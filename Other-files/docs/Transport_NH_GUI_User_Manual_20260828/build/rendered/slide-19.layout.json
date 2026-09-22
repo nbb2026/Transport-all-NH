@@ -1,0 +1,1807 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/2no730",
+    "id": "2no730",
+    "slide": 19,
+    "layoutId": "dfc6ddd5-97cd-4ff2-9e8d-4d1965958d3e",
+    "layoutName": "Title Slide",
+    "layoutType": "title",
+    "masterLayoutId": "c1e09104-553c-4bd7-a96b-941bbe0e0b20",
+    "masterLayoutName": "Master",
+    "backgroundColor": "#F4F7F8",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "theme": {
+    "colorSchemeName": "ChatGPT",
+    "colors": {
+      "accent1": "#156082",
+      "accent2": "#E97132",
+      "accent3": "#196B24",
+      "accent4": "#0F9ED5",
+      "accent5": "#A02B93",
+      "accent6": "#4EA72E",
+      "bg1": "#FFFFFF",
+      "bg2": "#000000",
+      "tx1": "#1F1F1F",
+      "tx2": "#FFFFFF",
+      "dk1": "#000000",
+      "lt1": "#FFFFFF",
+      "dk2": "#0E2841",
+      "lt2": "#E8E8E8",
+      "hlink": "#467886",
+      "folHlink": "#96607D"
+    },
+    "typefaces": [
+      "+mn-lt"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "dfc6ddd5-97cd-4ff2-9e8d-4d1965958d3e",
+      "name": "Title Slide",
+      "type": "title",
+      "parentLayoutId": "c1e09104-553c-4bd7-a96b-941bbe0e0b20",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "c1e09104-553c-4bd7-a96b-941bbe0e0b20",
+      "name": "Master",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/98fudczi",
+      "id": "1",
+      "bbox": [
+        0,
+        0,
+        1280,
+        9
+      ],
+      "geometry": "rect",
+      "fillColor": "#008D8D",
+      "lineColor": "#008D8D",
+      "lineWidth": 0
+    },
+    {
+      "order": 2,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/m5ov2xgr",
+      "id": "2",
+      "bbox": [
+        54,
+        28,
+        280,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Module Operation",
+      "textPreview": "Module Operation",
+      "resolvedFontSize": 13,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 13,
+        "typeface": "+mn-lt",
+        "color": "#008D8D",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Module Operation"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Module Operation",
+          "resolvedTextStyle": {
+            "fontSize": 13,
+            "color": "#008D8D",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Module Operation",
+              "fontSize": 13,
+              "color": "#008D8D",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/n6xcb2hc",
+      "id": "3",
+      "bbox": [
+        54,
+        56,
+        1172,
+        52
+      ],
+      "geometry": "rect",
+      "text": "6221 | Two Pulse-Sweep Modes and ROI",
+      "textPreview": "6221 | Two Pulse-Sweep Modes and ROI",
+      "resolvedFontSize": 36,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 36,
+        "typeface": "+mn-lt",
+        "color": "#16324F",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "6221 | Two Pulse-Sweep Modes and ROI"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "6221 | Two Pulse-Sweep Modes and ROI",
+          "resolvedTextStyle": {
+            "fontSize": 36,
+            "color": "#16324F",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "6221 | Two Pulse-Sweep Modes and ROI",
+              "fontSize": 36,
+              "color": "#16324F",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 4,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/wb6d8ryt",
+      "id": "4",
+      "bbox": [
+        46,
+        124,
+        580,
+        544
+      ],
+      "geometry": "roundRect",
+      "fillColor": "#FFFFFF",
+      "lineColor": "#D8E0E5",
+      "lineWidth": 1
+    },
+    {
+      "order": 5,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/xwfuhcze",
+      "id": "5",
+      "bbox": [
+        654,
+        124,
+        580,
+        544
+      ],
+      "geometry": "roundRect",
+      "fillColor": "#FFFFFF",
+      "lineColor": "#D8E0E5",
+      "lineWidth": 1
+    },
+    {
+      "order": 6,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/a9ov6hg3",
+      "id": "6",
+      "bbox": [
+        70,
+        146,
+        532,
+        28
+      ],
+      "geometry": "rect",
+      "text": "Current Round-Trip Sweep",
+      "textPreview": "Current Round-Trip Sweep",
+      "resolvedFontSize": 22,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 22,
+        "typeface": "+mn-lt",
+        "color": "#16324F",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Current Round-Trip Sweep"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Current Round-Trip Sweep",
+          "resolvedTextStyle": {
+            "fontSize": 22,
+            "color": "#16324F",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Current Round-Trip Sweep",
+              "fontSize": 22,
+              "color": "#16324F",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 7,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/vaxcfmh8",
+      "id": "7",
+      "bbox": [
+        70,
+        179,
+        46,
+        4
+      ],
+      "geometry": "rect",
+      "fillColor": "#008D8D",
+      "lineColor": "#008D8D",
+      "lineWidth": 0
+    },
+    {
+      "order": 8,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/kzqdcry5",
+      "id": "8",
+      "bbox": [
+        70,
+        194,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Start / Stop / Step mA",
+      "textPreview": "Start / Stop / Step mA",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Start / Stop / Step mA"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Start / Stop / Step mA",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Start / Stop / Step mA",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 9,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/50zelwzq",
+      "id": "9",
+      "bbox": [
+        70,
+        218,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "Define the round-trip pulse amplitude path.",
+      "textPreview": "Define the round-trip pulse amplitude path.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Define the round-trip pulse amplitude path."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Define the round-trip pulse amplitude path.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Define the round-trip pulse amplitude path.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 10,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/lo7i90zy",
+      "id": "10",
+      "bbox": [
+        70,
+        282,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Pulse width us",
+      "textPreview": "Pulse width us",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Pulse width us"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Pulse width us",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Pulse width us",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 11,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/0ny10vid",
+      "id": "11",
+      "bbox": [
+        70,
+        306,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "High-level time of each pulse.",
+      "textPreview": "High-level time of each pulse.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "High-level time of each pulse."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "High-level time of each pulse.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "High-level time of each pulse.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 12,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/zmp07ahs",
+      "id": "12",
+      "bbox": [
+        70,
+        370,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Acquire/Interval s",
+      "textPreview": "Acquire/Interval s",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Acquire/Interval s"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Acquire/Interval s",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Acquire/Interval s",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 13,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/elwjy507",
+      "id": "13",
+      "bbox": [
+        70,
+        394,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "Wait after the pulse and average the ROI over this time.",
+      "textPreview": "Wait after the pulse and average the ROI over this time.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Wait after the pulse and average the ROI over this time."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Wait after the pulse and average the ROI over this time.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Wait after the pulse and average the ROI over this time.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 14,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/9s72dkzu",
+      "id": "14",
+      "bbox": [
+        70,
+        458,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Start Current Round-Trip Sweep",
+      "textPreview": "Start Current Round-Trip Sweep",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Start Current Round-Trip Sweep"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Start Current Round-Trip Sweep",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Start Current Round-Trip Sweep",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 15,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/8ry14fi9",
+      "id": "15",
+      "bbox": [
+        70,
+        482,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "After starting, the x-axis of the right plot is the pulse current.",
+      "textPreview": "After starting, the x-axis of the right plot is the pulse current.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "After starting, the x-axis of the right plot is the pulse current."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "After starting, the x-axis of the right plot is the pulse current.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "After starting, the x-axis of the right plot is the pulse current.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 16,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/nqpkbaho",
+      "id": "16",
+      "bbox": [
+        678,
+        146,
+        532,
+        28
+      ],
+      "geometry": "rect",
+      "text": "Fixed-Current Pulse Acquisition",
+      "textPreview": "Fixed-Current Pulse Acquisition",
+      "resolvedFontSize": 22,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 22,
+        "typeface": "+mn-lt",
+        "color": "#16324F",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Fixed-Current Pulse Acquisition"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Fixed-Current Pulse Acquisition",
+          "resolvedTextStyle": {
+            "fontSize": 22,
+            "color": "#16324F",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Fixed-Current Pulse Acquisition",
+              "fontSize": 22,
+              "color": "#16324F",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 17,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/mpgj250j",
+      "id": "17",
+      "bbox": [
+        678,
+        179,
+        46,
+        4
+      ],
+      "geometry": "rect",
+      "fillColor": "#27B7C4",
+      "lineColor": "#27B7C4",
+      "lineWidth": 0
+    },
+    {
+      "order": 18,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/pwni1gzq",
+      "id": "18",
+      "bbox": [
+        678,
+        194,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Fixed pulse mA / Pulse count",
+      "textPreview": "Fixed pulse mA / Pulse count",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Fixed pulse mA / Pulse count"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Fixed pulse mA / Pulse count",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Fixed pulse mA / Pulse count",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 19,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/4ve1sbi5",
+      "id": "19",
+      "bbox": [
+        678,
+        218,
+        532,
+        51.33
+      ],
+      "geometry": "rect",
+      "text": "Specify the number of repetitions at the same amplitude.",
+      "textPreview": "Specify the number of repetitions at the same amplitude.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Specify the number of repetitions at the same amplitude."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Specify the number of repetitions at the same amplitude.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Specify the number of repetitions at the same amplitude.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 20,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/gfi18vq1",
+      "id": "20",
+      "bbox": [
+        678,
+        269.33,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Pulse width us / Acquisition interval s",
+      "textPreview": "Pulse width us / Acquisition interval s",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Pulse width us / Acquisition interval s"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Pulse width us / Acquisition interval s",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Pulse width us / Acquisition interval s",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 21,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/h0rih07m",
+      "id": "21",
+      "bbox": [
+        678,
+        293.33,
+        532,
+        51.33
+      ],
+      "geometry": "rect",
+      "text": "Control the pulse width and the post-pulse ROI averaging window.",
+      "textPreview": "Control the pulse width and the post-pulse ROI averaging window.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Control the pulse width and the post-pulse ROI averaging window."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Control the pulse width and the post-pulse ROI averaging window.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Control the pulse width and the post-pulse ROI averaging window.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 22,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/udgj6l8v",
+      "id": "22",
+      "bbox": [
+        678,
+        344.67,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Start Fixed-Current Pulse Acquisition",
+      "textPreview": "Start Fixed-Current Pulse Acquisition",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Start Fixed-Current Pulse Acquisition"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Start Fixed-Current Pulse Acquisition",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Start Fixed-Current Pulse Acquisition",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 23,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/vep0fq9g",
+      "id": "23",
+      "bbox": [
+        678,
+        368.67,
+        532,
+        51.33
+      ],
+      "geometry": "rect",
+      "text": "The x-axis of the right plot switches to the pulse index.",
+      "textPreview": "The x-axis of the right plot switches to the pulse index.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "The x-axis of the right plot switches to the pulse index."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "The x-axis of the right plot switches to the pulse index.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "The x-axis of the right plot switches to the pulse index.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 24,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/43i1cvqx",
+      "id": "24",
+      "bbox": [
+        678,
+        420,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Save MOKE raw 16-bit synchronously",
+      "textPreview": "Save MOKE raw 16-bit synchronously",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Save MOKE raw 16-bit synchronously"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Save MOKE raw 16-bit synchronously",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Save MOKE raw 16-bit synchronously",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 25,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/54r2l07i",
+      "id": "25",
+      "bbox": [
+        678,
+        444,
+        532,
+        51.33
+      ],
+      "geometry": "rect",
+      "text": "Save a raw image at the end of the acquisition window after each pulse.",
+      "textPreview": "Save a raw image at the end of the acquisition window after each pulse.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Save a raw image at the end of the acquisition window after each pulse."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Save a raw image at the end of the acquisition window after each pulse.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Save a raw image at the end of the acquisition window after each pulse.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 26,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/i10jal87",
+      "id": "26",
+      "bbox": [
+        678,
+        495.33,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Save CSV",
+      "textPreview": "Save CSV",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Save CSV"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Save CSV",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Save CSV",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 27,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/329kjqpc",
+      "id": "27",
+      "bbox": [
+        678,
+        519.33,
+        532,
+        51.33
+      ],
+      "geometry": "rect",
+      "text": "Save the pulse parameters and ROI data.",
+      "textPreview": "Save the pulse parameters and ROI data.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Save the pulse parameters and ROI data."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Save the pulse parameters and ROI data.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Save the pulse parameters and ROI data.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 28,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/s721gfq9",
+      "id": "28",
+      "bbox": [
+        678,
+        570.67,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "ROI/Left plot",
+      "textPreview": "ROI/Left plot",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "ROI/Left plot"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "ROI/Left plot",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "ROI/Left plot",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 29,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/d8b2pk7u",
+      "id": "29",
+      "bbox": [
+        678,
+        594.67,
+        532,
+        51.33
+      ],
+      "geometry": "rect",
+      "text": "The left plot continuously shows ROI intensity vs time; the right plot records only the pulse sweep.",
+      "textPreview": "The left plot continuously shows ROI intensity vs time; the right plot records only the pulse sweep.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "The left plot continuously shows ROI intensity vs time; the right plot records only the pulse sweep."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "The left plot continuously shows ROI intensity vs time; the right plot records only the pulse sweep.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "The left plot continuously shows ROI intensity vs time; the right plot records only the pulse sweep.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 30,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/n2d4fe9w",
+      "id": "30",
+      "bbox": [
+        54,
+        687,
+        520,
+        20
+      ],
+      "geometry": "rect",
+      "text": "Transport_NH · GUI User Manual",
+      "textPreview": "Transport_NH · GUI User Manual",
+      "resolvedFontSize": 12,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 12,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Transport_NH · GUI User Manual"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Transport_NH · GUI User Manual",
+          "resolvedTextStyle": {
+            "fontSize": 12,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Transport_NH · GUI User Manual",
+              "fontSize": 12,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 31,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/m143m9sb",
+      "id": "31",
+      "bbox": [
+        1170,
+        687,
+        56,
+        20
+      ],
+      "geometry": "rect",
+      "text": "19",
+      "textPreview": "19",
+      "resolvedFontSize": 12,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 12,
+        "typeface": "+mn-lt",
+        "color": "#008D8D",
+        "bold": true,
+        "alignment": "right",
+        "verticalAlignment": "middle",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "19"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "19",
+          "resolvedTextStyle": {
+            "fontSize": 12,
+            "color": "#008D8D",
+            "bold": true,
+            "alignment": "right"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "19",
+              "fontSize": 12,
+              "color": "#008D8D",
+              "bold": true,
+              "alignment": "right"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    }
+  ],
+  "composeRuns": []
+}

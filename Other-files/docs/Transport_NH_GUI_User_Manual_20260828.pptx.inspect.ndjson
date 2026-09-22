@@ -1,0 +1,1193 @@
+{"kind":"deck","id":"pr/mh6266","name":"Deck"}
+{"kind":"layout","layoutId":"c1e09104-553c-4bd7-a96b-941bbe0e0b20","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"dfc6ddd5-97cd-4ff2-9e8d-4d1965958d3e","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/mmcb83","slide":1,"title":"Magneto‑Electro‑Optical‑Microwave Transport","textShapes":6}
+{"kind":"textbox","id":"sh/3m1k3mtk","slide":1,"text":"Magneto‑Electro‑Optical‑Microwave Transport","textPreview":"Magneto‑Electro‑Optical‑Microwave Transport","textChars":43,"textLines":1,"bbox":[72,238,980,108]}
+{"kind":"textbox","id":"sh/2ls3u1sz","slide":1,"text":"Transport_NH 图形界面完整使用说明","textPreview":"Transport_NH 图形界面完整使用说明","textChars":23,"textLines":1,"bbox":[76,376,900,44]}
+{"kind":"textbox","id":"sh/1kj21wbe","slide":1,"text":"依据 2026‑08‑28 最新开发版源码 · 九个模块 · 控件逐项说明","textPreview":"依据 2026‑08‑28 最新开发版源码 · 九个模块 · 控件逐项说明","textChars":37,"textLines":1,"bbox":[76,438,980,34]}
+{"kind":"textbox","id":"sh/gjalsrat","slide":1,"text":"NH & Prof Chen’s group","textPreview":"NH & Prof Chen’s group","textChars":22,"textLines":1,"bbox":[76,615,520,30]}
+{"kind":"shape","id":"sh/fihkzmto","slide":1,"bbox":[1090,0,190,720]}
+{"kind":"textbox","id":"sh/eh83qhs3","slide":1,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/tgz2xcbi","slide":1,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"image","id":"im/to3ylwvy","slide":1,"name":"","alt":"Transport_NH application icon","bbox":[72,76,140,140]}
+{"kind":"notes","id":"nt/mmcb83","slide":1,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:1-30\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11020-11028\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/assets/Magneto_Electro_Optical_Microwave_Transport_NH_icon.png (project icon)"}
+{"kind":"slide","id":"sl/9n0itu","slide":2,"title":"阅读指南","textShapes":22}
+{"kind":"shape","id":"sh/7eh8ru5s","slide":2,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/8fqpkzmd","slide":2,"text":"阅读指南","textPreview":"阅读指南","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/tgzqt4ny","slide":2,"text":"本说明书的使用边界","textPreview":"本说明书的使用边界","textChars":9,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/uh87m94j","slide":2,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/vih8ve54","slide":2,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/gjqpojmp","slide":2,"text":"适用范围","textPreview":"适用范围","textChars":4,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/hkjqxo3u","slide":2,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/ils7q94f","slide":2,"text":"唯一依据","textPreview":"唯一依据","textChars":4,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/3618zel0","slide":2,"text":"以当前 dev 源码中的真实控件、默认值和回调逻辑为准。","textPreview":"以当前 dev 源码中的真实控件、默认值和回调逻辑为准。","textChars":28,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/ji5s3uho","slide":2,"text":"覆盖内容","textPreview":"覆盖内容","textChars":4,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/ihcrup03","slide":2,"text":"九个页签、Camera Live、ROI、扫描、保存、急停和退出。","textPreview":"九个页签、Camera Live、ROI、扫描、保存、急停和退出。","textChars":33,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/54na5kze","slide":2,"text":"培训用途","textPreview":"培训用途","textChars":4,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/k3etwfi9","slide":2,"text":"适合新用户上机前自学、实验室交接和现场核对。","textPreview":"适合新用户上机前自学、实验室交接和现场核对。","textChars":22,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/velszahc","slide":2,"text":"硬件边界","textPreview":"硬件边界","textChars":4,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/adcrq50r","slide":2,"text":"离线检查不等于相机、串口、GPIB、PPMS 或 Windows 实机验收。","textPreview":"离线检查不等于相机、串口、GPIB、PPMS 或 Windows 实机验收。","textChars":38,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/xg3a1kzi","slide":2,"text":"阅读方式","textPreview":"阅读方式","textChars":4,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/wfu9sfix","slide":2,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/fapsbehw","slide":2,"text":"先看模块","textPreview":"先看模块","textChars":4,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/u9wb290b","slide":2,"text":"先按页签定位，再查看对应控件表与操作顺序。","textPreview":"先按页签定位，再查看对应控件表与操作顺序。","textChars":21,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/q50vadkj","slide":2,"text":"再看安全","textPreview":"再看安全","textChars":4,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/b69w3y14","slide":2,"text":"所有非零输出、运动和扫描前，必须完成硬件侧确认。","textPreview":"所有非零输出、运动和扫描前，必须完成硬件侧确认。","textChars":24,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/c7idc329","slide":2,"text":"最后看保存","textPreview":"最后看保存","textChars":5,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/dsre58ju","slide":2,"text":"理解 CSV、PNG、16‑bit 原图、差分图和视频的区别。","textPreview":"理解 CSV、PNG、16‑bit 原图、差分图和视频的区别。","textChars":31,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/ytkvedkf","slide":2,"text":"异常处理","textPreview":"异常处理","textChars":4,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/zutw7i10","slide":2,"text":"优先停止/归零；不要用反复重连代替排查占用或硬件状态。","textPreview":"优先停止/归零；不要用反复重连代替排查占用或硬件状态。","textChars":27,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/0v2dgn2l","slide":2,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/lwbe9sj6","slide":2,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/9n0itu","slide":2,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:1-30"}
+{"kind":"slide","id":"sl/nc2bji","slide":3,"title":"系统导航","textShapes":22}
+{"kind":"shape","id":"sh/cbqdk3md","slide":3,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/rahcryls","slide":3,"text":"系统导航","textPreview":"系统导航","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/q98vit47","slide":3,"text":"九个页签：从光学成像到微波输运","textPreview":"九个页签：从光学成像到微波输运","textChars":15,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/10jexs3u","slide":3,"bbox":[58,142,364,124]}
+{"kind":"textbox","id":"sh/0zadonm9","slide":3,"text":"MOKE光源","textPreview":"MOKE光源","textChars":6,"textLines":1,"bbox":[78,158,324,32]}
+{"kind":"textbox","id":"sh/ze1wvilo","slide":3,"text":"相机、四路 LED、检偏器旋转台","textPreview":"相机、四路 LED、检偏器旋转台","textChars":16,"textLines":1,"bbox":[78,194,324,56]}
+{"kind":"shape","id":"sh/edsvmd4j","slide":3,"bbox":[458,142,364,124]}
+{"kind":"textbox","id":"sh/h4zulo3q","slide":3,"text":"MOKE电机","textPreview":"MOKE电机","textChars":6,"textLines":1,"bbox":[478,158,324,32]}
+{"kind":"textbox","id":"sh/gj6dcjm5","slide":3,"text":"Cell‑VSDM 位移与 Home","textPreview":"Cell‑VSDM 位移与 Home","textChars":18,"textLines":1,"bbox":[478,194,324,56]}
+{"kind":"shape","id":"sh/adgjipk3","slide":3,"bbox":[858,142,364,124]}
+{"kind":"textbox","id":"sh/ve90bu1o","slide":3,"text":"MOKE磁铁","textPreview":"MOKE磁铁","textChars":6,"textLines":1,"bbox":[878,158,324,32]}
+{"kind":"textbox","id":"sh/wfi1kz29","slide":3,"text":"差分成像、磁场、电流扫描","textPreview":"差分成像、磁场、电流扫描","textChars":12,"textLines":1,"bbox":[878,194,324,56]}
+{"kind":"shape","id":"sh/xgrid4je","slide":3,"bbox":[58,302,364,124]}
+{"kind":"textbox","id":"sh/i10jmpkz","slide":3,"text":"2410","textPreview":"2410","textChars":4,"textLines":1,"bbox":[78,318,324,32]}
+{"kind":"textbox","id":"sh/j29kfu1k","slide":3,"text":"电阻监测、电压扫描、ROI","textPreview":"电阻监测、电压扫描、ROI","textChars":13,"textLines":1,"bbox":[78,354,324,56]}
+{"kind":"shape","id":"sh/k3i1oz25","slide":3,"bbox":[458,302,364,124]}
+{"kind":"textbox","id":"sh/54r2h4jq","slide":3,"text":"6221","textPreview":"6221","textChars":4,"textLines":1,"bbox":[478,318,324,32]}
+{"kind":"textbox","id":"sh/650jq9kb","slide":3,"text":"AC/DC、有限脉冲、脉冲扫描","textPreview":"AC/DC、有限脉冲、脉冲扫描","textChars":15,"textLines":1,"bbox":[478,354,324,56]}
+{"kind":"shape","id":"sh/76tkje1w","slide":3,"bbox":[858,302,364,124]}
+{"kind":"textbox","id":"sh/3at07eho","slide":3,"text":"IV","textPreview":"IV","textChars":2,"textLines":1,"bbox":[878,318,324,32]}
+{"kind":"textbox","id":"sh/29kze9gj","slide":3,"text":"6221 + 多种电压读出","textPreview":"6221 + 多种电压读出","textChars":13,"textLines":1,"bbox":[878,354,324,56]}
+{"kind":"shape","id":"sh/pcbi9ozu","slide":3,"bbox":[58,462,364,124]}
+{"kind":"textbox","id":"sh/4b21gjy9","slide":3,"text":"Gate‑VI","textPreview":"Gate‑VI","textChars":7,"textLines":1,"bbox":[78,478,324,32]}
+{"kind":"textbox","id":"sh/f6t03uhs","slide":3,"text":"2410 脉冲门控 + 6221/电压读出","textPreview":"2410 脉冲门控 + 6221/电压读出","textChars":21,"textLines":1,"bbox":[78,514,324,56]}
+{"kind":"shape","id":"sh/u5kza9g7","slide":3,"bbox":[458,462,364,124]}
+{"kind":"textbox","id":"sh/h8bi54zy","slide":3,"text":"PPMS1","textPreview":"PPMS1","textChars":5,"textLines":1,"bbox":[478,478,324,32]}
+{"kind":"textbox","id":"sh/g72hczyd","slide":3,"text":"环境控制 + 6221/SR830 扫场","textPreview":"环境控制 + 6221/SR830 扫场","textChars":20,"textLines":1,"bbox":[478,514,324,56]}
+{"kind":"shape","id":"sh/7i90zuhw","slide":3,"bbox":[858,462,364,124]}
+{"kind":"textbox","id":"sh/6h0z6pgb","slide":3,"text":"STFMR","textPreview":"STFMR","textChars":5,"textLines":1,"bbox":[878,478,324,32]}
+{"kind":"textbox","id":"sh/wnyxgvet","slide":3,"text":"4886/475/PNA 的 FMR 扫描","textPreview":"4886/475/PNA 的 FMR 扫描","textChars":21,"textLines":1,"bbox":[878,514,324,56]}
+{"kind":"textbox","id":"sh/xo7y90fe","slide":3,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/alwfelw3","slide":3,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/nc2bji","slide":3,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11020-11028\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11050-12130\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:13854-16270\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:29018-29190"}
+{"kind":"slide","id":"sl/0f0jze","slide":4,"title":"安全与状态","textShapes":20}
+{"kind":"shape","id":"sh/l8by5sba","slide":4,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/yl0zudcz","slide":4,"text":"安全与状态","textPreview":"安全与状态","textChars":5,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/z69g3it4","slide":4,"text":"共用交互规则：颜色、使能与危险动作","textPreview":"共用交互规则：颜色、使能与危险动作","textChars":17,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/8b2h0nu1","slide":4,"bbox":[54,126,1172,534]}
+{"kind":"shape","id":"sh/9cby9sbm","slide":4,"bbox":[78,154,18,18]}
+{"kind":"textbox","id":"sh/m9kzyxcv","slide":4,"text":"灰色圆点 / 未连接","textPreview":"灰色圆点 / 未连接","textChars":10,"textLines":1,"bbox":[112,146,280,34]}
+{"kind":"textbox","id":"sh/7atg72tg","slide":4,"text":"资源尚未打开；相关操作通常禁用。","textPreview":"资源尚未打开；相关操作通常禁用。","textChars":16,"textLines":1,"bbox":[400,146,790,40]}
+{"kind":"shape","id":"sh/ofyho3uh","slide":4,"bbox":[112,198,1078,1]}
+{"kind":"shape","id":"sh/pgryx8b2","slide":4,"bbox":[78,216,18,18]}
+{"kind":"textbox","id":"sh/9gbi5sfm","slide":4,"text":"绿色圆点 / 已连接","textPreview":"绿色圆点 / 已连接","textChars":10,"textLines":1,"bbox":[112,208,280,34]}
+{"kind":"textbox","id":"sh/8f21wny1","slide":4,"text":"仅表示软件会话建立，不等同于已完成硬件功能验收。","textPreview":"仅表示软件会话建立，不等同于已完成硬件功能验收。","textChars":24,"textLines":1,"bbox":[400,208,790,40]}
+{"kind":"shape","id":"sh/7ut03ixg","slide":4,"bbox":[112,260,1078,1]}
+{"kind":"shape","id":"sh/mt0judgv","slide":4,"bbox":[78,278,18,18]}
+{"kind":"textbox","id":"sh/hkbi9sfi","slide":4,"text":"灰色按钮","textPreview":"灰色按钮","textChars":4,"textLines":1,"bbox":[112,270,280,34]}
+{"kind":"textbox","id":"sh/wj210nyx","slide":4,"text":"当前状态、缺少连接或缺少安全确认，不允许执行。","textPreview":"当前状态、缺少连接或缺少安全确认，不允许执行。","textChars":23,"textLines":1,"bbox":[400,270,790,40]}
+{"kind":"shape","id":"sh/vit07ixc","slide":4,"bbox":[112,322,1078,1]}
+{"kind":"shape","id":"sh/uhkjyxg7","slide":4,"bbox":[78,340,18,18]}
+{"kind":"textbox","id":"sh/5ov2dcfu","slide":4,"text":"红色按钮","textPreview":"红色按钮","textChars":4,"textLines":1,"bbox":[112,332,280,34]}
+{"kind":"textbox","id":"sh/4nm147y9","slide":4,"text":"停止、关输出、归零或紧急动作；优先级最高。","textPreview":"停止、关输出、归零或紧急动作；优先级最高。","textChars":21,"textLines":1,"bbox":[400,332,790,40]}
+{"kind":"shape","id":"sh/o3etwfah","slide":4,"bbox":[112,384,1078,1]}
+{"kind":"shape","id":"sh/p4nupkr2","slide":4,"bbox":[78,402,18,18]}
+{"kind":"textbox","id":"sh/21cbu5sb","slide":4,"text":"安全确认复选框","textPreview":"安全确认复选框","textChars":7,"textLines":1,"bbox":[112,394,280,34]}
+{"kind":"textbox","id":"sh/32lcna9w","slide":4,"text":"确认接线、极性、限值、冷却、机械路径和人员安全。","textPreview":"确认接线、极性、限值、冷却、机械路径和人员安全。","textChars":24,"textLines":1,"bbox":[400,394,790,40]}
+{"kind":"shape","id":"sh/c7edkfqt","slide":4,"bbox":[112,446,1078,1]}
+{"kind":"shape","id":"sh/xsnutkry","slide":4,"bbox":[78,464,18,18]}
+{"kind":"textbox","id":"sh/q5wby58n","slide":4,"text":"连接 → 参数 → 输出","textPreview":"连接 → 参数 → 输出","textChars":12,"textLines":1,"bbox":[112,456,280,34]}
+{"kind":"textbox","id":"sh/b65cra98","slide":4,"text":"先连接并读取状态，再设置小量程参数，最后允许输出。","textPreview":"先连接并读取状态，再设置小量程参数，最后允许输出。","textChars":25,"textLines":1,"bbox":[400,456,790,40]}
+{"kind":"shape","id":"sh/sbutova9","slide":4,"bbox":[112,508,1078,1]}
+{"kind":"shape","id":"sh/tc3uh0ru","slide":4,"bbox":[78,526,18,18]}
+{"kind":"textbox","id":"sh/vq9wnytc","slide":4,"text":"保存","textPreview":"保存","textChars":2,"textLines":1,"bbox":[112,518,280,34]}
+{"kind":"textbox","id":"sh/up0futsr","slide":4,"text":"优先在扫描结束后保存；同步图像会显著增加磁盘和处理负载。","textPreview":"优先在扫描结束后保存；同步图像会显著增加磁盘和处理负载。","textChars":28,"textLines":1,"bbox":[400,518,790,40]}
+{"kind":"shape","id":"sh/hsrepobi","slide":4,"bbox":[112,570,1078,1]}
+{"kind":"shape","id":"sh/wrixw3ax","slide":4,"bbox":[78,588,18,18]}
+{"kind":"textbox","id":"sh/7m9wjetg","slide":4,"text":"退出程序","textPreview":"退出程序","textChars":4,"textLines":1,"bbox":[112,580,280,34]}
+{"kind":"textbox","id":"sh/m1gfq9cv","slide":4,"text":"程序会尝试关闭输出与会话；仍需核对仪器前面板。","textPreview":"程序会尝试关闭输出与会话；仍需核对仪器前面板。","textChars":23,"textLines":1,"bbox":[400,580,790,40]}
+{"kind":"textbox","id":"sh/9orelob6","slide":4,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/8nixsja1","slide":4,"text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/0f0jze","slide":4,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:10620-10990\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11100-11120\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11340-11370\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11795-11835\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:14730-14770\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:15120-15150"}
+{"kind":"slide","id":"sl/jn2h1k","slide":5,"title":"模块操作","textShapes":22}
+{"kind":"shape","id":"sh/snqlcjad","slide":5,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/rmhkjets","slide":5,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/6l83a9sn","slide":5,"text":"MOKE光源｜相机入口","textPreview":"MOKE光源｜相机入口","textChars":11,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/1sjmpoba","slide":5,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/gralgjap","slide":5,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/fq14net4","slide":5,"text":"相机控制","textPreview":"相机控制","textChars":4,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/eps3e9sj","slide":5,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/hwf2dkbq","slide":5,"text":"连接相机","textPreview":"连接相机","textChars":4,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/wv6lkza5","slide":5,"text":"创建 PCO 相机会话并开始后台采集；连接前不采集。","textPreview":"创建 PCO 相机会话并开始后台采集；连接前不采集。","textChars":26,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/epkvmlof","slide":5,"text":"断开相机","textPreview":"断开相机","textChars":4,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/fqtcfq50","slide":5,"text":"停止采集、释放相机；相机画面和相关按钮随状态更新。","textPreview":"停止采集、释放相机；相机画面和相关按钮随状态更新。","textChars":25,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/gr2dov6l","slide":5,"text":"显示 Camera Live 窗口","textPreview":"显示 Camera Live 窗口","textChars":17,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/1sbuhgn6","slide":5,"text":"展开独立实时画面；不会重复连接相机。","textPreview":"展开独立实时画面；不会重复连接相机。","textChars":18,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/2tkvqlor","slide":5,"text":"收起画面","textPreview":"收起画面","textChars":4,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/3udcjq5c","slide":5,"text":"隐藏实时窗口但保持已建立的相机会话。","textPreview":"隐藏实时窗口但保持已建立的相机会话。","textChars":18,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/ovmdsv6x","slide":5,"text":"Camera Live 作用","textPreview":"Camera Live 作用","textChars":14,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/pwvel0n2","slide":5,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/ax4vu5on","slide":5,"text":"实时观察","textPreview":"实时观察","textChars":4,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/bydwna58","slide":5,"text":"显示当前处理后的 8‑bit 画面、角标、曝光和对比度状态。","textPreview":"显示当前处理后的 8‑bit 画面、角标、曝光和对比度状态。","textChars":30,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/7mxcbalg","slide":5,"text":"ROI 入口","textPreview":"ROI 入口","textChars":6,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/mlob25kv","slide":5,"text":"Shift + 左键拖拽选择 ROI；普通左键拖拽用于平移。","textPreview":"Shift + 左键拖拽选择 ROI；普通左键拖拽用于平移。","textChars":30,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/9ofudk3m","slide":5,"text":"MOKE 共用","textPreview":"MOKE 共用","textChars":7,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/8n6t4f21","slide":5,"text":"MOKE、2410、6221 的 ROI 与保存均读取同一相机数据链。","textPreview":"MOKE、2410、6221 的 ROI 与保存均读取同一相机数据链。","textChars":35,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/zydc7qlk","slide":5,"text":"旋转规则","textPreview":"旋转规则","textChars":4,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/yx4bylkz","slide":5,"text":"原始帧先逆时针旋转 90°，角标 1/2/3/4 同步旋转。","textPreview":"原始帧先逆时针旋转 90°，角标 1/2/3/4 同步旋转。","textChars":30,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/lkvu903a","slide":5,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/kzmt0v2p","slide":5,"text":"05","textPreview":"05","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/jn2h1k","slide":5,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11255-11303\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:8800-10100"}
+{"kind":"slide","id":"sl/mz2jm2","slide":6,"title":"模块操作","textShapes":28}
+{"kind":"shape","id":"sh/qd43itcv","slide":6,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/dgvmd8v6","slide":6,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/sfmlk3ul","slide":6,"text":"MOKE光源｜LED 串口与全局控制","textPreview":"MOKE光源｜LED 串口与全局控制","textChars":18,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/3qd47ed4","slide":6,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/ipk3e9cj","slide":6,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/5cvm9ova","slide":6,"text":"连接区","textPreview":"连接区","textChars":3,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/4bmlgjup","slide":6,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/vmtk3ed8","slide":6,"text":"LED 串口","textPreview":"LED 串口","textChars":6,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/ulk3a9cn","slide":6,"text":"选择 COM 资源；默认链路为 COM5。","textPreview":"选择 COM 资源；默认链路为 COM5。","textChars":21,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/ofal4jip","slide":6,"text":"刷新","textPreview":"刷新","textChars":2,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/p0jmxoja","slide":6,"text":"重新扫描可用串口。","textPreview":"重新扫描可用串口。","textChars":9,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/2d83290j","slide":6,"text":"连接 / 断开","textPreview":"连接 / 断开","textChars":7,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/3eh4ve14","slide":6,"text":"打开或释放 115200‑8N1 串口会话。","textPreview":"打开或释放 115200‑8N1 串口会话。","textChars":22,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/gbql0jid","slide":6,"text":"显示日志 / 隐藏日志","textPreview":"显示日志 / 隐藏日志","textChars":11,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/hczmtojy","slide":6,"text":"展开或收起 TX/RX 通信记录。","textPreview":"展开或收起 TX/RX 通信记录。","textChars":17,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/u983y90n","slide":6,"text":"全部归零 / 紧急关闭","textPreview":"全部归零 / 紧急关闭","textChars":11,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/fah4re18","slide":6,"text":"四路设为 0 并关闭输出；异常时优先使用。","textPreview":"四路设为 0 并关闭输出；异常时优先使用。","textChars":21,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/07u5c3ix","slide":6,"text":"四路全局控制","textPreview":"四路全局控制","textChars":6,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/l83m58ji","slide":6,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/9ozmp8bm","slide":6,"text":"0 / 10 / 50 / 100 / 500","textPreview":"0 / 10 / 50 / 100 / 500","textChars":23,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/8nqlg3a1","slide":6,"text":"把同一电流预设写入四路输入。","textPreview":"把同一电流预设写入四路输入。","textChars":14,"textLines":1,"bbox":[678,218,532,51.33]}
+{"kind":"textbox","id":"sh/7mh4nytg","slide":6,"text":"四路连续开启","textPreview":"四路连续开启","textChars":6,"textLines":1,"bbox":[678,269.33,532,24]}
+{"kind":"textbox","id":"sh/mlo3etsv","slide":6,"text":"把四路模式统一切换到连续输出。","textPreview":"把四路模式统一切换到连续输出。","textChars":15,"textLines":1,"bbox":[678,293.33,532,51.33]}
+{"kind":"textbox","id":"sh/l0fmloba","slide":6,"text":"应用全部 / 查询全部","textPreview":"应用全部 / 查询全部","textChars":11,"textLines":1,"bbox":[678,344.67,532,24]}
+{"kind":"textbox","id":"sh/kz6lc3ap","slide":6,"text":"批量写入或批量读取四路状态。","textPreview":"批量写入或批量读取四路状态。","textChars":14,"textLines":1,"bbox":[678,368.67,532,51.33]}
+{"kind":"textbox","id":"sh/zyx4jytk","slide":6,"text":"设置四路连续电流","textPreview":"设置四路连续电流","textChars":8,"textLines":1,"bbox":[678,420,532,24]}
+{"kind":"textbox","id":"sh/yxo3atsz","slide":6,"text":"把输入值同时作为四路连续电流；上限 2000。","textPreview":"把输入值同时作为四路连续电流；上限 2000。","textChars":23,"textLines":1,"bbox":[678,444,532,51.33]}
+{"kind":"textbox","id":"sh/xwf2hobe","slide":6,"text":"设置后自动回读","textPreview":"设置后自动回读","textChars":7,"textLines":1,"bbox":[678,495.33,532,24]}
+{"kind":"textbox","id":"sh/cv6l8jat","slide":6,"text":"每次写入后立即查询；用于核对但会增加通信量。","textPreview":"每次写入后立即查询；用于核对但会增加通信量。","textChars":22,"textLines":1,"bbox":[678,519.33,532,51.33]}
+{"kind":"textbox","id":"sh/2pkr2l4f","slide":6,"text":"显示并编辑高级参数","textPreview":"显示并编辑高级参数","textChars":9,"textLines":1,"bbox":[678,570.67,532,24]}
+{"kind":"textbox","id":"sh/3qtsvq50","slide":6,"text":"展开每路 p/g/d/f 高级脉冲参数。","textPreview":"展开每路 p/g/d/f 高级脉冲参数。","textChars":20,"textLines":1,"bbox":[678,594.67,532,51.33]}
+{"kind":"textbox","id":"sh/4r294vml","slide":6,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/psbax0nq","slide":6,"text":"06","textPreview":"06","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/mz2jm2","slide":6,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11068-11224\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:16450-16550"}
+{"kind":"slide","id":"sl/v6bj60","slide":7,"title":"模块操作","textShapes":30}
+{"kind":"shape","id":"sh/w7ylsnuh","slide":7,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/b6p4z2tw","slide":7,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/a5g3qxcb","slide":7,"text":"MOKE光源｜通道、ROI 与检偏器","textPreview":"MOKE光源｜通道、ROI 与检偏器","textChars":18,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/lcrm5cby","slide":7,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/kbilw7ut","slide":7,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/ja9432t8","slide":7,"text":"每路 LED 通道","textPreview":"每路 LED 通道","textChars":9,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/y903uxcn","slide":7,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/t0rm9cba","slide":7,"text":"电流","textPreview":"电流","textChars":2,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/8fi507up","slide":7,"text":"输入该通道电流值。","textPreview":"输入该通道电流值。","textChars":9,"textLines":1,"bbox":[70,218,532,51.33]}
+{"kind":"textbox","id":"sh/i5ofutgv","slide":7,"text":"模式","textPreview":"模式","textChars":2,"textLines":1,"bbox":[70,269.33,532,24]}
+{"kind":"textbox","id":"sh/j6xg3yhg","slide":7,"text":"选择关闭、连续或设备支持的脉冲模式。","textPreview":"选择关闭、连续或设备支持的脉冲模式。","textChars":18,"textLines":1,"bbox":[70,293.33,532,51.33]}
+{"kind":"textbox","id":"sh/k7qxw3yl","slide":7,"text":"应用","textPreview":"应用","textChars":2,"textLines":1,"bbox":[70,344.67,532,24]}
+{"kind":"textbox","id":"sh/58zy58z6","slide":7,"text":"只写入当前通道。","textPreview":"只写入当前通道。","textChars":8,"textLines":1,"bbox":[70,368.67,532,51.33]}
+{"kind":"textbox","id":"sh/6t8fydgr","slide":7,"text":"查询","textPreview":"查询","textChars":2,"textLines":1,"bbox":[70,420,532,24]}
+{"kind":"textbox","id":"sh/7uhg7ihc","slide":7,"text":"只读取当前通道。","textPreview":"只读取当前通道。","textChars":8,"textLines":1,"bbox":[70,444,532,51.33]}
+{"kind":"textbox","id":"sh/svqh0nyx","slide":7,"text":"p/g/d/f","textPreview":"p/g/d/f","textChars":7,"textLines":1,"bbox":[70,495.33,532,24]}
+{"kind":"textbox","id":"sh/twzy9szi","slide":7,"text":"高级模式下编辑脉冲相关参数。","textPreview":"高级模式下编辑脉冲相关参数。","textChars":14,"textLines":1,"bbox":[70,519.33,532,51.33]}
+{"kind":"textbox","id":"sh/mx4fm90n","slide":7,"text":"ROI intensity vs time","textPreview":"ROI intensity vs time","textChars":21,"textLines":1,"bbox":[70,570.67,532,24]}
+{"kind":"textbox","id":"sh/nydgveh8","slide":7,"text":"绘制所选 ROI 的原始 16‑bit 平均强度，不扣背景。","textPreview":"绘制所选 ROI 的原始 16‑bit 平均强度，不扣背景。","textChars":30,"textLines":1,"bbox":[70,594.67,532,51.33]}
+{"kind":"textbox","id":"sh/r6947qto","slide":7,"text":"Thorlabs K10CR1 检偏器","textPreview":"Thorlabs K10CR1 检偏器","textChars":19,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/q503elc3","slide":7,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/dsrm90bu","slide":7,"text":"连接 / 断开","textPreview":"连接 / 断开","textChars":7,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/s7ilgva9","slide":7,"text":"建立或释放 Kinesis 旋转台会话。","textPreview":"建立或释放 Kinesis 旋转台会话。","textChars":20,"textLines":1,"bbox":[678,218,532,51.33]}
+{"kind":"textbox","id":"sh/32p436ts","slide":7,"text":"读取状态 / 识别设备","textPreview":"读取状态 / 识别设备","textChars":11,"textLines":1,"bbox":[678,269.33,532,24]}
+{"kind":"textbox","id":"sh/i1g3a1c7","slide":7,"text":"更新位置与 Home/Enabled 状态；触发 Identify。","textPreview":"更新位置与 Home/Enabled 状态；触发 Identify。","textChars":34,"textLines":1,"bbox":[678,293.33,532,51.33]}
+{"kind":"textbox","id":"sh/54rm5gbi","slide":7,"text":"安全确认","textPreview":"安全确认","textChars":4,"textLines":1,"bbox":[678,344.67,532,24]}
+{"kind":"textbox","id":"sh/43ylcbux","slide":7,"text":"未勾选时禁止正常运动。","textPreview":"未勾选时禁止正常运动。","textChars":11,"textLines":1,"bbox":[678,368.67,532,51.33]}
+{"kind":"textbox","id":"sh/nyt4fatw","slide":7,"text":"相对转动 / 到绝对角度","textPreview":"相对转动 / 到绝对角度","textChars":12,"textLines":1,"bbox":[678,420,532,24]}
+{"kind":"textbox","id":"sh/2xknm5sb","slide":7,"text":"分别执行相对角和 0–360° 绝对角。","textPreview":"分别执行相对角和 0–360° 绝对角。","textChars":20,"textLines":1,"bbox":[678,444,532,51.33]}
+{"kind":"textbox","id":"sh/k3u1g7at","slide":7,"text":"−微动 / +微动","textPreview":"−微动 / +微动","textChars":9,"textLines":1,"bbox":[678,495.33,532,24]}
+{"kind":"textbox","id":"sh/l4ni9cre","slide":7,"text":"≤1° 诊断微动；未 Home 时只允许这类动作。","textPreview":"≤1° 诊断微动；未 Home 时只允许这类动作。","textChars":25,"textLines":1,"bbox":[678,519.33,532,51.33]}
+{"kind":"textbox","id":"sh/yhcjexsn","slide":7,"text":"Home / 立即停止","textPreview":"Home / 立即停止","textChars":11,"textLines":1,"bbox":[678,570.67,532,24]}
+{"kind":"textbox","id":"sh/j2l07298","slide":7,"text":"建立机械参考；或立即停止运动。退出不自动归零。","textPreview":"建立机械参考；或立即停止运动。退出不自动归零。","textChars":23,"textLines":1,"bbox":[678,594.67,532,51.33]}
+{"kind":"textbox","id":"sh/87e1k7qp","slide":7,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/t8n2dcra","slide":7,"text":"07","textPreview":"07","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/v6bj60","slide":7,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11124-11223\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:13854-13980"}
+{"kind":"slide","id":"sl/e0ex58","slide":8,"title":"模块操作","textShapes":26}
+{"kind":"shape","id":"sh/l8zq107u","slide":8,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/y5876l83","slide":8,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/z6h8zqpo","slide":8,"text":"Camera Live｜鼠标与快捷键","textPreview":"Camera Live｜鼠标与快捷键","textChars":18,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/8bq9cv6l","slide":8,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/9wzq507q","slide":8,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/m98ra58f","slide":8,"text":"鼠标","textPreview":"鼠标","textChars":2,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/7ah83ap0","slide":8,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/of6p0bq1","slide":8,"text":"左键拖拽","textPreview":"左键拖拽","textChars":4,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/p0fqtg7m","slide":8,"text":"平移当前显示视野；平移范围会被图像边界限制。","textPreview":"平移当前显示视野；平移范围会被图像边界限制。","textChars":22,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/t47idsba","slide":8,"text":"Shift + 左键拖拽","textPreview":"Shift + 左键拖拽","textChars":12,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/s3yhknap","slide":8,"text":"新建/重选 ROI；2410 扫描期间禁止重选。","textPreview":"新建/重选 ROI；2410 扫描期间禁止重选。","textChars":24,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/r250b2t4","slide":8,"text":"滚轮","textPreview":"滚轮","textChars":2,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/61wzixsj","slide":8,"text":"围绕鼠标位置缩放视野。","textPreview":"围绕鼠标位置缩放视野。","textChars":11,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/1s7ihcb6","slide":8,"text":"ROI 清除快捷键","textPreview":"ROI 清除快捷键","textChars":9,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/gry1o7al","slide":8,"text":"清除当前 ROI，实时曲线回到等待状态。","textPreview":"清除当前 ROI，实时曲线回到等待状态。","textChars":20,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/f6p0f2t0","slide":8,"text":"键盘状态控制","textPreview":"键盘状态控制","textChars":6,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/e5gzmxsv","slide":8,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/pwrilcbi","slide":8,"text":"A · Contrast","textPreview":"A · Contrast","textChars":12,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/ovi1srax","slide":8,"text":"切换自动/固定对比度；自动对比度只统计当前可见区域。","textPreview":"切换自动/固定对比度；自动对比度只统计当前可见区域。","textChars":26,"textLines":1,"bbox":[678,218,532,51.33]}
+{"kind":"textbox","id":"sh/8zqlovit","slide":8,"text":"B · BG on/off","textPreview":"B · BG on/off","textChars":13,"textLines":1,"bbox":[678,269.33,532,24]}
+{"kind":"textbox","id":"sh/90z2h0ze","slide":8,"text":"开启或关闭背景扣除。","textPreview":"开启或关闭背景扣除。","textChars":10,"textLines":1,"bbox":[678,293.33,532,51.33]}
+{"kind":"textbox","id":"sh/mdo3ml03","slide":8,"text":"N · new BG","textPreview":"N · new BG","textChars":10,"textLines":1,"bbox":[678,344.67,532,24]}
+{"kind":"textbox","id":"sh/nyhkfqh8","slide":8,"text":"重采背景，并把 ROI‑time 横轴重新从 0 开始。","textPreview":"重采背景，并把 ROI‑time 横轴重新从 0 开始。","textChars":28,"textLines":1,"bbox":[678,368.67,532,51.33]}
+{"kind":"textbox","id":"sh/w3qlsvi5","slide":8,"text":"R · reset","textPreview":"R · reset","textChars":9,"textLines":1,"bbox":[678,420,532,24]}
+{"kind":"textbox","id":"sh/x4z2l0zq","slide":8,"text":"复位缩放和平移。","textPreview":"复位缩放和平移。","textChars":8,"textLines":1,"bbox":[678,444,532,51.33]}
+{"kind":"textbox","id":"sh/a183q50z","slide":8,"text":"M · marker","textPreview":"M · marker","textChars":10,"textLines":1,"bbox":[678,495.33,532,24]}
+{"kind":"textbox","id":"sh/v2hkjqhk","slide":8,"text":"显示/隐藏 100× 视野 marker。","textPreview":"显示/隐藏 100× 视野 marker。","textChars":21,"textLines":1,"bbox":[678,519.33,532,51.33]}
+{"kind":"textbox","id":"sh/c761gbil","slide":8,"text":"Q · quit","textPreview":"Q · quit","textChars":8,"textLines":1,"bbox":[678,570.67,532,24]}
+{"kind":"textbox","id":"sh/d8f29gz6","slide":8,"text":"关闭 Camera Live 窗口；不替代主程序的安全退出。","textPreview":"关闭 Camera Live 窗口；不替代主程序的安全退出。","textChars":30,"textLines":1,"bbox":[678,594.67,532,51.33]}
+{"kind":"textbox","id":"sh/fe5wby50","slide":8,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/edwf2tof","slide":8,"text":"08","textPreview":"08","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/e0ex58","slide":8,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:8800-10100\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:17000-18000"}
+{"kind":"slide","id":"sl/l5yz11","slide":9,"title":"模块操作","textShapes":24}
+{"kind":"shape","id":"sh/kzi983m1","slide":9,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/jypszylg","slide":9,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/yxgr6t4v","slide":9,"text":"MOKE电机｜连接、初始化与状态","textPreview":"MOKE电机｜连接、初始化与状态","textChars":16,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/xw7axo3a","slide":9,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/wvy94jmp","slide":9,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/bupsvel4","slide":9,"text":"串口与输出","textPreview":"串口与输出","textChars":5,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/atgr294z","slide":9,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/9s7ato3e","slide":9,"text":"刷新 / 连接 / 断开","textPreview":"刷新 / 连接 / 断开","textChars":12,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/ore90jmt","slide":9,"text":"选择并管理 115200‑8N1、地址 1 的电机会话。","textPreview":"选择并管理 115200‑8N1、地址 1 的电机会话。","textChars":28,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/61ovutg3","slide":9,"text":"Init ON","textPreview":"Init ON","textChars":7,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/72xc3yx8","slide":9,"text":"初始化 Cell‑VSDM 输出。","textPreview":"初始化 Cell‑VSDM 输出。","textChars":17,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/836dw3yt","slide":9,"text":"Init OFF / 停止输出","textPreview":"Init OFF / 停止输出","textChars":15,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/t4fu58fe","slide":9,"text":"关闭初始化并停止驱动输出。","textPreview":"关闭初始化并停止驱动输出。","textChars":13,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/yx4vqtgr","slide":9,"text":"安全确认","textPreview":"安全确认","textChars":4,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/jyxczyhc","slide":9,"text":"确认机械路径、限位和方向；勾选后连续微调不会自动取消。","textPreview":"确认机械路径、限位和方向；勾选后连续微调不会自动取消。","textChars":27,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/kz6dsjyx","slide":9,"text":"状态与参数","textPreview":"状态与参数","textChars":5,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/l0fu1ofi","slide":9,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/a94vm9gv","slide":9,"text":"读取一次 / 连续读取","textPreview":"读取一次 / 连续读取","textChars":11,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/badcvehg","slide":9,"text":"读取寄存器 4 和 Home 标志；它们不是位置反馈。","textPreview":"读取寄存器 4 和 Home 标志；它们不是位置反馈。","textChars":27,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/fe9s3axs","slide":9,"text":"方向 Mode1","textPreview":"方向 Mode1","textChars":8,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/ed0ru5wn","slide":9,"text":"当前方向模式显示。","textPreview":"当前方向模式显示。","textChars":9,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/1gba5kfy","slide":9,"text":"速度 / 加速度 / 减速度","textPreview":"速度 / 加速度 / 减速度","textChars":14,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/0f29wfed","slide":9,"text":"设置 rps、rps/s 参数。","textPreview":"设置 rps、rps/s 参数。","textChars":16,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/nits7ud4","slide":9,"text":"应用参数","textPreview":"应用参数","textChars":4,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/2hkrypwj","slide":9,"text":"只写入运动参数，不启动位移。","textPreview":"只写入运动参数，不启动位移。","textChars":14,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/p4ba9kva","slide":9,"text":"显示通信日志","textPreview":"显示通信日志","textChars":6,"textLines":1,"bbox":[678,546,532,24]}
+{"kind":"textbox","id":"sh/o32t0fep","slide":9,"text":"查看 Modbus TX/RX；再次点击收起。","textPreview":"查看 Modbus TX/RX；再次点击收起。","textChars":23,"textLines":1,"bbox":[678,570,532,64]}
+{"kind":"textbox","id":"sh/3mpsvqx0","slide":9,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/ilgrmlwf","slide":9,"text":"09","textPreview":"09","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/l5yz11","slide":9,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:29018-29190"}
+{"kind":"slide","id":"sl/sw7wed","slide":10,"title":"模块操作","textShapes":26}
+{"kind":"shape","id":"sh/h8na1kvi","slide":10,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/u5wb65wr","slide":10,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/v65szaxc","slide":10,"text":"MOKE电机｜位置、步进与 Home","textPreview":"MOKE电机｜位置、步进与 Home","textChars":18,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/8jet4ve1","slide":10,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/tknax0f6","slide":10,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/6hcb2lwv","slide":10,"text":"位置操作","textPreview":"位置操作","textChars":4,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/7ilsvqxg","slide":10,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/kfut0vep","slide":10,"text":"到达绝对位置","textPreview":"到达绝对位置","textChars":6,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/lg3at0fa","slide":10,"text":"按 µm 输入目标并写入；先确认安全和运动方向。","textPreview":"按 µm 输入目标并写入；先确认安全和运动方向。","textChars":24,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/1cjyh4r2","slide":10,"text":"7250 µm","textPreview":"7250 µm","textChars":7,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/0baxozqh","slide":10,"text":"快速到达固定实验位置。","textPreview":"快速到达固定实验位置。","textChars":11,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/za1wfu9c","slide":10,"text":"Home","textPreview":"Home","textChars":4,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/e9sfmp8r","slide":10,"text":"已勾选安全确认时直接执行；未勾选只弹出提醒。","textPreview":"已勾选安全确认时直接执行；未勾选只弹出提醒。","textChars":22,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/d8jedkr6","slide":10,"text":"步长","textPreview":"步长","textChars":2,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/c7axkzql","slide":10,"text":"输入单次微调的 µm 增量。","textPreview":"输入单次微调的 µm 增量。","textChars":14,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/r61wbu90","slide":10,"text":"↑ Up / ↓ Down","textPreview":"↑ Up / ↓ Down","textChars":13,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/q58fip8f","slide":10,"text":"按设定步长连续微调，不弹窗。","textPreview":"按设定步长连续微调，不弹窗。","textChars":14,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/pkze9kru","slide":10,"text":"理解显示值","textPreview":"理解显示值","textChars":5,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/4jqxgfqp","slide":10,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/gzepcjmh","slide":10,"text":"软件命令位置","textPreview":"软件命令位置","textChars":6,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/h0n6lo32","slide":10,"text":"只记录软件最近命令，不是编码器反馈。","textPreview":"只记录软件最近命令，不是编码器反馈。","textChars":18,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/uxwna94b","slide":10,"text":"寄存器 4","textPreview":"寄存器 4","textChars":5,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/fy5ojelw","slide":10,"text":"设备状态字，不应解释为真实位置。","textPreview":"设备状态字，不应解释为真实位置。","textChars":16,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/sbu58zml","slide":10,"text":"Home 标志","textPreview":"Home 标志","textChars":7,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/tw36h436","slide":10,"text":"寄存器 5，用于判断归位触发状态。","textPreview":"寄存器 5，用于判断归位触发状态。","textChars":17,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/69cn694f","slide":10,"text":"抓包比例","textPreview":"抓包比例","textChars":4,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/7aloful0","slide":10,"text":"绝对位置 ×102.4；步长增量 ×25.6。","textPreview":"绝对位置 ×102.4；步长增量 ×25.6。","textChars":23,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/c7ypk32p","slide":10,"text":"急停原则","textPreview":"急停原则","textChars":4,"textLines":1,"bbox":[678,546,532,24]}
+{"kind":"textbox","id":"sh/ds76t83a","slide":10,"text":"异常时先 Init OFF，再使用硬件急停。","textPreview":"异常时先 Init OFF，再使用硬件急停。","textChars":22,"textLines":1,"bbox":[678,570,532,64]}
+{"kind":"textbox","id":"sh/nm9sj25c","slide":10,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/m10rqx4r","slide":10,"text":"10","textPreview":"10","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/sw7wed","slide":10,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:29060-29190"}
+{"kind":"slide","id":"sl/yys1px","slide":11,"title":"模块操作","textShapes":26}
+{"kind":"shape","id":"sh/8nqdcrud","slide":11,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/7mhc3mts","slide":11,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/6l8vahcn","slide":11,"text":"MOKE磁铁｜差分模式与串口","textPreview":"MOKE磁铁｜差分模式与串口","textChars":14,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/lkzu1cb2","slide":11,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/kjqt87uh","slide":11,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/jihcz2tw","slide":11,"text":"差分显示","textPreview":"差分显示","textChars":4,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/yh8b6hcb","slide":11,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/xwzuxcbq","slide":11,"text":"关闭","textPreview":"关闭","textChars":2,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/wv6t47u5","slide":11,"text":"显示普通实时画面。","textPreview":"显示普通实时画面。","textChars":9,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/29gf2hsb","slide":11,"text":"普通差分","textPreview":"普通差分","textChars":4,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/3apgbmtw","slide":11,"text":"当前帧减去一张固定背景。","textPreview":"当前帧减去一张固定背景。","textChars":12,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/4byx4rah","slide":11,"text":"漂移追踪","textPreview":"漂移追踪","textChars":4,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/pcrydwr2","slide":11,"text":"在扣背景基础上补偿漂移。","textPreview":"在扣背景基础上补偿漂移。","textChars":12,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/ulgfyhsf","slide":11,"text":"重采背景","textPreview":"重采背景","textChars":4,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/fmpg7mt0","slide":11,"text":"重建背景并重置 ROI‑time 时间零点。","textPreview":"重建背景并重置 ROI‑time 时间零点。","textChars":22,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/g7yx0ral","slide":11,"text":"添加100× Marker","textPreview":"添加100× Marker","textChars":13,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/h87y9cb6","slide":11,"text":"在 5× 视野中标记切换到 100× 后的预计视野。","textPreview":"在 5× 视野中标记切换到 100× 后的预计视野。","textChars":26,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/6hwfuxsj","slide":11,"text":"KEPCO / 高斯计连接","textPreview":"KEPCO / 高斯计连接","textChars":13,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/7i5g32to","slide":11,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/vmlcby9g","slide":11,"text":"四个串口下拉框","textPreview":"四个串口下拉框","textChars":7,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/alcv2t8b","slide":11,"text":"分别选择面外/面内 BOP 与高斯计端口。","textPreview":"分别选择面外/面内 BOP 与高斯计端口。","textChars":21,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/xo3ud8rm","slide":11,"text":"刷新 / 连接 / 断开","textPreview":"刷新 / 连接 / 断开","textChars":12,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/wnud43q1","slide":11,"text":"枚举端口并管理四路串口。","textPreview":"枚举端口并管理四路串口。","textChars":12,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/jqlwfi9s","slide":11,"text":"实体拨挡片","textPreview":"实体拨挡片","textChars":5,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/ipcv6d87","slide":11,"text":"GUI 必须与实物处于面外或面内同一档。","textPreview":"GUI 必须与实物处于面外或面内同一档。","textChars":20,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/5sneh8ry","slide":11,"text":"当前档使能/归零","textPreview":"当前档使能/归零","textChars":8,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/krud8nqd","slide":11,"text":"使能当前档并先归零；切档前必须两路归零。","textPreview":"使能当前档并先归零；切档前必须两路归零。","textChars":20,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/zu1c3e98","slide":11,"text":"两路立即归零","textPreview":"两路立即归零","textChars":6,"textLines":1,"bbox":[678,546,532,24]}
+{"kind":"textbox","id":"sh/etsvu983","slide":11,"text":"同时把两路磁体输出归零。","textPreview":"同时把两路磁体输出归零。","textChars":12,"textLines":1,"bbox":[678,570,532,64]}
+{"kind":"textbox","id":"sh/4z694f6l","slide":11,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/p0faxk76","slide":11,"text":"11","textPreview":"11","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/yys1px","slide":11,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:13994-14210"}
+{"kind":"slide","id":"sl/evajsc","slide":12,"title":"模块操作","textShapes":30}
+{"kind":"shape","id":"sh/ovuxozit","slide":12,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/3ulgfuh8","slide":12,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/2tsfm90n","slide":12,"text":"MOKE磁铁｜单通道输出与高斯归零","textPreview":"MOKE磁铁｜单通道输出与高斯归零","textChars":17,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/1sjyd4zi","slide":12,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/graxkzix","slide":12,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/fq1gbuhc","slide":12,"text":"每个磁体通道","textPreview":"每个磁体通道","textChars":6,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/epsfip0r","slide":12,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/lonypozm","slide":12,"text":"目标 A + 写入","textPreview":"目标 A + 写入","textChars":9,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/0nehwjy1","slide":12,"text":"写入目标电流。","textPreview":"写入目标电流。","textChars":7,"textLines":1,"bbox":[70,218,532,51.33]}
+{"kind":"textbox","id":"sh/u54ja1wn","slide":12,"text":"反转","textPreview":"反转","textChars":2,"textLines":1,"bbox":[70,269.33,532,24]}
+{"kind":"textbox","id":"sh/v6xkj6d8","slide":12,"text":"把当前目标电流取反后写入。","textPreview":"把当前目标电流取反后写入。","textChars":13,"textLines":1,"bbox":[70,293.33,532,51.33]}
+{"kind":"textbox","id":"sh/w761cret","slide":12,"text":"电流归零","textPreview":"电流归零","textChars":4,"textLines":1,"bbox":[70,344.67,532,24]}
+{"kind":"textbox","id":"sh/h8f2lwve","slide":12,"text":"把 BOP 电流设为 0 A。","textPreview":"把 BOP 电流设为 0 A。","textChars":15,"textLines":1,"bbox":[70,368.67,532,51.33]}
+{"kind":"textbox","id":"sh/m14j6hwr","slide":12,"text":"磁场归零","textPreview":"磁场归零","textChars":4,"textLines":1,"bbox":[70,420,532,24]}
+{"kind":"textbox","id":"sh/72d0fmdc","slide":12,"text":"闭环调节电流，使相应高斯计接近 0 G。","textPreview":"闭环调节电流，使相应高斯计接近 0 G。","textChars":20,"textLines":1,"bbox":[70,444,532,51.33]}
+{"kind":"textbox","id":"sh/83m18rex","slide":12,"text":"I / Field","textPreview":"I / Field","textChars":9,"textLines":1,"bbox":[70,495.33,532,24]}
+{"kind":"textbox","id":"sh/94vihwv2","slide":12,"text":"显示电流回读与当前档高斯计读数。","textPreview":"显示电流回读与当前档高斯计读数。","textChars":16,"textLines":1,"bbox":[70,519.33,532,51.33]}
+{"kind":"textbox","id":"sh/6xojilwv","slide":12,"text":"步长 A + Down/Up","textPreview":"步长 A + Down/Up","textChars":14,"textLines":1,"bbox":[70,570.67,532,24]}
+{"kind":"textbox","id":"sh/ryhkrqdg","slide":12,"text":"按指定增量降低或提高电流。","textPreview":"按指定增量降低或提高电流。","textChars":13,"textLines":1,"bbox":[70,594.67,532,51.33]}
+{"kind":"textbox","id":"sh/3i9g3its","slide":12,"text":"读取与互锁","textPreview":"读取与互锁","textChars":5,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/2h0fadc7","slide":12,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/p4ry58by","slide":12,"text":"读取当前档","textPreview":"读取当前档","textChars":5,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/ojihcnud","slide":12,"text":"立即读取当前实体档的电流与磁场。","textPreview":"立即读取当前实体档的电流与磁场。","textChars":16,"textLines":1,"bbox":[678,218,532,51.33]}
+{"kind":"textbox","id":"sh/b69g7it4","slide":12,"text":"连续","textPreview":"连续","textChars":2,"textLines":1,"bbox":[678,269.33,532,24]}
+{"kind":"textbox","id":"sh/a50zedcj","slide":12,"text":"按间隔 s 自动刷新。","textPreview":"按间隔 s 自动刷新。","textChars":11,"textLines":1,"bbox":[678,293.33,532,51.33]}
+{"kind":"textbox","id":"sh/x8by9sbu","slide":12,"text":"间隔 s","textPreview":"间隔 s","textChars":4,"textLines":1,"bbox":[678,344.67,532,24]}
+{"kind":"textbox","id":"sh/c72hgnup","slide":12,"text":"设置自动读取周期。","textPreview":"设置自动读取周期。","textChars":9,"textLines":1,"bbox":[678,368.67,532,51.33]}
+{"kind":"textbox","id":"sh/zatgb2t0","slide":12,"text":"非当前档","textPreview":"非当前档","textChars":4,"textLines":1,"bbox":[678,420,532,24]}
+{"kind":"textbox","id":"sh/y9kzixcf","slide":12,"text":"显示为不可用，不允许把另一路读数误当当前档。","textPreview":"显示为不可用，不允许把另一路读数误当当前档。","textChars":22,"textLines":1,"bbox":[678,444,532,51.33]}
+{"kind":"textbox","id":"sh/wfmx87qt","slide":12,"text":"安全复选框","textPreview":"安全复选框","textChars":5,"textLines":1,"bbox":[678,495.33,532,24]}
+{"kind":"textbox","id":"sh/hgvy1cre","slide":12,"text":"所有非零输出前必须确认极性、冷却、接线和人员安全。","textPreview":"所有非零输出前必须确认极性、冷却、接线和人员安全。","textChars":25,"textLines":1,"bbox":[678,519.33,532,51.33]}
+{"kind":"textbox","id":"sh/udkf6x8n","slide":12,"text":"失联处理","textPreview":"失联处理","textChars":4,"textLines":1,"bbox":[678,570.67,532,24]}
+{"kind":"textbox","id":"sh/vedgz298","slide":12,"text":"先停止扫描/归零，再断开并排查串口占用。","textPreview":"先停止扫描/归零，再断开并排查串口占用。","textChars":20,"textLines":1,"bbox":[678,594.67,532,51.33]}
+{"kind":"textbox","id":"sh/8b2x4nqh","slide":12,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/9cbyxsr2","slide":12,"text":"12","textPreview":"12","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/evajsc","slide":12,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:14120-14210\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:14620-14710"}
+{"kind":"slide","id":"sl/6wb01u","slide":13,"title":"模块操作","textShapes":26}
+{"kind":"shape","id":"sh/zyt0vaxc","slide":13,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/kj2h4fyx","slide":13,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/lkbixkf2","slide":13,"text":"MOKE磁铁｜电流扫描与 ROI 采集","textPreview":"MOKE磁铁｜电流扫描与 ROI 采集","textChars":19,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/qt0zy5gf","slide":13,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/bu90rax0","slide":13,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/cvih0fyl","slide":13,"text":"扫描参数","textPreview":"扫描参数","textChars":4,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/dwrit0f6","slide":13,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/2pgzulgj","slide":13,"text":"起始 / 截止 / 步长 A","textPreview":"起始 / 截止 / 步长 A","textChars":14,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/3qp0nqx4","slide":13,"text":"生成起点→终点→起点的电流路径。","textPreview":"生成起点→终点→起点的电流路径。","textChars":16,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/je9cjmhs","slide":13,"text":"Loop","textPreview":"Loop","textChars":4,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/id0vqh07","slide":13,"text":"往返回线次数。","textPreview":"往返回线次数。","textChars":7,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/50rulczy","slide":13,"text":"稳定 s","textPreview":"稳定 s","textChars":4,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/kzids7id","slide":13,"text":"到达电流点后等待。","textPreview":"到达电流点后等待。","textChars":9,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/72tcnmh4","slide":13,"text":"采集 s","textPreview":"采集 s","textChars":4,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/610vuh0j","slide":13,"text":"用于 ROI 平均和同步图像采集。","textPreview":"用于 ROI 平均和同步图像采集。","textChars":17,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/t4bupwzu","slide":13,"text":"开始扫描","textPreview":"开始扫描","textChars":4,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/s32dwri9","slide":13,"text":"显示预计时间，确认后后台执行。","textPreview":"显示预计时间，确认后后台执行。","textChars":15,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/n6pcb21k","slide":13,"text":"运行与保存","textPreview":"运行与保存","textChars":5,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/m5gbix0z","slide":13,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/q1ofq5kn","slide":13,"text":"停止/归零","textPreview":"停止/归零","textChars":5,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/r2xgza18","slide":13,"text":"终止扫描并把当前通道归零。","textPreview":"终止扫描并把当前通道归零。","textChars":13,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/c36xsv2t","slide":13,"text":"保存 CSV + PNG","textPreview":"保存 CSV + PNG","textChars":12,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/d4fy10je","slide":13,"text":"选择文件夹，保存回线数据、右侧曲线 PNG 与参数 log。","textPreview":"选择文件夹，保存回线数据、右侧曲线 PNG 与参数 log。","textChars":30,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/2x4fmlkr","slide":13,"text":"同步保存处理图像","textPreview":"同步保存处理图像","textChars":8,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/3ydgvq1c","slide":13,"text":"每个扫描点同时保存处理图像；会增加 I/O 时间。","textPreview":"每个扫描点同时保存处理图像；会增加 I/O 时间。","textChars":25,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/4zmxov2h","slide":13,"text":"进度条 / 预计剩余","textPreview":"进度条 / 预计剩余","textChars":10,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/p0vyx0j2","slide":13,"text":"显示当前点数和 ETA。","textPreview":"显示当前点数和 ETA。","textChars":12,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/utkfilkf","slide":13,"text":"右侧图窗","textPreview":"右侧图窗","textChars":4,"textLines":1,"bbox":[678,546,532,24]}
+{"kind":"textbox","id":"sh/fudwrq10","slide":13,"text":"横轴用磁体输出电流，上轴显示高斯计磁场。","textPreview":"横轴用磁体输出电流，上轴显示高斯计磁场。","textChars":20,"textLines":1,"bbox":[678,570,532,64]}
+{"kind":"textbox","id":"sh/h03ad87u","slide":13,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/wzu9k3q9","slide":13,"text":"13","textPreview":"13","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/6wb01u","slide":13,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:14211-14305\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:19500-20400"}
+{"kind":"slide","id":"sl/inad05","slide":14,"title":"模块操作","textShapes":30}
+{"kind":"shape","id":"sh/hwv61kn2","slide":14,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/ut4765ob","slide":14,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/fudoza5w","slide":14,"text":"MOKE磁铁｜ROI、CLim 与图像处理","textPreview":"MOKE磁铁｜ROI、CLim 与图像处理","textChars":21,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/srmp4v65","slide":14,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/tsv6x0nq","slide":14,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/6pk725of","slide":14,"text":"ROI / 曲线","textPreview":"ROI / 曲线","textChars":8,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/7qtovq50","slide":14,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/kn2p0v69","slide":14,"text":"A± / W± / H± / X± / Y±","textPreview":"A± / W± / H± / X± / Y±","textChars":22,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/5ob6t0nu","slide":14,"text":"按可编辑步长改变角度、宽、高和中心位置。","textPreview":"按可编辑步长改变角度、宽、高和中心位置。","textChars":20,"textLines":1,"bbox":[70,218,532,51.33]}
+{"kind":"textbox","id":"sh/hsr69c7q","slide":14,"text":"Field","textPreview":"Field","textChars":5,"textLines":1,"bbox":[70,269.33,532,24]}
+{"kind":"textbox","id":"sh/wripg7q5","slide":14,"text":"选择面外或面内作为曲线磁场来源。","textPreview":"选择面外或面内作为曲线磁场来源。","textChars":16,"textLines":1,"bbox":[70,293.33,532,51.33]}
+{"kind":"textbox","id":"sh/vq9o72p0","slide":14,"text":"刷新 s / 点 / 应用","textPreview":"刷新 s / 点 / 应用","textChars":13,"textLines":1,"bbox":[70,344.67,532,24]}
+{"kind":"textbox","id":"sh/up07eh8f","slide":14,"text":"设定 ROI‑time 刷新周期和最多点数。","textPreview":"设定 ROI‑time 刷新周期和最多点数。","textChars":22,"textLines":1,"bbox":[70,368.67,532,51.33]}
+{"kind":"textbox","id":"sh/9or65c7u","slide":14,"text":"清空曲线","textPreview":"清空曲线","textChars":4,"textLines":1,"bbox":[70,420,532,24]}
+{"kind":"textbox","id":"sh/8nipc7q9","slide":14,"text":"清除 ROI‑time 和扫场曲线。","textPreview":"清除 ROI‑time 和扫场曲线。","textChars":18,"textLines":1,"bbox":[70,444,532,51.33]}
+{"kind":"textbox","id":"sh/7m9o32po","slide":14,"text":"手动 / Auto CLim","textPreview":"手动 / Auto CLim","textChars":14,"textLines":1,"bbox":[70,495.33,532,24]}
+{"kind":"textbox","id":"sh/ml0nax83","slide":14,"text":"手动映射差分原始值，或按当前可见区域自动估计。","textPreview":"手动映射差分原始值，或按当前可见区域自动估计。","textChars":23,"textLines":1,"bbox":[70,519.33,532,51.33]}
+{"kind":"textbox","id":"sh/lk761s7i","slide":14,"text":"直方图","textPreview":"直方图","textChars":3,"textLines":1,"bbox":[70,570.67,532,24]}
+{"kind":"textbox","id":"sh/kjy58nqd","slide":14,"text":"查看 CLim 前的原始差分值分布。","textPreview":"查看 CLim 前的原始差分值分布。","textChars":18,"textLines":1,"bbox":[70,594.67,532,51.33]}
+{"kind":"textbox","id":"sh/cfmx4r25","slide":14,"text":"降噪、曝光与保存","textPreview":"降噪、曝光与保存","textChars":8,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/xgvydwjq","slide":14,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/ad4f2hkz","slide":14,"text":"0/2/4/8 帧平均","textPreview":"0/2/4/8 帧平均","textChars":11,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/bedgbm1k","slide":14,"text":"对差分原始数据做时间平均。","textPreview":"对差分原始数据做时间平均。","textChars":13,"textLines":1,"bbox":[678,218,532,51.33]}
+{"kind":"textbox","id":"sh/ob2x0r29","slide":14,"text":"1×1/2×2/4×4/8×8 Binning","textPreview":"1×1/2×2/4×4/8×8 Binning","textChars":23,"textLines":1,"bbox":[678,269.33,532,24]}
+{"kind":"textbox","id":"sh/pcvy9cju","slide":14,"text":"对原始数据做空间合并。","textPreview":"对原始数据做空间合并。","textChars":11,"textLines":1,"bbox":[678,293.33,532,51.33]}
+{"kind":"textbox","id":"sh/2pkfyhk3","slide":14,"text":"Mean filter 关闭/2×2/4×4","textPreview":"Mean filter 关闭/2×2/4×4","textChars":22,"textLines":1,"bbox":[678,344.67,532,24]}
+{"kind":"textbox","id":"sh/natg7m1o","slide":14,"text":"滑动均值同步影响 ROI、扫描和处理图像。","textPreview":"滑动均值同步影响 ROI、扫描和处理图像。","textChars":21,"textLines":1,"bbox":[678,368.67,532,51.33]}
+{"kind":"textbox","id":"sh/876hcb2d","slide":14,"text":"曝光 ms + 应用曝光","textPreview":"曝光 ms + 应用曝光","textChars":12,"textLines":1,"bbox":[678,420,532,24]}
+{"kind":"textbox","id":"sh/98fylgjy","slide":14,"text":"把输入曝光写入相机。","textPreview":"把输入曝光写入相机。","textChars":10,"textLines":1,"bbox":[678,444,532,51.33]}
+{"kind":"textbox","id":"sh/j2h0bal0","slide":14,"text":"开始录像","textPreview":"开始录像","textChars":4,"textLines":1,"bbox":[678,495.33,532,24]}
+{"kind":"textbox","id":"sh/i18j254f","slide":14,"text":"保存当前 Camera Live 的 8‑bit 无标记画面。","textPreview":"保存当前 Camera Live 的 8‑bit 无标记画面。","textChars":31,"textLines":1,"bbox":[678,519.33,532,51.33]}
+{"kind":"textbox","id":"sh/54jidk36","slide":14,"text":"三种图片保存","textPreview":"三种图片保存","textChars":6,"textLines":1,"bbox":[678,570.67,532,24]}
+{"kind":"textbox","id":"sh/43a14fml","slide":14,"text":"显示图、原始16‑bit、差分原始图分别保存，互不混用。","textPreview":"显示图、原始16‑bit、差分原始图分别保存，互不混用。","textChars":28,"textLines":1,"bbox":[678,594.67,532,51.33]}
+{"kind":"textbox","id":"sh/r610fulc","slide":14,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/q5sj6p4r","slide":14,"text":"14","textPreview":"14","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/inad05","slide":14,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:14306-14590\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:17400-18100"}
+{"kind":"slide","id":"sl/0bf6tn","slide":15,"title":"模块操作","textShapes":24}
+{"kind":"shape","id":"sh/yhonilk7","slide":15,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/lkz6t03y","slide":15,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/kjq5kv2d","slide":15,"text":"2410｜连接、电阻监测与手动电压","textPreview":"2410｜连接、电阻监测与手动电压","textChars":17,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/bexonqlw","slide":15,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/adonelkb","slide":15,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/xgf6p03m","slide":15,"text":"连接与急停","textPreview":"连接与急停","textChars":5,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/cf65gv2h","slide":15,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/vahozal0","slide":15,"text":"资源 / 限流","textPreview":"资源 / 限流","textChars":7,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/u987q5kf","slide":15,"text":"输入 VISA 地址和允许电流上限。","textPreview":"输入 VISA 地址和允许电流上限。","textChars":18,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/072xobe1","slide":15,"text":"连接 / 断开","textPreview":"连接 / 断开","textChars":7,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/l8byhgvm","slide":15,"text":"管理 2410 会话与绿色状态灯。","textPreview":"管理 2410 会话与绿色状态灯。","textChars":17,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/y5kfmlwb","slide":15,"text":"2410 归零 / 关闭输出","textPreview":"2410 归零 / 关闭输出","textChars":14,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/z6tgf6dg","slide":15,"text":"电压归零并关闭输出。","textPreview":"电压归零并关闭输出。","textChars":10,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/c32xkbe5","slide":15,"text":"安全提示","textPreview":"安全提示","textChars":4,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/d4bedgvq","slide":15,"text":"扫压最高 200 V；测阻时限压保持 5 V。","textPreview":"扫压最高 200 V；测阻时限压保持 5 V。","textChars":23,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/q10fi1wz","slide":15,"text":"|R| 连续测量 / 手动电压","textPreview":"|R| 连续测量 / 手动电压","textChars":15,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/b2twb6dk","slide":15,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/ozixgret","slide":15,"text":"测阻安全确认","textPreview":"测阻安全确认","textChars":6,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/p0re9wve","slide":15,"text":"确认接线和样品允许测试电流。","textPreview":"确认接线和样品允许测试电流。","textChars":14,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/5kzmxoj6","slide":15,"text":"开始连续测量 / 结束测量","textPreview":"开始连续测量 / 结束测量","textChars":13,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/4jqloj2l","slide":15,"text":"滚动显示最近 20 s 的电阻绝对值。","textPreview":"滚动显示最近 20 s 的电阻绝对值。","textChars":19,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/jih4vy10","slide":15,"text":"单独设置 V + 写入","textPreview":"单独设置 V + 写入","textChars":11,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/ih83mtkf","slide":15,"text":"直接设定一个电压点。","textPreview":"直接设定一个电压点。","textChars":10,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/xgzmto3u","slide":15,"text":"反转 / 归零","textPreview":"反转 / 归零","textChars":7,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/wfqlkj2p","slide":15,"text":"电压取反或设为 0 V。","textPreview":"电压取反或设为 0 V。","textChars":12,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/vuh4rel4","slide":15,"text":"步长 V + Down/Up","textPreview":"步长 V + Down/Up","textChars":14,"textLines":1,"bbox":[678,546,532,24]}
+{"kind":"textbox","id":"sh/ato3i9kj","slide":15,"text":"按给定步长微调电压。","textPreview":"按给定步长微调电压。","textChars":10,"textLines":1,"bbox":[678,570,532,64]}
+{"kind":"textbox","id":"sh/1cjm58je","slide":15,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/gba5w32t","slide":15,"text":"15","textPreview":"15","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/0bf6tn","slide":15,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:14713-14830\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:20500-21000"}
+{"kind":"slide","id":"sl/q6cbfn","slide":16,"title":"模块操作","textShapes":28}
+{"kind":"shape","id":"sh/gr21wfu5","slide":16,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/fqtk3adk","slide":16,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/epkju5cz","slide":16,"text":"2410｜往返扫描、ROI 与文件","textPreview":"2410｜往返扫描、ROI 与文件","textChars":17,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/pwv29kbm","slide":16,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/ovm10fu1","slide":16,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/3utk7atg","slide":16,"text":"电压扫描","textPreview":"电压扫描","textChars":4,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/2tkjypcb","slide":16,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/dkv2d4by","slide":16,"text":"起始 / 截止 / 步长 V","textPreview":"起始 / 截止 / 步长 V","textChars":14,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/czml4zud","slide":16,"text":"定义起点→终点→起点电压路径。","textPreview":"定义起点→终点→起点电压路径。","textChars":15,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/qh8zup8j","slide":16,"text":"稳定 s / 采集 s","textPreview":"稳定 s / 采集 s","textChars":11,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/rihgnu94","slide":16,"text":"每点等待与 ROI 平均时间。","textPreview":"每点等待与 ROI 平均时间。","textChars":15,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/cjahwzqp","slide":16,"text":"开始往返扫描 / 停止扫描","textPreview":"开始往返扫描 / 停止扫描","textChars":13,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/dkjyp4ra","slide":16,"text":"启动后台扫描；停止时关闭输出。","textPreview":"启动后台扫描；停止时关闭输出。","textChars":15,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/elszy98f","slide":16,"text":"同步保存处理图像","textPreview":"同步保存处理图像","textChars":8,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/zm1gre90","slide":16,"text":"每个电压点保存处理图像。","textPreview":"每个电压点保存处理图像。","textChars":12,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/0nah0jql","slide":16,"text":"保存 CSV + PNG","textPreview":"保存 CSV + PNG","textChars":12,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/1ojyt4r6","slide":16,"text":"保存 Voltage‑ROI、参数 log 和相应 PNG；不另存 ROI‑time PNG。","textPreview":"保存 Voltage‑ROI、参数 log 和相应 PNG；不另存 ROI‑time PNG。","textChars":47,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/upofm58b","slide":16,"text":"ROI 与录像","textPreview":"ROI 与录像","textChars":7,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/fqxgfa9w","slide":16,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/jit47mlc","slide":16,"text":"A/W/H/X/Y ±","textPreview":"A/W/H/X/Y ±","textChars":11,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/yhknyhkr","slide":16,"text":"和 MOKE 相同的 ROI 编辑。","textPreview":"和 MOKE 相同的 ROI 编辑。","textChars":18,"textLines":1,"bbox":[678,218,532,51.33]}
+{"kind":"textbox","id":"sh/lkbm9c3i","slide":16,"text":"实时刷新间隔 / 最多点 / 应用","textPreview":"实时刷新间隔 / 最多点 / 应用","textChars":17,"textLines":1,"bbox":[678,269.33,532,24]}
+{"kind":"textbox","id":"sh/kj250r2x","slide":16,"text":"控制 ROI‑time 显示负载。","textPreview":"控制 ROI‑time 显示负载。","textChars":17,"textLines":1,"bbox":[678,293.33,532,51.33]}
+{"kind":"textbox","id":"sh/be9432lg","slide":16,"text":"保存处理图像","textPreview":"保存处理图像","textChars":6,"textLines":1,"bbox":[678,344.67,532,24]}
+{"kind":"textbox","id":"sh/ad03uxkv","slide":16,"text":"保存当前差分/处理结果。","textPreview":"保存当前差分/处理结果。","textChars":12,"textLines":1,"bbox":[678,368.67,532,51.33]}
+{"kind":"textbox","id":"sh/xgbm5c36","slide":16,"text":"保存原始16-bit图像","textPreview":"保存原始16-bit图像","textChars":12,"textLines":1,"bbox":[678,420,532,24]}
+{"kind":"textbox","id":"sh/wf25w721","slide":16,"text":"保存原始相机数据。","textPreview":"保存原始相机数据。","textChars":9,"textLines":1,"bbox":[678,444,532,51.33]}
+{"kind":"textbox","id":"sh/vad4f6lk","slide":16,"text":"开始录像","textPreview":"开始录像","textChars":4,"textLines":1,"bbox":[678,495.33,532,24]}
+{"kind":"textbox","id":"sh/u94n61kz","slide":16,"text":"录制 Camera Live 8‑bit；视频下方标记当前电压。","textPreview":"录制 Camera Live 8‑bit；视频下方标记当前电压。","textChars":32,"textLines":1,"bbox":[678,519.33,532,51.33]}
+{"kind":"textbox","id":"sh/sve103ih","slide":16,"text":"右侧图窗","textPreview":"右侧图窗","textChars":4,"textLines":1,"bbox":[678,570.67,532,24]}
+{"kind":"textbox","id":"sh/dw7298j2","slide":16,"text":"只在电压扫描期间记录 Voltage vs ROI。","textPreview":"只在电压扫描期间记录 Voltage vs ROI。","textChars":26,"textLines":1,"bbox":[678,594.67,532,51.33]}
+{"kind":"textbox","id":"sh/qtwjyt0b","slide":16,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/ru5k7y1w","slide":16,"text":"16","textPreview":"16","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/q6cbfn","slide":16,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:14830-15110\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:21000-21600"}
+{"kind":"slide","id":"sl/fvteuq","slide":17,"title":"界面导览","textShapes":5}
+{"kind":"shape","id":"sh/543ytwjq","slide":17,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/i1czy10f","slide":17,"text":"界面导览","textPreview":"界面导览","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/j2lgr610","slide":17,"text":"6221｜完整模块界面","textPreview":"6221｜完整模块界面","textChars":11,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/sreh4bih","slide":17,"bbox":[54,128,1172,500]}
+{"kind":"textbox","id":"sh/65wz210b","slide":17,"text":"当前 6221 页签：连续输出、有限脉冲、两种脉冲扫描、ROI 与双图窗。","textPreview":"当前 6221 页签：连续输出、有限脉冲、两种脉冲扫描、ROI 与双图窗。","textChars":37,"textLines":1,"bbox":[72,610,1136,34]}
+{"kind":"textbox","id":"sh/r65gv61w","slide":17,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/8vaxsrid","slide":17,"text":"17","textPreview":"17","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"image","id":"im/cvi1sfax","slide":17,"name":"","alt":"当前 6221 页签：连续输出、有限脉冲、两种脉冲扫描、ROI 与双图窗。","bbox":[72,144,1136,454]}
+{"kind":"notes","id":"nt/fvteuq","slide":17,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:15111-15457\n- /var/folders/61/zwljyfb1529g_99j7w44y9200000gn/T/codex-clipboard-b3786815-319a-47c4-bb19-e5b277d5ca81.png (current GUI screenshot)"}
+{"kind":"slide","id":"sl/pierb3","slide":18,"title":"模块操作","textShapes":28}
+{"kind":"shape","id":"sh/zyxo7ml4","slide":18,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/0z65072p","slide":18,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/10z69c3u","slide":18,"text":"6221｜连续输出与有限脉冲","textPreview":"6221｜连续输出与有限脉冲","textChars":14,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/ml8n2hkf","slide":18,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/nmhobml0","slide":18,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/onq54r2l","slide":18,"text":"AC/DC 连续输出","textPreview":"AC/DC 连续输出","textChars":10,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/9oz6dwj6","slide":18,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/ap8761kr","slide":18,"text":"模式 AC/DC","textPreview":"模式 AC/DC","textChars":8,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/bqhof61c","slide":18,"text":"AC 使用 RMS 电流；DC 选择后频率框变灰。","textPreview":"AC 使用 RMS 电流；DC 选择后频率框变灰。","textChars":25,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/3q1cnepw","slide":18,"text":"电流 / 频率 / 限压","textPreview":"电流 / 频率 / 限压","textChars":12,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/2p8be9ob","slide":18,"text":"设置源输出、电流频率和电压保护。","textPreview":"设置源输出、电流频率和电压保护。","textChars":16,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/psjupo72","slide":18,"text":"应用连续输出","textPreview":"应用连续输出","textChars":6,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/oratgj6h","slide":18,"text":"配置并开启连续输出。","textPreview":"配置并开启连续输出。","textChars":10,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/f2hsjup0","slide":18,"text":"停止 / 归零","textPreview":"停止 / 归零","textChars":7,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/e18bap8f","slide":18,"text":"关闭输出并把设定归零。","textPreview":"关闭输出并把设定归零。","textChars":11,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/14zul47q","slide":18,"text":"实时回读","textPreview":"实时回读","textChars":4,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/g3qtczql","slide":18,"text":"显示模式、I readback、f readback、限压、OUTP 与限压状态。","textPreview":"显示模式、I readback、f readback、限压、OUTP 与限压状态。","textChars":41,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/zylcvyp4","slide":18,"text":"直流单极性有限脉冲","textPreview":"直流单极性有限脉冲","textChars":9,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/yxsbmtoj","slide":18,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/atwfex8r","slide":18,"text":"脉冲电流","textPreview":"脉冲电流","textChars":4,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/ve5wn29c","slide":18,"text":"0 A 与设定电流之间切换。","textPreview":"0 A 与设定电流之间切换。","textChars":14,"textLines":1,"bbox":[678,218,532,51.33]}
+{"kind":"textbox","id":"sh/wfexg7qx","slide":18,"text":"高电平脉宽 us","textPreview":"高电平脉宽 us","textChars":8,"textLines":1,"bbox":[678,269.33,532,24]}
+{"kind":"textbox","id":"sh/xgnepcri","slide":18,"text":"设定非零电流持续时间。","textPreview":"设定非零电流持续时间。","textChars":11,"textLines":1,"bbox":[678,293.33,532,51.33]}
+{"kind":"textbox","id":"sh/ihgfix83","slide":18,"text":"脉冲数量","textPreview":"脉冲数量","textChars":4,"textLines":1,"bbox":[678,344.67,532,24]}
+{"kind":"textbox","id":"sh/jipwr29o","slide":18,"text":"有限 cycles；结束后自动回到 0 A 并关输出。","textPreview":"有限 cycles；结束后自动回到 0 A 并关输出。","textChars":27,"textLines":1,"bbox":[678,368.67,532,51.33]}
+{"kind":"textbox","id":"sh/kjyxk7qt","slide":18,"text":"限压 V","textPreview":"限压 V","textChars":4,"textLines":1,"bbox":[678,420,532,24]}
+{"kind":"textbox","id":"sh/5k7etcre","slide":18,"text":"保护负载；限压后实际电流可能小于设定。","textPreview":"保护负载；限压后实际电流可能小于设定。","textChars":19,"textLines":1,"bbox":[678,444,532,51.33]}
+{"kind":"textbox","id":"sh/ylcv6dsj","slide":18,"text":"应用脉冲输出","textPreview":"应用脉冲输出","textChars":6,"textLines":1,"bbox":[678,495.33,532,24]}
+{"kind":"textbox","id":"sh/zmlwfi94","slide":18,"text":"发送官方有限波形命令序列。","textPreview":"发送官方有限波形命令序列。","textChars":13,"textLines":1,"bbox":[678,519.33,532,51.33]}
+{"kind":"textbox","id":"sh/1gbilgbm","slide":18,"text":"6221 立即停止 / 归零","textPreview":"6221 立即停止 / 归零","textChars":14,"textLines":1,"bbox":[678,570.67,532,24]}
+{"kind":"textbox","id":"sh/gfihsba1","slide":18,"text":"任何模式下立即关输出。","textPreview":"任何模式下立即关输出。","textChars":11,"textLines":1,"bbox":[678,594.67,532,51.33]}
+{"kind":"textbox","id":"sh/fe90j6tw","slide":18,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/ed0zq1sb","slide":18,"text":"18","textPreview":"18","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/pierb3","slide":18,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:15111-15281\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:22400-23700"}
+{"kind":"slide","id":"sl/2no730","slide":19,"title":"模块操作","textShapes":26}
+{"kind":"shape","id":"sh/98fudczi","slide":19,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/m5ov2xgr","slide":19,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/n6xcb2hc","slide":19,"text":"6221｜两种脉冲扫描与 ROI","textPreview":"6221｜两种脉冲扫描与 ROI","textChars":16,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/wb6d8ryt","slide":19,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/xwfuhcze","slide":19,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/a9ov6hg3","slide":19,"text":"电流往返扫描","textPreview":"电流往返扫描","textChars":6,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/vaxcfmh8","slide":19,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/kzqdcry5","slide":19,"text":"起始 / 截止 / 步长 mA","textPreview":"起始 / 截止 / 步长 mA","textChars":15,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/50zelwzq","slide":19,"text":"定义往返脉冲幅值路径。","textPreview":"定义往返脉冲幅值路径。","textChars":11,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/lo7i90zy","slide":19,"text":"脉宽 us","textPreview":"脉宽 us","textChars":5,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/0ny10vid","slide":19,"text":"每个脉冲的高电平时间。","textPreview":"每个脉冲的高电平时间。","textChars":11,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/zmp07ahs","slide":19,"text":"采集/间隔 s","textPreview":"采集/间隔 s","textChars":7,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/elwjy507","slide":19,"text":"脉冲后等待并在该时间内平均 ROI。","textPreview":"脉冲后等待并在该时间内平均 ROI。","textChars":18,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/9s72dkzu","slide":19,"text":"开始电流往返扫描","textPreview":"开始电流往返扫描","textChars":8,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/8ry14fi9","slide":19,"text":"启动后右图横轴为脉冲电流。","textPreview":"启动后右图横轴为脉冲电流。","textChars":13,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/nqpkbaho","slide":19,"text":"定电流脉冲采集","textPreview":"定电流脉冲采集","textChars":7,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/mpgj250j","slide":19,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/pwni1gzq","slide":19,"text":"固定脉冲 mA / 脉冲数","textPreview":"固定脉冲 mA / 脉冲数","textChars":13,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/4ve1sbi5","slide":19,"text":"指定同一幅值重复次数。","textPreview":"指定同一幅值重复次数。","textChars":11,"textLines":1,"bbox":[678,218,532,51.33]}
+{"kind":"textbox","id":"sh/gfi18vq1","slide":19,"text":"脉宽 us / 采集间隔 s","textPreview":"脉宽 us / 采集间隔 s","textChars":14,"textLines":1,"bbox":[678,269.33,532,24]}
+{"kind":"textbox","id":"sh/h0rih07m","slide":19,"text":"控制脉冲宽度与脉冲后 ROI 平均窗口。","textPreview":"控制脉冲宽度与脉冲后 ROI 平均窗口。","textChars":20,"textLines":1,"bbox":[678,293.33,532,51.33]}
+{"kind":"textbox","id":"sh/udgj6l8v","slide":19,"text":"开始定电流脉冲采集","textPreview":"开始定电流脉冲采集","textChars":9,"textLines":1,"bbox":[678,344.67,532,24]}
+{"kind":"textbox","id":"sh/vep0fq9g","slide":19,"text":"右图横轴切换为脉冲序号。","textPreview":"右图横轴切换为脉冲序号。","textChars":12,"textLines":1,"bbox":[678,368.67,532,51.33]}
+{"kind":"textbox","id":"sh/43i1cvqx","slide":19,"text":"同步保存 MOKE 原始16-bit","textPreview":"同步保存 MOKE 原始16-bit","textChars":18,"textLines":1,"bbox":[678,420,532,24]}
+{"kind":"textbox","id":"sh/54r2l07i","slide":19,"text":"每个脉冲后在采集窗口末尾保存原始图。","textPreview":"每个脉冲后在采集窗口末尾保存原始图。","textChars":18,"textLines":1,"bbox":[678,444,532,51.33]}
+{"kind":"textbox","id":"sh/i10jal87","slide":19,"text":"保存 CSV","textPreview":"保存 CSV","textChars":6,"textLines":1,"bbox":[678,495.33,532,24]}
+{"kind":"textbox","id":"sh/329kjqpc","slide":19,"text":"保存脉冲参数和 ROI 数据。","textPreview":"保存脉冲参数和 ROI 数据。","textChars":15,"textLines":1,"bbox":[678,519.33,532,51.33]}
+{"kind":"textbox","id":"sh/s721gfq9","slide":19,"text":"ROI/左图","textPreview":"ROI/左图","textChars":6,"textLines":1,"bbox":[678,570.67,532,24]}
+{"kind":"textbox","id":"sh/d8b2pk7u","slide":19,"text":"左图持续显示 ROI intensity vs time，右图仅记录脉冲扫描。","textPreview":"左图持续显示 ROI intensity vs time，右图仅记录脉冲扫描。","textChars":39,"textLines":1,"bbox":[678,594.67,532,51.33]}
+{"kind":"textbox","id":"sh/n2d4fe9w","slide":19,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/m143m9sb","slide":19,"text":"19","textPreview":"19","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/2no730","slide":19,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:15282-15457\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:23700-24400"}
+{"kind":"slide","id":"sl/6zfmxn","slide":20,"title":"模块操作","textShapes":26}
+{"kind":"shape","id":"sh/zylwrqtc","slide":20,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/0zux0vuh","slide":20,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/l0net0b2","slide":20,"text":"IV｜仪器行与独立连接","textPreview":"IV｜仪器行与独立连接","textChars":11,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/q9cfu1cf","slide":20,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/balwn6t0","slide":20,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/cvuxwbul","slide":20,"text":"6221 / SR830","textPreview":"6221 / SR830","textChars":12,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/dw3epgb6","slide":20,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/a5wf65sz","slide":20,"text":"6221 输出 AC/DC","textPreview":"6221 输出 AC/DC","textChars":13,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/vq5gzat4","slide":20,"text":"选择源模式；DC 时频率不可编辑。","textPreview":"选择源模式；DC 时频率不可编辑。","textChars":17,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/zato3qxg","slide":20,"text":"每台仪器连接 / 断开","textPreview":"每台仪器连接 / 断开","textChars":11,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/e9knalwv","slide":20,"text":"6221、#8、#9、MFLI、2182A 独立建立会话。","textPreview":"6221、#8、#9、MFLI、2182A 独立建立会话。","textChars":29,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/1cv650fm","slide":20,"text":"SR830 输入耦合 AC/DC","textPreview":"SR830 输入耦合 AC/DC","textChars":16,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/0b25cve1","slide":20,"text":"设置输入前端耦合。","textPreview":"设置输入前端耦合。","textChars":9,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/nedo7qxc","slide":20,"text":"倍频 / 读取 X/Y/R","textPreview":"倍频 / 读取 X/Y/R","textChars":13,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/md4nelwr","slide":20,"text":"选择谐波和记录量。","textPreview":"选择谐波和记录量。","textChars":9,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/9gv690fi","slide":20,"text":"参与扫描","textPreview":"参与扫描","textChars":4,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/ofm5gvex","slide":20,"text":"可只用 #8、只用 #9 或同时使用。","textPreview":"可只用 #8、只用 #9 或同时使用。","textChars":19,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/bidobaxo","slide":20,"text":"MFLI / 2182A","textPreview":"MFLI / 2182A","textChars":12,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/ah4ni5w3","slide":20,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/6d8ra9gb","slide":20,"text":"参考接口","textPreview":"参考接口","textChars":4,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/7yh83ehw","slide":20,"text":"Aux Input 1/2 或 Trigger In 1/2，实际写入相应解调器参考源。","textPreview":"Aux Input 1/2 或 Trigger In 1/2，实际写入相应解调器参考源。","textChars":44,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/8zq9cjyh","slide":20,"text":"输入耦合 / 倍频 / 读取","textPreview":"输入耦合 / 倍频 / 读取","textChars":14,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/t0zq5ozm","slide":20,"text":"配置 AC/DC、谐波和 X/Y/R。","textPreview":"配置 AC/DC、谐波和 X/Y/R。","textChars":19,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/y9o76pgz","slide":20,"text":"参与扫描（自动量程）","textPreview":"参与扫描（自动量程）","textChars":10,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/jax8zuhk","slide":20,"text":"扫描时启用 MFLI 并动态调整输入量程。","textPreview":"扫描时启用 MFLI 并动态调整输入量程。","textChars":21,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/kbq98zy5","slide":20,"text":"阻抗 / Scaling","textPreview":"阻抗 / Scaling","textChars":12,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/lczq14zq","slide":20,"text":"可选 10 MΩ 或 50 Ω，并设置缩放系数。","textPreview":"可选 10 MΩ 或 50 Ω，并设置缩放系数。","textChars":24,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/i5sritgj","slide":20,"text":"2182A 参与扫描","textPreview":"2182A 参与扫描","textChars":10,"textLines":1,"bbox":[678,546,532,24]}
+{"kind":"textbox","id":"sh/3618byx4","slide":20,"text":"读取通道 1 电压；不绘制 theta。","textPreview":"读取通道 1 电压；不绘制 theta。","textChars":20,"textLines":1,"bbox":[678,570,532,64]}
+{"kind":"textbox","id":"sh/dcn2xcni","slide":20,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/cbelormx","slide":20,"text":"20","textPreview":"20","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/6zfmxn","slide":20,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:15458-15720"}
+{"kind":"slide","id":"sl/v05e7v","slide":21,"title":"模块操作","textShapes":28}
+{"kind":"shape","id":"sh/9wfydgbm","slide":21,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/mtof21sv","slide":21,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/nuxgb6tg","slide":21,"text":"IV｜扫描参数、Trigger Link 与图窗","textPreview":"IV｜扫描参数、Trigger Link 与图窗","textChars":24,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/wzqx8vax","slide":21,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/x0zyhgbi","slide":21,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/ax8f6lsr","slide":21,"text":"扫流参数","textPreview":"扫流参数","textChars":4,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/vyhgfqtc","slide":21,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/knqhcva9","slide":21,"text":"起始 / 截止 / 步长电流","textPreview":"起始 / 截止 / 步长电流","textChars":14,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/5ojyl0re","slide":21,"text":"定义 6221 RMS 扫描路径。","textPreview":"定义 6221 RMS 扫描路径。","textChars":17,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/lob2d0bu","slide":21,"text":"频率 / 采样 Hz / 稳定 s","textPreview":"频率 / 采样 Hz / 稳定 s","textChars":17,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/kn214va9","slide":21,"text":"控制参考频率、采样速率和每点稳定。","textPreview":"控制参考频率、采样速率和每点稳定。","textChars":17,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/zm9kbqto","slide":21,"text":"每点测量 s","textPreview":"每点测量 s","textChars":6,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/yl0j25s3","slide":21,"text":"每个电流点的平均时间。","textPreview":"每个电流点的平均时间。","textChars":11,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/9cb2hkbq","slide":21,"text":"预处理电流 / 预处理 s","textPreview":"预处理电流 / 预处理 s","textChars":13,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/8b2l8fa5","slide":21,"text":"正式扫描前预置；0 s 时直接开始。","textPreview":"正式扫描前预置；0 s 时直接开始。","textChars":18,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/7qtkfatk","slide":21,"text":"限压 V / 关系图横轴","textPreview":"限压 V / 关系图横轴","textChars":12,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/mpk365sz","slide":21,"text":"设置源保护与 I 或 I² 横轴。","textPreview":"设置源保护与 I 或 I² 横轴。","textChars":17,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/pgr25gbm","slide":21,"text":"动作与显示","textPreview":"动作与显示","textChars":5,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/ofy1wbu1","slide":21,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/gz2lsb2x","slide":21,"text":"Trigger Link输出线","textPreview":"Trigger Link输出线","textChars":15,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/h0b2lgji","slide":21,"text":"选择 6221 marker 线；连接到所选 SR830 REF IN/MFLI 参考口。","textPreview":"选择 6221 marker 线；连接到所选 SR830 REF IN/MFLI 参考口。","textChars":45,"textLines":1,"bbox":[678,218,532,51.33]}
+{"kind":"textbox","id":"sh/uxkjqlkr","slide":21,"text":"安全确认","textPreview":"安全确认","textChars":4,"textLines":1,"bbox":[678,269.33,532,24]}
+{"kind":"textbox","id":"sh/fytkjq1c","slide":21,"text":"确认样品允许 AC/DC 电流和限压。","textPreview":"确认样品允许 AC/DC 电流和限压。","textChars":19,"textLines":1,"bbox":[678,293.33,532,51.33]}
+{"kind":"textbox","id":"sh/o3mlwv2t","slide":21,"text":"立即停止输出 / 归零","textPreview":"立即停止输出 / 归零","textChars":11,"textLines":1,"bbox":[678,344.67,532,24]}
+{"kind":"textbox","id":"sh/p4v2p0je","slide":21,"text":"关闭 6221。","textPreview":"关闭 6221。","textChars":8,"textLines":1,"bbox":[678,368.67,532,51.33]}
+{"kind":"textbox","id":"sh/2143ulkn","slide":21,"text":"选择文件夹并开始扫描","textPreview":"选择文件夹并开始扫描","textChars":10,"textLines":1,"bbox":[678,420,532,24]}
+{"kind":"textbox","id":"sh/32dknq18","slide":21,"text":"先选目录，再运行并实时保存。","textPreview":"先选目录，再运行并实时保存。","textChars":14,"textLines":1,"bbox":[678,444,532,51.33]}
+{"kind":"textbox","id":"sh/crml0v25","slide":21,"text":"停止扫描","textPreview":"停止扫描","textChars":4,"textLines":1,"bbox":[678,495.33,532,24]}
+{"kind":"textbox","id":"sh/dsf2t0ja","slide":21,"text":"终止并执行清理。","textPreview":"终止并执行清理。","textChars":8,"textLines":1,"bbox":[678,519.33,532,51.33]}
+{"kind":"textbox","id":"sh/7y1wfyp4","slide":21,"text":"图窗","textPreview":"图窗","textChars":2,"textLines":1,"bbox":[678,570.67,532,24]}
+{"kind":"textbox","id":"sh/mxsv6t8j","slide":21,"text":"每台仪器独立 R/电压、theta、I‑V；单位自动切换并重绘历史点。","textPreview":"每台仪器独立 R/电压、theta、I‑V；单位自动切换并重绘历史点。","textChars":35,"textLines":1,"bbox":[678,594.67,532,51.33]}
+{"kind":"textbox","id":"sh/90jeh87u","slide":21,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/8zax83q9","slide":21,"text":"21","textPreview":"21","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/v05e7v","slide":21,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:15713-15957\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:24400-26900"}
+{"kind":"slide","id":"sl/t3s71q","slide":22,"title":"模块操作","textShapes":22}
+{"kind":"shape","id":"sh/9c7qpcj2","slide":22,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/m9g7uxkb","slide":22,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/nap8n21w","slide":22,"text":"Gate‑VI｜仪器连接与互锁","textPreview":"Gate‑VI｜仪器连接与互锁","textChars":15,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/0nyps725","slide":22,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/l87qlcjq","slide":22,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/ylg7qxkf","slide":22,"text":"独立连接","textPreview":"独立连接","textChars":4,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/zmpoj210","slide":22,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/cjepon29","slide":22,"text":"2410 / 6221","textPreview":"2410 / 6221","textChars":11,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/dkn6hsju","slide":22,"text":"分别连接门脉冲源和读电流源。","textPreview":"分别连接门脉冲源和读电流源。","textChars":14,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/lcz2l8ni","slide":22,"text":"SR830 #8/#9","textPreview":"SR830 #8/#9","textChars":11,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/kb61c36x","slide":22,"text":"设置输入耦合、倍频、X/Y/R 和参与扫描。","textPreview":"设置输入耦合、倍频、X/Y/R 和参与扫描。","textChars":22,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/zaxkjy5c","slide":22,"text":"MFLI","textPreview":"MFLI","textChars":4,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/ypojador","slide":22,"text":"选择参考接口、耦合、倍频、读取量、自动量程、阻抗与 Scaling。","textPreview":"选择参考接口、耦合、倍频、读取量、自动量程、阻抗与 Scaling。","textChars":34,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/xof2h8nm","slide":22,"text":"2182A","textPreview":"2182A","textChars":5,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/cn618361","slide":22,"text":"通道1、NPLC 1、自动量程；可选参与扫描。","textPreview":"通道1、NPLC 1、自动量程；可选参与扫描。","textChars":23,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/bmxkfy5g","slide":22,"text":"安全与 Trigger Link","textPreview":"安全与 Trigger Link","textChars":16,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/aloj6tov","slide":22,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/pkf2dona","slide":22,"text":"安全确认","textPreview":"安全确认","textChars":4,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/ojm14j6p","slide":22,"text":"确认 2410 电压脉冲、6221 电流和样品安全。","textPreview":"确认 2410 电压脉冲、6221 电流和样品安全。","textChars":26,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/0fatgnix","slide":22,"text":"Trigger Link输出线","textPreview":"Trigger Link输出线","textChars":15,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/1gju9szi","slide":22,"text":"把标记送到所选参考输入。","textPreview":"把标记送到所选参考输入。","textChars":12,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/edsbed0r","slide":22,"text":"互锁","textPreview":"互锁","textChars":2,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/fe1s7ihc","slide":22,"text":"2410 脉冲/测阻时 6221 必须 OFF；读电压时 2410 必须 OFF。","textPreview":"2410 脉冲/测阻时 6221 必须 OFF；读电压时 2410 必须 OFF。","textChars":41,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/sbatcnil","slide":22,"text":"立即停止 2410 / 6221","textPreview":"立即停止 2410 / 6221","textChars":16,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/dcja58z6","slide":22,"text":"同时关闭两台源输出。","textPreview":"同时关闭两台源输出。","textChars":10,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/698bad0v","slide":22,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/rahs3ihg","slide":22,"text":"22","textPreview":"22","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/t3s71q","slide":22,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:15958-16223"}
+{"kind":"slide","id":"sl/wxkf9a","slide":23,"title":"模块操作","textShapes":26}
+{"kind":"shape","id":"sh/25gjid8j","slide":23,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/p8rids7u","slide":23,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/o7i1knq9","slide":23,"text":"Gate‑VI｜电压脉冲扫描与数据","textPreview":"Gate‑VI｜电压脉冲扫描与数据","textChars":17,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/fip07ips","slide":23,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/ehgjed87","slide":23,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/147i9s7y","slide":23,"text":"扫描参数","textPreview":"扫描参数","textChars":4,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/g3y1gnqd","slide":23,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/zyt0j2pw","slide":23,"text":"起始 / 截止 / 步长 V","textPreview":"起始 / 截止 / 步长 V","textChars":14,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/yd0jax8r","slide":23,"text":"定义门电压脉冲序列。","textPreview":"定义门电压脉冲序列。","textChars":10,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/4j2lwfah","slide":23,"text":"脉宽 s / 脉冲后等待 s","textPreview":"脉宽 s / 脉冲后等待 s","textChars":14,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/pkbmpkr2","slide":23,"text":"控制写入脉冲和读出延时。","textPreview":"控制写入脉冲和读出延时。","textChars":12,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/2h03u5sr","slide":23,"text":"6221 电流 mA / 频率 Hz","textPreview":"6221 电流 mA / 频率 Hz","textChars":18,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/3i94na9w","slide":23,"text":"设置读电流；DC 模式时频率失效。","textPreview":"设置读电流；DC 模式时频率失效。","textChars":17,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/gvilsval","slide":23,"text":"采样 Hz / 预运行 s / 每点测量 s","textPreview":"采样 Hz / 预运行 s / 每点测量 s","textChars":22,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/hgrml0r6","slide":23,"text":"设置读出采样和平均。","textPreview":"设置读出采样和平均。","textChars":10,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/ut03qlsf","slide":23,"text":"6221 限压 / 脉冲门槛 MΩ","textPreview":"6221 限压 / 脉冲门槛 MΩ","textChars":17,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/fu94jq90","slide":23,"text":"保护电流源并设置门脉冲判定阈值。","textPreview":"保护电流源并设置门脉冲判定阈值。","textChars":16,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/srilova9","slide":23,"text":"运行与图窗","textPreview":"运行与图窗","textChars":5,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/tsrmh0ru","slide":23,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/9cza5szm","slide":23,"text":"选择文件夹并开始扫描","textPreview":"选择文件夹并开始扫描","textChars":10,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/8bqtwny1","slide":23,"text":"选择输出目录并执行完整门控序列。","textPreview":"选择输出目录并执行完整门控序列。","textChars":16,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/nahs3ihg","slide":23,"text":"停止扫描","textPreview":"停止扫描","textChars":4,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/m9obudgv","slide":23,"text":"停止线程并关闭 2410/6221 输出。","textPreview":"停止线程并关闭 2410/6221 输出。","textChars":21,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/l8fa18za","slide":23,"text":"状态灯","textPreview":"状态灯","textChars":3,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/076ts3yp","slide":23,"text":"每台仪器独立显示连接状态。","textPreview":"每台仪器独立显示连接状态。","textChars":13,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/z6xszihk","slide":23,"text":"SR830/MFLI 图窗","textPreview":"SR830/MFLI 图窗","textChars":13,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/y5orqdgz","slide":23,"text":"显示电压/锁相信号、theta 和 Gate‑VI 关系。","textPreview":"显示电压/锁相信号、theta 和 Gate‑VI 关系。","textChars":29,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/54jadcfu","slide":23,"text":"2182A 图窗","textPreview":"2182A 图窗","textChars":8,"textLines":1,"bbox":[678,546,532,24]}
+{"kind":"textbox","id":"sh/k3at47y9","slide":23,"text":"只显示 Voltage vs time 与 Gate‑VI，不显示 theta。","textPreview":"只显示 Voltage vs time 与 Gate‑VI，不显示 theta。","textChars":40,"textLines":1,"bbox":[678,570,532,64]}
+{"kind":"textbox","id":"sh/29k7y9wr","slide":23,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/3at87exc","slide":23,"text":"23","textPreview":"23","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/wxkf9a","slide":23,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:16224-16450\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:26900-28600"}
+{"kind":"slide","id":"sl/7aennu","slide":24,"title":"模块操作","textShapes":26}
+{"kind":"shape","id":"sh/sjehw3m1","slide":24,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/ri503y5g","slide":24,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/6hwzut4v","slide":24,"text":"PPMS1｜连接、读回与环境控制","textPreview":"PPMS1｜连接、读回与环境控制","textChars":16,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/5gni1ona","slide":24,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/4fehsjmp","slide":24,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/jelgze54","slide":24,"text":"PPMS1 会话","textPreview":"PPMS1 会话","textChars":8,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/itczq9oj","slide":24,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/pc7idsne","slide":24,"text":"接口 / IP / 端口","textPreview":"接口 / IP / 端口","textChars":12,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/obyh4nmt","slide":24,"text":"选择 MultiVu/QDInstrument 后端；IP 和 TCP 端口可改。","textPreview":"选择 MultiVu/QDInstrument 后端；IP 和 TCP 端口可改。","textChars":41,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/ql07m1kv","slide":24,"text":"连接 PPMS / 断开","textPreview":"连接 PPMS / 断开","textChars":12,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/bm98f6lg","slide":24,"text":"建立或释放远程会话。","textPreview":"建立或释放远程会话。","textChars":10,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/cnipob21","slide":24,"text":"读取当前值","textPreview":"读取当前值","textChars":5,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/dorqhg3m","slide":24,"text":"刷新温度、磁场和状态。","textPreview":"刷新温度、磁场和状态。","textChars":11,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/2hg7ihkz","slide":24,"text":"绿色状态灯","textPreview":"绿色状态灯","textChars":5,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/3ip8rmlk","slide":24,"text":"仅表示会话可用。","textPreview":"仅表示会话可用。","textChars":8,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/ojypkr25","slide":24,"text":"安全确认","textPreview":"安全确认","textChars":4,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/pkrqtw3a","slide":24,"text":"启用温度和磁场设定前必须勾选。","textPreview":"启用温度和磁场设定前必须勾选。","textChars":15,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/mdk7ulk3","slide":24,"text":"温度与磁场","textPreview":"温度与磁场","textChars":5,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/net8nqlo","slide":24,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/jm1wzexo","slide":24,"text":"目标 K / 速率 / Approach / 设置温度","textPreview":"目标 K / 速率 / Approach / 设置温度","textChars":27,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/ylsv69wj","slide":24,"text":"5–380 K；5–10 K 段 ≤1 K/min，其余 ≤10 K/min。","textPreview":"5–380 K；5–10 K 段 ≤1 K/min，其余 ≤10 K/min。","textChars":39,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/lo3e1ofu","slide":24,"text":"目标 Oe / 速率 / Approach / Mode / 设置磁场","textPreview":"目标 Oe / 速率 / Approach / Mode / 设置磁场","textChars":35,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/knud8je9","slide":24,"text":"范围 ±89900 Oe；速率必须 <150 Oe/s。","textPreview":"范围 ±89900 Oe；速率必须 <150 Oe/s。","textChars":28,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/7qlw3yx0","slide":24,"text":"归零","textPreview":"归零","textChars":2,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/6pcvatwf","slide":24,"text":"把 PPMS 目标磁场设为 0 Oe。","textPreview":"把 PPMS 目标磁场设为 0 Oe。","textChars":19,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/tc3e58f6","slide":24,"text":"步长 Oe + Down/Up","textPreview":"步长 Oe + Down/Up","textChars":15,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/8budc3el","slide":24,"text":"按给定磁场步长微调。","textPreview":"按给定磁场步长微调。","textChars":10,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/velw7yxw","slide":24,"text":"当前温度 / 当前磁场","textPreview":"当前温度 / 当前磁场","textChars":11,"textLines":1,"bbox":[678,546,532,24]}
+{"kind":"textbox","id":"sh/udcvydwb","slide":24,"text":"显示数值和 Stable/Persistent 等状态。","textPreview":"显示数值和 Stable/Persistent 等状态。","textChars":28,"textLines":1,"bbox":[678,570,532,64]}
+{"kind":"textbox","id":"sh/cjedo3up","slide":24,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/dknux8ba","slide":24,"text":"24","textPreview":"24","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/7aennu","slide":24,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11304-11515"}
+{"kind":"slide","id":"sl/7awj0h","slide":25,"title":"模块操作","textShapes":28}
+{"kind":"shape","id":"sh/dc7epw3y","slide":25,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/q9gvuh4n","slide":25,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/rapwnmls","slide":25,"text":"PPMS1｜强制同步扫场与外接仪器","textPreview":"PPMS1｜强制同步扫场与外接仪器","textChars":17,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/47eds7mh","slide":25,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/58nelc32","slide":25,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/ilwvqx4b","slide":25,"text":"磁场扫描","textPreview":"磁场扫描","textChars":4,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/3m5wj2lw","slide":25,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/o3ix4b2l","slide":25,"text":"起始 / 截止 / 步长 Oe","textPreview":"起始 / 截止 / 步长 Oe","textChars":15,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/p4rexg36","slide":25,"text":"定义外磁场路径。","textPreview":"定义外磁场路径。","textChars":8,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/t8n2pg3q","slide":25,"text":"速率 Oe/s / Loop / 稳定 s","textPreview":"速率 Oe/s / Loop / 稳定 s","textChars":21,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/s7elgb25","slide":25,"text":"设置变场速率、循环数和等待。","textPreview":"设置变场速率、循环数和等待。","textChars":14,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/r65kn6l0","slide":25,"text":"开始扫描 / 停止归零","textPreview":"开始扫描 / 停止归零","textChars":11,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/65w3e14f","slide":25,"text":"扫描必须同时加 6221 AC 并测至少一台 SR830。","textPreview":"扫描必须同时加 6221 AC 并测至少一台 SR830。","textChars":29,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/5kn2lw3u","slide":25,"text":"保存 CSV","textPreview":"保存 CSV","textChars":6,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/4ju1crm9","slide":25,"text":"保存环境值、源设置和 SR830 电压。","textPreview":"保存环境值、源设置和 SR830 电压。","textChars":20,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/jilkjmlo","slide":25,"text":"进度条 / ETA","textPreview":"进度条 / ETA","textChars":9,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/ihcja143","slide":25,"text":"显示已完成点和预计剩余。","textPreview":"显示已完成点和预计剩余。","textChars":12,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/pg72x03y","slide":25,"text":"输运与仪器","textPreview":"输运与仪器","textChars":5,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/ofylov2d","slide":25,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/8vqdg3e1","slide":25,"text":"电流 RMS / 频率 / 限压","textPreview":"电流 RMS / 频率 / 限压","textChars":16,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/9wze98fm","slide":25,"text":"设置 6221 AC 读出。","textPreview":"设置 6221 AC 读出。","textChars":14,"textLines":1,"bbox":[678,218,532,51.33]}
+{"kind":"textbox","id":"sh/mt8vetwv","slide":25,"text":"槽 A / 槽 B 倍频","textPreview":"槽 A / 槽 B 倍频","textChars":12,"textLines":1,"bbox":[678,269.33,532,24]}
+{"kind":"textbox","id":"sh/nuhw7yxg","slide":25,"text":"分别设置两台 SR830 谐波。","textPreview":"分别设置两台 SR830 谐波。","textChars":16,"textLines":1,"bbox":[678,293.33,532,51.33]}
+{"kind":"textbox","id":"sh/0r6dcjep","slide":25,"text":"外接仪器连接 / 断开","textPreview":"外接仪器连接 / 断开","textChars":11,"textLines":1,"bbox":[678,344.67,532,24]}
+{"kind":"textbox","id":"sh/lsze5ofa","slide":25,"text":"6221、两台 SR830 和 2400 独立管理。","textPreview":"6221、两台 SR830 和 2400 独立管理。","textChars":26,"textLines":1,"bbox":[678,368.67,532,51.33]}
+{"kind":"textbox","id":"sh/ypova9wz","slide":25,"text":"SR830 地址 8/9/10","textPreview":"SR830 地址 8/9/10","textChars":15,"textLines":1,"bbox":[678,420,532,24]}
+{"kind":"textbox","id":"sh/zqxw3ex4","slide":25,"text":"每个槽位可选；重复地址不允许。","textPreview":"每个槽位可选；重复地址不允许。","textChars":15,"textLines":1,"bbox":[678,444,532,51.33]}
+{"kind":"textbox","id":"sh/cn6d8jet","slide":25,"text":"6221 / 2400 立即关闭输出","textPreview":"6221 / 2400 立即关闭输出","textChars":18,"textLines":1,"bbox":[678,495.33,532,24]}
+{"kind":"textbox","id":"sh/dofe14fe","slide":25,"text":"紧急关闭源输出。","textPreview":"紧急关闭源输出。","textChars":8,"textLines":1,"bbox":[678,519.33,532,51.33]}
+{"kind":"textbox","id":"sh/fydwbeh0","slide":25,"text":"电压 vs 磁场图","textPreview":"电压 vs 磁场图","textChars":9,"textLines":1,"bbox":[678,570.67,532,24]}
+{"kind":"textbox","id":"sh/ex4fi90f","slide":25,"text":"只绘制已连接并参与的 SR830。","textPreview":"只绘制已连接并参与的 SR830。","textChars":17,"textLines":1,"bbox":[678,594.67,532,51.33]}
+{"kind":"textbox","id":"sh/10ved4z6","slide":25,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/gzmxkzil","slide":25,"text":"25","textPreview":"25","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/7awj0h","slide":25,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11516-11750\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:28600-29010"}
+{"kind":"slide","id":"sl/j85kei","slide":26,"title":"界面导览","textShapes":5}
+{"kind":"shape","id":"sh/i5wjel0r","slide":26,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/5sni90zi","slide":26,"text":"界面导览","textPreview":"界面导览","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/kre1gvix","slide":26,"text":"STFMR｜完整模块界面","textPreview":"STFMR｜完整模块界面","textChars":12,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/v2l036hg","slide":26,"bbox":[54,128,1172,500]}
+{"kind":"textbox","id":"sh/x43i5gz6","slide":26,"text":"当前 STFMR 页签：三台核心仪器、4886 输出、475 读回、多频扫场与实测磁场曲线。","textPreview":"当前 STFMR 页签：三台核心仪器、4886 输出、475 读回、多频扫场与实测磁场曲线。","textChars":46,"textLines":1,"bbox":[72,610,1136,34]}
+{"kind":"textbox","id":"sh/w3uhcbil","slide":26,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/nyl0z6h4","slide":26,"text":"26","textPreview":"26","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"image","id":"im/v6xsjaxg","slide":26,"name":"","alt":"当前 STFMR 页签：三台核心仪器、4886 输出、475 读回、多频扫场与实测磁场曲线。","bbox":[72,144,1136,454]}
+{"kind":"notes","id":"nt/j85kei","slide":26,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11751-12130\n- /var/folders/61/zwljyfb1529g_99j7w44y9200000gn/T/codex-clipboard-8b467c84-bfc9-43a1-8ef8-d0df7ef0ee66.png (current GUI screenshot)\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/Codex-Memory/20-Projects/P11-PYTHON-TRANSPORT.md (STFMR validation boundary)"}
+{"kind":"slide","id":"sl/60tcaf","slide":27,"title":"模块操作","textShapes":28}
+{"kind":"shape","id":"sh/6lwfmlk7","slide":27,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/t8nyh0ji","slide":27,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/snexov2d","slide":27,"text":"STFMR｜连接、4886 与 LS475","textPreview":"STFMR｜连接、4886 与 LS475","textChars":21,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/jilwb61g","slide":27,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/ihcfilkv","slide":27,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/5k3ydgjm","slide":27,"text":"仪器连接","textPreview":"仪器连接","textChars":4,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/kjuxkb21","slide":27,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/velw761k","slide":27,"text":"KEPCO4886","textPreview":"KEPCO4886","textChars":9,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/adsfe1kz","slide":27,"text":"GPIB0::6::INSTR；连接时只占用资源，不查询、不写输出。","textPreview":"GPIB0::6::INSTR；连接时只占用资源，不查询、不写输出。","textChars":34,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/s7ato7qp","slide":27,"text":"LS475","textPreview":"LS475","textChars":5,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/d8jaxc7a","slide":27,"text":"GPIB0::12::INSTR；用于真实磁场反馈。","textPreview":"GPIB0::12::INSTR；用于真实磁场反馈。","textChars":26,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/qlsbmh8z","slide":27,"text":"PNA","textPreview":"PNA","textChars":3,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/rm1sv2p4","slide":27,"text":"GPIB0::16::INSTR；N5242A/N5227A。","textPreview":"GPIB0::16::INSTR；N5242A/N5227A。","textChars":31,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/4jq9k7qt","slide":27,"text":"SR830 / MFLI / SMB100A","textPreview":"SR830 / MFLI / SMB100A","textChars":22,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/5kzatc7e","slide":27,"text":"预留独立连接与状态灯；SMB 默认 GPIB0::28::INSTR。","textPreview":"预留独立连接与状态灯；SMB 默认 GPIB0::28::INSTR。","textChars":35,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/ih8rix8n","slide":27,"text":"绿色/灰色灯","textPreview":"绿色/灰色灯","textChars":6,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/3ihsr2p8","slide":27,"text":"分别表示已连接/未连接。","textPreview":"分别表示已连接/未连接。","textChars":12,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/ofutwrqx","slide":27,"text":"手动输出与读回","textPreview":"手动输出与读回","textChars":7,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/pg3a5w7i","slide":27,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/xwza9wzm","slide":27,"text":"安全确认","textPreview":"安全确认","textChars":4,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/wvqtgri1","slide":27,"text":"确认磁体极性、冷却、接线、前面板限值和无其他控制程序。","textPreview":"确认磁体极性、冷却、接线、前面板限值和无其他控制程序。","textChars":27,"textLines":1,"bbox":[678,218,532,51.33]}
+{"kind":"textbox","id":"sh/buhs7mhg","slide":27,"text":"输出模式","textPreview":"输出模式","textChars":4,"textLines":1,"bbox":[678,269.33,532,24]}
+{"kind":"textbox","id":"sh/at8reh0b","slide":27,"text":"选择电流或电压。","textPreview":"选择电流或电压。","textChars":8,"textLines":1,"bbox":[678,293.33,532,51.33]}
+{"kind":"textbox","id":"sh/9sza5wzq","slide":27,"text":"目标 / 限值 / 应用输出","textPreview":"目标 / 限值 / 应用输出","textChars":14,"textLines":1,"bbox":[678,344.67,532,24]}
+{"kind":"textbox","id":"sh/o7q9cri5","slide":27,"text":"写入 4886；软件限制 ±10 A / ±20 V。","textPreview":"写入 4886；软件限制 ±10 A / ±20 V。","textChars":27,"textLines":1,"bbox":[678,368.67,532,51.33]}
+{"kind":"textbox","id":"sh/n6xs3mhk","slide":27,"text":"显示已发送值","textPreview":"显示已发送值","textChars":6,"textLines":1,"bbox":[678,420,532,24]}
+{"kind":"textbox","id":"sh/m5orah0z","slide":27,"text":"只显示缓存的最近命令，不是 4886 回读。","textPreview":"只显示缓存的最近命令，不是 4886 回读。","textChars":22,"textLines":1,"bbox":[678,444,532,51.33]}
+{"kind":"textbox","id":"sh/14fa1cze","slide":27,"text":"归零 / OFF","textPreview":"归零 / OFF","textChars":8,"textLines":1,"bbox":[678,495.33,532,24]}
+{"kind":"textbox","id":"sh/036987it","slide":27,"text":"发送 0 并关输出。","textPreview":"发送 0 并关输出。","textChars":10,"textLines":1,"bbox":[678,519.33,532,51.33]}
+{"kind":"textbox","id":"sh/qxkzm9cf","slide":27,"text":"读取一次 / 连续读取","textPreview":"读取一次 / 连续读取","textChars":11,"textLines":1,"bbox":[678,570.67,532,24]}
+{"kind":"textbox","id":"sh/rytgvet0","slide":27,"text":"从 LS475 读取磁场，连续周期 0.5 s。","textPreview":"从 LS475 读取磁场，连续周期 0.5 s。","textChars":24,"textLines":1,"bbox":[678,594.67,532,51.33]}
+{"kind":"textbox","id":"sh/sz2hojul","slide":27,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/d0byxob6","slide":27,"text":"27","textPreview":"27","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/60tcaf","slide":27,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11751-11940\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/Codex-Memory/20-Projects/P11-PYTHON-TRANSPORT.md (4886 trace-constrained behavior)"}
+{"kind":"slide","id":"sl/tr7r1s","slide":28,"title":"模块操作","textShapes":28}
+{"kind":"shape","id":"sh/vit03ud8","slide":28,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/wj21czet","slide":28,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/hkbi54ve","slide":28,"text":"STFMR｜多频扫场","textPreview":"STFMR｜多频扫场","textChars":10,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/md0j6pwr","slide":28,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/7e90zudc","slide":28,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/8fi18zex","slide":28,"text":"参数","textPreview":"参数","textChars":2,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/9gri1kvi","slide":28,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/q94ji9wb","slide":28,"text":"频率起 / 止 / 步 GHz","textPreview":"频率起 / 止 / 步 GHz","textChars":15,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/rad0bedg","slide":28,"text":"例如 5→10、步 1，将依次执行 6 个频率。","textPreview":"例如 5→10、步 1，将依次执行 6 个频率。","textChars":24,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/7utg7694","slide":28,"text":"PNA 功率 dBm","textPreview":"PNA 功率 dBm","textChars":10,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/6tkzy18z","slide":28,"text":"默认 −10 dBm；GUI 上限 0 dBm。","textPreview":"默认 −10 dBm；GUI 上限 0 dBm。","textChars":24,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/tgby9wra","slide":28,"text":"起始 / 截止 / 步长 A","textPreview":"起始 / 截止 / 步长 A","textChars":14,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/8f2h0rqp","slide":28,"text":"扫 4886 电流；横轴用 LS475 实测磁场绝对值。","textPreview":"扫 4886 电流；横轴用 LS475 实测磁场绝对值。","textChars":28,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/vitgb69g","slide":28,"text":"限压 V / 等待 s","textPreview":"限压 V / 等待 s","textChars":11,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/uhkz218v","slide":28,"text":"设置 4886 电压限值与每点稳定时间。","textPreview":"设置 4886 电压限值与每点稳定时间。","textChars":20,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/hkvydgrm","slide":28,"text":"S11/S12/S21/S22","textPreview":"S11/S12/S21/S22","textChars":15,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/gj2h4bq1","slide":28,"text":"可多选；跨源端口组合按同一磁场点顺序切换，不是严格同时采样。","textPreview":"可多选；跨源端口组合按同一磁场点顺序切换，不是严格同时采样。","textChars":30,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/3md0fq9c","slide":28,"text":"动作","textPreview":"动作","textChars":2,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/il4z6l87","slide":28,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/ehojypsf","slide":28,"text":"结束后关闭 PNA RF","textPreview":"结束后关闭 PNA RF","textChars":12,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/fixk7utk","slide":28,"text":"扫描结束或停止时关闭激励。","textPreview":"扫描结束或停止时关闭激励。","textChars":13,"textLines":1,"bbox":[678,218,532,51.33]}
+{"kind":"textbox","id":"sh/0j610fa5","slide":28,"text":"开始多频扫场","textPreview":"开始多频扫场","textChars":6,"textLines":1,"bbox":[678,269.33,532,24]}
+{"kind":"textbox","id":"sh/1kz29kbq","slide":28,"text":"按频率外循环、磁场点内循环执行。","textPreview":"按频率外循环、磁场点内循环执行。","textChars":16,"textLines":1,"bbox":[678,293.33,532,51.33]}
+{"kind":"textbox","id":"sh/qdoju5s3","slide":28,"text":"停止 / 归零","textPreview":"停止 / 归零","textChars":7,"textLines":1,"bbox":[678,344.67,532,24]}
+{"kind":"textbox","id":"sh/rexk3ato","slide":28,"text":"停止线程、4886 归零并关输出。","textPreview":"停止线程、4886 归零并关输出。","textChars":17,"textLines":1,"bbox":[678,368.67,532,51.33]}
+{"kind":"textbox","id":"sh/sf61wfa9","slide":28,"text":"保存 CSV + PNG","textPreview":"保存 CSV + PNG","textChars":12,"textLines":1,"bbox":[678,420,532,24]}
+{"kind":"textbox","id":"sh/dgf25kbu","slide":28,"text":"保存全频率/全 S 参数数据和磁场曲线。","textPreview":"保存全频率/全 S 参数数据和磁场曲线。","textChars":20,"textLines":1,"bbox":[678,444,532,51.33]}
+{"kind":"textbox","id":"sh/a98369s7","slide":28,"text":"进度条","textPreview":"进度条","textChars":3,"textLines":1,"bbox":[678,495.33,532,24]}
+{"kind":"textbox","id":"sh/bahkfets","slide":28,"text":"显示频率×磁场×S 参数总进度和状态。","textPreview":"显示频率×磁场×S 参数总进度和状态。","textChars":19,"textLines":1,"bbox":[678,519.33,532,51.33]}
+{"kind":"textbox","id":"sh/l43m58va","slide":28,"text":"切频采点","textPreview":"切频采点","textChars":4,"textLines":1,"bbox":[678,570.67,532,24]}
+{"kind":"textbox","id":"sh/k3u5c3up","slide":28,"text":"切换频率后先建立新曲线并等待稳定，避免把过渡点串入前后频率。","textPreview":"切换频率后先建立新曲线并等待稳定，避免把过渡点串入前后频率。","textChars":30,"textLines":1,"bbox":[678,594.67,532,51.33]}
+{"kind":"textbox","id":"sh/j2143yd4","slide":28,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/y1snatcj","slide":28,"text":"28","textPreview":"28","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/tr7r1s","slide":28,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11941-12040\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:12130-13750"}
+{"kind":"slide","id":"sl/hjv40v","slide":29,"title":"模块操作","textShapes":26}
+{"kind":"shape","id":"sh/436tszmd","slide":29,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/j2xcju5s","slide":29,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/i1obqp47","slide":29,"text":"STFMR｜固定磁场扫频","textPreview":"STFMR｜固定磁场扫频","textChars":12,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/t8zup4nu","slide":29,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/s76twjm9","slide":29,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/r6xcne5o","slide":29,"text":"参数与反馈","textPreview":"参数与反馈","textChars":5,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/65obu943","slide":29,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/1wzutonq","slide":29,"text":"固定磁场 G","textPreview":"固定磁场 G","textChars":6,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/gvqd0jm5","slide":29,"text":"目标磁场的绝对值。","textPreview":"目标磁场的绝对值。","textChars":9,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/q1kb2tk3","slide":29,"text":"频率起 / 止 / 步 GHz","textPreview":"频率起 / 止 / 步 GHz","textChars":15,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/r2dsvylo","slide":29,"text":"定义单一磁场下的频率序列。","textPreview":"定义单一磁场下的频率序列。","textChars":13,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/c3mt4329","slide":29,"text":"磁场容差 G","textPreview":"磁场容差 G","textChars":6,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/dovuxo3u","slide":29,"text":"默认 10 G；反馈调节到容差内再开始扫频。","textPreview":"默认 10 G；反馈调节到容差内再开始扫频。","textChars":22,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/ep4b6tkf","slide":29,"text":"反馈等待 s","textPreview":"反馈等待 s","textChars":6,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/zqdczyl0","slide":29,"text":"每次调 4886 后给 LS475 的稳定时间。","textPreview":"每次调 4886 后给 LS475 的稳定时间。","textChars":24,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/0rmt832l","slide":29,"text":"S 参数 / PNA 功率","textPreview":"S 参数 / PNA 功率","textChars":13,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/1svu183q","slide":29,"text":"沿用上方选择与功率设置。","textPreview":"沿用上方选择与功率设置。","textChars":12,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/ut0bu94b","slide":29,"text":"动作与图","textPreview":"动作与图","textChars":4,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/fu9snelg","slide":29,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/jyp8va18","slide":29,"text":"固定磁场扫频","textPreview":"固定磁场扫频","textChars":6,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/ydg725k3","slide":29,"text":"先用 LS475 反馈调节 4886，再逐频率采集。","textPreview":"先用 LS475 反馈调节 4886，再逐频率采集。","textChars":26,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/507qxkje","slide":29,"text":"保存扫频 CSV + PNG","textPreview":"保存扫频 CSV + PNG","textChars":14,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/kzyp4f2t","slide":29,"text":"保存 Frequency‑S 参数数据和图像。","textPreview":"保存 Frequency‑S 参数数据和图像。","textChars":23,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/ba58rq1c","slide":29,"text":"扫频进度条","textPreview":"扫频进度条","textChars":5,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/a9w7ylkr","slide":29,"text":"显示反馈和频点进度。","textPreview":"显示反馈和频点进度。","textChars":10,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/xc7qt0ji","slide":29,"text":"磁场图横轴","textPreview":"磁场图横轴","textChars":5,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/wbyp0v2x","slide":29,"text":"使用 |实测磁场|，0 永远在最左，正负场都向右增加。","textPreview":"使用 |实测磁场|，0 永远在最左，正负场都向右增加。","textChars":27,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/f6983u1g","slide":29,"text":"频率图横轴","textPreview":"频率图横轴","textChars":5,"textLines":1,"bbox":[678,546,532,24]}
+{"kind":"textbox","id":"sh/u50rap0v","slide":29,"text":"GHz；纵轴为所选 S 参数幅值 dB。","textPreview":"GHz；纵轴为所选 S 参数幅值 dB。","textChars":20,"textLines":1,"bbox":[678,570,532,64]}
+{"kind":"textbox","id":"sh/cba54rid","slide":29,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/dc3mxwzy","slide":29,"text":"29","textPreview":"29","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/hjv40v","slide":29,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:12040-12130\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:13250-13750"}
+{"kind":"slide","id":"sl/2nnbsy","slide":30,"title":"界面导览","textShapes":5}
+{"kind":"shape","id":"sh/elwvq1cz","slide":30,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/1onu1gba","slide":30,"text":"界面导览","textPreview":"界面导览","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/0nedsbup","slide":30,"text":"STFMR｜实时曲线示例","textPreview":"STFMR｜实时曲线示例","textChars":12,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/nq5c36tg","slide":30,"bbox":[54,128,1172,500]}
+{"kind":"textbox","id":"sh/psnu5gbm","slide":30,"text":"S21 随 |实测磁场| 的实时曲线；实际数据由 475 读回，而不是用 4886 电流换算。","textPreview":"S21 随 |实测磁场| 的实时曲线；实际数据由 475 读回，而不是用 4886 电流换算。","textChars":47,"textLines":1,"bbox":[72,610,1136,34]}
+{"kind":"textbox","id":"sh/oredwbu1","slide":30,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/3ulcrmdc","slide":30,"text":"30","textPreview":"30","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"image","id":"im/rqh8r21k","slide":30,"name":"","alt":"S21 随 |实测磁场| 的实时曲线；实际数据由 475 读回，而不是用 4886 电流换算。","bbox":[72,144,1136,454]}
+{"kind":"notes","id":"nt/2nnbsy","slide":30,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:13100-13380\n- /var/folders/61/zwljyfb1529g_99j7w44y9200000gn/T/codex-clipboard-aa2be826-b768-47f5-8cab-141e9505b813.png (current GUI screenshot)\n- /var/folders/61/zwljyfb1529g_99j7w44y9200000gn/T/codex-clipboard-aa2be826-b768-47f5-8cab-141e9505b813.png (current GUI screenshot)"}
+{"kind":"slide","id":"sl/djgk8t","slide":31,"title":"模块操作","textShapes":26}
+{"kind":"shape","id":"sh/itkfet4b","slide":31,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/5wbe98n2","slide":31,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/4v2xg3mh","slide":31,"text":"通用 ROI 编辑｜按钮含义","textPreview":"通用 ROI 编辑｜按钮含义","textChars":14,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/rytwby5s","slide":31,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/6xkfit47","slide":31,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/tkved8ny","slide":31,"text":"几何按钮","textPreview":"几何按钮","textChars":4,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/szmxk3md","slide":31,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/729wze5o","slide":31,"text":"A− / A+","textPreview":"A− / A+","textChars":7,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/m10v6943","slide":31,"text":"减小/增大 ROI 旋转角。","textPreview":"减小/增大 ROI 旋转角。","textChars":14,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/87elwzax","slide":31,"text":"W− / W+","textPreview":"W− / W+","textChars":7,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/98nm54bi","slide":31,"text":"减小/增大 ROI 宽度。","textPreview":"减小/增大 ROI 宽度。","textChars":13,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/m5c3upsr","slide":31,"text":"H− / H+","textPreview":"H− / H+","textChars":7,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/n6543utc","slide":31,"text":"减小/增大 ROI 高度。","textPreview":"减小/增大 ROI 高度。","textChars":13,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/wbel0zat","slide":31,"text":"X− / X+","textPreview":"X− / X+","textChars":7,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/xwnm94be","slide":31,"text":"向左/向右移动 ROI 中心。","textPreview":"向左/向右移动 ROI 中心。","textChars":15,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/a9w3y9s3","slide":31,"text":"Y− / Y+","textPreview":"Y− / Y+","textChars":7,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/va547ut8","slide":31,"text":"向上/向下移动 ROI 中心。","textPreview":"向上/向下移动 ROI 中心。","textChars":15,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/cfulofap","slide":31,"text":"步长与约束","textPreview":"步长与约束","textChars":5,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/d03mxkba","slide":31,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/dwv2lw3y","slide":31,"text":"A / W / H / X / Y 步长","textPreview":"A / W / H / X / Y 步长","textChars":20,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/svm1sbmd","slide":31,"text":"所有步长都可键入；角度用 °，位置/尺寸用 px。","textPreview":"所有步长都可键入；角度用 °，位置/尺寸用 px。","textChars":25,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/rutkj6ls","slide":31,"text":"Shift + 左拖","textPreview":"Shift + 左拖","textChars":10,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/qtkjq14n","slide":31,"text":"最快的新建 ROI 方式。","textPreview":"最快的新建 ROI 方式。","textChars":13,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/10v2pg3a","slide":31,"text":"ROI mean","textPreview":"ROI mean","textChars":8,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/0zm1wbmp","slide":31,"text":"显示当前处理链后的 ROI 平均值。","textPreview":"显示当前处理链后的 ROI 平均值。","textChars":18,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/fydkn6l4","slide":31,"text":"扫描期间","textPreview":"扫描期间","textChars":4,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/ex4ju14j","slide":31,"text":"2410 扫描时禁止重选 ROI，避免数据区域变化。","textPreview":"2410 扫描时禁止重选 ROI，避免数据区域变化。","textChars":26,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/p4f2tg36","slide":31,"text":"清除 ROI","textPreview":"清除 ROI","textChars":6,"textLines":1,"bbox":[678,546,532,24]}
+{"kind":"textbox","id":"sh/o3610v2l","slide":31,"text":"Camera Live 快捷键清除后，各模块曲线等待重新选择。","textPreview":"Camera Live 快捷键清除后，各模块曲线等待重新选择。","textChars":31,"textLines":1,"bbox":[678,570,532,64]}
+{"kind":"textbox","id":"sh/mxw7ytgr","slide":31,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/nyp87yxc","slide":31,"text":"31","textPreview":"31","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/djgk8t","slide":31,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:16380-16540\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:8800-10100"}
+{"kind":"slide","id":"sl/uis5km","slide":32,"title":"模块操作","textShapes":26}
+{"kind":"shape","id":"sh/s7e5kf6l","slide":32,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/r6loba50","slide":32,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/65cni5of","slide":32,"text":"文件保存｜不要混淆数据层级","textPreview":"文件保存｜不要混淆数据层级","textChars":13,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/543m90nu","slide":32,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/43u5gv69","slide":32,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/j2l47q5o","slide":32,"text":"图像与视频","textPreview":"图像与视频","textChars":5,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/i1cne5oj","slide":32,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/p076l4ny","slide":32,"text":"保存当前显示图片","textPreview":"保存当前显示图片","textChars":8,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/ozy5szmt","slide":32,"text":"保存 Camera Live 当前 8‑bit 显示内容，不含 marker。","textPreview":"保存 Camera Live 当前 8‑bit 显示内容，不含 marker。","textChars":39,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/2x87ixcj","slide":32,"text":"保存原始16-bit","textPreview":"保存原始16-bit","textChars":10,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/3yhor2t4","slide":32,"text":"保存相机原始 16‑bit 数据。","textPreview":"保存相机原始 16‑bit 数据。","textChars":17,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/4zqpk7ap","slide":32,"text":"保存差分原始图像","textPreview":"保存差分原始图像","textChars":8,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/p0z6tcba","slide":32,"text":"保存差分、binning、mean filter 后的原始数据层。","textPreview":"保存差分、binning、mean filter 后的原始数据层。","textChars":33,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/u987excn","slide":32,"text":"同步保存处理图像","textPreview":"同步保存处理图像","textChars":8,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/fuhon2t8","slide":32,"text":"扫描每点保存处理图；磁盘 I/O 会变慢。","textPreview":"扫描每点保存处理图；磁盘 I/O 会变慢。","textChars":21,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/gvqpg7ut","slide":32,"text":"Camera Live 8-bit录像","textPreview":"Camera Live 8-bit录像","textChars":19,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/hwz6pcby","slide":32,"text":"按设定 FPS 记录显示层；视频包含场/电压等实验标记。","textPreview":"按设定 FPS 记录显示层；视频包含场/电压等实验标记。","textChars":28,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/e5s7qhsr","slide":32,"text":"CSV / PNG / log","textPreview":"CSV / PNG / log","textChars":15,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/zq18zmtc","slide":32,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/vad4re9o","slide":32,"text":"MOKE 保存 CSV + PNG","textPreview":"MOKE 保存 CSV + PNG","textChars":17,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/a9k3its3","slide":32,"text":"保存磁体电流、Gauss、ROI、曲线快照和完整参数 log。","textPreview":"保存磁体电流、Gauss、ROI、曲线快照和完整参数 log。","textChars":31,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/xcvmtoru","slide":32,"text":"2410 保存 CSV + PNG","textPreview":"2410 保存 CSV + PNG","textChars":17,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/wbmlkja9","slide":32,"text":"保存电压‑ROI 和参数 log，不保存 ROI‑time PNG。","textPreview":"保存电压‑ROI 和参数 log，不保存 ROI‑time PNG。","textChars":34,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/jed4vy90","slide":32,"text":"6221 保存 CSV","textPreview":"6221 保存 CSV","textChars":11,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/id43mtsf","slide":32,"text":"保存脉冲路径、脉冲号和 ROI 平均。","textPreview":"保存脉冲路径、脉冲号和 ROI 平均。","textChars":19,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/50vmx8rq","slide":32,"text":"PPMS1 保存 CSV","textPreview":"PPMS1 保存 CSV","textChars":12,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/kfmlo3al","slide":32,"text":"保存温度、磁场、6221 和 SR830。","textPreview":"保存温度、磁场、6221 和 SR830。","textChars":21,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/72x4zy9w","slide":32,"text":"STFMR 两类保存","textPreview":"STFMR 两类保存","textChars":10,"textLines":1,"bbox":[678,546,532,24]}
+{"kind":"textbox","id":"sh/614nqd8b","slide":32,"text":"多频扫场与固定场扫频分别保存 CSV + PNG。","textPreview":"多频扫场与固定场扫频分别保存 CSV + PNG。","textChars":25,"textLines":1,"bbox":[678,570,532,64]}
+{"kind":"textbox","id":"sh/476lg36p","slide":32,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/p8f2987a","slide":32,"text":"32","textPreview":"32","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/uis5km","slide":32,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:14310-14580\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:14910-15060\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:15320-15420\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11535-11575\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11990-12100"}
+{"kind":"slide","id":"sl/kv2c2l","slide":33,"title":"模块操作","textShapes":28}
+{"kind":"shape","id":"sh/edsridcv","slide":33,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/10jatsv6","slide":33,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/gfa9knul","slide":33,"text":"停止、归零与退出｜按模块核对","textPreview":"停止、归零与退出｜按模块核对","textChars":14,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/rahsnid4","slide":33,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/698redcj","slide":33,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/tcjapsva","slide":33,"text":"立即动作","textPreview":"立即动作","textChars":4,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/sba9gnup","slide":33,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/b6lsz2d8","slide":33,"text":"LED 全部归零","textPreview":"LED 全部归零","textChars":8,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/q5crqxc3","slide":33,"text":"四路 LED 归零并关闭。","textPreview":"四路 LED 归零并关闭。","textChars":13,"textLines":1,"bbox":[70,218,532,51.33]}
+{"kind":"textbox","id":"sh/o3ad4ryd","slide":33,"text":"电机 Init OFF","textPreview":"电机 Init OFF","textChars":11,"textLines":1,"bbox":[70,269.33,532,24]}
+{"kind":"textbox","id":"sh/p4juxwzy","slide":33,"text":"停止驱动输出；机械急停仍需可触及。","textPreview":"停止驱动输出；机械急停仍需可触及。","textChars":17,"textLines":1,"bbox":[70,293.33,532,51.33]}
+{"kind":"textbox","id":"sh/218v2hgn","slide":33,"text":"MOKE 两路立即归零","textPreview":"MOKE 两路立即归零","textChars":11,"textLines":1,"bbox":[70,344.67,532,24]}
+{"kind":"textbox","id":"sh/321cvmh8","slide":33,"text":"磁体两通道归零。","textPreview":"磁体两通道归零。","textChars":8,"textLines":1,"bbox":[70,368.67,532,51.33]}
+{"kind":"textbox","id":"sh/gzqd07yh","slide":33,"text":"2410 归零 / 关闭输出","textPreview":"2410 归零 / 关闭输出","textChars":14,"textLines":1,"bbox":[70,420,532,24]}
+{"kind":"textbox","id":"sh/10zutcz2","slide":33,"text":"电压设 0 并关闭源。","textPreview":"电压设 0 并关闭源。","textChars":11,"textLines":1,"bbox":[70,444,532,51.33]}
+{"kind":"textbox","id":"sh/ed8byhgb","slide":33,"text":"6221 立即停止 / 归零","textPreview":"6221 立即停止 / 归零","textChars":14,"textLines":1,"bbox":[70,495.33,532,24]}
+{"kind":"textbox","id":"sh/fyhcr2hw","slide":33,"text":"关闭连续与脉冲输出。","textPreview":"关闭连续与脉冲输出。","textChars":10,"textLines":1,"bbox":[70,519.33,532,51.33]}
+{"kind":"textbox","id":"sh/sbqtw7yl","slide":33,"text":"IV/Gate‑VI 急停","textPreview":"IV/Gate‑VI 急停","textChars":13,"textLines":1,"bbox":[70,570.67,532,24]}
+{"kind":"textbox","id":"sh/tczupczq","slide":33,"text":"关闭 6221，或同时关闭 2410/6221。","textPreview":"关闭 6221，或同时关闭 2410/6221。","textChars":24,"textLines":1,"bbox":[70,594.67,532,51.33]}
+{"kind":"textbox","id":"sh/9sratoru","slide":33,"text":"扫描清理","textPreview":"扫描清理","textChars":4,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/8ri90ja9","slide":33,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/76psry9o","slide":33,"text":"PPMS1 停止/归零","textPreview":"PPMS1 停止/归零","textChars":11,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/m5gryts3","slide":33,"text":"停止扫场并回零；6221 输出关闭。","textPreview":"停止扫场并回零；6221 输出关闭。","textChars":18,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/l47apori","slide":33,"text":"STFMR 停止/归零","textPreview":"STFMR 停止/归零","textChars":11,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/k3y9wjax","slide":33,"text":"停止扫描、4886 归零/OFF；按设置关闭 PNA RF。","textPreview":"停止扫描、4886 归零/OFF；按设置关闭 PNA RF。","textChars":30,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/z2psne9s","slide":33,"text":"程序关闭","textPreview":"程序关闭","textChars":4,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/y1gru9s7","slide":33,"text":"逐模块尝试停止、关输出、释放会话。","textPreview":"逐模块尝试停止、关输出、释放会话。","textChars":17,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/50ba18r2","slide":33,"text":"旋转台退出","textPreview":"旋转台退出","textChars":5,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/4z2t8nqh","slide":33,"text":"保留当前位置，不自动回零。","textPreview":"保留当前位置，不自动回零。","textChars":13,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/25c7m58z","slide":33,"text":"最终核对","textPreview":"最终核对","textChars":4,"textLines":1,"bbox":[678,546,532,24]}
+{"kind":"textbox","id":"sh/n6l8vapk","slide":33,"text":"程序退出后必须看仪器前面板，确认所有源确实 OFF。","textPreview":"程序退出后必须看仪器前面板，确认所有源确实 OFF。","textChars":26,"textLines":1,"bbox":[678,570,532,64]}
+{"kind":"textbox","id":"sh/o7epofqp","slide":33,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/p8nqxk7a","slide":33,"text":"33","textPreview":"33","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/kv2c2l","slide":33,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:10800-11010\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11100-11120\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:14750-14770\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:15260-15280\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:15740-15755\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:16200-16220\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11870-11895"}
+{"kind":"slide","id":"sl/oh3qad","slide":34,"title":"模块操作","textShapes":24}
+{"kind":"shape","id":"sh/wze98vex","slide":34,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/ve58fqxs","slide":34,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/adwr6lw7","slide":34,"text":"标准启动顺序","textPreview":"标准启动顺序","textChars":6,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/9cnqdgfm","slide":34,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/8bep4be1","slide":34,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/na58b6xg","slide":34,"text":"上电前","textPreview":"上电前","textChars":3,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/m9c72lwv","slide":34,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/t87qpkfq","slide":34,"text":"1 · 检查硬件","textPreview":"1 · 检查硬件","textChars":8,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/s7y9gfe5","slide":34,"text":"线缆、极性、冷却、机械限位、接地、量程和急停。","textPreview":"线缆、极性、冷却、机械限位、接地、量程和急停。","textChars":23,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/etkfq1g3","slide":34,"text":"2 · 关闭其他控制器","textPreview":"2 · 关闭其他控制器","textChars":11,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/zutgj6xo","slide":34,"text":"避免 LabVIEW、旧 Python 或仪器软件同时占用资源。","textPreview":"避免 LabVIEW、旧 Python 或仪器软件同时占用资源。","textChars":32,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/0v2xsby9","slide":34,"text":"3 · 启动主程序","textPreview":"3 · 启动主程序","textChars":9,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/1wbylwfu","slide":34,"text":"确认标题为当前 Transport_NH 版本。","textPreview":"确认标题为当前 Transport_NH 版本。","textChars":24,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/q5kfmhg7","slide":34,"text":"4 · 逐台连接","textPreview":"4 · 逐台连接","textChars":8,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/r6tgfmhc","slide":34,"text":"优先连接读回仪器，再连接输出源。","textPreview":"优先连接读回仪器，再连接输出源。","textChars":16,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/cr2xoryx","slide":34,"text":"开始测量","textPreview":"开始测量","textChars":4,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/dsbyhwfi","slide":34,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/a14zylgb","slide":34,"text":"5 · 读取零点","textPreview":"5 · 读取零点","textChars":8,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/b2dgrqxw","slide":34,"text":"检查相机、Gauss、温度、场、电压/电流是否合理。","textPreview":"检查相机、Gauss、温度、场、电压/电流是否合理。","textChars":26,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/76pcjix8","slide":34,"text":"6 · 勾选安全确认","textPreview":"6 · 勾选安全确认","textChars":10,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/65wvqdwn","slide":34,"text":"只有硬件检查完成后才勾选。","textPreview":"只有硬件检查完成后才勾选。","textChars":13,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/t87ulsfe","slide":34,"text":"7 · 小量程试运行","textPreview":"7 · 小量程试运行","textChars":10,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/s7ydsnet","slide":34,"text":"先用 0 或最小安全值验证方向和回读。","textPreview":"先用 0 或最小安全值验证方向和回读。","textChars":19,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/fapwnid4","slide":34,"text":"8 · 设置扫描并估时","textPreview":"8 · 设置扫描并估时","textChars":11,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/u9gvudwz","slide":34,"text":"核对起止、步长、Loop、等待、采集和保存目录。","textPreview":"核对起止、步长、Loop、等待、采集和保存目录。","textChars":24,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/hc7epsva","slide":34,"text":"9 · 运行并观察","textPreview":"9 · 运行并观察","textChars":9,"textLines":1,"bbox":[678,546,532,24]}
+{"kind":"textbox","id":"sh/gbydwnep","slide":34,"text":"同时看进度、仪器前面板和异常状态。","textPreview":"同时看进度、仪器前面板和异常状态。","textChars":17,"textLines":1,"bbox":[678,570,532,64]}
+{"kind":"textbox","id":"sh/3y9wr2dg","slide":34,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/2xgvyxwv","slide":34,"text":"34","textPreview":"34","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/oh3qad","slide":34,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:10200-10990\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11300-12130"}
+{"kind":"slide","id":"sl/ui8brc","slide":35,"title":"模块操作","textShapes":26}
+{"kind":"shape","id":"sh/f6x0zahw","slide":35,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/g7618fyh","slide":35,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/18fi1kz2","slide":35,"text":"常见问题与处理","textPreview":"常见问题与处理","textChars":7,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/614z25gf","slide":35,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/r2d0vahk","slide":35,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/s36h4vy5","slide":35,"text":"连接类","textPreview":"连接类","textChars":3,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/t4fix0zq","slide":35,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/qx8jepgj","slide":35,"text":"按钮仍为灰色","textPreview":"按钮仍为灰色","textChars":6,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/byh07ux4","slide":35,"text":"检查连接灯、安全确认和必需仪器是否齐全。","textPreview":"检查连接灯、安全确认和必需仪器是否齐全。","textChars":20,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/z6twfu9g","slide":35,"text":"VISA/串口超时","textPreview":"VISA/串口超时","textChars":9,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/y5kv6psv","slide":35,"text":"停止输出，关闭占用程序，断开并重新连接；不要连续盲目重试。","textPreview":"停止输出，关闭占用程序，断开并重新连接；不要连续盲目重试。","textChars":29,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/l8veh4r6","slide":35,"text":"资源能枚举但不响应","textPreview":"资源能枚举但不响应","textChars":9,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/072d8za1","slide":35,"text":"核对终止符、地址、驱动和仪器远程/本地状态。","textPreview":"核对终止符、地址、驱动和仪器远程/本地状态。","textChars":22,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/nudwje9c","slide":35,"text":"MFLI WARNING","textPreview":"MFLI WARNING","textChars":12,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/mt4va9sr","slide":35,"text":"检查参考接口、锁相频率、输入量程、阻抗和 LabOne 兼容性。","textPreview":"检查参考接口、锁相频率、输入量程、阻抗和 LabOne 兼容性。","textChars":32,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/9wvel4ri","slide":35,"text":"PPMS 连不上","textPreview":"PPMS 连不上","textChars":8,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/8vmdcjax","slide":35,"text":"确认 MultiVu/QDInstrument Server、IP/端口和单客户端限制。","textPreview":"确认 MultiVu/QDInstrument Server、IP/端口和单客户端限制。","textChars":44,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/vydwne9o","slide":35,"text":"数据/显示类","textPreview":"数据/显示类","textChars":6,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/ax4ve9s3","slide":35,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/6t8z6dcb","slide":35,"text":"ROI 曲线无数据","textPreview":"ROI 曲线无数据","textChars":9,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/7uhgfitw","slide":35,"text":"选择 ROI、连接相机并确认相应处理/扫描模式。","textPreview":"选择 ROI、连接相机并确认相应处理/扫描模式。","textChars":24,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/svqh8nu1","slide":35,"text":"差分看不见磁畴","textPreview":"差分看不见磁畴","textChars":7,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/twzyhsbm","slide":35,"text":"重采背景，检查 CLim、时间平均、binning、mean filter 和曝光。","textPreview":"重采背景，检查 CLim、时间平均、binning、mean filter 和曝光。","textChars":42,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/ipoz2dcz","slide":35,"text":"视频打不开","textPreview":"视频打不开","textChars":5,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/jqxgbitk","slide":35,"text":"优先使用 MJPG/AVI 兼容播放器；源数据仍以原始图/CSV 为准。","textPreview":"优先使用 MJPG/AVI 兼容播放器；源数据仍以原始图/CSV 为准。","textChars":36,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/krqh43u5","slide":35,"text":"曲线单位跳变","textPreview":"曲线单位跳变","textChars":6,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/5szyd8bq","slide":35,"text":"自动单位会重缩放全部历史点，不应只缩放新点。","textPreview":"自动单位会重缩放全部历史点，不应只缩放新点。","textChars":22,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/2lszexcj","slide":35,"text":"扫描变慢","textPreview":"扫描变慢","textChars":4,"textLines":1,"bbox":[678,546,532,24]}
+{"kind":"textbox","id":"sh/3m10n2t4","slide":35,"text":"同步图像、短刷新周期和高点数都会增加负载。","textPreview":"同步图像、短刷新周期和高点数都会增加负载。","textChars":21,"textLines":1,"bbox":[678,570,532,64]}
+{"kind":"textbox","id":"sh/xsnat0zi","slide":35,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/cret0vix","slide":35,"text":"35","textPreview":"35","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/ui8brc","slide":35,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:17000-18100\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:20800-21600\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:23900-24400\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:24400-28600"}
+{"kind":"slide","id":"sl/f8ugtf","slide":36,"title":"模块操作","textShapes":26}
+{"kind":"shape","id":"sh/ad0fip0r","slide":36,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/xgbyd4ji","slide":36,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/wf2xkzix","slide":36,"text":"运行依赖｜哪个模块需要什么","textPreview":"运行依赖｜哪个模块需要什么","textChars":13,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/na9g7a10","slide":36,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/m90fe50v","slide":36,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/9cry9kj6","slide":36,"text":"通用软件","textPreview":"通用软件","textChars":4,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/obixgfil","slide":36,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/76dgje1k","slide":36,"text":"Python 3.11","textPreview":"Python 3.11","textChars":11,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/65kfq90z","slide":36,"text":"开发与打包基线；Windows 运行需匹配环境或独立 EXE 包。","textPreview":"开发与打包基线；Windows 运行需匹配环境或独立 EXE 包。","textChars":33,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/gjuto765","slide":36,"text":"pyserial","textPreview":"pyserial","textChars":8,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/hk3ahcnq","slide":36,"text":"LED、MOKE 磁体和电机串口。","textPreview":"LED、MOKE 磁体和电机串口。","textChars":17,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/uhsrmxoz","slide":36,"text":"PyVISA + NI‑VISA","textPreview":"PyVISA + NI‑VISA","textChars":16,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/filsf25k","slide":36,"text":"2410、6221、SR830、2182A、PNA、4886、LS475 等。","textPreview":"2410、6221、SR830、2182A、PNA、4886、LS475 等。","textChars":39,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/sfa9k76t","slide":36,"text":"NumPy / Pillow / OpenCV","textPreview":"NumPy / Pillow / OpenCV","textChars":23,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/tgjadcne","slide":36,"text":"图像、ROI、视频和数据处理。","textPreview":"图像、ROI、视频和数据处理。","textChars":15,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/6tsrixon","slide":36,"text":"Tkinter","textPreview":"Tkinter","textChars":7,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/7e1sb258","slide":36,"text":"主 GUI 和 Camera Live。","textPreview":"主 GUI 和 Camera Live。","textChars":20,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/kra9gn6x","slide":36,"text":"专用驱动","textPreview":"专用驱动","textChars":4,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/5sja9sni","slide":36,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/l8bqdoz6","slide":36,"text":"PCO SDK / sc2_cam.dll","textPreview":"PCO SDK / sc2_cam.dll","textChars":21,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/k72p4jyl","slide":36,"text":"PCO 相机。","textPreview":"PCO 相机。","textChars":7,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/zm98beh0","slide":36,"text":"Thorlabs Kinesis + pythonnet","textPreview":"Thorlabs Kinesis + pythonnet","textChars":28,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/yl0729gf","slide":36,"text":"K10CR1 旋转台。","textPreview":"K10CR1 旋转台。","textChars":11,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/xkrq94za","slide":36,"text":"Zurich LabOne + zhinst","textPreview":"Zurich LabOne + zhinst","textChars":22,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/cjip0zyp","slide":36,"text":"MFLI；API 与 Data Server 版本必须兼容。","textPreview":"MFLI；API 与 Data Server 版本必须兼容。","textChars":30,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/bi987eh4","slide":36,"text":"Quantum Design MultiVu/QDInstrument","textPreview":"Quantum Design MultiVu/QDInstrument","textChars":35,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/ah07y9gj","slide":36,"text":"PPMS1 环境控制。","textPreview":"PPMS1 环境控制。","textChars":11,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/hgvql8fe","slide":36,"text":"仪器固件/驱动","textPreview":"仪器固件/驱动","textChars":7,"textLines":1,"bbox":[678,546,532,24]}
+{"kind":"textbox","id":"sh/wfm9c3yt","slide":36,"text":"所有模块仍依赖正确的硬件地址和本机驱动。","textPreview":"所有模块仍依赖正确的硬件地址和本机驱动。","textChars":20,"textLines":1,"bbox":[678,570,532,64]}
+{"kind":"textbox","id":"sh/elwn65wb","slide":36,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/fm54faxw","slide":36,"text":"36","textPreview":"36","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/f8ugtf","slide":36,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:18-120\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:9000-11000\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/Codex-Memory/20-Projects/P11-PYTHON-TRANSPORT.md (runtime and hardware validation notes)"}
+{"kind":"slide","id":"sl/2f1ugv","slide":37,"title":"模块操作","textShapes":26}
+{"kind":"shape","id":"sh/7mts3ypc","slide":37,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/8n2tc36x","slide":37,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/98va587i","slide":37,"text":"上机前一页核对表","textPreview":"上机前一页核对表","textChars":8,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/yhkb6tov","slide":37,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/zitszypg","slide":37,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/kj2t8361","slide":37,"text":"输出与运动","textPreview":"输出与运动","textChars":5,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/lkba187m","slide":37,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/id4bixoz","slide":37,"text":"□ 输出源为 0 / OFF","textPreview":"□ 输出源为 0 / OFF","textChars":14,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/jedsbipk","slide":37,"text":"LED、BOP、2410、6221、4886。","textPreview":"LED、BOP、2410、6221、4886。","textChars":23,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/v2l8by90","slide":37,"text":"□ 机械路径安全","textPreview":"□ 机械路径安全","textChars":8,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/u1cr2tsf","slide":37,"text":"电机、旋转台、探针和限位。","textPreview":"电机、旋转台、探针和限位。","textChars":13,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/h43qdor6","slide":37,"text":"□ 冷却与极性正确","textPreview":"□ 冷却与极性正确","textChars":9,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/g3u943al","slide":37,"text":"MOKE 磁体和 STFMR 电磁铁。","textPreview":"MOKE 磁体和 STFMR 电磁铁。","textChars":19,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/3ql8fy9w","slide":37,"text":"□ 没有第二控制程序","textPreview":"□ 没有第二控制程序","textChars":10,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/ipcr6tsr","slide":37,"text":"特别是 LabVIEW、旧脚本和仪器软件。","textPreview":"特别是 LabVIEW、旧脚本和仪器软件。","textChars":21,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/5s3qh8r2","slide":37,"text":"□ 急停可触及","textPreview":"□ 急停可触及","textChars":7,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/4ru983ah","slide":37,"text":"软件急停不能替代硬件急停。","textPreview":"软件急停不能替代硬件急停。","textChars":13,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/ru58ji98","slide":37,"text":"参数与数据","textPreview":"参数与数据","textChars":5,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/qtwradsn","slide":37,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/2pgbihcv","slide":37,"text":"□ 地址/端口正确","textPreview":"□ 地址/端口正确","textChars":9,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/nqpcbmtg","slide":37,"text":"COM、GPIB、IP、TCP 端口。","textPreview":"COM、GPIB、IP、TCP 端口。","textChars":19,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/orytk7u1","slide":37,"text":"□ 限流/限压/速率正确","textPreview":"□ 限流/限压/速率正确","textChars":12,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/psrudcbm","slide":37,"text":"包含 PPMS 温度/磁场速率。","textPreview":"包含 PPMS 温度/磁场速率。","textChars":16,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/elgbexcz","slide":37,"text":"□ ROI 与差分正确","textPreview":"□ ROI 与差分正确","textChars":11,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/fmpc72t4","slide":37,"text":"背景、CLim、曝光、平均和 binning。","textPreview":"背景、CLim、曝光、平均和 binning。","textChars":23,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/0nytg7up","slide":37,"text":"□ 扫描路径正确","textPreview":"□ 扫描路径正确","textChars":8,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/1o7u9cba","slide":37,"text":"起止、步长、Loop、稳定、采集。","textPreview":"起止、步长、Loop、稳定、采集。","textChars":17,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/yh0bq1c3","slide":37,"text":"□ 保存目录空间足够","textPreview":"□ 保存目录空间足够","textChars":10,"textLines":1,"bbox":[678,546,532,24]}
+{"kind":"textbox","id":"sh/zi9cj6to","slide":37,"text":"同步图像和视频前尤其检查。","textPreview":"同步图像和视频前尤其检查。","textChars":13,"textLines":1,"bbox":[678,570,532,64]}
+{"kind":"textbox","id":"sh/9cve90vq","slide":37,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/8bmxgve5","slide":37,"text":"37","textPreview":"37","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/2f1ugv","slide":37,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:10200-10990\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11300-16280"}
+{"kind":"slide","id":"sl/fu2ne3","slide":38,"title":"模块操作","textShapes":26}
+{"kind":"shape","id":"sh/187ix0v6","slide":38,"bbox":[0,0,1280,9]}
+{"kind":"textbox","id":"sh/e5wjm5cv","slide":38,"text":"模块操作","textPreview":"模块操作","textChars":4,"textLines":1,"bbox":[54,28,280,24]}
+{"kind":"textbox","id":"sh/f6p0vadg","slide":38,"text":"快速路线图｜我要做什么？","textPreview":"快速路线图｜我要做什么？","textChars":12,"textLines":1,"bbox":[54,56,1172,52]}
+{"kind":"shape","id":"sh/oby1sfux","slide":38,"bbox":[46,124,580,544]}
+{"kind":"shape","id":"sh/pc721kvi","slide":38,"bbox":[654,124,580,544]}
+{"kind":"textbox","id":"sh/29gjq5cr","slide":38,"text":"光学与 MOKE","textPreview":"光学与 MOKE","textChars":8,"textLines":1,"bbox":[70,146,532,28]}
+{"kind":"shape","id":"sh/nap0zadc","slide":38,"bbox":[70,179,46,4]}
+{"kind":"textbox","id":"sh/4fe1gbet","slide":38,"text":"看相机 / 调光","textPreview":"看相机 / 调光","textChars":8,"textLines":1,"bbox":[70,194,532,24]}
+{"kind":"textbox","id":"sh/5gnipgve","slide":38,"text":"MOKE光源 → 连接相机 → LED/检偏器 → Camera Live。","textPreview":"MOKE光源 → 连接相机 → LED/检偏器 → Camera Live。","textChars":38,"textLines":1,"bbox":[70,218,532,64]}
+{"kind":"textbox","id":"sh/1srydwrm","slide":38,"text":"调焦/位移","textPreview":"调焦/位移","textChars":5,"textLines":1,"bbox":[70,282,532,24]}
+{"kind":"textbox","id":"sh/0rix4ra1","slide":38,"text":"MOKE电机 → Init ON → Home/步进。","textPreview":"MOKE电机 → Init ON → Home/步进。","textChars":27,"textLines":1,"bbox":[70,306,532,64]}
+{"kind":"textbox","id":"sh/fq9gbm9g","slide":38,"text":"看磁畴回线","textPreview":"看磁畴回线","textChars":5,"textLines":1,"bbox":[70,370,532,24]}
+{"kind":"textbox","id":"sh/ep0f2hsv","slide":38,"text":"MOKE磁铁 → 差分 → 确认拨挡片 → 扫电流 + ROI。","textPreview":"MOKE磁铁 → 差分 → 确认拨挡片 → 扫电流 + ROI。","textChars":32,"textLines":1,"bbox":[70,394,532,64]}
+{"kind":"textbox","id":"sh/pgbyhwri","slide":38,"text":"电场调控 MOKE","textPreview":"电场调控 MOKE","textChars":9,"textLines":1,"bbox":[70,458,532,24]}
+{"kind":"textbox","id":"sh/ov2x8rax","slide":38,"text":"2410 → 往返电压扫描 + ROI/录像。","textPreview":"2410 → 往返电压扫描 + ROI/录像。","textChars":23,"textLines":1,"bbox":[70,482,532,64]}
+{"kind":"textbox","id":"sh/nutgfm9s","slide":38,"text":"脉冲调控 MOKE","textPreview":"脉冲调控 MOKE","textChars":9,"textLines":1,"bbox":[70,546,532,24]}
+{"kind":"textbox","id":"sh/2t0f6hs7","slide":38,"text":"6221 → 往返或定电流脉冲 + ROI。","textPreview":"6221 → 往返或定电流脉冲 + ROI。","textChars":22,"textLines":1,"bbox":[70,570,532,64]}
+{"kind":"textbox","id":"sh/xkbylgru","slide":38,"text":"输运与微波","textPreview":"输运与微波","textChars":5,"textLines":1,"bbox":[678,146,532,28]}
+{"kind":"shape","id":"sh/cj2xcba9","slide":38,"bbox":[678,179,46,4]}
+{"kind":"textbox","id":"sh/gzu9oz2h","slide":38,"text":"非局域 I‑V","textPreview":"非局域 I‑V","textChars":7,"textLines":1,"bbox":[678,194,532,24]}
+{"kind":"textbox","id":"sh/h03qx432","slide":38,"text":"IV → 6221 + SR830/MFLI/2182A。","textPreview":"IV → 6221 + SR830/MFLI/2182A。","textChars":29,"textLines":1,"bbox":[678,218,532,64]}
+{"kind":"textbox","id":"sh/udcr29kr","slide":38,"text":"Gate‑VI","textPreview":"Gate‑VI","textChars":7,"textLines":1,"bbox":[678,282,532,24]}
+{"kind":"textbox","id":"sh/vyl8velw","slide":38,"text":"Gate‑VI → 2410 脉冲 + 6221/锁相/纳伏表。","textPreview":"Gate‑VI → 2410 脉冲 + 6221/锁相/纳伏表。","textChars":32,"textLines":1,"bbox":[678,306,532,64]}
+{"kind":"textbox","id":"sh/43e9sj2t","slide":38,"text":"PPMS 输运扫场","textPreview":"PPMS 输运扫场","textChars":9,"textLines":1,"bbox":[678,370,532,24]}
+{"kind":"textbox","id":"sh/54nq1o3e","slide":38,"text":"PPMS1 → 环境连接 + 6221 AC + SR830。","textPreview":"PPMS1 → 环境连接 + 6221 AC + SR830。","textChars":31,"textLines":1,"bbox":[678,394,532,64]}
+{"kind":"textbox","id":"sh/i1crq9kn","slide":38,"text":"多频 FMR","textPreview":"多频 FMR","textChars":6,"textLines":1,"bbox":[678,458,532,24]}
+{"kind":"textbox","id":"sh/32l8zel8","slide":38,"text":"STFMR → 4886/475/PNA → 多频扫场。","textPreview":"STFMR → 4886/475/PNA → 多频扫场。","textChars":28,"textLines":1,"bbox":[678,482,532,64]}
+{"kind":"textbox","id":"sh/k7apwf29","slide":38,"text":"固定场扫频","textPreview":"固定场扫频","textChars":5,"textLines":1,"bbox":[678,546,532,24]}
+{"kind":"textbox","id":"sh/l8jqpk3u","slide":38,"text":"STFMR → 反馈到目标场 → 固定磁场扫频。","textPreview":"STFMR → 反馈到目标场 → 固定磁场扫频。","textChars":24,"textLines":1,"bbox":[678,570,532,64]}
+{"kind":"textbox","id":"sh/n29cv25c","slide":38,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/21gb2x47","slide":38,"text":"38","textPreview":"38","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"notes","id":"nt/fu2ne3","slide":38,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11020-11028\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:11300-16280"}
+{"kind":"slide","id":"sl/k7bond","slide":39,"title":"先确认硬件，再允许输出","textShapes":7}
+{"kind":"textbox","id":"sh/r6twz6h4","slide":39,"text":"先确认硬件，再允许输出","textPreview":"先确认硬件，再允许输出","textChars":11,"textLines":1,"bbox":[84,112,900,70]}
+{"kind":"textbox","id":"sh/c72xsbyp","slide":39,"text":"连接成功只是软件会话建立；实验安全与数据可信度仍由接线、限值、回读和现场核对共同保证。","textPreview":"连接成功只是软件会话建立；实验安全与数据可信度仍由接线、限值、回读和现场核对共同保证。","textChars":43,"textLines":1,"bbox":[88,220,920,96]}
+{"kind":"shape","id":"sh/d8be1gza","slide":39,"bbox":[88,362,910,124]}
+{"kind":"textbox","id":"sh/e94fulgv","slide":39,"text":"推荐顺序","textPreview":"推荐顺序","textChars":4,"textLines":1,"bbox":[116,380,200,28]}
+{"kind":"textbox","id":"sh/zadw3qh0","slide":39,"text":"读回仪器 → 输出源 → 小量程验证 → 正式扫描 → 保存 → 归零/OFF → 前面板复核","textPreview":"读回仪器 → 输出源 → 小量程验证 → 正式扫描 → 保存 → 归零/OFF → 前面板复核","textChars":47,"textLines":1,"bbox":[116,418,840,44]}
+{"kind":"textbox","id":"sh/1cve50f6","slide":39,"text":"Transport_NH GUI 使用说明 · 2026‑08‑28","textPreview":"Transport_NH GUI 使用说明 · 2026‑08‑28","textChars":34,"textLines":1,"bbox":[88,646,760,26]}
+{"kind":"textbox","id":"sh/ud0vi1gb","slide":39,"text":"Transport_NH · GUI 使用说明","textPreview":"Transport_NH · GUI 使用说明","textChars":23,"textLines":1,"bbox":[54,687,520,20]}
+{"kind":"textbox","id":"sh/ve9wrmhw","slide":39,"text":"39","textPreview":"39","textChars":2,"textLines":1,"bbox":[1170,687,56,20]}
+{"kind":"image","id":"im/lw7mhwnu","slide":39,"name":"","alt":"Transport_NH icon","bbox":[1070,500,120,120]}
+{"kind":"notes","id":"nt/k7bond","slide":39,"text":"[Sources]\n- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py:10200-10990"}

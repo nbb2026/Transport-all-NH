@@ -1,0 +1,1807 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/f8ugtf",
+    "id": "f8ugtf",
+    "slide": 36,
+    "layoutId": "dfc6ddd5-97cd-4ff2-9e8d-4d1965958d3e",
+    "layoutName": "Title Slide",
+    "layoutType": "title",
+    "masterLayoutId": "c1e09104-553c-4bd7-a96b-941bbe0e0b20",
+    "masterLayoutName": "Master",
+    "backgroundColor": "#F4F7F8",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "theme": {
+    "colorSchemeName": "ChatGPT",
+    "colors": {
+      "accent1": "#156082",
+      "accent2": "#E97132",
+      "accent3": "#196B24",
+      "accent4": "#0F9ED5",
+      "accent5": "#A02B93",
+      "accent6": "#4EA72E",
+      "bg1": "#FFFFFF",
+      "bg2": "#000000",
+      "tx1": "#1F1F1F",
+      "tx2": "#FFFFFF",
+      "dk1": "#000000",
+      "lt1": "#FFFFFF",
+      "dk2": "#0E2841",
+      "lt2": "#E8E8E8",
+      "hlink": "#467886",
+      "folHlink": "#96607D"
+    },
+    "typefaces": [
+      "+mn-lt"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "dfc6ddd5-97cd-4ff2-9e8d-4d1965958d3e",
+      "name": "Title Slide",
+      "type": "title",
+      "parentLayoutId": "c1e09104-553c-4bd7-a96b-941bbe0e0b20",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "c1e09104-553c-4bd7-a96b-941bbe0e0b20",
+      "name": "Master",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/ad0fip0r",
+      "id": "1",
+      "bbox": [
+        0,
+        0,
+        1280,
+        9
+      ],
+      "geometry": "rect",
+      "fillColor": "#008D8D",
+      "lineColor": "#008D8D",
+      "lineWidth": 0
+    },
+    {
+      "order": 2,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/xgbyd4ji",
+      "id": "2",
+      "bbox": [
+        54,
+        28,
+        280,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Module Operation",
+      "textPreview": "Module Operation",
+      "resolvedFontSize": 13,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 13,
+        "typeface": "+mn-lt",
+        "color": "#008D8D",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Module Operation"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Module Operation",
+          "resolvedTextStyle": {
+            "fontSize": 13,
+            "color": "#008D8D",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Module Operation",
+              "fontSize": 13,
+              "color": "#008D8D",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/wf2xkzix",
+      "id": "3",
+      "bbox": [
+        54,
+        56,
+        1172,
+        52
+      ],
+      "geometry": "rect",
+      "text": "Runtime Dependencies | Which Module Needs What",
+      "textPreview": "Runtime Dependencies | Which Module Needs What",
+      "resolvedFontSize": 36,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 36,
+        "typeface": "+mn-lt",
+        "color": "#16324F",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Runtime Dependencies | Which Module Needs What"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Runtime Dependencies | Which Module Needs What",
+          "resolvedTextStyle": {
+            "fontSize": 36,
+            "color": "#16324F",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Runtime Dependencies | Which Module Needs What",
+              "fontSize": 36,
+              "color": "#16324F",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 4,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/na9g7a10",
+      "id": "4",
+      "bbox": [
+        46,
+        124,
+        580,
+        544
+      ],
+      "geometry": "roundRect",
+      "fillColor": "#FFFFFF",
+      "lineColor": "#D8E0E5",
+      "lineWidth": 1
+    },
+    {
+      "order": 5,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/m90fe50v",
+      "id": "5",
+      "bbox": [
+        654,
+        124,
+        580,
+        544
+      ],
+      "geometry": "roundRect",
+      "fillColor": "#FFFFFF",
+      "lineColor": "#D8E0E5",
+      "lineWidth": 1
+    },
+    {
+      "order": 6,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/9cry9kj6",
+      "id": "6",
+      "bbox": [
+        70,
+        146,
+        532,
+        28
+      ],
+      "geometry": "rect",
+      "text": "Common Software",
+      "textPreview": "Common Software",
+      "resolvedFontSize": 22,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 22,
+        "typeface": "+mn-lt",
+        "color": "#16324F",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Common Software"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Common Software",
+          "resolvedTextStyle": {
+            "fontSize": 22,
+            "color": "#16324F",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Common Software",
+              "fontSize": 22,
+              "color": "#16324F",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 7,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/obixgfil",
+      "id": "7",
+      "bbox": [
+        70,
+        179,
+        46,
+        4
+      ],
+      "geometry": "rect",
+      "fillColor": "#008D8D",
+      "lineColor": "#008D8D",
+      "lineWidth": 0
+    },
+    {
+      "order": 8,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/76dgje1k",
+      "id": "8",
+      "bbox": [
+        70,
+        194,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Python 3.11",
+      "textPreview": "Python 3.11",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Python 3.11"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Python 3.11",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Python 3.11",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 9,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/65kfq90z",
+      "id": "9",
+      "bbox": [
+        70,
+        218,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "Development and packaging baseline; running on Windows requires a matching environment or a standalone EXE package.",
+      "textPreview": "Development and packaging baseline; running on Windows requires a matching environment or a standalone EXE package.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Development and packaging baseline; running on Windows requires a matching environment or a standalone EXE package."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Development and packaging baseline; running on Windows requires a matching environment or a standalone EXE package.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Development and packaging baseline; running on Windows requires a matching environment or a standalone EXE package.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 10,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/gjuto765",
+      "id": "10",
+      "bbox": [
+        70,
+        282,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "pyserial",
+      "textPreview": "pyserial",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "pyserial"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "pyserial",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "pyserial",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 11,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/hk3ahcnq",
+      "id": "11",
+      "bbox": [
+        70,
+        306,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "Serial ports for the LED, MOKE magnet and motor.",
+      "textPreview": "Serial ports for the LED, MOKE magnet and motor.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Serial ports for the LED, MOKE magnet and motor."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Serial ports for the LED, MOKE magnet and motor.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Serial ports for the LED, MOKE magnet and motor.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 12,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/uhsrmxoz",
+      "id": "12",
+      "bbox": [
+        70,
+        370,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "PyVISA + NI‑VISA",
+      "textPreview": "PyVISA + NI‑VISA",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "PyVISA + NI‑VISA"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "PyVISA + NI‑VISA",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "PyVISA + NI‑VISA",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 13,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/filsf25k",
+      "id": "13",
+      "bbox": [
+        70,
+        394,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "2410, 6221, SR830, 2182A, PNA, 4886, LS475, etc.",
+      "textPreview": "2410, 6221, SR830, 2182A, PNA, 4886, LS475, etc.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "2410, 6221, SR830, 2182A, PNA, 4886, LS475, etc."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "2410, 6221, SR830, 2182A, PNA, 4886, LS475, etc.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "2410, 6221, SR830, 2182A, PNA, 4886, LS475, etc.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 14,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/sfa9k76t",
+      "id": "14",
+      "bbox": [
+        70,
+        458,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "NumPy / Pillow / OpenCV",
+      "textPreview": "NumPy / Pillow / OpenCV",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "NumPy / Pillow / OpenCV"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "NumPy / Pillow / OpenCV",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "NumPy / Pillow / OpenCV",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 15,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/tgjadcne",
+      "id": "15",
+      "bbox": [
+        70,
+        482,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "Image, ROI, video and data processing.",
+      "textPreview": "Image, ROI, video and data processing.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Image, ROI, video and data processing."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Image, ROI, video and data processing.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Image, ROI, video and data processing.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 16,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/6tsrixon",
+      "id": "16",
+      "bbox": [
+        70,
+        546,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Tkinter",
+      "textPreview": "Tkinter",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Tkinter"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Tkinter",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Tkinter",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 17,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/7e1sb258",
+      "id": "17",
+      "bbox": [
+        70,
+        570,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "Main GUI and Camera Live.",
+      "textPreview": "Main GUI and Camera Live.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Main GUI and Camera Live."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Main GUI and Camera Live.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Main GUI and Camera Live.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 18,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/kra9gn6x",
+      "id": "18",
+      "bbox": [
+        678,
+        146,
+        532,
+        28
+      ],
+      "geometry": "rect",
+      "text": "Dedicated Drivers",
+      "textPreview": "Dedicated Drivers",
+      "resolvedFontSize": 22,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 22,
+        "typeface": "+mn-lt",
+        "color": "#16324F",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Dedicated Drivers"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Dedicated Drivers",
+          "resolvedTextStyle": {
+            "fontSize": 22,
+            "color": "#16324F",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Dedicated Drivers",
+              "fontSize": 22,
+              "color": "#16324F",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 19,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/5sja9sni",
+      "id": "19",
+      "bbox": [
+        678,
+        179,
+        46,
+        4
+      ],
+      "geometry": "rect",
+      "fillColor": "#27B7C4",
+      "lineColor": "#27B7C4",
+      "lineWidth": 0
+    },
+    {
+      "order": 20,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/l8bqdoz6",
+      "id": "20",
+      "bbox": [
+        678,
+        194,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "PCO SDK / sc2_cam.dll",
+      "textPreview": "PCO SDK / sc2_cam.dll",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "PCO SDK / sc2_cam.dll"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "PCO SDK / sc2_cam.dll",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "PCO SDK / sc2_cam.dll",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 21,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/k72p4jyl",
+      "id": "21",
+      "bbox": [
+        678,
+        218,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "PCO camera.",
+      "textPreview": "PCO camera.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "PCO camera."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "PCO camera.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "PCO camera.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 22,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/zm98beh0",
+      "id": "22",
+      "bbox": [
+        678,
+        282,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Thorlabs Kinesis + pythonnet",
+      "textPreview": "Thorlabs Kinesis + pythonnet",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Thorlabs Kinesis + pythonnet"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Thorlabs Kinesis + pythonnet",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Thorlabs Kinesis + pythonnet",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 23,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/yl0729gf",
+      "id": "23",
+      "bbox": [
+        678,
+        306,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "K10CR1 rotation stage.",
+      "textPreview": "K10CR1 rotation stage.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "K10CR1 rotation stage."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "K10CR1 rotation stage.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "K10CR1 rotation stage.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 24,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/xkrq94za",
+      "id": "24",
+      "bbox": [
+        678,
+        370,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Zurich LabOne + zhinst",
+      "textPreview": "Zurich LabOne + zhinst",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Zurich LabOne + zhinst"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Zurich LabOne + zhinst",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Zurich LabOne + zhinst",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 25,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/cjip0zyp",
+      "id": "25",
+      "bbox": [
+        678,
+        394,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "MFLI; the API and Data Server versions must be compatible.",
+      "textPreview": "MFLI; the API and Data Server versions must be compatible.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "MFLI; the API and Data Server versions must be compatible."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "MFLI; the API and Data Server versions must be compatible.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "MFLI; the API and Data Server versions must be compatible.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 26,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/bi987eh4",
+      "id": "26",
+      "bbox": [
+        678,
+        458,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Quantum Design MultiVu/QDInstrument",
+      "textPreview": "Quantum Design MultiVu/QDInstrument",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Quantum Design MultiVu/QDInstrument"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Quantum Design MultiVu/QDInstrument",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Quantum Design MultiVu/QDInstrument",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 27,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/ah07y9gj",
+      "id": "27",
+      "bbox": [
+        678,
+        482,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "PPMS1 environment control.",
+      "textPreview": "PPMS1 environment control.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "PPMS1 environment control."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "PPMS1 environment control.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "PPMS1 environment control.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 28,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/hgvql8fe",
+      "id": "28",
+      "bbox": [
+        678,
+        546,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Instrument firmware/drivers",
+      "textPreview": "Instrument firmware/drivers",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Instrument firmware/drivers"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Instrument firmware/drivers",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Instrument firmware/drivers",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 29,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/wfm9c3yt",
+      "id": "29",
+      "bbox": [
+        678,
+        570,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "All modules still depend on correct hardware addresses and local drivers.",
+      "textPreview": "All modules still depend on correct hardware addresses and local drivers.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "All modules still depend on correct hardware addresses and local drivers."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "All modules still depend on correct hardware addresses and local drivers.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "All modules still depend on correct hardware addresses and local drivers.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 30,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/elwn65wb",
+      "id": "30",
+      "bbox": [
+        54,
+        687,
+        520,
+        20
+      ],
+      "geometry": "rect",
+      "text": "Transport_NH · GUI User Manual",
+      "textPreview": "Transport_NH · GUI User Manual",
+      "resolvedFontSize": 12,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 12,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Transport_NH · GUI User Manual"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Transport_NH · GUI User Manual",
+          "resolvedTextStyle": {
+            "fontSize": 12,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Transport_NH · GUI User Manual",
+              "fontSize": 12,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 31,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/fm54faxw",
+      "id": "31",
+      "bbox": [
+        1170,
+        687,
+        56,
+        20
+      ],
+      "geometry": "rect",
+      "text": "36",
+      "textPreview": "36",
+      "resolvedFontSize": 12,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 12,
+        "typeface": "+mn-lt",
+        "color": "#008D8D",
+        "bold": true,
+        "alignment": "right",
+        "verticalAlignment": "middle",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "36"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "36",
+          "resolvedTextStyle": {
+            "fontSize": 12,
+            "color": "#008D8D",
+            "bold": true,
+            "alignment": "right"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "36",
+              "fontSize": 12,
+              "color": "#008D8D",
+              "bold": true,
+              "alignment": "right"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    }
+  ],
+  "composeRuns": []
+}

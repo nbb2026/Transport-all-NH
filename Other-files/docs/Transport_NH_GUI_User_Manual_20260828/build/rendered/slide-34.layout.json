@@ -1,0 +1,1680 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/oh3qad",
+    "id": "oh3qad",
+    "slide": 34,
+    "layoutId": "dfc6ddd5-97cd-4ff2-9e8d-4d1965958d3e",
+    "layoutName": "Title Slide",
+    "layoutType": "title",
+    "masterLayoutId": "c1e09104-553c-4bd7-a96b-941bbe0e0b20",
+    "masterLayoutName": "Master",
+    "backgroundColor": "#F4F7F8",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "theme": {
+    "colorSchemeName": "ChatGPT",
+    "colors": {
+      "accent1": "#156082",
+      "accent2": "#E97132",
+      "accent3": "#196B24",
+      "accent4": "#0F9ED5",
+      "accent5": "#A02B93",
+      "accent6": "#4EA72E",
+      "bg1": "#FFFFFF",
+      "bg2": "#000000",
+      "tx1": "#1F1F1F",
+      "tx2": "#FFFFFF",
+      "dk1": "#000000",
+      "lt1": "#FFFFFF",
+      "dk2": "#0E2841",
+      "lt2": "#E8E8E8",
+      "hlink": "#467886",
+      "folHlink": "#96607D"
+    },
+    "typefaces": [
+      "+mn-lt"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "dfc6ddd5-97cd-4ff2-9e8d-4d1965958d3e",
+      "name": "Title Slide",
+      "type": "title",
+      "parentLayoutId": "c1e09104-553c-4bd7-a96b-941bbe0e0b20",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "c1e09104-553c-4bd7-a96b-941bbe0e0b20",
+      "name": "Master",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/wze98vex",
+      "id": "1",
+      "bbox": [
+        0,
+        0,
+        1280,
+        9
+      ],
+      "geometry": "rect",
+      "fillColor": "#008D8D",
+      "lineColor": "#008D8D",
+      "lineWidth": 0
+    },
+    {
+      "order": 2,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/ve58fqxs",
+      "id": "2",
+      "bbox": [
+        54,
+        28,
+        280,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Module Operation",
+      "textPreview": "Module Operation",
+      "resolvedFontSize": 13,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 13,
+        "typeface": "+mn-lt",
+        "color": "#008D8D",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Module Operation"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Module Operation",
+          "resolvedTextStyle": {
+            "fontSize": 13,
+            "color": "#008D8D",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Module Operation",
+              "fontSize": 13,
+              "color": "#008D8D",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/adwr6lw7",
+      "id": "3",
+      "bbox": [
+        54,
+        56,
+        1172,
+        52
+      ],
+      "geometry": "rect",
+      "text": "Standard Start-Up Sequence",
+      "textPreview": "Standard Start-Up Sequence",
+      "resolvedFontSize": 36,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 36,
+        "typeface": "+mn-lt",
+        "color": "#16324F",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Standard Start-Up Sequence"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Standard Start-Up Sequence",
+          "resolvedTextStyle": {
+            "fontSize": 36,
+            "color": "#16324F",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Standard Start-Up Sequence",
+              "fontSize": 36,
+              "color": "#16324F",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 4,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/9cnqdgfm",
+      "id": "4",
+      "bbox": [
+        46,
+        124,
+        580,
+        544
+      ],
+      "geometry": "roundRect",
+      "fillColor": "#FFFFFF",
+      "lineColor": "#D8E0E5",
+      "lineWidth": 1
+    },
+    {
+      "order": 5,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/8bep4be1",
+      "id": "5",
+      "bbox": [
+        654,
+        124,
+        580,
+        544
+      ],
+      "geometry": "roundRect",
+      "fillColor": "#FFFFFF",
+      "lineColor": "#D8E0E5",
+      "lineWidth": 1
+    },
+    {
+      "order": 6,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/na58b6xg",
+      "id": "6",
+      "bbox": [
+        70,
+        146,
+        532,
+        28
+      ],
+      "geometry": "rect",
+      "text": "Before Power-On",
+      "textPreview": "Before Power-On",
+      "resolvedFontSize": 22,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 22,
+        "typeface": "+mn-lt",
+        "color": "#16324F",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Before Power-On"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Before Power-On",
+          "resolvedTextStyle": {
+            "fontSize": 22,
+            "color": "#16324F",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Before Power-On",
+              "fontSize": 22,
+              "color": "#16324F",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 7,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/m9c72lwv",
+      "id": "7",
+      "bbox": [
+        70,
+        179,
+        46,
+        4
+      ],
+      "geometry": "rect",
+      "fillColor": "#008D8D",
+      "lineColor": "#008D8D",
+      "lineWidth": 0
+    },
+    {
+      "order": 8,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/t87qpkfq",
+      "id": "8",
+      "bbox": [
+        70,
+        194,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "1 · Check the hardware",
+      "textPreview": "1 · Check the hardware",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "1 · Check the hardware"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "1 · Check the hardware",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "1 · Check the hardware",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 9,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/s7y9gfe5",
+      "id": "9",
+      "bbox": [
+        70,
+        218,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "Cables, polarity, cooling, mechanical limits, grounding, ranges and emergency stop.",
+      "textPreview": "Cables, polarity, cooling, mechanical limits, grounding, ranges and emergency stop.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Cables, polarity, cooling, mechanical limits, grounding, ranges and emergency stop."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Cables, polarity, cooling, mechanical limits, grounding, ranges and emergency stop.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Cables, polarity, cooling, mechanical limits, grounding, ranges and emergency stop.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 10,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/etkfq1g3",
+      "id": "10",
+      "bbox": [
+        70,
+        282,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "2 · Close other controllers",
+      "textPreview": "2 · Close other controllers",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "2 · Close other controllers"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "2 · Close other controllers",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "2 · Close other controllers",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 11,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/zutgj6xo",
+      "id": "11",
+      "bbox": [
+        70,
+        306,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "Avoid LabVIEW, old Python or instrument software occupying the resources at the same time.",
+      "textPreview": "Avoid LabVIEW, old Python or instrument software occupying the resources at the same time.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Avoid LabVIEW, old Python or instrument software occupying the resources at the same time."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Avoid LabVIEW, old Python or instrument software occupying the resources at the same time.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Avoid LabVIEW, old Python or instrument software occupying the resources at the same time.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 12,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/0v2xsby9",
+      "id": "12",
+      "bbox": [
+        70,
+        370,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "3 · Launch the main program",
+      "textPreview": "3 · Launch the main program",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "3 · Launch the main program"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "3 · Launch the main program",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "3 · Launch the main program",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 13,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/1wbylwfu",
+      "id": "13",
+      "bbox": [
+        70,
+        394,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "Confirm that the title shows the current Transport_NH version.",
+      "textPreview": "Confirm that the title shows the current Transport_NH version.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Confirm that the title shows the current Transport_NH version."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Confirm that the title shows the current Transport_NH version.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Confirm that the title shows the current Transport_NH version.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 14,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/q5kfmhg7",
+      "id": "14",
+      "bbox": [
+        70,
+        458,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "4 · Connect instruments one by one",
+      "textPreview": "4 · Connect instruments one by one",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "4 · Connect instruments one by one"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "4 · Connect instruments one by one",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "4 · Connect instruments one by one",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 15,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/r6tgfmhc",
+      "id": "15",
+      "bbox": [
+        70,
+        482,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "Connect the readback instruments first, then the output sources.",
+      "textPreview": "Connect the readback instruments first, then the output sources.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Connect the readback instruments first, then the output sources."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Connect the readback instruments first, then the output sources.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Connect the readback instruments first, then the output sources.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 16,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/cr2xoryx",
+      "id": "16",
+      "bbox": [
+        678,
+        146,
+        532,
+        28
+      ],
+      "geometry": "rect",
+      "text": "Start Measuring",
+      "textPreview": "Start Measuring",
+      "resolvedFontSize": 22,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 22,
+        "typeface": "+mn-lt",
+        "color": "#16324F",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Start Measuring"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Start Measuring",
+          "resolvedTextStyle": {
+            "fontSize": 22,
+            "color": "#16324F",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Start Measuring",
+              "fontSize": 22,
+              "color": "#16324F",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 17,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/dsbyhwfi",
+      "id": "17",
+      "bbox": [
+        678,
+        179,
+        46,
+        4
+      ],
+      "geometry": "rect",
+      "fillColor": "#27B7C4",
+      "lineColor": "#27B7C4",
+      "lineWidth": 0
+    },
+    {
+      "order": 18,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/a14zylgb",
+      "id": "18",
+      "bbox": [
+        678,
+        194,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "5 · Read the zero points",
+      "textPreview": "5 · Read the zero points",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "5 · Read the zero points"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "5 · Read the zero points",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "5 · Read the zero points",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 19,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/b2dgrqxw",
+      "id": "19",
+      "bbox": [
+        678,
+        218,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "Check that the camera, Gauss, temperature, field and voltage/current are reasonable.",
+      "textPreview": "Check that the camera, Gauss, temperature, field and voltage/current are reasonable.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Check that the camera, Gauss, temperature, field and voltage/current are reasonable."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Check that the camera, Gauss, temperature, field and voltage/current are reasonable.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Check that the camera, Gauss, temperature, field and voltage/current are reasonable.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 20,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/76pcjix8",
+      "id": "20",
+      "bbox": [
+        678,
+        282,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "6 · Check the safety confirmation",
+      "textPreview": "6 · Check the safety confirmation",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "6 · Check the safety confirmation"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "6 · Check the safety confirmation",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "6 · Check the safety confirmation",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 21,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/65wvqdwn",
+      "id": "21",
+      "bbox": [
+        678,
+        306,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "Check it only after the hardware check is complete.",
+      "textPreview": "Check it only after the hardware check is complete.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Check it only after the hardware check is complete."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Check it only after the hardware check is complete.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Check it only after the hardware check is complete.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 22,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/t87ulsfe",
+      "id": "22",
+      "bbox": [
+        678,
+        370,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "7 · Small-range trial run",
+      "textPreview": "7 · Small-range trial run",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "7 · Small-range trial run"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "7 · Small-range trial run",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "7 · Small-range trial run",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 23,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/s7ydsnet",
+      "id": "23",
+      "bbox": [
+        678,
+        394,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "First verify the direction and readback with 0 or the minimum safe value.",
+      "textPreview": "First verify the direction and readback with 0 or the minimum safe value.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "First verify the direction and readback with 0 or the minimum safe value."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "First verify the direction and readback with 0 or the minimum safe value.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "First verify the direction and readback with 0 or the minimum safe value.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 24,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/fapwnid4",
+      "id": "24",
+      "bbox": [
+        678,
+        458,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "8 · Set up the sweep and estimate the time",
+      "textPreview": "8 · Set up the sweep and estimate the time",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "8 · Set up the sweep and estimate the time"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "8 · Set up the sweep and estimate the time",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "8 · Set up the sweep and estimate the time",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 25,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/u9gvudwz",
+      "id": "25",
+      "bbox": [
+        678,
+        482,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "Verify the start/stop, step, Loop, wait, acquisition and save directory.",
+      "textPreview": "Verify the start/stop, step, Loop, wait, acquisition and save directory.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Verify the start/stop, step, Loop, wait, acquisition and save directory."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Verify the start/stop, step, Loop, wait, acquisition and save directory.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Verify the start/stop, step, Loop, wait, acquisition and save directory.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 26,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/hc7epsva",
+      "id": "26",
+      "bbox": [
+        678,
+        546,
+        532,
+        24
+      ],
+      "geometry": "rect",
+      "text": "9 · Run and observe",
+      "textPreview": "9 · Run and observe",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 17,
+        "typeface": "+mn-lt",
+        "color": "#14212B",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "9 · Run and observe"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "9 · Run and observe",
+          "resolvedTextStyle": {
+            "fontSize": 17,
+            "color": "#14212B",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "9 · Run and observe",
+              "fontSize": 17,
+              "color": "#14212B",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 27,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/gbydwnep",
+      "id": "27",
+      "bbox": [
+        678,
+        570,
+        532,
+        64
+      ],
+      "geometry": "rect",
+      "text": "Watch the progress, the instrument front panels and any abnormal status at the same time.",
+      "textPreview": "Watch the progress, the instrument front panels and any abnormal status at the same time.",
+      "resolvedFontSize": 16,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 16,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Watch the progress, the instrument front panels and any abnormal status at the same time."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Watch the progress, the instrument front panels and any abnormal status at the same time.",
+          "resolvedTextStyle": {
+            "fontSize": 16,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Watch the progress, the instrument front panels and any abnormal status at the same time.",
+              "fontSize": 16,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 28,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/3y9wr2dg",
+      "id": "28",
+      "bbox": [
+        54,
+        687,
+        520,
+        20
+      ],
+      "geometry": "rect",
+      "text": "Transport_NH · GUI User Manual",
+      "textPreview": "Transport_NH · GUI User Manual",
+      "resolvedFontSize": 12,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 12,
+        "typeface": "+mn-lt",
+        "color": "#5F6B74",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Transport_NH · GUI User Manual"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Transport_NH · GUI User Manual",
+          "resolvedTextStyle": {
+            "fontSize": 12,
+            "color": "#5F6B74",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Transport_NH · GUI User Manual",
+              "fontSize": 12,
+              "color": "#5F6B74",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 29,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/2xgvyxwv",
+      "id": "29",
+      "bbox": [
+        1170,
+        687,
+        56,
+        20
+      ],
+      "geometry": "rect",
+      "text": "34",
+      "textPreview": "34",
+      "resolvedFontSize": 12,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 12,
+        "typeface": "+mn-lt",
+        "color": "#008D8D",
+        "bold": true,
+        "alignment": "right",
+        "verticalAlignment": "middle",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "34"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "34",
+          "resolvedTextStyle": {
+            "fontSize": 12,
+            "color": "#008D8D",
+            "bold": true,
+            "alignment": "right"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "34",
+              "fontSize": 12,
+              "color": "#008D8D",
+              "bold": true,
+              "alignment": "right"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    }
+  ],
+  "composeRuns": []
+}

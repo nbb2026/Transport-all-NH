@@ -1,0 +1,4 @@
+MEO Transport V3 Windows one-file build package
+Build revision: 3.2.0 PY3119 NUITKA413 MINGW64 PCOFIX ROT90 SCANLOG
+Frozen source SHA-256: b90f84e60e284e24ed724b869769e172b85b18b60b679d39bea0d569159b7033
+Created: 2026-08-27

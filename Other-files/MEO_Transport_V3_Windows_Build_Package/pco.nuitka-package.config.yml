@@ -1,0 +1,20 @@
+# Nuitka cannot treat DLLs as ordinary package data.  The official pco 2.6.0
+# wheel loads these libraries dynamically from pco/win_x64, so declare both
+# the main directory and its nested GenICam dependency directory explicitly.
+---
+- module-name: 'pco.loader'
+  dlls:
+    - from_filenames:
+        relative_path: 'win_x64'
+        prefixes:
+          - ''
+        suffixes:
+          - 'dll'
+      when: 'win32 and arch_amd64'
+    - from_filenames:
+        relative_path: 'win_x64/genicam'
+        prefixes:
+          - ''
+        suffixes:
+          - 'dll'
+      when: 'win32 and arch_amd64'

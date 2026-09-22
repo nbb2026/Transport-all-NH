@@ -1,0 +1,696 @@
+
+# ---- Fixed-field microwave/modulation grid application ----
+import colorsys
+from decimal import Decimal, InvalidOperation
+from dataclasses import dataclass, asdict
+from concurrent.futures import ThreadPoolExecutor
+
+APP_NAME = 'Microwave_Transport_Test_NH_dev'
+
+
+def parse_axis(value: str, limit: int = 10000) -> tuple[float, ...]:
+    """Positive, unique values; comma lists or inclusive start:stop:step."""
+    value = value.strip().replace('，', ',').replace('；', ',').replace(';', ',')
+    try:
+        if ':' in value:
+            parts = value.split(':')
+            if len(parts) != 3:
+                raise ValueError('范围格式：起点:终点:步长')
+            a, b, step = map(Decimal, parts)
+            if not all(v.is_finite() for v in (a, b, step)) or step == 0 or (b-a)*step < 0:
+                raise ValueError('范围必须有限，步长方向必须正确')
+            count = int((b-a)/step) + 1
+            if count > limit or count < 1:
+                raise ValueError('单轴点数超限')
+            values = [a+i*step for i in range(count)]
+            if values[-1] != b:
+                values.append(b)
+        else:
+            values = [Decimal(v.strip()) for v in value.split(',')]
+        out = tuple(float(v) for v in values)
+    except (InvalidOperation, OverflowError) as e:
+        raise ValueError('请输入数值列表或起点:终点:步长') from e
+    if not out or len(out) > limit or any(not math.isfinite(v) or v <= 0 for v in out):
+        raise ValueError('频率必须为有限正数，单轴最多 10000 点')
+    if len(set(out)) != len(out):
+        raise ValueError('频率列表不能重复')
+    return out
+
+
+def prime_axis(start, stop):
+    """Inclusive integer-Hz bounds, bounded sieve; no composite frequencies."""
+    try:
+        a, b = Decimal(str(start)), Decimal(str(stop))
+        if not all(v.is_finite() and v == v.to_integral_value() for v in (a, b)):
+            raise ValueError('调制起止频率须为整数 Hz')
+        a, b = int(a), int(b)
+    except (InvalidOperation, OverflowError):
+        raise ValueError('调制起止频率须为整数 Hz')
+    if not 1 <= a <= b <= 1000000:
+        raise ValueError('调制范围须满足 1 ≤ 起点 ≤ 终点 ≤ 1000000 Hz')
+    sieve = bytearray(b'\x01') * (b + 1)
+    sieve[:2] = b'\x00\x00'
+    for n in range(2, math.isqrt(b) + 1):
+        if sieve[n]:sieve[n*n:b+1:n] = b'\x00' * ((b-n*n)//n+1)
+    values = tuple(float(n) for n in range(a,b+1) if sieve[n])
+    if not values:raise ValueError('此范围内没有质数，请调整起止频率')
+    if len(values)>10000:raise ValueError('调制频率最多 10000 个质数，请缩小范围')
+    return values
+
+
+def lockin_indicators(sample):
+    locked = sample.get('reference_valid')
+    lock = ('green','已锁定') if locked is True else ('red','未锁定') if locked is False else ('gray','未知')
+    if sample.get('auto_range'):
+        return lock, ('amber','调整量程中')
+    if 'status' in sample and 'sensitivity_index' in sample:
+        overloaded = bool(int(sample['status']) & 0x07)
+    else:overloaded = sample.get('input_overload')
+    level = ('red','过载') if overloaded is True else ('green','量程正常') if overloaded is False else ('gray','量程未知')
+    return lock, level
+
+
+@dataclass(frozen=True)
+class GridSettings:
+    microwave_ghz: tuple[float, ...]
+    modulation_hz: tuple[float, ...]
+    fixed_current_a: float = 0.0
+    voltage_limit_v: float = 10.0
+    power_dbm: float = 18.0
+    point_delay_s: float = 0.5
+    field_settle_s: float = 0.3
+    timeconstant_s: float = 0.1
+    samples_per_cell: int = 3
+    meter: str = 'MFLI'
+    mfli_reference: str = 'Aux Input 1'
+    sr830_reference: str = 'Sine'
+    auto_range: bool = True
+    simulation: bool = False
+
+    def validate(self):
+        for axis in (self.microwave_ghz, self.modulation_hz):
+            if not axis or len(set(axis)) != len(axis) or any(not math.isfinite(v) or v <= 0 for v in axis):
+                raise ValueError('频率必须是有限正数且不能重复')
+        if len(self.microwave_ghz)*len(self.modulation_hz) > 20000:
+            raise ValueError('二维网格最多 20000 格')
+        if self.meter not in ('MFLI', 'SR830'):
+            raise ValueError('请选择 MFLI 或 SR830')
+        values = (self.fixed_current_a,self.voltage_limit_v,
+                  self.power_dbm,self.point_delay_s,self.field_settle_s,self.timeconstant_s)
+        if not all(math.isfinite(v) for v in values):
+            raise ValueError('所有参数必须有限')
+        if abs(self.fixed_current_a)>10:
+            raise ValueError('固定电流必须在 ±10 A 内')
+        if not 0 < self.voltage_limit_v <= 20 or not -120 <= self.power_dbm <= 25:
+            raise ValueError('限压须在 0–20 V，功率须在 −120–25 dBm')
+        if self.point_delay_s < 0.05 or self.field_settle_s < 0.1 or self.timeconstant_s <= 0:
+            raise ValueError('点等待至少 0.05 s，电流设置后等待至少 0.1 s，时间常数须为正')
+        if not isinstance(self.samples_per_cell,int) or not 1 <= self.samples_per_cell <= 1000:
+            raise ValueError('每格采样数须为 1–1000 的整数')
+        if self.mfli_reference not in NONLOCAL_MFLI_REFERENCE_INPUTS or self.sr830_reference not in STFMR_LOCKIN_SR830_REFERENCE_INPUTS:
+            raise ValueError('参考输入选择无效')
+        return self
+
+
+def cell_settle_seconds(settings, modulation):
+    tau = settings.timeconstant_s if settings.meter == 'MFLI' else 1.0
+    return max(settings.point_delay_s, 10*tau, 5/modulation)
+
+
+def estimated_scan_seconds(settings):
+    """Scheduled waits only; hardware latency and range/lock retries are additional."""
+    settings.validate()
+    return 2*settings.field_settle_s + len(settings.microwave_ghz) * sum(
+        cell_settle_seconds(settings, mod) + (settings.samples_per_cell + 1)*settings.point_delay_s
+        for mod in settings.modulation_hz)
+
+
+def format_duration(seconds):
+    total = math.ceil(seconds)
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    return (f'{hours} 小时 ' if hours else '') + (f'{minutes} 分 ' if minutes or hours else '') + f'{secs} 秒'
+
+
+class GridRecorder(STFMRScanRecorder):
+    FIELDNAMES = ('index','microwave_index','modulation_index','sample_in_cell','elapsed_s',
+                  'meter','microwave_frequency_ghz','modulation_frequency_hz','microwave_power_dbm',
+                  'fixed_current_a','field_g','field_after_g','current_a','x_v','y_v','r_v','phase_deg',
+                  'reference_frequency_hz','reference_valid','input_overload','input_range_v',
+                  'input_utilization','device_status_flags','sensitivity_index','status','timestamp_iso')
+
+    def __init__(self, parent, settings):
+        # Same fsync/close semantics as the integrated recorder, separate naming.
+        stamp = datetime_module.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        stem = f'{APP_NAME}_{stamp}'
+        self.directory=Path(parent)/stem; self.directory.mkdir(parents=True,exist_ok=False)
+        self.csv_path=self.directory/f'{stem}.csv'; self.log_path=self.directory/f'{stem}.log'
+        self.csv_handle=self.log_handle=None; self.closed=False; self.rows_written=0
+        try:
+            self.csv_handle=self.csv_path.open('x',newline='',encoding='utf-8-sig')
+            self.log_handle=self.log_path.open('x',encoding='utf-8')
+            self.writer=csv.DictWriter(self.csv_handle,fieldnames=self.FIELDNAMES)
+            self.writer.writeheader();self._sync(self.csv_handle)
+            self.event('run_prepared',settings=settings,csv_path=str(self.csv_path))
+        except BaseException:
+            for h in (self.csv_handle,self.log_handle):
+                if h: h.close()
+            self.closed=True
+            raise
+
+
+class ScanStopped(Exception):
+    pass
+
+
+def component(sample, name):
+    keys={'x':('x_v','X'),'y':('y_v','Y'),'r':('r_v','R','voltage')}[name]
+    for k in keys:
+        if k in sample and math.isfinite(float(sample[k])):return float(sample[k])
+    raise RuntimeError(f'锁相回读缺少有效 {name.upper()}')
+
+
+class GridEngine:
+    """Worker sequences I/O; the isolated current reapply is acknowledged by Tk."""
+    def __init__(self,devices,settings,recorder,stop_event,emit=lambda *a:None,main_thread_call=None):
+        self.devices=devices;self.s=settings.validate();self.rec=recorder;self.stop=stop_event
+        self.main_thread_call=main_thread_call or (lambda fn:fn())
+        self.emit=emit;self.current=settings.fixed_current_a;self.cells={};self.started=time.monotonic()
+
+    def check(self):
+        if self.stop.is_set():raise ScanStopped()
+
+    def wait(self,seconds):
+        deadline=time.monotonic()+seconds
+        while True:
+            remaining=deadline-time.monotonic()
+            if remaining<=0:return
+            if self.stop.wait(min(.5,remaining)):raise ScanStopped()
+            # Monitoring only: never write current in response to the gauss meter.
+            self.emit('field',{'field_g':self.field(),'current_a':self.current})
+
+    def event(self,name,**kw):
+        self.rec.event(name,**kw)
+        self.emit('status',name)
+
+    def field(self):
+        self.check()
+        b=STFMRGauss475Controller.value_in_gauss(self.devices['gauss'].read_field())
+        if not math.isfinite(b):raise RuntimeError('LS475 返回无效磁场')
+        return b
+
+    def settle_seconds(self,modulation):
+        return cell_settle_seconds(self.s,modulation)
+
+    def sample(self,modulation,initial=False):
+        attempts=0
+        for read in range(35):
+            self.check()
+            sample=(self.devices['mfli'].read_stfmr_mfli(modulation,auto_range=self.s.auto_range,
+                        initial=initial,attempts=attempts) if self.s.meter=='MFLI' else
+                    self.devices['830'].read_sample(modulation))
+            self.emit('readback',sample)
+            action=str(sample.get('auto_range',''))
+            if action:
+                attempts+=1;initial=False
+                self.event('autorange_retry',action=action,attempt=attempts,modulation_hz=modulation)
+                if attempts>3:raise RuntimeError('量程调整超过 3 次，当前格不保存')
+                self.wait(self.settle_seconds(modulation));continue
+            if sample.get('input_overload') is True:
+                raise RuntimeError('MFLI 输入过载，当前格不保存')
+            ref=float(sample.get('reference_frequency_hz',math.nan))
+            locked=bool(sample.get('reference_valid',False)) and math.isfinite(ref) and math.isclose(ref,modulation,rel_tol=.005,abs_tol=.1)
+            if not locked:
+                self.wait(max(.1, min(.5, self.s.point_delay_s)));continue
+            if not bool(sample.get('measurement_valid',True)):
+                raise RuntimeError('锁相输入状态无效，当前格不保存')
+            for name in ('x','y','r'):component(sample,name)
+            if not math.isfinite(float(sample.get('phase_deg',math.nan))):raise RuntimeError('无效锁相相位')
+            return sample
+        raise RuntimeError(f'参考未锁定到 {modulation:g} Hz，当前格不保存')
+
+    def row(self,sample,b,after,mi,fi,k):
+        return dict(index=self.rec.rows_written+1,microwave_index=fi,modulation_index=mi,
+            sample_in_cell=k,elapsed_s=time.monotonic()-self.started,meter=self.s.meter,
+            microwave_frequency_ghz=self.s.microwave_ghz[fi],modulation_frequency_hz=self.s.modulation_hz[mi],
+            microwave_power_dbm=self.s.power_dbm,fixed_current_a=self.s.fixed_current_a,field_g=b,
+            field_after_g=after,current_a=self.current,x_v=component(sample,'x'),y_v=component(sample,'y'),
+            r_v=component(sample,'r'),phase_deg=float(sample['phase_deg']),
+            reference_frequency_hz=float(sample['reference_frequency_hz']),reference_valid=True,
+            input_overload=sample.get('input_overload'),input_range_v=sample.get('input_range_v'),
+            input_utilization=sample.get('input_utilization'),device_status_flags=sample.get('device_status_flags'),
+            sensitivity_index=sample.get('sensitivity_index'),status=sample.get('status',sample.get('lia_status')),
+            timestamp_iso=datetime_module.datetime.now().astimezone().isoformat(timespec='milliseconds'))
+
+    def run(self):
+        outcome='completed';error=None;shutdown=[]
+        try:
+            self.check()
+            before=self.field()
+            self.rec.event('kepco_initialize_requested',current_setpoint_a=self.current,voltage_limit_v=self.s.voltage_limit_v,field_before_g=before)
+            self.devices['kepco'].set_output('CURR',self.current,self.s.voltage_limit_v)
+            self.wait(self.s.field_settle_s)
+            initialized=self.field()
+            self.rec.event('kepco_initialized',current_setpoint_a=self.current,field_g=initialized)
+            # Match the integrated scan: a separate setpoint write on the Tk thread.
+            # The worker must await acknowledgment before it may clean up outputs.
+            def reapply():
+                self.check()
+                result=self.devices['kepco'].set_scan_current(self.current)
+                return result,threading.current_thread().name
+            self.check()
+            self.rec.event('kepco_reapply_requested',current_setpoint_a=self.current)
+            _,thread_name=self.main_thread_call(reapply)
+            self.rec.event('kepco_reapplied',current_setpoint_a=self.current,thread=thread_name,readback_kind='command_cache_not_measured')
+            self.wait(self.s.field_settle_s)
+            after=self.field()
+            self.rec.event('kepco_field_after_reapply',current_setpoint_a=self.current,field_before_g=before,field_initialized_g=initialized,field_after_g=after)
+            self.emit('field',{'field_g':after,'current_a':self.current})
+            s=self.s
+            self.check()
+            self.devices['smb'].configure(s.microwave_ghz[0],s.power_dbm,s.modulation_hz[0])
+            if s.meter=='MFLI':
+                self.devices['mfli'].configure_mfli('AC',1,'R',reference_source=s.mfli_reference,
+                    sample_rate_hz=max(1.,1/max(s.point_delay_s,.05)),input_impedance='10 MΩ',
+                    input_scaling=1.,timeconstant_s=s.timeconstant_s)
+            else:self.devices['830'].configure(s.sr830_reference,s.auto_range)
+            for mi,mod in enumerate(s.modulation_hz):
+                for fi,carrier in enumerate(s.microwave_ghz):
+                    self.check()
+                    # Same trace-backed LFO command; no magnet reset between cells.
+                    self.devices['smb'].set_frequency(carrier)
+                    with self.devices['smb'].lock:
+                        self.check()
+                        self.devices['smb'].instrument.write(f'LFO:FREQ {mod:.7g} Hz')
+                    self.event('cell_configured',microwave_index=fi,modulation_index=mi,
+                               microwave_ghz=carrier,modulation_hz=mod)
+                    self.wait(self.settle_seconds(mod))
+                    # At every new coordinate discard two transitional VALID reads, not two grid cells.
+                    self.sample(mod,initial=True);self.wait(s.point_delay_s);self.sample(mod)
+                    collected=[]
+                    while len(collected)<s.samples_per_cell:
+                        self.wait(s.point_delay_s);b=self.field();sample=self.sample(mod);after=self.field()
+                        self.emit('field',{'field_g':after,'current_a':self.current})
+                        self.check();r=self.row(sample,b,after,mi,fi,len(collected)+1)
+                        self.rec.append_point(r);collected.append(r)
+                    meanx=sum(r['x_v'] for r in collected)/len(collected)
+                    meany=sum(r['y_v'] for r in collected)/len(collected)
+                    # Phase of the averaged complex voltage; no arithmetic averaging across ±180°.
+                    theta=math.degrees(math.atan2(meany,meanx)) if math.hypot(meanx,meany)>1e-30 else math.nan
+                    cell=dict(microwave_index=fi,modulation_index=mi,microwave_frequency_ghz=carrier,
+                        modulation_frequency_hz=mod,x_v=meanx,y_v=meany,phase_deg=theta,
+                        field_g=sum(r['field_g'] for r in collected)/len(collected),current_a=self.current,
+                        samples=len(collected))
+                    self.check();self.rec.event('cell_complete',**cell);self.cells[(mi,fi)]=cell
+                    self.emit('cell',cell)
+        except ScanStopped:outcome='stopped'
+        except BaseException as exc:outcome='error';error=str(exc)
+        finally:
+            for key,fn in (('SMB100A',self.devices['smb'].rf_off),('KEPCO4886',self.devices['kepco'].zero_output)):
+                try:fn()
+                except BaseException as exc:shutdown.append(f'{key}: {exc}')
+            if shutdown:outcome='error'
+            export_errors=[]
+            try:export_grid(self.rec.directory,self.s,self.cells)
+            except BaseException as exc:export_errors.append(str(exc))
+            close_errors=self.rec.close(outcome,error=error,shutdown_errors=shutdown,export_errors=export_errors,
+                                        completed_cells=len(self.cells),outputs_off=not shutdown)
+            result=dict(outcome=outcome,error=error,shutdown_errors=shutdown,export_errors=export_errors,
+                        close_errors=close_errors,directory=str(self.rec.directory),completed_cells=len(self.cells))
+            self.emit('finished',result)
+        return result
+
+
+def grid_values(settings,cells,key):
+    return [[cells.get((j,i),{}).get(key,math.nan) for i in range(len(settings.microwave_ghz))]
+            for j in range(len(settings.modulation_hz))]
+
+
+def heatmap_scene(width,height,settings,cells,key):
+    """Shared primitives for Tk and PNG: explicit missing cells, discrete parameter axes."""
+    values=grid_values(settings,cells,key)
+    finite=[v for row in values for v in row if math.isfinite(v)]
+    limit=180. if key=='phase_deg' else max([abs(v)*1e6 for v in finite]+[1e-12])
+    x0,y0,x1,y1=66,40,max(100,width-72),max(90,height-66)
+    nx,ny=len(settings.microwave_ghz),len(settings.modulation_hz)
+    shapes=[]
+    def txt(x,y,text,size=10,anchor='center',color='#303640'):shapes.append(('text',x,y,str(text),size,anchor,color))
+    def rect(a,b,c,d,color):shapes.append(('rect',a,b,c,d,color))
+    def color(v):
+        if not math.isfinite(v):return '#e4e7eb'
+        if key=='phase_deg':rgb=colorsys.hsv_to_rgb((v+180)/360,.76,.86)
+        else:
+            t=max(-1.,min(1.,v*1e6/limit))
+            rgb=(1-.78*max(-t,0),1-.70*abs(t),1-.78*max(t,0))
+        return '#'+''.join(f'{round(c*255):02x}' for c in rgb)
+    rect(x0-1,y0-1,x1+1,y1+1,'#303640')
+    for j,row in enumerate(values):
+        for i,v in enumerate(row):
+            rect(x0+i*(x1-x0)/nx,y1-(j+1)*(y1-y0)/ny,x0+(i+1)*(x1-x0)/nx,y1-j*(y1-y0)/ny,color(v))
+    titles={'x_v':'X (µV)','y_v':'Y (µV)','phase_deg':'Theta (°)'}
+    txt(width/2,18,titles[key],12)
+    for i,v in enumerate(settings.microwave_ghz):
+        if i%max(1,math.ceil(nx/6))==0 or i==nx-1:txt(x0+(i+.5)*(x1-x0)/nx,y1+14,f'{v:g}',9)
+    for j,v in enumerate(settings.modulation_hz):
+        if j%max(1,math.ceil(ny/8))==0 or j==ny-1:txt(x0-5,y1-(j+.5)*(y1-y0)/ny,f'{v:g}',9,'e')
+    txt((x0+x1)/2,height-17,'Microwave frequency (GHz)',10)
+    txt(x0,y0-13,'Modulation (Hz)',9,'w')
+    for k in range(100):
+        v=-limit+2*limit*k/99
+        rect(x1+12,y1-(k+1)*(y1-y0)/100,x1+24,y1-k*(y1-y0)/100,color(v if key=='phase_deg' else v/1e6))
+    color_ticks=(-1,-.5,0,.5,1) if key=='phase_deg' else (-1,0,1)
+    for t in color_ticks:txt(x1+28,y1-(t+1)/2*(y1-y0),f'{t*limit:.3g}',8,'w')
+    return shapes,(x0,y0,x1,y1)
+
+
+def export_grid(directory,settings,cells):
+    directory=Path(directory)
+    for key,label in (('x_v','X_V'),('y_v','Y_V'),('phase_deg','Theta_deg')):
+        with (directory/f'{label}_matrix.csv').open('w',encoding='utf-8-sig',newline='') as f:
+            w=csv.writer(f);w.writerow(['modulation_Hz / microwave_GHz',*settings.microwave_ghz])
+            for mod,row in zip(settings.modulation_hz,grid_values(settings,cells,key)):
+                w.writerow([mod,*[v if math.isfinite(v) else '' for v in row]])
+    with (directory/'cells.csv').open('w',encoding='utf-8-sig',newline='') as f:
+        fields=('microwave_index','modulation_index','microwave_frequency_ghz','modulation_frequency_hz',
+                'x_v','y_v','phase_deg','field_g','current_a','samples')
+        w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(cells.values())
+    (directory/'settings.json').write_text(json.dumps(asdict(settings),ensure_ascii=False,indent=2))
+    if Image is None:raise RuntimeError('矩阵 CSV 已保存；缺少 Pillow，未生成 PNG')
+    from PIL import ImageDraw,ImageFont
+    scale=6;w,h=700,450
+    for key,label in (('x_v','X'),('y_v','Y'),('phase_deg','Theta')):
+        im=Image.new('RGB',(w*scale,h*scale),'white');draw=ImageDraw.Draw(im);fonts={}
+        for primitive in heatmap_scene(w,h,settings,cells,key)[0]:
+            if primitive[0]=='rect':
+                _,a,b,c,d,color=primitive;draw.rectangle((round(a*scale),round(b*scale),round(c*scale),round(d*scale)),fill=color)
+            else:
+                _,x,y,text,size,anchor,color=primitive
+                if size not in fonts:
+                    for candidate in ('DejaVuSans.ttf','Arial.ttf','C:/Windows/Fonts/arial.ttf','/System/Library/Fonts/Supplemental/Arial.ttf'):
+                        try:fonts[size]=ImageFont.truetype(candidate,round(size*scale));break
+                        except OSError:pass
+                    else:fonts[size]=ImageFont.load_default()
+                draw.text((x*scale,y*scale),text,font=fonts[size],fill=color,anchor={'center':'mm','e':'rm','w':'lm'}[anchor])
+        im.save(directory/f'{label}_heatmap.png',dpi=(900,900))
+
+
+class DemoDevice:
+    """Explicit simulation only; never opens a VISA/LabOne session."""
+    def __init__(self,bank,key):self.bank=bank;self.key=key;self.connected=False;self.lock=threading.RLock();self.instrument=self
+    @property
+    def mfli_connected(self):return self.connected
+    def connect(self,resource):self.connected=True;return 'SIMULATION '+resource
+    connect_mfli=connect
+    def disconnect(self):self.connected=False
+    disconnect_mfli=disconnect
+    def configure(self,*args):
+        if self.key=='smb':self.bank.update(freq=args[0],mod=args[2],rf=True)
+    def configure_mfli(self,*a,**k):pass
+    def set_output(self,mode,current,limit):self.bank['current']=current
+    def set_scan_current(self,current):self.bank['current']=current
+    def zero_output(self):self.bank['current']=0
+    def rf_off(self):self.bank['rf']=False
+    def set_frequency(self,f):self.bank['freq']=f
+    def write(self,command):
+        if command.startswith('LFO:FREQ'):self.bank['mod']=float(command.split()[1])
+    def read_field(self):return {'field':300*self.bank['current'],'unit':'G','unit_code':1}
+    def read_sample(self,expected):
+        f=self.bank.get('freq',1.);m=self.bank.get('mod',17.3);amp=2e-6*math.exp(-((f-2.0)/.6)**2)+1e-7
+        angle=math.atan(m/80)+f/3;x=amp*math.cos(angle);y=amp*math.sin(angle)
+        return {'X':x,'Y':y,'R':amp,'phase_deg':math.degrees(angle),'reference_valid':True,
+                'reference_frequency_hz':expected,'input_overload':False,'input_range_v':.003}
+    def read_stfmr_mfli(self,expected,**kw):return self.read_sample(expected)
+
+
+class MicrowaveTransportApp:
+    def __init__(self,root,demo=False):
+        self.root=root;self.demo=demo;self.running=False;self.busy=False;self.closing=False
+        self.events=queue.Queue();self.executor=ThreadPoolExecutor(max_workers=1);self.stop_event=threading.Event()
+        self.cells={};self.settings=None;self.last_directory=None;self.dirty=False;self.idle_field_pending=False;self.last_idle_field_time=0.
+        self.root.title(APP_NAME+(' — SIMULATION' if demo else ''));self.root.geometry('1360x860');self.root.minsize(1000,700)
+        configure_tk_font_system(root)
+        logger=lambda message:self.events.put(('log',str(message)))
+        if demo:
+            bank={'current':0.,'rf':False};self.devices={k:DemoDevice(bank,k) for k in STFMR_LOCKIN_DEFAULT_RESOURCES}
+        else:
+            self.devices={'kepco':STFMRKepco4886Controller(logger),'gauss':STFMRGauss475Controller(logger),
+                          'smb':STFMRSMB100AController(logger),'830':STFMRSR830Controller(logger),'mfli':NonLocalACController(logger)}
+        self.resources={k:tk.StringVar(value=v) for k,v in STFMR_LOCKIN_DEFAULT_RESOURCES.items()}
+        self.connection_labels={};self.connection_lamps={};self.connection_buttons=[];self.editable=[]
+        self.vars={k:tk.StringVar(value=v) for k,v in {
+            'microwave':'1:3:0.1','mod_start':'5','mod_stop':'400','current':'0','limit':'10','power':'18','delay':'0.5','fieldsettle':'0.3','tau':'0.1',
+            'samples':'3','meter':'MFLI','mfli_ref':'Aux Input 1','sr_ref':'Sine'}.items()}
+        self.autorange=tk.BooleanVar(value=True);self.safety=tk.BooleanVar(value=False)
+        self.status=tk.StringVar(value='就绪。先连接仪器，再设置固定电流及二维参数。')
+        self.readback=tk.StringVar(value='B: — G     I: — A     X: — V     Y: — V     Theta: —°')
+        self._build();self.root.protocol('WM_DELETE_WINDOW',self.close);self.root.after(80,self.poll)
+
+    def _build(self):
+        outer=ttk.Frame(self.root,padding=8);outer.pack(fill='both',expand=True)
+        instruments=ttk.LabelFrame(outer,text='STFMR 仪器连接'+('（模拟）' if self.demo else ''),padding=5);instruments.pack(fill='x')
+        for n,(key,name) in enumerate((('kepco','KEPCO4886'),('830','SR830'),('gauss','LS475'),('mfli','MFLI'),('smb','SMB100A'))):
+            frame=ttk.Frame(instruments);frame.grid(row=n//2,column=n%2,sticky='ew',padx=4,pady=2);instruments.columnconfigure(n%2,weight=1)
+            ttk.Label(frame,text=name,width=12).pack(side='left');e=ttk.Entry(frame,textvariable=self.resources[key],width=24);e.pack(side='left',fill='x',expand=True);self.editable.append((e,'normal'))
+            for action,label in (('connect','连接'),('disconnect','断开')):
+                b=ttk.Button(frame,text=label,width=5,command=lambda k=key,a=action:self.connection(k,a));b.pack(side='left',padx=2);self.connection_buttons.append(b)
+            self.connection_lamps[key]=self.make_lamp(frame, '未连接')
+            self.connection_labels[key]=self.connection_lamps[key][2]
+        params=ttk.LabelFrame(outer,text='固定电流 · 微波频率 × 调制频率',padding=6);params.pack(fill='x',pady=5)
+        specs=[('微波 GHz（列表/起:止:步）','microwave'),('调制起点 Hz（质数）','mod_start'),('调制终点 Hz（质数）','mod_stop'),('功率 dBm','power'),
+               ('固定电流 A','current'),('限压 V','limit'),
+               ('每点等待 s','delay'),('电流设置后等待 s','fieldsettle'),('每格采样数','samples'),('MFLI 时间常数 s','tau')]
+        for n,(label,key) in enumerate(specs):
+            frame=ttk.Frame(params);frame.grid(row=n//4,column=n%4,sticky='ew',padx=4,pady=3);params.columnconfigure(n%4,weight=1)
+            ttk.Label(frame,text=label).pack(anchor='w');e=ttk.Entry(frame,textvariable=self.vars[key],width=26 if n<2 else 12);e.pack(fill='x');self.editable.append((e,'normal'))
+        frame=ttk.Frame(params);frame.grid(row=3,column=0,columnspan=4,sticky='ew')
+        for label,key,values in [('读取','meter',('MFLI','SR830')),('MFLI REF','mfli_ref',tuple(NONLOCAL_MFLI_REFERENCE_INPUTS)),('SR830 REF','sr_ref',tuple(STFMR_LOCKIN_SR830_REFERENCE_INPUTS))]:
+            ttk.Label(frame,text=label).pack(side='left',padx=4);e=ttk.Combobox(frame,textvariable=self.vars[key],values=values,state='readonly',width=12);e.pack(side='left');self.editable.append((e,'readonly'))
+        a=ttk.Checkbutton(frame,text='锁相自动量程',variable=self.autorange);a.pack(side='left',padx=10);self.editable.append((a,'normal'))
+        a=ttk.Checkbutton(params,text='已确认磁体极性、冷却、接线、输出上限及人员安全',variable=self.safety);a.grid(row=4,column=0,columnspan=4,sticky='w',pady=4);self.editable.append((a,'normal'))
+        actions=ttk.Frame(outer);actions.pack(fill='x')
+        self.start_button=ttk.Button(actions,text='开始二维扫描',command=self.start);self.start_button.pack(side='left',padx=3)
+        self.stop_button=ttk.Button(actions,text='停止 / 输出归零',command=self.stop,state='disabled');self.stop_button.pack(side='left',padx=3)
+        self.zero_button=ttk.Button(actions,text='归零并关闭输出',command=self.zero);self.zero_button.pack(side='left',padx=3)
+        self.export_button=ttk.Button(actions,text='导出当前热力图',command=self.export,state='disabled');self.export_button.pack(side='left',padx=3)
+        self.progress=ttk.Progressbar(actions,mode='determinate');self.progress.pack(side='left',fill='x',expand=True,padx=10)
+        lights=ttk.Frame(outer);lights.pack(fill='x',pady=3)
+        ttk.Label(lights,text='锁相参考：').pack(side='left');self.lock_lamp=self.make_lamp(lights,'待读取')
+        ttk.Label(lights,text='   输入量程：').pack(side='left');self.range_lamp=self.make_lamp(lights,'待读取')
+        self.prime_info=tk.StringVar();ttk.Label(lights,textvariable=self.prime_info).pack(side='right')
+        for key in ('mod_start','mod_stop'):self.vars[key].trace_add('write',lambda *args:self.update_prime_info())
+        self.vars['meter'].trace_add('write',lambda *args:self.reset_lock_lamps())
+        self.update_prime_info()
+        ttk.Label(outer,textvariable=self.readback).pack(fill='x',pady=3)
+        ttk.Label(outer,textvariable=self.status,wraplength=1250).pack(fill='x',pady=3)
+        plots=ttk.Frame(outer);plots.pack(fill='both',expand=True);self.canvases={}
+        for i,key in enumerate(('x_v','y_v','phase_deg')):
+            c=tk.Canvas(plots,bg='white',highlightthickness=1,highlightbackground='#cad0d8');c.grid(row=0,column=i,sticky='nsew',padx=3);plots.columnconfigure(i,weight=1,uniform='heatmap');c.bind('<Configure>',lambda e:self.mark_dirty());c.bind('<Button-1>',lambda e,k=key:self.cell_click(e,k));self.canvases[key]=c
+        plots.rowconfigure(0,weight=1)
+        ttk.Label(outer,text='灰格：未完成采集；X/Y 为各格均值，Theta 为均值复电压的相位。点击色块查看实测值。').pack(anchor='w')
+        self.log_widget=tk.Text(outer,height=4,state='disabled',font=('TkFixedFont',9));self.log_widget.pack(fill='x',pady=(4,0))
+
+    def make_lamp(self, parent, label):
+        canvas=tk.Canvas(parent,width=16,height=16,highlightthickness=0)
+        canvas.pack(side='left',padx=(4,1))
+        dot=canvas.create_oval(3,3,13,13,fill='#9ca3af',outline='')
+        text=tk.StringVar(value=label);ttk.Label(parent,textvariable=text,width=11).pack(side='left')
+        return canvas,dot,text
+
+    def set_lamp(self, lamp, color, label):
+        canvas,dot,text=lamp
+        canvas.itemconfigure(dot,fill={'green':'#16a34a','red':'#dc2626','amber':'#d97706','gray':'#9ca3af'}[color]);text.set(label)
+
+    def reset_lock_lamps(self):
+        for lamp in (self.lock_lamp,self.range_lamp):self.set_lamp(lamp,'gray','待读取')
+
+    def update_prime_info(self):
+        try:
+            values=prime_axis(self.vars['mod_start'].get(),self.vars['mod_stop'].get())
+            self.prime_info.set(f'调制：{len(values)} 个质数，{values[0]:g}–{values[-1]:g} Hz')
+        except ValueError as exc:self.prime_info.set(str(exc))
+
+    def mark_dirty(self):self.dirty=True
+    def connected(self,key):return self.devices[key].mfli_connected if key=='mfli' else self.devices[key].connected
+    def emit(self,*event):self.events.put(event)
+    def busy_ui(self,busy):
+        self.busy=busy
+        for w,state in self.editable:w.configure(state='disabled' if busy else state)
+        for w in self.connection_buttons:w.configure(state='disabled' if busy else 'normal')
+        self.start_button.configure(state='disabled' if busy else 'normal');self.zero_button.configure(state='disabled' if busy else 'normal')
+        self.stop_button.configure(state='normal' if self.running else 'disabled');self.export_button.configure(state='normal' if self.settings and not busy else 'disabled')
+
+    def submit(self,fn):
+        future=self.executor.submit(fn)
+        def done(f):
+            try:result=f.result();self.emit('operation_done',result)
+            except BaseException as exc:self.emit('operation_error',str(exc))
+        future.add_done_callback(done)
+
+    def connection(self,key,action):
+        if self.busy or self.closing:return
+        if action=='connect' and self.connected(key):return
+        if action=='disconnect' and not self.connected(key):return
+        self.busy_ui(True);device=self.devices[key];resource=self.resources[key].get().strip()
+        method=getattr(device,('connect_mfli' if key=='mfli' else 'connect') if action=='connect' else ('disconnect_mfli' if key=='mfli' else 'disconnect'))
+        fn=(lambda:method(resource)) if action=='connect' else method
+        # Preserve the integrated driver's main-thread-only KEPCO session opening.
+        if key=='kepco' and action=='connect':
+            try:self.emit('operation_done',fn())
+            except BaseException as exc:self.emit('operation_error',str(exc))
+        else:self.submit(fn)
+
+    def inputs(self):
+        v=lambda k:float(self.vars[k].get())
+        return GridSettings(parse_axis(self.vars['microwave'].get()),prime_axis(self.vars['mod_start'].get(),self.vars['mod_stop'].get()),
+            fixed_current_a=v('current'),voltage_limit_v=v('limit'),
+            power_dbm=v('power'),point_delay_s=v('delay'),field_settle_s=v('fieldsettle'),timeconstant_s=v('tau'),
+            samples_per_cell=int(self.vars['samples'].get()),meter=self.vars['meter'].get(),mfli_reference=self.vars['mfli_ref'].get(),
+            sr830_reference=self.vars['sr_ref'].get(),auto_range=self.autorange.get(),simulation=self.demo).validate()
+
+    def start(self):
+        if self.busy or self.closing:return
+        try:
+            settings=self.inputs()
+            if not self.safety.get():raise ValueError('请先勾选接线、磁体冷却及输出安全确认')
+            for key in ('kepco','gauss','smb','mfli' if settings.meter=='MFLI' else '830'):
+                if not self.connected(key):raise ValueError(f'{key} 尚未连接')
+        except Exception as exc:messagebox.showerror(APP_NAME,str(exc),parent=self.root);return
+        total=len(settings.microwave_ghz)*len(settings.modulation_hz)
+        if not messagebox.askyesno('开始固定电流二维扫描',f'固定电流 {settings.fixed_current_a:+g} A（LS475 仅监测，无反馈）\n微波 {len(settings.microwave_ghz)} 点 × 调制 {len(settings.modulation_hz)} 点 = {total} 格\n功率 {settings.power_dbm:g} dBm；限压 {settings.voltage_limit_v:g} V\n每格保存 {settings.samples_per_cell} 次采样，切换后先丢弃两次过渡读取。\n预计用时（等待时间基准）：{format_duration(estimated_scan_seconds(settings))}\n实际另加仪器通信、配置、自动量程/锁定重试及文件保存时间。\n完成、停止和异常均关闭 RF 并归零电流。',parent=self.root):return
+        parent=filedialog.askdirectory(title='选择本次数据保存位置',parent=self.root)
+        if not parent:return
+        try:rec=GridRecorder(parent,dict(asdict(settings),resources={k:v.get() for k,v in self.resources.items()},program=APP_NAME))
+        except Exception as exc:messagebox.showerror('创建记录失败',str(exc),parent=self.root);return
+        self.reset_lock_lamps();self.settings=settings;self.cells={};self.last_directory=rec.directory;self.running=True;self.stop_event.clear();self.busy_ui(True)
+        self.progress.configure(maximum=total,value=0);self.mark_dirty()
+        engine=GridEngine(self.devices,settings,rec,self.stop_event,self.emit,self.call_on_main_thread)
+        try:self.executor.submit(engine.run)
+        except BaseException as exc:
+            rec.close('error',error=str(exc));self.running=False;self.busy_ui(False);self.status.set(str(exc))
+
+    def call_on_main_thread(self, fn):
+        if threading.current_thread() is threading.main_thread():return fn()
+        done=threading.Event();box={}
+        self.emit('main_thread_call',(fn,done,box))
+        # Do not return on stop before the UI acknowledges the queued command:
+        # otherwise a delayed write could run after worker shutdown.
+        done.wait()
+        if 'error' in box:raise box['error']
+        return box['result']
+
+    def stop(self):
+        if self.running:self.stop_event.set();self.status.set('正在停止，等待当前仪器调用结束后关闭输出…')
+    def zero(self):
+        if self.busy:return
+        self.busy_ui(True)
+        def operation():
+            errors=[]
+            for fn in (self.devices['smb'].rf_off,self.devices['kepco'].zero_output):
+                try:fn()
+                except BaseException as exc:errors.append(str(exc))
+            if errors:raise RuntimeError('; '.join(errors))
+            return 'RF 已关闭，电流已归零'
+        self.submit(operation)
+
+    def export(self):
+        if self.busy or not self.settings:return
+        parent=filedialog.askdirectory(title='导出热力图',parent=self.root)
+        if not parent:return
+        out=Path(parent)/(APP_NAME+'_export_'+datetime_module.datetime.now().strftime('%Y%m%d_%H%M%S_%f'));out.mkdir()
+        settings=self.settings;cells=dict(self.cells);self.busy_ui(True);self.submit(lambda:export_grid(out,settings,cells))
+
+    def draw(self):
+        for key,c in self.canvases.items():
+            c.delete('all')
+            if self.settings is None:
+                c.create_text(c.winfo_width()/2,c.winfo_height()/2,text={'x_v':'X','y_v':'Y','phase_deg':'Theta'}[key]+'\n等待二维扫描',fill='#777777');continue
+            shapes,_=heatmap_scene(c.winfo_width(),c.winfo_height(),self.settings,self.cells,key)
+            for primitive in shapes:
+                if primitive[0]=='rect':_,a,b,d,e,col=primitive;c.create_rectangle(a,b,d,e,fill=col,outline='')
+                else:
+                    _,x,y,t,size,anchor,col=primitive;c.create_text(x,y,text=t,font=('Arial',size),anchor=anchor,fill=col)
+        self.dirty=False
+
+    def cell_click(self,event,key):
+        if self.settings is None:return
+        c=self.canvases[key];_,(x0,y0,x1,y1)=heatmap_scene(c.winfo_width(),c.winfo_height(),self.settings,self.cells,key)
+        if not(x0<=event.x<x1 and y0<=event.y<y1):return
+        i=int((event.x-x0)/(x1-x0)*len(self.settings.microwave_ghz));j=int((y1-event.y)/(y1-y0)*len(self.settings.modulation_hz))
+        cell=self.cells.get((j,i))
+        self.status.set(f'{self.settings.microwave_ghz[i]:g} GHz / {self.settings.modulation_hz[j]:g} Hz：'+
+            (f"X={cell['x_v']:.6g} V，Y={cell['y_v']:.6g} V，Theta={cell['phase_deg']:.4g}°，B={cell['field_g']:.5g} G，n={cell['samples']}" if cell else '未完成采集'))
+
+    def poll(self):
+        for _ in range(250):
+            try:kind,data=self.events.get_nowait()
+            except queue.Empty:break
+            if kind=='main_thread_call':
+                fn,done,box=data
+                try:box['result']=fn()
+                except BaseException as exc:box['error']=exc
+                finally:done.set()
+            elif kind=='log':
+                self.log_widget.configure(state='normal');self.log_widget.insert('end',str(data)+'\n');self.log_widget.see('end');self.log_widget.configure(state='disabled')
+            elif kind=='status':
+                self.status.set(str(data))
+                if data=='cell_configured':
+                    self.set_lamp(self.lock_lamp,'amber','等待锁定');self.set_lamp(self.range_lamp,'gray','待读取')
+            elif kind=='field':self.readback.set(f"B: {data['field_g']:+.6g} G     I(set): {data['current_a']:+.6g} A" + ("     X:" + self.readback.get().split("     X:",1)[1] if "     X:" in self.readback.get() else ""))
+            elif kind=='readback':
+                lock,level=lockin_indicators(data)
+                self.set_lamp(self.lock_lamp,*lock);self.set_lamp(self.range_lamp,*level)
+                try:self.readback.set(self.readback.get().split('     X:')[0]+f"     X: {component(data,'x'):+.6g} V     Y: {component(data,'y'):+.6g} V     Theta: {float(data['phase_deg']):+.5g}°     REF: {'LOCK' if data.get('reference_valid') else '等待'}     Overload: {data.get('input_overload','—')}")
+                except Exception:pass
+            elif kind=='cell':
+                self.cells[(data['modulation_index'],data['microwave_index'])]=data;self.progress.configure(value=len(self.cells));self.mark_dirty()
+                self.status.set(f"完成 {len(self.cells)}/{int(float(self.progress['maximum']))} 格；{data['microwave_frequency_ghz']:g} GHz / {data['modulation_frequency_hz']:g} Hz")
+            elif kind=='finished':
+                self.running=False;self.busy_ui(False);self.reset_lock_lamps()
+                issues=[data.get('error')]+data.get('shutdown_errors',[])+data.get('export_errors',[])+data.get('close_errors',[])
+                self.status.set(f"{data['outcome']}；完成 {data['completed_cells']} 格；保存于 {data['directory']}"+('；'+'；'.join(str(v) for v in issues if v) if any(issues) else ''))
+                if any(issues):messagebox.showerror('扫描结果 / 输出状态',self.status.get(),parent=self.root)
+            elif kind in ('operation_done','operation_error'):
+                self.busy_ui(False)
+                for key,lamp in self.connection_lamps.items():self.set_lamp(lamp,'green' if self.connected(key) else 'gray','已连接' if self.connected(key) else '未连接')
+                if not self.connected('mfli' if self.vars['meter'].get()=='MFLI' else '830'):self.reset_lock_lamps()
+                if kind=='operation_error':messagebox.showerror(APP_NAME,str(data),parent=self.root)
+                elif data:self.status.set(str(data))
+            elif kind=='idle_field':
+                self.idle_field_pending=False
+                if data.get('error'):
+                    self.status.set('LS475 实时读取失败：'+data['error'])
+                elif not self.running:
+                    self.readback.set(f"B: {data['field_g']:+.6g} G（LS475 实时监测，无电流反馈）")
+            elif kind=='closed':
+                if data:messagebox.showerror('关闭仪器',str(data),parent=self.root)
+                self.executor.shutdown(wait=False);self.root.destroy();return
+        if not self.busy and not self.closing and not self.idle_field_pending and self.connected('gauss') and time.monotonic()-self.last_idle_field_time>=1:
+            self.idle_field_pending=True;self.last_idle_field_time=time.monotonic()
+            def read_idle_field():
+                try:
+                    value=STFMRGauss475Controller.value_in_gauss(self.devices['gauss'].read_field())
+                    self.emit('idle_field',{'field_g':value})
+                except BaseException as exc:self.emit('idle_field',{'error':str(exc)})
+            self.executor.submit(read_idle_field)
+        if self.dirty:self.draw()
+        if self.closing and not self.busy and not self.running:
+            self.busy_ui(True)
+            def disconnect_all():
+                errors=[]
+                for key,device in self.devices.items():
+                    try:(device.disconnect_mfli if key=='mfli' else device.disconnect)()
+                    except BaseException as exc:errors.append(f'{key}: {exc}')
+                self.emit('closed','; '.join(errors))
+            self.executor.submit(disconnect_all)
+        self.root.after(100,self.poll)
+
+    def close(self):
+        if self.closing:return
+        self.closing=True;self.stop();self.status.set('正在关闭输出和仪器连接…')
+
+
+def main():
+    root=tk.Tk();MicrowaveTransportApp(root,demo='--demo' in sys.argv);root.mainloop()
+
+
+if __name__=='__main__':main()

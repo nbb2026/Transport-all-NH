@@ -1,0 +1,12 @@
+Primary source of truth:
+- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/3-Transport/Magneto_Electro_Optical_Microwave_Transport_NH_dev.py
+
+Current GUI screenshots used as visual references:
+- /var/folders/61/zwljyfb1529g_99j7w44y9200000gn/T/codex-clipboard-b3786815-319a-47c4-bb19-e5b277d5ca81.png (6221 tab)
+- /var/folders/61/zwljyfb1529g_99j7w44y9200000gn/T/codex-clipboard-8b467c84-bfc9-43a1-8ef8-d0df7ef0ee66.png (STFMR tab and plot)
+- /var/folders/61/zwljyfb1529g_99j7w44y9200000gn/T/codex-clipboard-aa2be826-b768-47f5-8cab-141e9505b813.png (STFMR layout)
+
+Project context and validation boundary:
+- /Users/nbb/Desktop/2-Posdoc_Heng/0-Codex/Codex-Memory/20-Projects/P11-PYTHON-TRANSPORT.md
+
+No web assets were used. All explanations are derived from the current source and current project card.
