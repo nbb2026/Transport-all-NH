@@ -114,14 +114,25 @@ class FieldOutputTests(unittest.TestCase):
     def page_frames(self, tab):
         return {w.cget("text"): w for w in descendants(tab) if isinstance(w, tk.ttk.LabelFrame)}
 
-    def test_output_panel_is_left_of_the_connections(self):
+    def test_connections_are_left_of_the_output_panel(self):
+        for tab_name, tab, title in (("STFMR", self.a.stfmr_lockin_tab, "STFMR instrument connections"),
+                                     ("FMR", self.a.stfmr_tab, "FMR instrument connections")):
+            with self.subTest(page=tab_name):
+                self.arranged(1420, tab_name, self.a.stfmr_lockin_resource_widgets
+                              if tab_name == "STFMR" else self.a.stfmr_device_resource_widgets)
+                frames = self.page_frames(tab)
+                panel = frames["KEPCO 4886 BOP 20-10 field output"]
+                connections = frames[title]
+                self.assertIs(panel.master, connections.master, "they share one top row")
+                self.assertEqual(int(panel.master.grid_info()["row"]), 0)
+                self.assertEqual((int(connections.grid_info()["column"]), int(panel.grid_info()["column"])), (0, 1))
+                self.assertLess(connections.winfo_rootx(), panel.winfo_rootx())
+                self.assertEqual(int(panel.master.columnconfigure(1)["weight"]), 1,
+                                 "the panel takes the spare width; the list stays compact")
+        self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
         frames = self.page_frames(self.a.stfmr_lockin_tab)
-        panel = frames["KEPCO 4886 BOP 20-10 field output"]
-        connections = frames["STFMR instrument connections"]
-        self.assertIs(panel.master, connections.master, "they share one top row")
-        self.assertEqual(int(panel.master.grid_info()["row"]), 0)
         self.assertEqual(int(frames["STFMR field-sweep parameters"].grid_info()["row"]), 1)
-        outer = panel.master.master
+        outer = frames["KEPCO 4886 BOP 20-10 field output"].master.master
         self.assertEqual(int(outer.rowconfigure(4)["weight"]), 1, "plots keep the spare height")
         self.assertEqual(max(int(w.grid_info()["row"]) for w in outer.winfo_children()), 4)
 
@@ -149,6 +160,8 @@ class FieldOutputTests(unittest.TestCase):
                                       ("FMR", self.a.stfmr_device_resource_widgets)):
                 with self.subTest(page=tab_name):
                     self.assertFalse(self.arranged(820, tab_name, widgets), "narrow: stacked")
+                    connections = widgets["kepco"].master.master
+                    self.assertEqual(int(connections.grid_info()["row"]), 0, "stacked: connections first")
                     self.assertTrue(self.arranged(1420, tab_name, widgets), "wide: side by side")
         finally:
             self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
@@ -165,6 +178,145 @@ class FieldOutputTests(unittest.TestCase):
                 self.assertEqual(over, [], f"{tab_name}: widgets past the right edge")
         finally:
             self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+
+    def test_parameter_table_is_aligned(self):
+        """Every field in a column starts at the same x and has the same width."""
+        self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+        table = self.a.stfmr_lockin_meter_combo.master
+        compared = 0
+        for column in range(1, 12, 2):
+            fields = [w for w in table.grid_slaves(column=column)
+                      if w.winfo_class() in ("TEntry", "TCombobox", "TSpinbox")]
+            if len(fields) < 2:
+                continue
+            compared += 1
+            with self.subTest(column=column):
+                self.assertEqual(len({(w.winfo_x(), w.winfo_width()) for w in fields}), 1,
+                                 [(w.winfo_class(), w.winfo_x(), w.winfo_width()) for w in fields])
+        # One table, so fields share columns down the rows; separate
+        # per-field groups (the old layout) would leave nothing to compare.
+        self.assertGreaterEqual(compared, 5, "fields are not in one shared table")
+        for column in range(0, 12, 2):
+            for label in table.grid_slaves(column=column):
+                if label.winfo_class() == "TLabel":
+                    self.assertEqual(label.grid_info()["sticky"], "e", "labels sit against their field")
+
+    def test_sweep_controls_sit_right_of_the_parameters(self):
+        self.arranged(1420, "STFMR", self.a.stfmr_lockin_resource_widgets)
+        table = self.a.stfmr_lockin_meter_combo.master
+        column = self.a.stfmr_lockin_start_button.master.master
+        self.assertIs(column.master, table.master, "both inside the field-sweep parameters box")
+        self.assertTrue(getattr(table.master, "_pair_side_by_side", False))
+        self.assertGreater(column.winfo_rootx(), table.winfo_rootx() + table.winfo_width() - 1)
+        for button in (self.a.stfmr_lockin_start_button, self.a.stfmr_lockin_stop_button,
+                       self.a.stfmr_lockin_save_button, self.a.stfmr_lockin_read_gauss_button):
+            self.assertIs(button.master.master, column)
+
+    def test_the_duplicate_safety_line_is_gone(self):
+        boxes = [w.cget("text") for w in descendants(self.a.stfmr_lockin_tab)
+                 if w.winfo_class() == "TCheckbutton" and "safety" in str(w.cget("text"))]
+        self.assertEqual(len(boxes), 1, boxes)
+        self.assertIn("microwave power", boxes[0], "the remaining tick covers what the removed line did")
+
+    def test_sweep_refuses_without_the_panel_safety_tick(self):
+        self.a.stfmr_lockin_manual_safety_var.set(False)
+        original = self.a._stfmr_lockin_connected
+        self.a._stfmr_lockin_connected = lambda _key: True
+        try:
+            with self.assertRaisesRegex(RuntimeError, "safety confirmation"):
+                self.a._stfmr_lockin_inputs()
+        finally:
+            self.a._stfmr_lockin_connected = original
+
+    def test_fmr_scan_has_two_columns(self):
+        self.arranged(1420, "FMR", self.a.stfmr_device_resource_widgets)
+        frames = self.page_frames(self.a.stfmr_tab)
+        sweep = frames["FMR scan: sweep 4886 current, x-axis is the measured 475 field (signed)"]
+        frequency = frames["Fixed-field frequency sweep"]
+        self.assertIs(sweep.master, frequency.master)
+        self.assertEqual((int(sweep.grid_info()["column"]), int(frequency.grid_info()["column"])), (0, 1))
+        self.assertIs(self.a.stfmr_frequency_start_button.master.master, frequency)
+        self.assertIs(self.a.stfmr_fmr_start_button.master.master, sweep)
+
+    def test_fmr_buttons_and_labels_show_their_whole_text(self):
+        self.arranged(1420, "FMR", self.a.stfmr_device_resource_widgets)
+        font = tkinter.font.nametofont("TkDefaultFont")
+        cut = []
+        for widget in descendants(self.a.stfmr_tab):
+            if widget.winfo_class() in ("TButton", "TLabel") and widget.winfo_ismapped():
+                text = str(widget.cget("text"))
+                if text and not str(widget.cget("textvariable")):
+                    slack = 10 if widget.winfo_class() == "TButton" else 0
+                    if font.measure(text) > widget.winfo_width() - slack:
+                        cut.append(text)
+        self.assertEqual(cut, [], "Connect, Disconnect and the sweep buttons were cut")
+
+    def label_showing(self, variable):
+        return next(w for w in descendants(self.root)
+                    if w.winfo_class() == "TLabel" and str(w.cget("textvariable")) == str(variable))
+
+    def test_live_readouts_fit_their_longest_text_without_resizing_the_column(self):
+        """Dual MFLI + SR830 lines and SR830 autorange messages were cut."""
+        self.arranged(1420, "STFMR", self.a.stfmr_lockin_resource_widgets)
+        column = self.a.stfmr_lockin_start_button.master.master
+        width_before = column.winfo_reqwidth()
+        font = tkinter.font.nametofont("TkDefaultFont")
+        dual = ("MFLI X=+1.2346e-05 Y=-1.2346e-05 V θ=+123.456°\n"
+                "SR830 X=+1.2346e-05 Y=-1.2346e-05 V θ=+123.456°")
+        autorange = "Ref: 1234.5 Hz; autorange SENS 20->21 (overload/high)"
+        try:
+            self.a.stfmr_lockin_voltage_var.set(dual)
+            self.a.stfmr_lockin_reference_status_var.set(autorange)
+            self.root.update()
+            voltage = self.label_showing(self.a.stfmr_lockin_voltage_var)
+            reference = self.label_showing(self.a.stfmr_lockin_reference_status_var)
+            self.assertGreaterEqual(voltage.winfo_width(), max(map(font.measure, dual.splitlines())))
+            self.assertGreaterEqual(reference.winfo_width(), font.measure(autorange))
+            self.assertEqual(column.winfo_reqwidth(), width_before, "readings must not resize the column")
+        finally:
+            self.a.stfmr_lockin_voltage_var.set("-- V")
+            self.a.stfmr_lockin_reference_status_var.set("Ref: --")
+
+    def test_side_by_side_only_when_the_table_gets_its_full_width(self):
+        """The decision must allow for the parameter box's padding and border."""
+        table = self.a.stfmr_lockin_meter_combo.master
+        decided = set()
+        try:
+            for width in range(900, 1441, 20):
+                self.arranged(width, "STFMR", self.a.stfmr_lockin_resource_widgets)
+                side = getattr(table.master, "_pair_side_by_side", None)
+                self.assertIsNotNone(side, f"no layout decision at {width} px")
+                decided.add(side)
+                if side:
+                    self.assertGreaterEqual(table.winfo_width(), table.winfo_reqwidth(),
+                                            f"side by side at {width} px but the table is squeezed")
+        finally:
+            self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+        self.assertEqual(decided, {True, False}, "both layouts should occur across this range")
+
+    def test_narrow_window_keeps_dropdowns_whole_and_fields_readable(self):
+        font = tkinter.font.nametofont("TkTextFont")
+        try:
+            self.arranged(700, "STFMR", self.a.stfmr_lockin_resource_widgets)
+            combo = self.a.stfmr_lockin_meter_combo
+            self.assertGreaterEqual(combo.winfo_width(), combo.winfo_reqwidth(), "MFLI + SR830 was cut")
+            table = combo.master
+            for column in (5, 7, 9, 11):
+                for field in table.grid_slaves(column=column):
+                    if field.winfo_class() in ("TEntry", "TSpinbox"):
+                        self.assertGreaterEqual(field.winfo_width(), font.measure("0" * 6))
+        finally:
+            self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+
+    def test_fmr_plots_fill_the_page_down_to_the_status_line(self):
+        self.root.geometry("1420x1000+0+40")
+        self.arranged(1420, "FMR", self.a.stfmr_device_resource_widgets)
+        tab = self.a.stfmr_tab
+        status = self.label_showing(self.a.stfmr_status_var)
+        blank = (tab.winfo_rooty() + tab.winfo_height()) - (status.winfo_rooty() + status.winfo_height())
+        self.assertLess(blank, 30, f"{blank} px left empty below the status line")
+        canvas = self.a.stfmr_fmr_canvas
+        self.assertGreater(canvas.winfo_height(), canvas.winfo_reqheight(), "plots should take the spare height")
 
     def test_address_fields_are_narrow_and_status_text_fits(self):
         font = tkinter.font.nametofont("TkDefaultFont")

@@ -591,10 +591,19 @@ class InstrumentSafetyTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "valid X"):
             helper({"X": float("nan")}, "X")
 
+    def test_stfmr_sweep_refuses_to_start_without_the_safety_tick(self):
+        """The page's one confirmation, in the 4886 output panel, gates the sweep."""
+        harness = object.__new__(app.CombinedControlApp)
+        harness._stfmr_lockin_connected = lambda _key: True
+        harness.stfmr_lockin_meter_var = FakeVariable("MFLI")
+        harness.stfmr_lockin_manual_safety_var = FakeVariable(False)
+        with self.assertRaisesRegex(RuntimeError, "safety confirmation"):
+            harness._stfmr_lockin_inputs()
+
     def test_stfmr_lockin_scan_is_one_way_per_loop(self):
         harness = object.__new__(app.CombinedControlApp)
         harness._stfmr_lockin_connected = lambda _key: True
-        harness.stfmr_lockin_safety_var = FakeVariable(True)
+        harness.stfmr_lockin_manual_safety_var = FakeVariable(True)
         harness.stfmr_lockin_meter_var = FakeVariable("MFLI")
         harness.stfmr_lockin_frequency_start_var = FakeVariable("5")
         harness.stfmr_lockin_frequency_stop_var = FakeVariable("7")

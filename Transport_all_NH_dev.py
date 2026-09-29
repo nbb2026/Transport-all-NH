@@ -12148,9 +12148,9 @@ class CombinedControlApp:
         self.stfmr_output_target_label_var = tk.StringVar(value="Target current A:")
         self.stfmr_output_limit_label_var = tk.StringVar(value="Voltage limit V:")
         self.stfmr_kepco_mode_var = tk.StringVar(value="Mode: --")
-        self.stfmr_kepco_current_var = tk.StringVar(value="I：-- A")
-        self.stfmr_kepco_voltage_var = tk.StringVar(value="V：-- V")
-        self.stfmr_kepco_output_var = tk.StringVar(value="OUTP：OFF")
+        self.stfmr_kepco_current_var = tk.StringVar(value="I: -- A")
+        self.stfmr_kepco_voltage_var = tk.StringVar(value="V: -- V")
+        self.stfmr_kepco_output_var = tk.StringVar(value="OUTP: OFF")
         self.stfmr_gauss_field_var = tk.StringVar(value="-- G")
         self.stfmr_gauss_status_var = tk.StringVar(value="Waiting for gaussmeter connection")
         self.stfmr_gauss_auto_var = tk.BooleanVar(value=True)
@@ -12246,7 +12246,6 @@ class CombinedControlApp:
         self.stfmr_lockin_connect_buttons = {}
         self.stfmr_lockin_disconnect_buttons = {}
         self.stfmr_lockin_resource_widgets = {}
-        self.stfmr_lockin_safety_var = tk.BooleanVar(value=False)
         # Manual KEPCO field output, as on the FMR page.
         self.stfmr_lockin_manual_safety_var = tk.BooleanVar(value=False)
         self.stfmr_lockin_manual_mode_var = tk.StringVar(value="Current")
@@ -12385,7 +12384,9 @@ class CombinedControlApp:
         scale = self.canvas_scale if canvas else self.ui_scale
         return max(int(minimum), int(round(float(value) * scale)))
 
-    def _arrange_pair_by_width(self, container, left, right, *, gap: int = 4) -> None:
+    def _arrange_pair_by_width(
+        self, container, left, right, *, gap: int = 4, stack_gap: int | None = None
+    ) -> None:
         """Place two sections side by side when both fit, otherwise stack them.
 
         On a wide screen the program opens the control window at about 43 % of
@@ -12395,9 +12396,16 @@ class CombinedControlApp:
         """
         def arrange(_event=None) -> None:
             try:
-                available = container.winfo_width()
+                # A LabelFrame's padding and border are not usable width.
+                # ttk returns padding as a tuple such as (7,) or a Tcl list.
+                raw = container.cget("padding") if "padding" in container.keys() else ()
+                padding = [int(float(str(v))) for v in container.tk.splitlist(raw)] or [0]
+                inset = padding[0] + (padding[2] if len(padding) > 2 else padding[0])
+                if container.winfo_class() == "TLabelframe":
+                    inset += 4
+                available = container.winfo_width() - inset
                 needed = left.winfo_reqwidth() + right.winfo_reqwidth() + gap
-            except tk.TclError:
+            except (tk.TclError, ValueError):
                 return
             if available <= 1:
                 return  # not laid out yet; the first <Configure> decides
@@ -12409,7 +12417,10 @@ class CombinedControlApp:
                 left.grid_configure(row=0, column=0, columnspan=1, padx=(0, gap), pady=0)
                 right.grid_configure(row=0, column=1, columnspan=1, padx=0, pady=0)
             else:
-                left.grid_configure(row=0, column=0, columnspan=2, padx=0, pady=(0, gap))
+                left.grid_configure(
+                    row=0, column=0, columnspan=2, padx=0,
+                    pady=(0, gap if stack_gap is None else stack_gap),
+                )
                 right.grid_configure(row=1, column=0, columnspan=2, padx=0, pady=0)
 
         container.bind("<Configure>", arrange, add="+")
@@ -13710,23 +13721,22 @@ class CombinedControlApp:
         outer = ttk.Frame(self.stfmr_tab, padding=self._ui_px(8, 5))
         outer.grid(row=0, column=0, sticky="nsew")
         outer.columnconfigure(0, weight=1)
-        # Keep every STFMR control/plot block packed at the top.  Any spare
-        # window height belongs to the empty tail row so new controls can be
-        # added later without leaving large gaps between today's sections.
-        outer.rowconfigure(6, weight=1)
+        # Spare window height goes to the plots (row 3), so they fill the page
+        # down to the status line instead of leaving a blank area below it.
+        outer.rowconfigure(3, weight=1)
 
-        # One row: the manual 4886 output on the left, the three instrument
-        # connections as a compact single column on the right.  Side by side
-        # the two sections share one height instead of stacking.
+        # One row: the three instrument connections as a compact single
+        # column on the left, the manual 4886 output on the right.  Side by
+        # side the two sections share one height instead of stacking.
         top = ttk.Frame(outer)
         top.grid(row=0, column=0, sticky="ew", pady=(0, 5))
-        top.columnconfigure(0, weight=1)
+        top.columnconfigure(1, weight=1)
 
         output = ttk.LabelFrame(
             top, text="KEPCO 4886 BOP 20-10 field output", padding=8
         )
-        # Left of the connections and as tall as them; spare width stays here.
-        output.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        # Right of the connections and as tall as them; spare width stays here.
+        output.grid(row=0, column=1, sticky="nsew")
         output.columnconfigure(11, weight=1)
         for panel_row in range(3):
             output.rowconfigure(panel_row, weight=1)
@@ -13802,7 +13812,7 @@ class CombinedControlApp:
         instruments = ttk.LabelFrame(
             top, text="FMR instrument connections", padding=self._ui_px(6, 4)
         )
-        instruments.grid(row=0, column=1, sticky="nsew")
+        instruments.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         labels = {
             "kepco": "KEPCO4886",
             "gauss": "LS475",
@@ -13832,14 +13842,14 @@ class CombinedControlApp:
             connect_button = ttk.Button(
                 device,
                 text="Connect",
-                width=4,
+                width=8,
                 command=lambda selected=key: self.connect_stfmr_device(selected),
             )
             connect_button.grid(row=0, column=2, padx=1)
             disconnect_button = ttk.Button(
                 device,
                 text="Disconnect",
-                width=4,
+                width=10,
                 state="disabled",
                 command=lambda selected=key: self.disconnect_stfmr_device(selected),
             )
@@ -13856,7 +13866,7 @@ class CombinedControlApp:
                 anchor="w",
             ).grid(row=0, column=5, sticky="w", padx=(1, 0))
 
-        self._arrange_pair_by_width(top, output, instruments)
+        self._arrange_pair_by_width(top, instruments, output)
 
         gauss = ttk.LabelFrame(
             outer, text="Lake Shore 475 field readback", padding=8
@@ -13888,12 +13898,19 @@ class CombinedControlApp:
             outer, textvariable=self.stfmr_status_var, style="Status.TLabel"
         ).grid(row=5, column=0, sticky="ew")
 
+        # Two columns: the field sweep on the left and the fixed-field
+        # frequency sweep on the right, each with its own buttons and progress
+        # bar.  They stack when the window is too narrow for both.
+        scans = ttk.Frame(outer)
+        scans.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+        scans.columnconfigure(0, weight=1)
+        scans.columnconfigure(1, weight=1)
         scan = ttk.LabelFrame(
-            outer,
+            scans,
             text="FMR scan: sweep 4886 current, x-axis is the measured 475 field (signed)",
             padding=8,
         )
-        scan.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+        scan.grid(row=0, column=0, sticky="nsew")
         scan.columnconfigure(14, weight=1)
         parameter_grid = ttk.Frame(scan)
         parameter_grid.grid(row=0, column=0, columnspan=15, sticky="w")
@@ -13916,7 +13933,7 @@ class CombinedControlApp:
                 ttk.Label(
                     parameter_grid,
                     text=label,
-                    width=12,
+                    width=max(12, len(label) + 1),
                     anchor="e",
                 ).grid(
                     row=row, column=column, sticky="e", pady=1
@@ -13940,30 +13957,32 @@ class CombinedControlApp:
             text="PNA RF off at end",
             variable=self.stfmr_fmr_rf_off_var,
         ).grid(row=0, column=5, padx=(8, 3), sticky="w")
+        sweep_buttons = ttk.Frame(scan)
+        sweep_buttons.grid(row=3, column=0, columnspan=15, sticky="w", pady=(4, 0))
         self.stfmr_fmr_start_button = ttk.Button(
-            scan_controls,
+            sweep_buttons,
             text="Start multi-frequency sweep",
             command=self.start_stfmr_fmr_scan,
             state="disabled",
         )
-        self.stfmr_fmr_start_button.grid(row=0, column=7, padx=3)
+        self.stfmr_fmr_start_button.grid(row=0, column=0, padx=(0, 6))
         self.stfmr_fmr_stop_button = ttk.Button(
-            scan_controls,
+            sweep_buttons,
             text="Stop / zero",
             command=self.stop_stfmr_fmr_scan,
             state="disabled",
         )
-        self.stfmr_fmr_stop_button.grid(row=0, column=8, padx=3)
+        self.stfmr_fmr_stop_button.grid(row=0, column=1, padx=(0, 6))
         self.stfmr_fmr_save_button = ttk.Button(
-            scan_controls,
+            sweep_buttons,
             text="Save CSV + PNG",
             command=self.save_stfmr_fmr_results,
             state="disabled",
         )
-        self.stfmr_fmr_save_button.grid(row=0, column=9, padx=3)
+        self.stfmr_fmr_save_button.grid(row=0, column=2, padx=(0, 6))
         fmr_progress_row = ttk.Frame(scan)
         fmr_progress_row.grid(
-            row=3, column=0, columnspan=15, sticky="ew", pady=(5, 2)
+            row=4, column=0, columnspan=15, sticky="ew", pady=(5, 2)
         )
         fmr_progress_row.columnconfigure(0, weight=1)
         self.stfmr_fmr_progress = ttk.Progressbar(
@@ -13981,9 +14000,13 @@ class CombinedControlApp:
             style="Status.TLabel",
         ).grid(row=0, column=1, sticky="w")
 
-        ttk.Separator(scan, orient="horizontal").grid(
-            row=4, column=0, columnspan=15, sticky="ew", pady=4
-        )
+        frequency = ttk.LabelFrame(scans, text="Fixed-field frequency sweep", padding=8)
+        frequency.grid(row=0, column=1, sticky="nsew")
+        frequency.columnconfigure(0, weight=1)
+        # The progress row sits at the bottom, level with the field sweep's.
+        frequency.rowconfigure(2, weight=1)
+        fixed_grid = ttk.Frame(frequency)
+        fixed_grid.grid(row=0, column=0, sticky="w")
         fixed_primary_fields = (
             ("Fixed field G:", self.stfmr_frequency_target_field_var),
             ("f start GHz:", self.stfmr_frequency_start_var),
@@ -13994,40 +14017,33 @@ class CombinedControlApp:
             ("Field tol. G:", self.stfmr_frequency_tolerance_var),
             ("Feedback wait s:", self.stfmr_frequency_settle_var),
         )
-        for index, (label, variable) in enumerate(fixed_primary_fields):
-            column = 2 * index
-            ttk.Label(scan, text=label).grid(row=5, column=column, sticky="e")
-            ttk.Entry(scan, textvariable=variable, width=8).grid(
-                row=5, column=column + 1, padx=(0, 7), pady=1
-            )
-        for index, (label, variable) in enumerate(fixed_secondary_fields):
-            column = 2 * index
-            ttk.Label(scan, text=label).grid(row=6, column=column, sticky="e")
-            ttk.Entry(scan, textvariable=variable, width=8).grid(
-                row=6, column=column + 1, padx=(0, 7), pady=1
-            )
+        for row, fields in enumerate((fixed_primary_fields, fixed_secondary_fields)):
+            for index, (label, variable) in enumerate(fields):
+                column = 2 * index
+                ttk.Label(fixed_grid, text=label).grid(row=row, column=column, sticky="e")
+                ttk.Entry(fixed_grid, textvariable=variable, width=8).grid(
+                    row=row, column=column + 1, padx=(0, 7), pady=1
+                )
+        # Buttons in their own row at their natural width.  Squeezed into the
+        # entry columns above they were cut to "Fixed-field frequency s".
+        frequency_buttons = ttk.Frame(frequency)
+        frequency_buttons.grid(row=1, column=0, sticky="w", pady=(4, 0))
         self.stfmr_frequency_start_button = ttk.Button(
-            scan,
+            frequency_buttons,
             text="Fixed-field frequency sweep",
             command=self.start_stfmr_frequency_scan,
             state="disabled",
         )
-        self.stfmr_frequency_start_button.grid(
-            row=6, column=4, columnspan=2, padx=3, sticky="ew"
-        )
+        self.stfmr_frequency_start_button.grid(row=0, column=0, padx=(0, 6))
         self.stfmr_frequency_save_button = ttk.Button(
-            scan,
+            frequency_buttons,
             text="Save sweep CSV + PNG",
             command=self.save_stfmr_frequency_results,
             state="disabled",
         )
-        self.stfmr_frequency_save_button.grid(
-            row=6, column=6, columnspan=2, padx=3, sticky="ew"
-        )
-        frequency_progress_row = ttk.Frame(scan)
-        frequency_progress_row.grid(
-            row=7, column=0, columnspan=15, sticky="ew", pady=(3, 0)
-        )
+        self.stfmr_frequency_save_button.grid(row=0, column=1, padx=(0, 6))
+        frequency_progress_row = ttk.Frame(frequency)
+        frequency_progress_row.grid(row=2, column=0, sticky="sew", pady=(5, 2))
         frequency_progress_row.columnconfigure(0, weight=1)
         self.stfmr_frequency_progress = ttk.Progressbar(
             frequency_progress_row,
@@ -14045,6 +14061,7 @@ class CombinedControlApp:
             anchor="w",
             style="Status.TLabel",
         ).grid(row=0, column=1, sticky="w")
+        self._arrange_pair_by_width(scans, scan, frequency, gap=6)
 
         plots = ttk.Frame(outer)
         plots.grid(row=3, column=0, sticky="nsew", pady=(0, 4))
@@ -14099,22 +14116,22 @@ class CombinedControlApp:
         outer.columnconfigure(0, weight=1)
         outer.rowconfigure(4, weight=1)
 
-        # One row: the manual 4886 output on the left, the instrument
-        # connections as a compact single column on the right.  Side by side
-        # they take the height of the five-row list instead of two stacked
+        # One row: the instrument connections as a compact single column on
+        # the left, the manual 4886 output on the right.  Side by side they
+        # take the height of the five-row list instead of two stacked
         # sections, which gives the plots more room.
         top = ttk.Frame(outer)
         top.grid(row=0, column=0, sticky="ew", pady=(0, 4))
-        top.columnconfigure(0, weight=1)
+        top.columnconfigure(1, weight=1)
 
         # Manual field output, as on the FMR page: set the 4886 by hand to
         # check polarity and the field on the LS475 without running a sweep.
         field_output = ttk.LabelFrame(
             top, text="KEPCO 4886 BOP 20-10 field output", padding=6
         )
-        # Left of the connections and as tall as them; spare width stays here
-        # so the connection list keeps its natural width at the right.
-        field_output.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        # Right of the connections and as tall as them; spare width stays here
+        # so the connection list keeps its natural width at the left.
+        field_output.grid(row=0, column=1, sticky="nsew")
         field_output.columnconfigure(12, weight=1)
         # The panel is as tall as the five-row connection list; share that
         # height between its three rows rather than leaving a gap below them.
@@ -14123,8 +14140,8 @@ class CombinedControlApp:
         ttk.Checkbutton(
             field_output,
             text=(
-                "Electromagnet polarity, cooling, wiring, front-panel limits and personnel safety confirmed, "
-                "and no other program controls this KEPCO"
+                "Electromagnet polarity, cooling, wiring, front-panel limits, microwave power and "
+                "personnel safety confirmed, and no other program controls this KEPCO"
             ),
             variable=self.stfmr_lockin_manual_safety_var,
         ).grid(row=0, column=0, columnspan=13, sticky="w", pady=(0, 4))
@@ -14188,7 +14205,7 @@ class CombinedControlApp:
             )
 
         instruments = ttk.LabelFrame(top, text="STFMR instrument connections", padding=6)
-        instruments.grid(row=0, column=1, sticky="nsew")
+        instruments.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         labels = {
             "kepco": "KEPCO4886",
             "gauss": "LS475",
@@ -14235,113 +14252,111 @@ class CombinedControlApp:
                 width=13, anchor="w",
             ).grid(row=0, column=5, sticky="w")
 
-        self._arrange_pair_by_width(top, field_output, instruments)
+        self._arrange_pair_by_width(top, instruments, field_output)
 
         controls = ttk.LabelFrame(outer, text="STFMR field-sweep parameters", padding=7)
         controls.grid(row=1, column=0, sticky="ew", pady=(0, 4))
-        # Compact, as on the PPMS page: fixed-width fields packed from the left
-        # in aligned columns, one row per group, spare width in a tail column.
-        controls.columnconfigure(6, weight=1)
+        # The parameters (left) and the sweep buttons with the live readback
+        # (right) share this box: side by side when both fit, else stacked.
+        params = ttk.Frame(controls)
+        params.grid(row=0, column=0, sticky="nw")
+        sweep_actions = ttk.Frame(controls)
+        sweep_actions.grid(row=0, column=1, sticky="nw")
+        # Spare width goes to the empty tail column, so the table keeps its
+        # natural size.  Only when the box is narrower than the table, as in
+        # the 826 px split-screen window, does grid shrink the weighted
+        # columns: the tail is already 0 px, so the table's field columns
+        # give way a little instead of the last field being cut off.
+        controls.columnconfigure(0, weight=1)
+        controls.columnconfigure(2, weight=1000)
 
-        def parameter_cell(
-            row, column, label, variable, *, kind="entry", values=(), width=8,
-            parent=None,
-        ):
-            cell = ttk.Frame(controls if parent is None else parent)
-            cell.grid(row=row, column=column, sticky="w", padx=(0, 12), pady=1)
-            ttk.Label(cell, text=label).grid(row=0, column=0, sticky="e")
+        # One aligned table, as on the PPMS page.  Each label is right-aligned
+        # against its field and every field in a column is the same width, so
+        # the boxes line up straight down the page.
+        def parameter(row, pair, label, variable, *, kind="entry", values=(), width=8):
+            ttk.Label(params, text=label).grid(
+                row=row, column=2 * pair, sticky="e",
+                padx=(0 if pair == 0 else 12, 3), pady=1,
+            )
             if kind == "spinbox":
                 widget = ttk.Spinbox(
-                    cell, from_=1, to=999, textvariable=variable, width=6
+                    params, from_=1, to=999, textvariable=variable, width=6
                 )
             elif kind == "combo":
                 widget = ttk.Combobox(
-                    cell, textvariable=variable, values=values,
+                    params, textvariable=variable, values=values,
                     state="readonly", width=width,
                 )
             else:
-                widget = ttk.Entry(cell, textvariable=variable, width=width)
-            widget.grid(row=0, column=1, sticky="w", padx=(3, 0))
+                widget = ttk.Entry(params, textvariable=variable, width=width)
+            widget.grid(row=row, column=2 * pair + 1, sticky="ew", pady=1)
             return widget
 
+        # In a window too narrow for the table only the plain number fields
+        # give way, down to a six-character floor.  The dropdown columns (1
+        # and 3) keep their width, so "MFLI + SR830" is never cut.
+        field_floor = tkfont.nametofont("TkTextFont").measure("0" * 6) + 8
+        for field_column in (5, 7, 9, 11):
+            params.columnconfigure(field_column, weight=1, minsize=field_floor)
+
+        def option(row, pair, text, variable):
+            box = ttk.Checkbutton(params, text=text, variable=variable)
+            box.grid(row=row, column=2 * pair, columnspan=2, sticky="w",
+                     padx=(12, 0), pady=1)
+            return box
+
         # Row 0: microwave carrier and modulation.
-        for column, (label, variable) in enumerate((
+        for pair, (label, variable) in enumerate((
             ("f start GHz:", self.stfmr_lockin_frequency_start_var),
             ("f stop GHz:", self.stfmr_lockin_frequency_stop_var),
             ("f step GHz:", self.stfmr_lockin_frequency_step_var),
             ("Power dBm:", self.stfmr_lockin_power_var),
             ("Mod. Hz:", self.stfmr_lockin_lfo_var),
         )):
-            parameter_cell(0, column, label, variable)
+            parameter(0, pair, label, variable)
         # Row 1: the magnet current sweep.
-        for column, (label, variable) in enumerate((
+        for pair, (label, variable) in enumerate((
             ("Start A:", self.stfmr_lockin_start_var),
             ("Stop A:", self.stfmr_lockin_stop_var),
             ("Step A:", self.stfmr_lockin_step_var),
             ("Comp. V:", self.stfmr_lockin_limit_var),
             ("Wait/pt s:", self.stfmr_lockin_delay_var),
         )):
-            parameter_cell(1, column, label, variable)
-        parameter_cell(1, 5, "Loop:", self.stfmr_lockin_loop_var, kind="spinbox")
-        # Row 2: the lock-in settings, SR830 group then MFLI group.  They share
-        # one row when the window is wide enough and wrap onto two rows when it
-        # is not, as the output panel and the connection list do above.
-        # Dropdowns are sized to their longest choice ("MFLI + SR830",
-        # "TTL Falling", "Trigger In 1"), since they no longer stretch.
-        lockins = ttk.Frame(controls)
-        lockins.grid(row=2, column=0, columnspan=7, sticky="ew")
-        lockins.columnconfigure(1, weight=1)
-        sr830_group = ttk.Frame(lockins)
-        sr830_group.grid(row=0, column=0, sticky="w")
-        mfli_group = ttk.Frame(lockins)
-        mfli_group.grid(row=0, column=1, sticky="w")
-        meter_combo = parameter_cell(
-            0, 0, "Meter:", self.stfmr_lockin_meter_var,
+            parameter(1, pair, label, variable)
+        parameter(1, 5, "Loop:", self.stfmr_lockin_loop_var, kind="spinbox")
+        # Rows 2 and 3: SR830, then MFLI.  Two rows keep the table narrow
+        # enough for the sweep buttons to sit on its right.  Dropdowns are
+        # sized to their longest choice ("MFLI + SR830", "TTL Falling",
+        # "Trigger In 1").
+        meter_combo = parameter(
+            2, 0, "Meter:", self.stfmr_lockin_meter_var,
             kind="combo", values=("SR830", "MFLI", "MFLI + SR830"), width=12,
-            parent=sr830_group,
         )
         meter_combo.bind(
             "<<ComboboxSelected>>", self._on_stfmr_lockin_meter_changed, add="+"
         )
         self.stfmr_lockin_meter_combo = meter_combo
-        parameter_cell(
-            0, 1, "SR830 REF IN:", self.stfmr_lockin_sr830_reference_var,
+        parameter(
+            2, 1, "SR830 REF IN:", self.stfmr_lockin_sr830_reference_var,
             kind="combo", values=tuple(STFMR_LOCKIN_SR830_REFERENCE_INPUTS), width=12,
-            parent=sr830_group,
         )
-        ttk.Checkbutton(
-            sr830_group,
-            text="SR830 autorange",
-            variable=self.stfmr_lockin_sr830_auto_range_var,
-        ).grid(row=0, column=2, sticky="w", padx=(0, 12), pady=1)
-        parameter_cell(
-            0, 0, "MFLI reference:", self.stfmr_lockin_reference_var,
+        option(2, 2, "SR830 autorange", self.stfmr_lockin_sr830_auto_range_var)
+        parameter(
+            3, 0, "MFLI reference:", self.stfmr_lockin_reference_var,
             kind="combo", values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS), width=12,
-            parent=mfli_group,
         )
-        parameter_cell(
-            0, 1, "MFLI time constant s:", self.stfmr_lockin_mfli_timeconstant_var,
-            width=7, parent=mfli_group,
+        parameter(
+            3, 1, "MFLI TC s:", self.stfmr_lockin_mfli_timeconstant_var,
+            width=7,
         )
-        self.stfmr_lockin_mfli_auto_range_check = ttk.Checkbutton(
-            mfli_group, text="MFLI autorange",
-            variable=self.stfmr_lockin_mfli_auto_range_var,
+        self.stfmr_lockin_mfli_auto_range_check = option(
+            3, 2, "MFLI autorange", self.stfmr_lockin_mfli_auto_range_var
         )
-        self.stfmr_lockin_mfli_auto_range_check.grid(
-            row=0, column=2, sticky="w", padx=(0, 12), pady=1,
-        )
-        self._arrange_pair_by_width(lockins, sr830_group, mfli_group, gap=0)
-        ttk.Checkbutton(
-            controls,
-            text="Magnet polarity, cooling, wiring, microwave power and personnel safety confirmed",
-            variable=self.stfmr_lockin_safety_var,
-        ).grid(row=3, column=0, columnspan=7, sticky="w", pady=(5, 1))
 
-        actions = ttk.Frame(outer)
-        actions.grid(row=2, column=0, sticky="ew", pady=(0, 4))
-        actions.columnconfigure(0, weight=1)
-        button_row = ttk.Frame(actions)
-        button_row.grid(row=0, column=0, sticky="ew")
+        # Right-hand column: sweep buttons, then the LS475 read controls, the
+        # live values and the MFLI overload lamp.
+        button_row = ttk.Frame(sweep_actions)
+        button_row.grid(row=0, column=0, sticky="w")
         self.stfmr_lockin_start_button = ttk.Button(
             button_row, text="Start STFMR multi-frequency sweep", command=self.start_stfmr_lockin_scan,
             state="disabled",
@@ -14357,8 +14372,8 @@ class CombinedControlApp:
             state="disabled",
         )
         self.stfmr_lockin_save_button.pack(side="left", padx=4)
-        readback_row = ttk.Frame(actions)
-        readback_row.grid(row=1, column=0, sticky="ew", pady=(3, 0))
+        readback_row = ttk.Frame(sweep_actions)
+        readback_row.grid(row=1, column=0, sticky="w", pady=(4, 0))
         self.stfmr_lockin_read_gauss_button = ttk.Button(
             readback_row, text="Read LS475", command=self.read_stfmr_lockin_gauss_once,
             state="disabled",
@@ -14369,14 +14384,23 @@ class CombinedControlApp:
             text="Continuous field read (0.5 s)",
             variable=self.stfmr_lockin_gauss_continuous_var,
         ).pack(side="left", padx=(0, 12))
-        ttk.Label(readback_row, textvariable=self.stfmr_lockin_field_var).pack(
-            side="left", padx=(0, 8)
-        )
-        ttk.Label(readback_row, textvariable=self.stfmr_lockin_voltage_var).pack(
-            side="left", padx=8
-        )
+        # Each readout is as wide as the longest text it can hold, so the column
+        # never changes width, and never flips the layout, as readings arrive:
+        # 47 characters per line for the two-line MFLI + SR830 readout and 55
+        # for an SR830 autorange message.  Only the height grows, in dual mode.
+        values_row = ttk.Frame(sweep_actions)
+        values_row.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(
+            values_row, textvariable=self.stfmr_lockin_field_var, width=16, anchor="nw"
+        ).pack(side="left", anchor="n", padx=(0, 8))
+        ttk.Label(
+            values_row, textvariable=self.stfmr_lockin_voltage_var,
+            width=48, anchor="nw", justify="left",
+        ).pack(side="left", anchor="n")
+        reference_row = ttk.Frame(sweep_actions)
+        reference_row.grid(row=3, column=0, sticky="w", pady=(4, 0))
         reference_indicator_canvas = tk.Canvas(
-            readback_row,
+            reference_row,
             width=16,
             height=16,
             highlightthickness=0,
@@ -14385,17 +14409,17 @@ class CombinedControlApp:
         reference_indicator_item = reference_indicator_canvas.create_oval(
             3, 3, 13, 13, fill="#9aa0a6", outline="#6f757b"
         )
-        reference_indicator_canvas.pack(side="left", padx=(8, 2))
+        reference_indicator_canvas.pack(side="left", anchor="n", padx=(0, 2))
         self.stfmr_lockin_reference_indicator = (
             reference_indicator_canvas,
             reference_indicator_item,
         )
-        ttk.Label(readback_row, textvariable=self.stfmr_lockin_reference_status_var).pack(
-            side="left", padx=(0, 8)
-        )
-        save_path_row = ttk.Frame(actions)
-        overload_row = ttk.Frame(actions)
-        overload_row.grid(row=3, column=0, sticky="w", pady=(3, 0))
+        ttk.Label(
+            reference_row, textvariable=self.stfmr_lockin_reference_status_var,
+            width=56, anchor="nw", justify="left",
+        ).pack(side="left")
+        overload_row = ttk.Frame(sweep_actions)
+        overload_row.grid(row=4, column=0, sticky="w", pady=(4, 0))
         overload_canvas = tk.Canvas(
             overload_row, width=16, height=16, highlightthickness=0,
             background=self.root.cget("background"),
@@ -14406,7 +14430,11 @@ class CombinedControlApp:
         overload_canvas.pack(side="left", padx=(2, 4))
         self.stfmr_lockin_overload_indicator = (overload_canvas, overload_item)
         ttk.Label(overload_row, textvariable=self.stfmr_lockin_overload_var).pack(side="left")
-        save_path_row.grid(row=2, column=0, sticky="ew", pady=(3, 0))
+        self._arrange_pair_by_width(controls, params, sweep_actions, gap=24, stack_gap=6)
+
+        # The save path can be long, so it keeps the full width below.
+        save_path_row = ttk.Frame(outer)
+        save_path_row.grid(row=2, column=0, sticky="ew", pady=(0, 4))
         save_path_row.columnconfigure(1, weight=1)
         ttk.Label(save_path_row, text="Live CSV / log:").grid(row=0, column=0)
         ttk.Entry(
@@ -14869,7 +14897,7 @@ class CombinedControlApp:
         )
         if len(self.stfmr_lockin_live_rows) > 100_000:
             del self.stfmr_lockin_live_rows[:-100_000]
-        self.stfmr_lockin_voltage_var.set(f"V：{voltage:+.7g} V")
+        self.stfmr_lockin_voltage_var.set(f"V: {voltage:+.7g} V")
         if math.isfinite(reference):
             self.stfmr_lockin_reference_status_var.set(
                 f"Ref: {reference:.5g} Hz " + ("LOCK" if valid else "WARNING")
@@ -14936,7 +14964,7 @@ class CombinedControlApp:
             try:
                 field = future.result()
                 field_g = STFMRGauss475Controller.value_in_gauss(field)
-                self.stfmr_lockin_field_var.set(f"B：{field_g:+.7g} G")
+                self.stfmr_lockin_field_var.set(f"B: {field_g:+.7g} G")
             except BaseException as error:
                 if not self.closing:
                     messagebox.showerror("LS475 read", str(error), parent=self.root)
@@ -15028,7 +15056,7 @@ class CombinedControlApp:
                 field_g = math.nan
                 if field is not None:
                     field_g = STFMRGauss475Controller.value_in_gauss(field)
-                    self.stfmr_lockin_field_var.set(f"B：{field_g:+.7g} G")
+                    self.stfmr_lockin_field_var.set(f"B: {field_g:+.7g} G")
                 if sample is not None:
                     # Standby polling updates only the compact readback text.
                     # X/Y/theta plots are scan results and must not acquire a
@@ -15040,7 +15068,7 @@ class CombinedControlApp:
                     valid = bool(sample.get("reference_valid", False))
                     self._set_stfmr_lockin_reference_state(valid)
                     self.stfmr_lockin_voltage_var.set(
-                        f"V：{voltage:+.7g} V"
+                        f"V: {voltage:+.7g} V"
                     )
                     if math.isfinite(reference):
                         self.stfmr_lockin_reference_status_var.set(
@@ -15097,8 +15125,12 @@ class CombinedControlApp:
         ]
         if missing:
             raise RuntimeError("Connect the 4886, 475, SMB100A and the selected lock-in before starting STFMR")
-        if not self.stfmr_lockin_safety_var.get():
-            raise RuntimeError("Please tick the magnet, cooling, wiring, microwave power and personnel safety confirmation first")
+        # The page has one safety confirmation, in the KEPCO 4886 field output
+        # panel; a sweep energises the magnet and the RF, so it needs that tick.
+        if not self.stfmr_lockin_manual_safety_var.get():
+            raise RuntimeError(
+                "Please tick the safety confirmation in the KEPCO 4886 field output panel first"
+            )
         frequencies_ghz = [
             frequency_hz / 1.0e9
             for frequency_hz in self._build_stfmr_frequency_points(
@@ -15244,7 +15276,7 @@ class CombinedControlApp:
             "mfli_auto_range": mfli_auto_range,
             "mfli_reference_source": reference_source,
             "mfli_sample_rate_hz": max(1.0, 1.0 / max(delay_s, 0.05)),
-            "safety_confirmed": bool(self.stfmr_lockin_safety_var.get()),
+            "safety_confirmed": bool(self.stfmr_lockin_manual_safety_var.get()),
         }
         try:
             recorder = STFMRScanRecorder(Path(folder), settings)
@@ -15636,9 +15668,9 @@ class CombinedControlApp:
                         frequency_ghz=frequency_ghz, point_index=index + 1,
                     ):
                         return
-                    self.stfmr_lockin_field_var.set(f"B：{field_g:+.7g} G")
+                    self.stfmr_lockin_field_var.set(f"B: {field_g:+.7g} G")
                     self.stfmr_lockin_voltage_var.set(
-                        f"V：{voltage:+.7g} V"
+                        f"V: {voltage:+.7g} V"
                     )
                     self.stfmr_lockin_reference_status_var.set(
                         f"Ref: {float(sample.get('reference_frequency_hz', math.nan)):.5g} "
@@ -15769,8 +15801,8 @@ class CombinedControlApp:
                 point_index=index + 1, current_a=current, field_g=field_g,
             ):
                 return
-            self.stfmr_lockin_field_var.set(f"B：{field_g:+.7g} G")
-            self.stfmr_lockin_voltage_var.set(f"V：{voltage:+.7g} V")
+            self.stfmr_lockin_field_var.set(f"B: {field_g:+.7g} G")
+            self.stfmr_lockin_voltage_var.set(f"V: {voltage:+.7g} V")
             self.stfmr_lockin_reference_status_var.set(
                 f"Ref: {row['reference_frequency_hz']:.5g} Hz "
                 + ("LOCK" if valid else "WARNING")
@@ -17776,13 +17808,13 @@ class CombinedControlApp:
         mode = "Current" if result["mode"] == "CURR" else "Voltage"
         self.stfmr_kepco_mode_var.set(f"Mode: {mode}")
         self.stfmr_kepco_current_var.set(
-            f"I：{float(result['current_a']):+.6g} A"
+            f"I: {float(result['current_a']):+.6g} A"
         )
         self.stfmr_kepco_voltage_var.set(
-            f"V：{float(result['voltage_v']):+.6g} V"
+            f"V: {float(result['voltage_v']):+.6g} V"
         )
         self.stfmr_kepco_output_var.set(
-            "OUTP：ON" if result["output"] else "OUTP：OFF"
+            "OUTP: ON" if result["output"] else "OUTP: OFF"
         )
 
     def apply_stfmr_kepco_output(self) -> None:

@@ -1,5 +1,43 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## STFMR and FMR layout, and the STFMR sweep safety tick (2026-09-30)
+
+- On both pages the instrument connections now sit left of the 4886 output
+  panel, which takes the spare width.
+- STFMR field-sweep parameters are one aligned table: each label sits against
+  its field and every field in a column has the same width, so the boxes line
+  up down the page. The lock-ins take two rows, SR830 then MFLI, which leaves
+  room for the sweep buttons, the LS475 readback, the live values and the
+  MFLI overload lamp in a column on the right of the table. The save path
+  keeps a full-width row below. "MFLI time constant s" is shortened to
+  "MFLI TC s".
+- **The STFMR sweep's own safety line is removed, as requested, and a sweep
+  now requires the tick in the 4886 output panel instead.** That line was the
+  interlock the sweep checks before energising the magnet and the RF, so
+  deleting it alone would have made sweeps impossible to start. The panel's
+  wording gained "microwave power", so it still covers everything the removed
+  line did, and the run log's `safety_confirmed` records that tick.
+- The FMR scan is split into two columns, the field sweep and the fixed-field
+  frequency sweep, each with its own buttons and progress bar. FMR's plots
+  now take the spare height down to the status line, instead of an empty row
+  below it taking it.
+- Truncated FMR text is fixed: Connect and Disconnect, "PNA power dBm",
+  "Fixed-field frequency sweep" and "Save sweep CSV + PNG" all show in full.
+- Every side-by-side section stacks automatically when the window is too
+  narrow. Checked on a 2560x1440 screen at 2000 px and at its default 1101 px
+  window, on a 1920x1080 screen's 826 px window, and at 1586 px: nothing is
+  clipped and no text is cut.
+- An adversarial review of this batch found no problem with the re-gated
+  interlock and confirmed four layout defects, all fixed:
+  - The fixed widths given to the live readouts cut the two-line MFLI + SR830
+    readout and SR830 autorange messages. They are now sized to the longest
+    text each can hold, so the column never changes width as readings arrive.
+  - In a narrow window every field shrank equally, cutting "MFLI + SR830".
+    Now only the plain number fields give way, down to a six-character floor.
+  - The side-by-side decision ignored the parameter box's padding. It also
+    failed silently, because ttk returns padding as a tuple; that parsing bug
+    was found while re-measuring and is fixed too.
+
 ## STFMR manual field output, compact STFMR and FMR layouts (2026-09-29)
 
 - The STFMR page gains the FMR page's "KEPCO 4886 BOP 20-10 field output"

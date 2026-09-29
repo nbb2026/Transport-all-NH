@@ -156,7 +156,8 @@ def harness(folder, meter='MFLI', stop='6', end_current='1'):
     h.stfmr_lockin_recorder = None
     h.stfmr_lockin_save_directory = Path(folder)
     values = {
-        'safety': True, 'meter': meter, 'frequency_start': '5',
+        # The sweep's safety confirmation is the tick in the 4886 output panel.
+        'manual_safety': True, 'meter': meter, 'frequency_start': '5',
         'frequency_stop': stop, 'frequency_step': '1', 'power': '10',
         'lfo': '317.3', 'delay': '0', 'limit': '10', 'loop': 1,
         'start': '-1', 'stop': end_current, 'step': '0.5',
