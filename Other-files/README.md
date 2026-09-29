@@ -1,6 +1,45 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
-## KEPCO 4886 recovery after a stalled write (2026-09-29, interim)
+## KEPCO 4886: device clear removed, stalled card needs a power cycle (2026-09-29)
+
+- A root-cause review of the NI traces, every 4886 code path and all 64 run
+  logs overturned the premise of the interim fix below. The SR830-mode
+  correlation is tied to the date: every attempt on 2026-09-29 was SR830 mode,
+  and the same order, SR830 lock then KEPCO enable, completed five times on
+  2026-09-07. GPIB addressing also rules out a mechanism, since the 4886 is not
+  a listener while the SR830 is addressed.
+- The surviving explanation is that the BIT 4886 card itself stopped
+  completing the data handshake. `VI_ERROR_TMO` rather than `VI_ERROR_NLISTENERS`
+  means something at address 6 takes its listen address and then never accepts
+  the byte. The LabVIEW traces show all 132 writes to this card finishing in
+  2-6 ms, so it is stalled, not slow. The project GPIB scanner already records
+  that this card stops responding after repeated `*IDN?`.
+- **Operator action: power-cycle the BOP 20-10, which resets its BIT 4886.**
+  Close the program, NI MAX and LabVIEW first. Do not run NI MAX "Scan for
+  Instruments", `Visa_list.py` or `visa_device_check.py` afterwards, since they
+  send `*IDN?` or a clear to address 6.
+- The interim device clear and full resend are removed. They had never run on
+  hardware, went against the project's write-only handling of this card, and
+  had a hazard: after an aborted transfer, a garbled resent `FUNC:MODE` could
+  leave the supply in voltage mode, so `CURR 0;VOLT 10` and `OUTP ON` would put
+  10 V across the magnet. The enable sequence is sent exactly once again.
+- The KEPCO timeout is back to 3 s, the value in the LabVIEW traces. 10 s
+  changed nothing except making every hang, and the zero/OFF GUI freeze,
+  longer.
+- Two existing safety gaps in the same path are fixed:
+  - The output is now claimed before `OUTP ON` is written, not after. A card
+    can act on `OUTP ON` and then stall its handshake, and previously that left
+    the supply possibly on with no zero/OFF attempted.
+  - Zero/OFF sends `OUTP OFF` even if the zero setpoint write is refused, and
+    keeps ownership when either write fails, so nothing reports the output as
+    confirmed off.
+- Kept from the earlier fix: every start-up step and per-point read names its
+  instrument, and a timed-out LS475 or SR830 read is retried twice. Reads
+  cannot change the supply, so retrying them is safe.
+
+## KEPCO 4886 recovery after a stalled write (2026-09-29, interim, SUPERSEDED)
+
+> Superseded the same evening by the entry above: the device clear and resend were removed.
 
 - The instrument-naming change confirmed the KEPCO 4886 is the device that
   stops responding, while enabling the output at the first current. Raising

@@ -1700,10 +1700,11 @@ class STFMRKepco4886Controller:
             try:
                 manager = acquire_shared_visa_manager()
                 instrument = manager.open_resource(resource_name)
-                # "OUTP ON" and the auto-range commands make this BIT 4886 hold
-                # the handshake while relays switch, which overran the previous
-                # 3 s and failed the scan before its first point.
-                instrument.timeout = 10000
+                # The LabVIEW traces use 3000 ms and show every write to this
+                # card completing in 2-6 ms, OUTP ON included.  A card that
+                # misses 3 s is stalled, not slow: 10 s was tried on
+                # 2026-09-29 and changed nothing except the length of the hang.
+                instrument.timeout = 3000
                 # LabVIEW capture: exact ASCII buffer, GPIB EOI, no CR/LF.
                 instrument.write_termination = None
                 instrument.read_termination = None
@@ -1739,49 +1740,14 @@ class STFMRKepco4886Controller:
     def _send_output_sequence(self, commands) -> None:
         """Send one output set-up sequence, remembering the command in flight."""
         for command in commands:
+            if command == "OUTP ON":
+                # Claim the output before the write, not after.  A write whose
+                # handshake stalls may still have been acted on by the card,
+                # so the supply can be on even though the write "failed";
+                # the failure path must then still send zero and OUTP OFF.
+                self.output_owned = True
             self.last_command = command
             self._write_exact(command)
-            if command == "OUTP ON":
-                # A later setpoint write can fail after the supply has
-                # already been enabled; retain ownership immediately so
-                # the exception path can make a best-effort Zero/OFF.
-                self.output_owned = True
-
-    def _recover_and_resend(self, commands, first_error: BaseException) -> None:
-        """Revive a BIT 4886 that stopped accepting data, then resend once.
-
-        STFMR start-up failed here on 2026-09-29, and only when the SR830 had
-        just been busy on the same bus; the identical sequence had completed in
-        every MFLI run.  A selected device clear frees a card that is holding
-        the handshake.  The clear may also return the card to its power-on
-        state, so the whole sequence is sent again from FUNC:MODE: resuming at
-        the failed command could send a current setpoint to a supply that has
-        fallen back to voltage mode.
-        """
-        failed = getattr(self, "last_command", "")
-        self.logger(
-            f"KEPCO 4886 did not accept {failed!r}; clearing its GPIB interface "
-            "and resending the whole output sequence once"
-        )
-        try:
-            self.instrument.clear()
-        except BaseException as clear_error:
-            raise RuntimeError(
-                f"{failed!r} was not accepted and the GPIB device clear also failed "
-                f"({short_status_error(clear_error, 60)}; VI_ERROR_TMO)"
-            ) from first_error
-        time.sleep(0.3)
-        try:
-            self._send_output_sequence(commands)
-        except BaseException as second_error:
-            if not is_visa_timeout(second_error):
-                raise
-            raise RuntimeError(
-                f"{self.last_command!r} was not accepted, even after a GPIB device "
-                "clear and a full resend (VI_ERROR_TMO). Power-cycle the BOP and its "
-                "BIT 4886 card, and check the supply is in remote"
-            ) from second_error
-        self.logger("KEPCO 4886 accepted the output sequence after the device clear")
 
     def _cached_state(self) -> dict[str, object]:
         return {
@@ -1846,12 +1812,12 @@ class STFMRKepco4886Controller:
                 )
             self.active_mode = selected
             try:
-                try:
-                    self._send_output_sequence(commands)
-                except BaseException as first_error:
-                    if not is_visa_timeout(first_error):
-                        raise
-                    self._recover_and_resend(commands, first_error)
+                # Sent exactly once.  This card is treated as write-only and
+                # is never device-cleared or queried: the project GPIB scanner
+                # records that it stops responding after repeated *IDN?, and a
+                # resend after an aborted transfer could reach a card left in
+                # voltage mode.  A stalled card needs a BOP power cycle.
+                self._send_output_sequence(commands)
             except BaseException:
                 if self.output_owned:
                     try:
@@ -1897,8 +1863,22 @@ class STFMRKepco4886Controller:
                 if self.active_mode == "VOLT"
                 else "CURR 0.000000"
             )
-            self._write_exact(zero)
-            self._write_exact("OUTP OFF")
+            failures = []
+            # Each write is attempted on its own: a supply that refuses the
+            # zero setpoint must still be sent OUTP OFF.
+            for command in (zero, "OUTP OFF"):
+                try:
+                    self._write_exact(command)
+                except BaseException as error:
+                    failures.append((command, error))
+            if failures:
+                # Ownership is kept, so a later close or disconnect tries again
+                # and nothing reports the output as confirmed off.
+                raise RuntimeError(
+                    "KEPCO 4886 zero/OFF not confirmed: "
+                    + "; ".join(f"{command!r} {short_status_error(error, 70)}"
+                                for command, error in failures)
+                ) from failures[0][1]
             self.output_owned = False
             self.cached_current_a = 0.0
             self.cached_voltage_v = 0.0

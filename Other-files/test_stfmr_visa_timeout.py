@@ -109,15 +109,15 @@ class RetryTests(unittest.TestCase):
 
 
 class KepcoTimeoutTests(unittest.TestCase):
-    def test_kepco_allows_time_for_relays_and_autorange(self):
-        """OUTP ON with auto-ranging held the bus longer than 3 s."""
+    def test_kepco_uses_the_labview_trace_timeout(self):
+        """Traces show 2-6 ms per write; 10 s was tried and only lengthened the hang."""
         import re
         from pathlib import Path
         text = Path(app.__file__).read_text(encoding="utf-8")
         block = text[text.index("class STFMRKepco4886Controller"):]
         block = block[:block.index("write_termination = None")]
         found = [int(v) for v in re.findall(r"instrument\.timeout = (\d+)", block)]
-        self.assertEqual(found, [10000])
+        self.assertEqual(found, [3000])
 
 
 if __name__ == "__main__":
@@ -127,36 +127,37 @@ if __name__ == "__main__":
 class FakeBit4886:
     """Records writes; can hold the handshake on chosen commands."""
 
-    def __init__(self, stall=(), stall_times=1, clear_fails=False):
+    def __init__(self, stall=(), acts_on_stall=False):
         self.stall = set(stall)
-        self.stall_left = {c: stall_times for c in self.stall}
-        self.clear_fails = clear_fails
+        self.acts_on_stall = acts_on_stall
         self.writes = []
         self.clears = 0
+        self.output_on = False
 
     def write_raw(self, payload):
         command = payload.decode("ascii")
-        if command in self.stall and self.stall_left[command] > 0:
-            self.stall_left[command] -= 1
+        if command in self.stall:
+            if self.acts_on_stall and command == "OUTP ON":
+                self.output_on = True   # the card acted, then stalled the handshake
             raise FakeVisaTimeout()
         self.writes.append(command)
+        if command == "OUTP ON":
+            self.output_on = True
+        if command == "OUTP OFF":
+            self.output_on = False
 
     def clear(self):
         self.clears += 1
-        if self.clear_fails:
-            raise FakeVisaTimeout()
-        # A device clear may return the card to power-on: forget everything.
-        self.writes.append("<DEVICE CLEAR>")
 
 
-class KepcoRecoveryTests(unittest.TestCase):
+class KepcoWriteOnlyTests(unittest.TestCase):
+    """The BIT 4886 is write-only and is never cleared, queried or resent to."""
+
     SEQUENCE = ["FUNC:MODE CURR", "CURR 0;VOLT 10", "VOLT:RANG:AUTO 1;CURR:RANG:AUTO 1",
                 "OUTP ON", "CURR -3.000000"]
 
     def controller(self, fake):
         made = app.STFMRKepco4886Controller(lambda *_: None)
-        made.logged = []
-        made.logger = made.logged.append
         made.instrument = fake
         return made
 
@@ -167,60 +168,64 @@ class KepcoRecoveryTests(unittest.TestCase):
         fake = FakeBit4886()
         self.enable(self.controller(fake))
         self.assertEqual(fake.writes, self.SEQUENCE)
-        self.assertEqual(fake.clears, 0)
 
-    def test_stall_is_cleared_and_the_whole_sequence_resent(self):
-        """After a clear the card may be in power-on state, so restart at FUNC:MODE."""
-        fake = FakeBit4886(stall={"OUTP ON"})
+    def test_a_stall_is_never_answered_with_a_device_clear_or_a_resend(self):
+        for stalled in self.SEQUENCE:
+            fake = FakeBit4886(stall={stalled})
+            with self.assertRaises(BaseException):
+                self.enable(self.controller(fake))
+            self.assertEqual(fake.clears, 0, f"device clear sent after {stalled!r}")
+            self.assertEqual(fake.writes.count("FUNC:MODE CURR"),
+                             0 if stalled == "FUNC:MODE CURR" else 1,
+                             f"sequence resent after {stalled!r}")
+
+    def test_stall_before_output_on_leaves_nothing_to_switch_off(self):
+        fake = FakeBit4886(stall={"CURR 0;VOLT 10"})
         made = self.controller(fake)
-        self.enable(made)
-        self.assertEqual(fake.clears, 1)
-        after_clear = fake.writes[fake.writes.index("<DEVICE CLEAR>") + 1:]
-        self.assertEqual(after_clear, self.SEQUENCE,
-                         "must resend from FUNC:MODE, never resume at the failed command")
-        self.assertTrue(made.output_owned)
-        self.assertTrue(any("'OUTP ON'" in line for line in made.logged))
-
-    def test_a_stall_on_the_first_command_is_also_recovered(self):
-        fake = FakeBit4886(stall={"FUNC:MODE CURR"})
-        self.enable(self.controller(fake))
-        self.assertEqual(fake.writes[-5:], self.SEQUENCE)
-
-    def test_persistent_stall_names_the_command_and_turns_output_off(self):
-        fake = FakeBit4886(stall={"CURR -3.000000"}, stall_times=2)
-        made = self.controller(fake)
-        with self.assertRaises(RuntimeError) as caught:
+        with self.assertRaises(BaseException):
             self.enable(made)
-        message = str(caught.exception)
-        self.assertIn("CURR -3.000000", message)
-        self.assertIn("device clear", message)
-        self.assertEqual(fake.writes[-2:], ["CURR 0.000000", "OUTP OFF"],
-                         "an output that was switched on must be switched off again")
+        self.assertFalse(made.output_owned)
+        self.assertNotIn("OUTP OFF", fake.writes)
+
+    def test_stall_on_outp_on_still_switches_the_output_off(self):
+        """The card may have acted on OUTP ON before stalling, so turn it off."""
+        fake = FakeBit4886(stall={"OUTP ON"}, acts_on_stall=True)
+        made = self.controller(fake)
+        with self.assertRaises(BaseException):
+            self.enable(made)
+        self.assertEqual(fake.writes[-2:], ["CURR 0.000000", "OUTP OFF"])
+        self.assertFalse(fake.output_on)
         self.assertFalse(made.output_owned)
 
-    def test_failed_clear_is_reported_and_nothing_is_resent(self):
-        fake = FakeBit4886(stall={"OUTP ON"}, clear_fails=True)
+    def test_stall_after_output_on_switches_the_output_off(self):
+        fake = FakeBit4886(stall={"CURR -3.000000"})
         made = self.controller(fake)
-        with self.assertRaises(RuntimeError) as caught:
+        with self.assertRaises(BaseException):
             self.enable(made)
-        self.assertIn("device clear also failed", str(caught.exception))
-        self.assertEqual(fake.writes.count("FUNC:MODE CURR"), 1)
+        self.assertEqual(fake.writes[-2:], ["CURR 0.000000", "OUTP OFF"])
+        self.assertFalse(fake.output_on)
 
-    def test_a_real_fault_is_not_retried(self):
-        class Refusing(FakeBit4886):
-            def write_raw(self, payload):
-                raise ValueError("bad payload")
-        fake = Refusing()
-        with self.assertRaises(ValueError):
-            self.enable(self.controller(fake))
-        self.assertEqual(fake.clears, 0)
+    def test_outp_off_is_sent_even_when_the_zero_setpoint_is_refused(self):
+        fake = FakeBit4886()
+        made = self.controller(fake)
+        self.enable(made)
+        fake.stall = {"CURR 0.000000"}
+        with self.assertRaises(RuntimeError) as caught:
+            made.safe_output_off()
+        self.assertEqual(fake.writes[-1], "OUTP OFF")
+        self.assertFalse(fake.output_on)
+        self.assertIn("not confirmed", str(caught.exception))
+        self.assertTrue(made.output_owned, "unconfirmed off must stay owned for a retry")
 
-    def test_outer_message_still_names_the_supply_and_the_command(self):
-        fake = FakeBit4886(stall={"OUTP ON"}, stall_times=2)
+    def test_named_error_reaches_the_operator(self):
+        fake = FakeBit4886(stall={"FUNC:MODE CURR"})
         made = self.controller(fake)
         with self.assertRaises(RuntimeError) as caught:
             with app.visa_operation("KEPCO 4886", "enabling the output at the first current"):
                 self.enable(made)
-        message = str(caught.exception)
-        for part in ("KEPCO 4886", "enabling the output", "'OUTP ON'", "device clear"):
-            self.assertIn(part, message)
+        self.assertIn("KEPCO 4886", str(caught.exception))
+        self.assertEqual(made.last_command, "FUNC:MODE CURR")
+
+
+if __name__ == "__main__":
+    unittest.main()
