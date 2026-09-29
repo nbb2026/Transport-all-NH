@@ -224,3 +224,6 @@ __marimo__/
 # Project-local CPython runtime and virtual environment; never released.
 .pyenv/
 .venv311/
+
+# Measurement run folders copied in for diagnosis; data, not source.
+STFMR_field_scan_*/

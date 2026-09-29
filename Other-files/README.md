@@ -1,5 +1,33 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## STFMR scans failing with a bare VI_ERROR_TMO (2026-09-29)
+
+- Three STFMR sweeps failed identically, 6.35 s after `frequency_configure`
+  and before a single point was saved. The logs show the run never reached
+  `frequency_ready` or the start pre-read, so the fault is in the block that
+  sets up the SMB100A, the SR830 and the KEPCO, not in the measurement loop.
+  The repeatability to within 0.03 s rules out a chance bus glitch.
+- The dialog said only `VI_ERROR_TMO`, naming none of the four instruments on
+  the bus. Every instrument call in that block, and every per-point read, now
+  reports which device stopped responding and what it was doing.
+- The KEPCO 4886 transfer timeout goes from 3 s to 10 s. It is the shortest
+  on the rack, and the start-up block ends by sending the auto-range commands
+  and `OUTP ON`, which make this old supply hold the GPIB handshake while its
+  relays switch. That is the best candidate for a failure that lands at the
+  same moment every time.
+- A timed-out read is now retried twice before the scan is abandoned, matching
+  what the PPMS rack already did. Writes are deliberately not retried, since
+  re-sending an output command could apply it twice.
+- Checked and ruled out as causes: the acquisition executor has one worker,
+  the 0.5 s continuous field read already pauses during a scan, and the manual
+  LS475 button is already disabled while scanning.
+- Still open: the SR830 reference reads 317.3 Hz, matching the modulation, yet
+  reports WARNING, which means its latched unlock bit is set. That points at a
+  genuinely intermittent reference from the SMB100A low-frequency output and
+  is worth checking at the cable.
+- `test_stfmr_visa_timeout.py` covers timeout detection by code and by text,
+  the naming, the retry and its limits, and the KEPCO timeout value.
+
 ## Project folder renamed to 0-Transport-Code (2026-09-22)
 
 - The project moved from `3-Transport-Code` to `0-Transport-Code`. The

@@ -239,6 +239,40 @@ def short_status_error(error: BaseException, limit: int = 120) -> str:
     return first_sentence[: max(1, limit - 1)].rstrip() + "…"
 
 
+# VISA reports a timed-out transfer with this status code.  Matching on the
+# code keeps the check working without importing pyvisa at module import time,
+# and the text is the fallback for backends that only raise a plain error.
+VI_ERROR_TMO_CODE = -1073807339
+
+
+def is_visa_timeout(error: BaseException) -> bool:
+    """True when ``error`` is a VISA transfer timeout."""
+    if getattr(error, "error_code", None) == VI_ERROR_TMO_CODE:
+        return True
+    return "VI_ERROR_TMO" in str(error)
+
+
+@contextmanager
+def visa_operation(label: str, step: str = ""):
+    """Name the instrument in a VISA timeout raised inside the block.
+
+    A bare "VI_ERROR_TMO" cannot be acted on when four instruments share the
+    bus, so the failing device, and the step it was on, are put in the message
+    the operator actually sees.
+    """
+    try:
+        yield
+    except BaseException as error:
+        if is_visa_timeout(error):
+            where = f" during {step}" if step else ""
+            raise RuntimeError(
+                f"{label} stopped responding on the bus{where} "
+                f"({short_status_error(error, 80)}). Check its GPIB address, "
+                "cabling and that it is not held busy by another program."
+            ) from error
+        raise
+
+
 def reload_current_zhinst_api() -> bool:
     """Import Zurich Core/Utils again after an in-process pip installation."""
     global zi_core, zi_utils
@@ -1665,7 +1699,10 @@ class STFMRKepco4886Controller:
             try:
                 manager = acquire_shared_visa_manager()
                 instrument = manager.open_resource(resource_name)
-                instrument.timeout = 3000
+                # "OUTP ON" and the auto-range commands make this BIT 4886 hold
+                # the handshake while relays switch, which overran the previous
+                # 3 s and failed the scan before its first point.
+                instrument.timeout = 10000
                 # LabVIEW capture: exact ASCII buffer, GPIB EOI, no CR/LF.
                 instrument.write_termination = None
                 instrument.read_termination = None
@@ -14971,20 +15008,23 @@ class CombinedControlApp:
             if self.stfmr_lockin_stop_event.is_set():
                 return
             if initial:
-                self.stfmr_lockin_controllers["smb"].configure(
-                    frequency_ghz,
-                    self.stfmr_lockin_power_dbm,
-                    self.stfmr_lockin_expected_hz,
-                )
-                if meter in ("SR830", "MFLI + SR830"):
-                    self.stfmr_lockin_controllers["830"].configure(
-                        self.stfmr_lockin_sr830_reference_input,
-                        self.stfmr_lockin_sr830_auto_range,
-                    )
-                    self.stfmr_lockin_controllers["830"].wait_for_reference(
+                with visa_operation("SMB100A", "carrier and modulation setup"):
+                    self.stfmr_lockin_controllers["smb"].configure(
+                        frequency_ghz,
+                        self.stfmr_lockin_power_dbm,
                         self.stfmr_lockin_expected_hz,
-                        timeout_s=5.0,
                     )
+                if meter in ("SR830", "MFLI + SR830"):
+                    with visa_operation("SR830", "lock-in setup"):
+                        self.stfmr_lockin_controllers["830"].configure(
+                            self.stfmr_lockin_sr830_reference_input,
+                            self.stfmr_lockin_sr830_auto_range,
+                        )
+                    with visa_operation("SR830", "waiting for the reference to lock"):
+                        self.stfmr_lockin_controllers["830"].wait_for_reference(
+                            self.stfmr_lockin_expected_hz,
+                            timeout_s=5.0,
+                        )
                 if meter in ("MFLI", "MFLI + SR830"):
                     self.stfmr_lockin_mfli_controller.configure_mfli(
                         "AC",
@@ -14997,15 +15037,18 @@ class CombinedControlApp:
                         timeconstant_s=self.stfmr_lockin_mfli_timeconstant_s,
                     )
             else:
-                self.stfmr_lockin_controllers["kepco"].zero_output()
-                self.stfmr_lockin_controllers["smb"].set_frequency(
-                    frequency_ghz
-                )
+                with visa_operation("KEPCO 4886", "zeroing before the next carrier"):
+                    self.stfmr_lockin_controllers["kepco"].zero_output()
+                with visa_operation("SMB100A", "carrier frequency change"):
+                    self.stfmr_lockin_controllers["smb"].set_frequency(
+                        frequency_ghz
+                    )
             if self.stfmr_lockin_stop_event.is_set():
                 return
-            self.stfmr_lockin_controllers["kepco"].set_output(
-                "CURR", first_current, self.stfmr_lockin_limit_v
-            )
+            with visa_operation("KEPCO 4886", "enabling the output at the first current"):
+                self.stfmr_lockin_controllers["kepco"].set_output(
+                    "CURR", first_current, self.stfmr_lockin_limit_v
+                )
 
         try:
             future = self.stfmr_lockin_executor.submit(configure)
@@ -15038,6 +15081,29 @@ class CombinedControlApp:
 
         future.add_done_callback(lambda _future: self.post_ui(configured))
 
+    def _stfmr_retry_read(self, label: str, operation, attempts: int = 3):
+        """Repeat a timed-out instrument read before giving up on the scan.
+
+        One dropped transfer on a shared GPIB bus used to end the whole sweep.
+        Only reads are retried here: re-sending a command that changes the
+        supply or the microwave output could apply it twice.
+        """
+        for attempt in range(1, max(1, int(attempts)) + 1):
+            try:
+                return operation()
+            except BaseException as error:
+                if not is_visa_timeout(error):
+                    raise
+                if attempt >= attempts:
+                    raise RuntimeError(
+                        f"{label} did not answer {attempts} read attempts "
+                        f"({short_status_error(error, 80)}). Check its GPIB "
+                        "address, cabling and that no other program holds it."
+                    ) from error
+                self.thread_log(
+                    f"STFMR {label} read timed out, attempt {attempt} of {attempts}; retrying"
+                )
+
     def _prime_stfmr_lockin_scan(self) -> None:
         """Exercise the read path once, without adding a timed startup wait."""
         self.stfmr_lockin_after_id = None
@@ -15051,10 +15117,16 @@ class CombinedControlApp:
         def prime() -> None:
             # Exercise the same read path as a real point, but intentionally
             # keep this startup sample out of plots/CSV.
-            self.stfmr_lockin_controllers["gauss"].read_field()
+            self._stfmr_retry_read(
+                "Lake Shore 475",
+                lambda: self.stfmr_lockin_controllers["gauss"].read_field(),
+            )
             if meter in ("SR830", "MFLI + SR830"):
-                self.stfmr_lockin_controllers["830"].read_sample(
-                    self.stfmr_lockin_expected_hz
+                self._stfmr_retry_read(
+                    "SR830",
+                    lambda: self.stfmr_lockin_controllers["830"].read_sample(
+                        self.stfmr_lockin_expected_hz
+                    ),
                 )
             if meter in ("MFLI", "MFLI + SR830"):
                 self.stfmr_lockin_mfli_controller.read_mfli(
@@ -15106,10 +15178,16 @@ class CombinedControlApp:
         meter = self.stfmr_lockin_selected_meter
 
         def read_point():
-            field = self.stfmr_lockin_controllers["gauss"].read_field()
+            field = self._stfmr_retry_read(
+                "Lake Shore 475",
+                lambda: self.stfmr_lockin_controllers["gauss"].read_field(),
+            )
             sample = (
-                self.stfmr_lockin_controllers["830"].read_sample(
-                    self.stfmr_lockin_expected_hz
+                self._stfmr_retry_read(
+                    "SR830",
+                    lambda: self.stfmr_lockin_controllers["830"].read_sample(
+                        self.stfmr_lockin_expected_hz
+                    ),
                 )
                 if meter == "SR830"
                 else self.stfmr_lockin_mfli_controller.read_stfmr_mfli(
@@ -15122,8 +15200,11 @@ class CombinedControlApp:
             if meter == "MFLI + SR830":
                 sample = dict(sample)
                 sample["_timestamp_iso"] = datetime_module.datetime.now().astimezone().isoformat(timespec="milliseconds")
-                sample["_sr830"] = self.stfmr_lockin_controllers["830"].read_sample(
-                    self.stfmr_lockin_expected_hz
+                sample["_sr830"] = self._stfmr_retry_read(
+                    "SR830",
+                    lambda: self.stfmr_lockin_controllers["830"].read_sample(
+                        self.stfmr_lockin_expected_hz
+                    ),
                 )
                 sample["_sr830"]["_timestamp_iso"] = datetime_module.datetime.now().astimezone().isoformat(timespec="milliseconds")
             return field, sample
