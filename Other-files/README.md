@@ -1,5 +1,39 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Compact MOKE-6221 page, and the STFMR field at 0 A (2026-09-30)
+
+- The MOKE-6221 page is compacted like STFMR. The 6221 connection sits
+  beside the continuous-output box, and the pulse scan beside ROI editing.
+  The scan's start, train-start and Save CSV buttons move to their own row
+  under the scan parameters, whose labels and boxes are now aligned. At the
+  lab's 2000 px window the controls need 245 px less height. The plots take
+  the spare height down to the status line; before, an empty row below them
+  took it.
+- Each side-by-side pair, and the Apply and red stop buttons of both
+  outputs, stacks by itself when the window is too narrow. Checked on a
+  2560x1440 screen at 2000 px and at its default 1101 px window, on a
+  1920x1080 screen's 826 px window, and at 1586 px: nothing is clipped and
+  no text is cut.
+- The STFMR "Measured field vs 4886 current" plot now states the field at
+  0 A, for example "Field at 0 A: +272.0 G". The value is the measured field
+  where a sweep crosses 0 A, interpolated between the points either side.
+  Frequencies and loops that agree within 2 G give one value. Otherwise the
+  label shows the range, because that spread is remanence. The label sits
+  outside the plot box, so it never covers the curve. If the legend leaves
+  no room, it moves into the plot's title bar instead.
+- Tab order follows the screen: on STFMR and FMR the connections come
+  before the 4886 output, and on MOKE-6221 the scan parameters come before
+  the start buttons.
+- A review of this batch confirmed two problems, both fixed and covered by
+  tests: that Tab order, and the 0 A label overlapping the axis title on a
+  narrow plot. The `test/` suite found a third: given a stand-in canvas,
+  as the stub tests use, the label raised an error that stopped the plot
+  redraw. It now draws nothing there.
+- The suites hang on macOS when the display is asleep, because Tk's
+  `update()` waits for the window server. The previous commit hangs the
+  same way. Wake the display, or run under `caffeinate -u`. The `test/`
+  command in the top-level README needed `PYTHONPATH=../..`, not `..`.
+
 ## STFMR and FMR layout, and the STFMR sweep safety tick (2026-09-30)
 
 - On both pages the instrument connections now sit left of the 4886 output

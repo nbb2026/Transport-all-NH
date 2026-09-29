@@ -13867,6 +13867,8 @@ class CombinedControlApp:
             ).grid(row=0, column=5, sticky="w", padx=(1, 0))
 
         self._arrange_pair_by_width(top, instruments, output)
+        # Tab visits the connections first, as they now sit on the left.
+        instruments.lower(output)
 
         gauss = ttk.LabelFrame(
             outer, text="Lake Shore 475 field readback", padding=8
@@ -14253,6 +14255,8 @@ class CombinedControlApp:
             ).grid(row=0, column=5, sticky="w")
 
         self._arrange_pair_by_width(top, instruments, field_output)
+        # Tab visits the connections first, as they now sit on the left.
+        instruments.lower(field_output)
 
         controls = ttk.LabelFrame(outer, text="STFMR field-sweep parameters", padding=7)
         controls.grid(row=1, column=0, sticky="ew", pady=(0, 4))
@@ -15961,6 +15965,77 @@ class CombinedControlApp:
             series_labels=labels,
             series_colors=colors,
         )
+        self._label_field_at_zero_current(canvas, series)
+
+    @staticmethod
+    def _fields_at_zero_current(points) -> list[float]:
+        """Measured field wherever one sweep passes 0 A.
+
+        Exact 0 A points are used as they are; otherwise the field is linearly
+        interpolated between the two points either side of 0 A.  A round trip
+        crosses twice, and with remanence the two values differ, so all
+        crossings are returned rather than the first.
+        """
+        zero = 1e-9
+        values = [float(field) for current, field in points if abs(current) <= zero]
+        for (x0, y0), (x1, y1) in zip(points, points[1:]):
+            if abs(x0) > zero and abs(x1) > zero and (x0 < 0.0) != (x1 < 0.0):
+                values.append(float(y0) + (0.0 - x0) * (float(y1) - float(y0)) / (x1 - x0))
+        return values
+
+    def _label_field_at_zero_current(self, canvas, series) -> None:
+        """Print the field that 0 A produces, clear of the curve.
+
+        Preferred spot: right-aligned in the strip above the plot, beside the
+        legend.  If the legend or the axis title leaves no free spot, as on a
+        narrow canvas with several frequencies, the value goes into the
+        plot's title bar instead, where it can never overlap anything.
+        Several frequencies or loops that agree within 2 G give one value;
+        otherwise the range is shown, since that spread is real remanence.
+        """
+        if not isinstance(canvas, tk.Canvas):
+            return  # nothing to annotate; the plot itself has already drawn
+        frame = canvas.master if canvas.master.winfo_class() == "TLabelframe" else None
+        if frame is not None and not hasattr(frame, "_zero_field_base_title"):
+            frame._zero_field_base_title = str(frame.cget("text"))
+
+        def frame_title(value: str = "") -> None:
+            if frame is not None:
+                base = frame._zero_field_base_title
+                frame.configure(text=f"{base}; field at 0 A: {value}" if value else base)
+
+        values = [value for points in series.values()
+                  for value in self._fields_at_zero_current(points)]
+        if not values:
+            frame_title()
+            return
+        low, high = min(values), max(values)
+        value = (f"{sum(values) / len(values):+.1f} G" if high - low <= 2.0
+                 else f"{low:+.1f} to {high:+.1f} G")
+        width = max(canvas.winfo_width(), 330)
+        height = max(canvas.winfo_height(), 120)
+        # Every spot lies outside the plot box, so the curve is never covered:
+        # the top strip beside the legend, then the bottom corners either side
+        # of the x-axis title.  Each is checked against everything drawn.
+        spots = ((width - 24, 12, "e"), (width - 24, height - 10, "e"), (90, height - 10, "w"))
+        label = canvas.create_text(0, 0, text=f"Field at 0 A: {value}", fill="#333333")
+        for text in (f"Field at 0 A: {value}", f"B(0 A): {value}"):
+            canvas.itemconfigure(label, text=text)
+            for x, y, anchor in spots:
+                canvas.coords(label, x, y)
+                canvas.itemconfigure(label, anchor=anchor)
+                box = canvas.bbox(label)
+                if box and not [item for item in canvas.find_overlapping(*box) if item != label]:
+                    frame_title()
+                    return
+        if frame is not None:
+            canvas.delete(label)
+            frame_title(value)
+            return
+        # A bare canvas with no title bar: the short form top-right, where at
+        # worst it touches the legend rather than the data.
+        canvas.itemconfigure(label, text=f"B(0 A): {value}", anchor="e")
+        canvas.coords(label, width - 24, 12)
 
     @staticmethod
     def _stfmr_lockin_current_field_series(
@@ -19322,14 +19397,22 @@ class CombinedControlApp:
         outer = ttk.Frame(self.k6221_tab, padding=7)
         outer.grid(row=0, column=0, sticky="nsew")
         outer.columnconfigure(0, weight=1)
-        outer.rowconfigure(6, weight=1)
+        # Spare window height goes to the plots (row 3), so they fill the page
+        # down to the status line instead of an empty row below it.
+        outer.rowconfigure(3, weight=1)
 
-        connection = ttk.LabelFrame(outer, text="Keithley 6221 / VISA", padding=7)
-        connection.grid(row=0, column=0, sticky="ew")
+        # Compact, as on the STFMR page: the connection beside the continuous
+        # output, and the pulse scan beside ROI editing.  Each pair stacks by
+        # itself when the window is too narrow for both.
+        top = ttk.Frame(outer)
+        top.grid(row=0, column=0, sticky="ew")
+        top.columnconfigure(1, weight=1)
+        connection = ttk.LabelFrame(top, text="Keithley 6221 / VISA", padding=7)
+        connection.grid(row=0, column=0, sticky="nsew")
         connection.columnconfigure(5, weight=1)
         ttk.Label(connection, text="Resource:").grid(row=0, column=0)
         ttk.Entry(
-            connection, textvariable=self.k6221_resource_var, width=24
+            connection, textvariable=self.k6221_resource_var, width=18
         ).grid(row=0, column=1, padx=(0, 8))
         self.k6221_connect_button = ttk.Button(
             connection, text="Connect", command=self.connect_k6221
@@ -19359,12 +19442,19 @@ class CombinedControlApp:
         )
 
         continuous = ttk.LabelFrame(
-            outer, text="AC/DC continuous output and live readback", padding=7
+            top, text="AC/DC continuous output and live readback", padding=7
         )
-        continuous.grid(row=1, column=0, sticky="ew", pady=(7, 7))
-        ttk.Label(continuous, text="Mode:").grid(row=0, column=0)
+        continuous.grid(row=0, column=1, sticky="nsew")
+        continuous.columnconfigure(0, weight=1)
+        continuous_row = ttk.Frame(continuous)
+        continuous_row.grid(row=0, column=0, columnspan=10, sticky="ew")
+        continuous_fields = ttk.Frame(continuous_row)
+        continuous_fields.grid(row=0, column=0, sticky="w")
+        continuous_buttons = ttk.Frame(continuous_row)
+        continuous_buttons.grid(row=0, column=1, sticky="w")
+        ttk.Label(continuous_fields, text="Mode:").grid(row=0, column=0)
         mode_combo = ttk.Combobox(
-            continuous,
+            continuous_fields,
             textvariable=self.k6221_continuous_mode_var,
             values=("AC", "DC"),
             state="readonly",
@@ -19375,43 +19465,44 @@ class CombinedControlApp:
             "<<ComboboxSelected>>",
             lambda _event: self._update_k6221_continuous_mode_ui(),
         )
-        ttk.Label(continuous, text="Current (mA, RMS for AC):").grid(
+        ttk.Label(continuous_fields, text="Current (mA, RMS for AC):").grid(
             row=0, column=2
         )
         current_entry = ttk.Entry(
-            continuous,
+            continuous_fields,
             textvariable=self.k6221_continuous_current_var,
             width=10,
         )
         current_entry.grid(row=0, column=3, padx=(0, 10))
-        ttk.Label(continuous, text="Frequency (Hz):").grid(row=0, column=4)
+        ttk.Label(continuous_fields, text="Frequency (Hz):").grid(row=0, column=4)
         self.k6221_continuous_frequency_entry = ttk.Entry(
-            continuous,
+            continuous_fields,
             textvariable=self.k6221_continuous_frequency_var,
             width=9,
         )
         self.k6221_continuous_frequency_entry.grid(
             row=0, column=5, padx=(0, 10)
         )
-        ttk.Label(continuous, text="Compliance (V):").grid(row=0, column=6)
+        ttk.Label(continuous_fields, text="Compliance (V):").grid(row=0, column=6)
         compliance_entry = ttk.Entry(
-            continuous,
+            continuous_fields,
             textvariable=self.k6221_compliance_var,
             width=8,
         )
         compliance_entry.grid(row=0, column=7, padx=(0, 10))
         self.k6221_continuous_apply_button = ttk.Button(
-            continuous,
+            continuous_buttons,
             text="Apply continuous output",
             command=self.apply_k6221_continuous_output,
         )
-        self.k6221_continuous_apply_button.grid(row=0, column=8, padx=3)
+        self.k6221_continuous_apply_button.grid(row=0, column=0, padx=(0, 3))
         self.k6221_continuous_off_button = ttk.Button(
-            continuous,
+            continuous_buttons,
             text="Stop / zero",
             command=self.stop_k6221,
         )
-        self.k6221_continuous_off_button.grid(row=0, column=9, padx=(3, 0))
+        self.k6221_continuous_off_button.grid(row=0, column=1, padx=(3, 0))
+        self._arrange_pair_by_width(continuous_row, continuous_fields, continuous_buttons, gap=4, stack_gap=5)
         self.k6221_continuous_widgets.extend(
             (mode_combo, current_entry, compliance_entry)
         )
@@ -19449,32 +19540,43 @@ class CombinedControlApp:
             style="Muted.TLabel",
         ).grid(row=2, column=0, columnspan=10, sticky="w", pady=(5, 0))
 
+        self._arrange_pair_by_width(top, connection, continuous, gap=7)
+
         output = ttk.LabelFrame(
             outer, text="DC unipolar pulse output (0 A ↔ setpoint, 50% duty)", padding=7
         )
-        output.grid(row=2, column=0, sticky="ew", pady=(0, 7))
-        ttk.Label(output, text="Pulse current (mA):").grid(row=0, column=0)
-        ttk.Entry(output, textvariable=self.k6221_current_var, width=9).grid(
+        output.grid(row=1, column=0, sticky="ew", pady=(7, 7))
+        output.columnconfigure(0, weight=1)
+        # Fields, then the Apply and red stop buttons; the buttons move below
+        # the fields when the window is too narrow, so neither is ever cut.
+        output_row = ttk.Frame(output)
+        output_row.grid(row=0, column=0, columnspan=10, sticky="ew")
+        output_fields = ttk.Frame(output_row)
+        output_fields.grid(row=0, column=0, sticky="w")
+        output_buttons = ttk.Frame(output_row)
+        output_buttons.grid(row=0, column=1, sticky="w")
+        ttk.Label(output_fields, text="Pulse current (mA):").grid(row=0, column=0)
+        ttk.Entry(output_fields, textvariable=self.k6221_current_var, width=9).grid(
             row=0, column=1, padx=(0, 10)
         )
-        ttk.Label(output, text="High-level width (us):").grid(row=0, column=2)
-        ttk.Entry(output, textvariable=self.k6221_width_var, width=9).grid(
+        ttk.Label(output_fields, text="High-level width (us):").grid(row=0, column=2)
+        ttk.Entry(output_fields, textvariable=self.k6221_width_var, width=9).grid(
             row=0, column=3, padx=(0, 10)
         )
-        ttk.Label(output, text="Pulse count:").grid(row=0, column=4)
-        ttk.Entry(output, textvariable=self.k6221_count_var, width=9).grid(
+        ttk.Label(output_fields, text="Pulse count:").grid(row=0, column=4)
+        ttk.Entry(output_fields, textvariable=self.k6221_count_var, width=9).grid(
             row=0, column=5, padx=(0, 10)
         )
-        ttk.Label(output, text="Compliance (V):").grid(row=0, column=6)
-        ttk.Entry(output, textvariable=self.k6221_compliance_var, width=8).grid(
+        ttk.Label(output_fields, text="Compliance (V):").grid(row=0, column=6)
+        ttk.Entry(output_fields, textvariable=self.k6221_compliance_var, width=8).grid(
             row=0, column=7, padx=(0, 10)
         )
         self.k6221_apply_button = ttk.Button(
-            output, text="Apply pulse output", command=self.apply_k6221_output
+            output_buttons, text="Apply pulse output", command=self.apply_k6221_output
         )
-        self.k6221_apply_button.grid(row=0, column=8, padx=3)
+        self.k6221_apply_button.grid(row=0, column=0, padx=(0, 3))
         self.k6221_off_button = tk.Button(
-            output,
+            output_buttons,
             text="6221 stop now / zero",
             command=self.stop_k6221,
             bg="#d70018",
@@ -19484,13 +19586,21 @@ class CombinedControlApp:
             padx=10,
             pady=3,
         )
-        self.k6221_off_button.grid(row=0, column=9, padx=(8, 0))
+        self.k6221_off_button.grid(row=0, column=1, padx=(8, 0))
+        self._arrange_pair_by_width(output_row, output_fields, output_buttons, gap=4, stack_gap=5)
         ttk.Label(
             output, textvariable=self.k6221_output_var, style="Metric.TLabel"
         ).grid(row=1, column=0, columnspan=10, sticky="e", pady=(6, 0))
 
-        scan = ttk.LabelFrame(outer, text="Pulse current scan and ROI acquisition", padding=7)
-        scan.grid(row=3, column=0, sticky="ew", pady=(0, 7))
+        bottom = ttk.Frame(outer)
+        bottom.grid(row=2, column=0, sticky="ew", pady=(0, 7))
+        bottom.columnconfigure(1, weight=1)
+        scan = ttk.LabelFrame(bottom, text="Pulse current scan and ROI acquisition", padding=7)
+        scan.grid(row=0, column=0, sticky="nsew")
+        # Under the parameter table rather than beside it, which kept the scan
+        # box too wide for narrow windows.
+        scan_buttons = ttk.Frame(scan)
+        scan_buttons.grid(row=2, column=0, columnspan=12, sticky="w", pady=(7, 0))
         for column, (label, variable, width) in enumerate(
             (
                 ("Start mA:", self.k6221_start_var, 8),
@@ -19500,20 +19610,14 @@ class CombinedControlApp:
                 ("Acquire/interval s:", self.k6221_scan_interval_var, 7),
             )
         ):
-            ttk.Label(scan, text=label).grid(row=0, column=column * 2)
+            ttk.Label(scan, text=label).grid(row=0, column=column * 2, sticky="e", padx=(0, 3))
             ttk.Entry(scan, textvariable=variable, width=width).grid(
-                row=0, column=column * 2 + 1, padx=(0, 8)
+                row=0, column=column * 2 + 1, sticky="ew", padx=(0, 8)
             )
         self.k6221_start_button = ttk.Button(
-            scan, text="Start current round-trip scan", command=self.start_k6221_scan
+            scan_buttons, text="Start current round-trip scan", command=self.start_k6221_scan
         )
-        self.k6221_start_button.grid(
-            row=0,
-            column=10,
-            columnspan=2,
-            sticky="ew",
-            padx=(8, 0),
-        )
+        self.k6221_start_button.grid(row=0, column=0, padx=(0, 6))
 
         for column, (label, variable, width) in enumerate(
             (
@@ -19523,20 +19627,27 @@ class CombinedControlApp:
                 ("Acquire/interval s:", self.k6221_train_interval_var, 7),
             )
         ):
-            ttk.Label(scan, text=label).grid(row=1, column=column * 2)
+            ttk.Label(scan, text=label).grid(
+                row=1, column=column * 2, sticky="e", padx=(0, 3), pady=(7, 0)
+            )
             ttk.Entry(scan, textvariable=variable, width=width).grid(
-                row=1, column=column * 2 + 1, padx=(0, 8), pady=(7, 0)
+                row=1, column=column * 2 + 1, sticky="ew", padx=(0, 8), pady=(7, 0)
             )
         self.k6221_train_start_button = ttk.Button(
-            scan,
+            scan_buttons,
             text="Start fixed-current pulse acquisition",
             command=self.start_k6221_pulse_train,
         )
-        self.k6221_train_start_button.grid(
-            row=1, column=8, columnspan=2, sticky="ew", pady=(7, 0)
+        self.k6221_train_start_button.grid(row=0, column=1, padx=(0, 6))
+        # Keyboard focus moves through siblings in stacking order, and the
+        # button row was created before the parameter fields.  Put it back
+        # after them, as it appears on screen, so Tab from the pulse output
+        # reaches "Start mA" rather than a start button a space bar can press.
+        scan_buttons.lift(
+            [w for w in scan.winfo_children() if w.winfo_class() == "TEntry"][-1]
         )
         ttk.Label(scan, textvariable=self.k6221_roi_var).grid(
-            row=2, column=0, columnspan=6, sticky="w", pady=(7, 0)
+            row=3, column=0, columnspan=6, sticky="w", pady=(7, 0)
         )
         self.k6221_save_images_check = ttk.Checkbutton(
             scan,
@@ -19545,25 +19656,18 @@ class CombinedControlApp:
             command=self.configure_k6221_image_saving,
         )
         self.k6221_save_images_check.grid(
-            row=2, column=6, columnspan=4, sticky="e", pady=(7, 0)
+            row=3, column=6, columnspan=4, sticky="e", pady=(7, 0)
         )
         self.k6221_save_button = ttk.Button(
-            scan, text="Save CSV", command=self.save_k6221_csv
+            scan_buttons, text="Save CSV", command=self.save_k6221_csv
         )
-        self.k6221_save_button.grid(
-            row=2,
-            column=10,
-            columnspan=2,
-            sticky="ew",
-            padx=(8, 0),
-            pady=(7, 0),
-        )
+        self.k6221_save_button.grid(row=0, column=2, padx=(0, 6))
         ttk.Label(
             scan, textvariable=self.k6221_image_directory_var, foreground="#555555"
-        ).grid(row=3, column=0, columnspan=12, sticky="w", pady=(5, 0))
+        ).grid(row=4, column=0, columnspan=12, sticky="w", pady=(5, 0))
 
-        roi_edit = ttk.LabelFrame(outer, text="ROI editing", padding=7)
-        roi_edit.grid(row=4, column=0, sticky="ew", pady=(0, 7))
+        roi_edit = ttk.LabelFrame(bottom, text="ROI editing", padding=7)
+        roi_edit.grid(row=0, column=1, sticky="nsew")
         actions = ttk.Frame(roi_edit)
         actions.grid(row=0, column=0, columnspan=10, sticky="ew")
         toolbar = ttk.Frame(actions)
@@ -19617,8 +19721,10 @@ class CombinedControlApp:
             command=lambda: self.save_current_raw_image("6221"),
         ).pack(side="left")
 
+        self._arrange_pair_by_width(bottom, scan, roi_edit, gap=7)
+
         data = ttk.Frame(outer)
-        data.grid(row=5, column=0, sticky="nsew")
+        data.grid(row=3, column=0, sticky="nsew")
         data.rowconfigure(0, weight=1)
         # Keep the live ROI trace as the primary plot, matching the MOKE page,
         # while reserving a narrower column for the scan-only relation plot.
@@ -19661,7 +19767,7 @@ class CombinedControlApp:
             textvariable=self.k6221_status_var,
             style="Status.TLabel",
             anchor="w",
-        ).grid(row=7, column=0, sticky="ew", pady=(7, 0))
+        ).grid(row=4, column=0, sticky="ew", pady=(7, 0))
         self._update_k6221_continuous_mode_ui()
         self._update_k6221_controls()
 

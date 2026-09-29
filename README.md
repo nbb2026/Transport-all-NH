@@ -87,12 +87,14 @@ cd Other-files && python3 -m unittest discover -s . -p "test_*.py"
 ```
 
 ```bash
-cd Other-files/test && PYTHONPATH=.. python3 -m unittest \
+cd Other-files/test && PYTHONPATH=../.. python3 -m unittest \
   test_instrument_safety_logic test_mfli_autorange test_mfli_overload \
   test_stfmr_realtime_recording
 ```
 
-That is 278 and 103 tests respectively, all passing as of 2026-09-27.
+That is 341 and 104 tests respectively, all passing as of 2026-09-30.
+On macOS they hang while the display is asleep, because Tk waits for the
+window server; wake it first, or run them under `caffeinate -u`.
 
 Passing tests are not hardware acceptance. They build panels from stubs and
 never run the real constructor, so a change should also be checked by starting

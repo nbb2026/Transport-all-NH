@@ -318,6 +318,139 @@ class FieldOutputTests(unittest.TestCase):
         canvas = self.a.stfmr_fmr_canvas
         self.assertGreater(canvas.winfo_height(), canvas.winfo_reqheight(), "plots should take the spare height")
 
+    # ------------------------------------------------------------ MOKE-6221
+    def test_moke_6221_sections_pair_up_and_plots_take_the_height(self):
+        self.root.geometry("1420x1000+0+40")
+        self.arranged(1420, "MOKE-6221", self.a.stfmr_lockin_resource_widgets)
+        frames = self.page_frames(self.a.k6221_tab)
+        connection = frames["Keithley 6221 / VISA"]
+        continuous = frames["AC/DC continuous output and live readback"]
+        scan = frames["Pulse current scan and ROI acquisition"]
+        roi = frames["ROI editing"]
+        self.assertIs(connection.master, continuous.master)
+        self.assertIs(scan.master, roi.master)
+        self.assertLess(connection.winfo_rootx(), continuous.winfo_rootx(), "connection on the left")
+        self.assertLess(scan.winfo_rootx(), roi.winfo_rootx(), "scan on the left")
+        outer = connection.master.master
+        self.assertEqual(int(outer.rowconfigure(3)["weight"]), 1, "the plots row takes spare height")
+        canvas = self.a.k6221_plot_canvas
+        self.assertGreater(canvas.winfo_height(), canvas.winfo_reqheight())
+
+    def test_moke_6221_red_stop_button_is_never_clipped(self):
+        """At narrow widths it used to extend 62 px past the window edge."""
+        try:
+            for width in (820, 1000, 1420):
+                self.arranged(width, "MOKE-6221", self.a.stfmr_lockin_resource_widgets)
+                tab = self.a.k6221_tab
+                right = tab.winfo_rootx() + tab.winfo_width()
+                over = [w for w in descendants(tab)
+                        if w.winfo_ismapped() and w.winfo_rootx() + w.winfo_width() > right + 1]
+                self.assertEqual(over, [], f"widgets past the edge at {width} px")
+                stop = self.a.k6221_off_button
+                self.assertTrue(stop.winfo_ismapped())
+                self.assertLessEqual(stop.winfo_rootx() + stop.winfo_width(), right)
+        finally:
+            self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+
+    # ------------------------------------------------------------ field at 0 A
+    def test_field_at_zero_current_is_interpolated_or_taken_exactly(self):
+        f = app.CombinedControlApp._fields_at_zero_current
+        sweep = [(i / 100.0, 272.0 + 278.0 * i / 100.0) for i in range(-200, 201)]
+        self.assertEqual(f(sweep), [272.0])
+        skipping = [(-0.15, 230.0), (0.05, 286.0)]
+        self.assertAlmostEqual(f(skipping)[0], 272.0)
+        trip = [(-1, 0.0), (1, 540.0), (-1, -20.0)]
+        self.assertEqual(len(f(trip)), 2, "a round trip crosses 0 A twice")
+        self.assertEqual(f([(0.5, 400.0), (2.0, 830.0)]), [], "never reaches 0 A")
+
+    def test_field_at_zero_current_label_sits_above_the_plot(self):
+        canvas = self.a.stfmr_lockin_canvas
+        sweep = [(i / 20.0, 272.0 + 278.0 * i / 20.0) for i in range(-40, 41)]
+        self.a._draw_nonlocal_series(canvas, {"4 GHz": sweep}, "4886 set current (A)",
+                                     "LS475 measured field (G)", "wait", markers=True,
+                                     marker_radius=1.5, show_legend=True,
+                                     series_labels={"4 GHz": "4 GHz"})
+        self.a._label_field_at_zero_current(canvas, {"4 GHz": sweep})
+        labels = [i for i in canvas.find_all()
+                  if canvas.type(i) == "text" and "Field at 0 A" in canvas.itemcget(i, "text")]
+        self.assertEqual(len(labels), 1)
+        self.assertEqual(canvas.itemcget(labels[0], "text"), "Field at 0 A: +272.0 G")
+        box = canvas.bbox(labels[0])
+        frame_top = min(canvas.bbox(i)[1] for i in canvas.find_all() if canvas.type(i) == "rectangle")
+        self.assertLessEqual(box[3], frame_top, "the label must stay clear of the data")
+        self.assertEqual([i for i in canvas.find_overlapping(*box) if i != labels[0]], [])
+
+    def test_disagreeing_sweeps_show_the_range(self):
+        canvas = self.a.stfmr_lockin_canvas
+        canvas.delete("all")
+        series = {"up": [(-1, 0.0), (1, 540.0)], "down": [(1, 530.0), (-1, -20.0)]}
+        self.a._label_field_at_zero_current(canvas, series)
+        text = [canvas.itemcget(i, "text") for i in canvas.find_all() if canvas.type(i) == "text"]
+        self.assertEqual(text, ["Field at 0 A: +255.0 to +270.0 G"])
+
+    def test_tab_from_the_pulse_output_reaches_scan_parameters_before_start_buttons(self):
+        """A space bar on a focused start button would begin a scan."""
+        buttons = (self.a.k6221_start_button, self.a.k6221_train_start_button, self.a.k6221_save_button)
+        try:
+            for button in buttons:   # as when connected; disabled buttons are skipped anyway
+                button.configure(state="normal")
+            self.arranged(1420, "MOKE-6221", self.a.stfmr_lockin_resource_widgets)
+            nxt = self.a.k6221_off_button.tk_focusNext()
+            self.assertEqual(str(nxt.cget("textvariable")), str(self.a.k6221_start_var),
+                             f"Tab went to {nxt.winfo_class()} {nxt.cget('text') if 'text' in nxt.keys() else ''}")
+            seen = []
+            widget = nxt
+            for _ in range(40):
+                widget = widget.tk_focusNext()
+                if widget in buttons:
+                    break
+                seen.append(widget)
+            self.assertTrue(any(str(w.cget("textvariable")) == str(self.a.k6221_train_interval_var)
+                                for w in seen if "textvariable" in w.keys()),
+                            "every parameter field comes before the first start button")
+        finally:
+            for button in buttons:
+                button.configure(state="disabled")
+            self.a._update_k6221_controls()
+
+    def test_tab_visits_connections_before_the_output_panel(self):
+        for widgets in (self.a.stfmr_lockin_resource_widgets, self.a.stfmr_device_resource_widgets):
+            connections = widgets["kepco"].master.master
+            top = connections.master
+            order = top.winfo_children()
+            panel = next(w for w in order if w is not connections)
+            self.assertLess(order.index(connections), order.index(panel))
+
+    def test_zero_field_label_never_lands_on_other_text_in_a_narrow_plot(self):
+        """Narrow plot, three disagreeing frequencies: no free spot on the canvas."""
+        frame = tk.ttk.LabelFrame(self.root, text="Measured field vs 4886 current (field sweep only)")
+        canvas = tk.Canvas(frame, width=387, height=250)
+        canvas.pack()
+        frame.place(x=0, y=0)
+        self.root.update()
+        try:
+            series = {f"{f} GHz": [(-1, 272.0 + 3 * k - 278.0), (1, 272.0 + 3 * k + 278.0)]
+                      for k, f in enumerate((4, 5, 6))}
+            self.a._draw_nonlocal_series(canvas, series, "4886 set current (A)",
+                                         "LS475 measured field (G)", "wait", markers=True,
+                                         show_legend=True, series_labels={k: k for k in series})
+            self.a._label_field_at_zero_current(canvas, series)
+            on_canvas = [i for i in canvas.find_all() if canvas.type(i) == "text"
+                         and "0 A)" in canvas.itemcget(i, "text") or canvas.type(i) == "text"
+                         and "Field at 0 A" in canvas.itemcget(i, "text")]
+            for item in on_canvas:
+                hits = [i for i in canvas.find_overlapping(*canvas.bbox(item)) if i != item]
+                self.assertEqual(hits, [], "a label on the canvas overlaps other drawing")
+            shown = [canvas.itemcget(i, "text") for i in on_canvas] + [str(frame.cget("text"))]
+            self.assertTrue(any("+272.0 to +278.0 G" in text for text in shown),
+                            f"the value must still be shown somewhere: {shown}")
+            # A later sweep without a 0 A crossing restores the plain title.
+            canvas.delete("all")
+            self.a._label_field_at_zero_current(canvas, {"4 GHz": [(0.5, 400.0), (2.0, 830.0)]})
+            self.assertEqual(str(frame.cget("text")), "Measured field vs 4886 current (field sweep only)")
+        finally:
+            frame.destroy()
+
     def test_address_fields_are_narrow_and_status_text_fits(self):
         font = tkinter.font.nametofont("TkDefaultFont")
         for page, widgets, statuses in (
