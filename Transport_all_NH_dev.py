@@ -267,7 +267,7 @@ def visa_operation(label: str, step: str = ""):
             where = f" during {step}" if step else ""
             raise RuntimeError(
                 f"{label} stopped responding on the bus{where} "
-                f"({short_status_error(error, 80)}). Check its GPIB address, "
+                f"({short_status_error(error, 160)}). Check its GPIB address, "
                 "cabling and that it is not held busy by another program."
             ) from error
         raise
@@ -1675,6 +1675,7 @@ class STFMRKepco4886Controller:
         self.lock = threading.RLock()
         self.active_mode = ""
         self.output_owned = False
+        self.last_command = ""
         self.cached_current_a = 0.0
         self.cached_voltage_v = 0.0
 
@@ -1734,6 +1735,53 @@ class STFMRKepco4886Controller:
             writer(payload)
         else:
             self.instrument.write(str(command))
+
+    def _send_output_sequence(self, commands) -> None:
+        """Send one output set-up sequence, remembering the command in flight."""
+        for command in commands:
+            self.last_command = command
+            self._write_exact(command)
+            if command == "OUTP ON":
+                # A later setpoint write can fail after the supply has
+                # already been enabled; retain ownership immediately so
+                # the exception path can make a best-effort Zero/OFF.
+                self.output_owned = True
+
+    def _recover_and_resend(self, commands, first_error: BaseException) -> None:
+        """Revive a BIT 4886 that stopped accepting data, then resend once.
+
+        STFMR start-up failed here on 2026-09-29, and only when the SR830 had
+        just been busy on the same bus; the identical sequence had completed in
+        every MFLI run.  A selected device clear frees a card that is holding
+        the handshake.  The clear may also return the card to its power-on
+        state, so the whole sequence is sent again from FUNC:MODE: resuming at
+        the failed command could send a current setpoint to a supply that has
+        fallen back to voltage mode.
+        """
+        failed = getattr(self, "last_command", "")
+        self.logger(
+            f"KEPCO 4886 did not accept {failed!r}; clearing its GPIB interface "
+            "and resending the whole output sequence once"
+        )
+        try:
+            self.instrument.clear()
+        except BaseException as clear_error:
+            raise RuntimeError(
+                f"{failed!r} was not accepted and the GPIB device clear also failed "
+                f"({short_status_error(clear_error, 60)}; VI_ERROR_TMO)"
+            ) from first_error
+        time.sleep(0.3)
+        try:
+            self._send_output_sequence(commands)
+        except BaseException as second_error:
+            if not is_visa_timeout(second_error):
+                raise
+            raise RuntimeError(
+                f"{self.last_command!r} was not accepted, even after a GPIB device "
+                "clear and a full resend (VI_ERROR_TMO). Power-cycle the BOP and its "
+                "BIT 4886 card, and check the supply is in remote"
+            ) from second_error
+        self.logger("KEPCO 4886 accepted the output sequence after the device clear")
 
     def _cached_state(self) -> dict[str, object]:
         return {
@@ -1798,13 +1846,12 @@ class STFMRKepco4886Controller:
                 )
             self.active_mode = selected
             try:
-                for command in commands:
-                    self._write_exact(command)
-                    if command == "OUTP ON":
-                        # A later setpoint write can fail after the supply has
-                        # already been enabled; retain ownership immediately so
-                        # the exception path can make a best-effort Zero/OFF.
-                        self.output_owned = True
+                try:
+                    self._send_output_sequence(commands)
+                except BaseException as first_error:
+                    if not is_visa_timeout(first_error):
+                        raise
+                    self._recover_and_resend(commands, first_error)
             except BaseException:
                 if self.output_owned:
                     try:

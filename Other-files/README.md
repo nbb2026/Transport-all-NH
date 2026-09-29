@@ -1,5 +1,28 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## KEPCO 4886 recovery after a stalled write (2026-09-29, interim)
+
+- The instrument-naming change confirmed the KEPCO 4886 is the device that
+  stops responding, while enabling the output at the first current. Raising
+  its timeout to 10 s did not help, so the supply is refusing a write rather
+  than being slow.
+- Across all 64 STFMR run logs, today's three failures are the only runs with
+  the MFLI disconnected and the only SR830-meter runs on this program, which
+  had run MFLI-only until now. Python 3.14, the KEPCO address, the 10 V limit
+  and the -3 A start had all completed before. So the enable sequence itself
+  is proven, and it fails right after heavy GPIB traffic to the SR830, which
+  the MFLI path never produces.
+- When a write to the 4886 times out, the program now sends a GPIB selected
+  device clear, waits 0.3 s and resends the whole output sequence once. It
+  restarts at `FUNC:MODE`, never at the failed command: the clear may return
+  the card to its power-on state, and resuming could send a current setpoint
+  to a supply that has fallen back to voltage mode.
+- If the resend also stalls, the error names the exact command and asks for
+  a power cycle of the BOP and its BIT card. Any output that was switched on
+  is switched off again first.
+- This is an interim fix. A root-cause analysis of the NI traces and the
+  other 4886 code paths is still running.
+
 ## STFMR scans failing with a bare VI_ERROR_TMO (2026-09-29)
 
 - Three STFMR sweeps failed identically, 6.35 s after `frequency_configure`
