@@ -1,5 +1,49 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## STFMR manual field output, compact STFMR and FMR layouts (2026-09-29)
+
+- The STFMR page gains the FMR page's "KEPCO 4886 BOP 20-10 field output"
+  panel: safety confirmation, Current or Voltage mode, target and limit,
+  Apply output, Show sent values and the red Zero / OFF. Apply and Show work
+  only when the KEPCO is connected and no sweep is running, since a running
+  sweep owns the supply. Zero / OFF stays live whenever the KEPCO is connected,
+  and pressed during a sweep it stops the sweep and zeroes at once. The status
+  line follows each point the sweep sends.
+- On both pages the 4886 output now sits left of the instrument connections,
+  which form one compact column. The two sections share one row, so the STFMR
+  plots are about 46 % taller. When the window is too narrow for both, for
+  example the 826 px split-screen window the program opens on a 1920 px
+  display, they stack automatically instead of clipping.
+- Address fields no longer stretch across the row: they keep an 18-character
+  width, which fits every GPIB default, and give way first if a row is too
+  narrow. "Not connected" is no longer cut to "Not conn".
+- The STFMR field-sweep parameters follow the PPMS pattern: fixed-width
+  fields packed from the left, one row each for the microwave carrier, the
+  magnet sweep and the lock-ins. That is four rows instead of five. The
+  lock-in row wraps onto two when the window is narrow.
+- An adversarial review of this work confirmed six defects before it reached
+  the magnet; all are fixed:
+  - **Zero / OFF could silently do nothing.** It only undid an output this
+    page had switched on, so an output left on by the front panel, LabVIEW,
+    another page or a crashed session was not touched, while the panel said
+    "zeroed and output off". The red button on both pages now always sends
+    the zero setpoint and `OUTP OFF`. With the mode unknown it zeroes both
+    setpoints, which only drives the output down.
+  - **Zero / OFF could freeze the window** for up to 15 s while the sweep
+    worker held the supply during start-up with a stalled card. It now never
+    waits on the Tk thread: the sweep is told to stop, which zeroes the
+    supply as soon as the transfer returns.
+  - **The display could claim "OUTP: OFF" falsely.** Before this session has
+    sent the 4886 anything, its state is shown as unknown, and an output left
+    possibly on by a failed zero/OFF reads "NOT CONFIRMED OFF", on FMR too.
+  - The split-screen overflow described above.
+  - Two weaknesses in the tests: a stray `unittest.main()` that skipped seven
+    tests when the file was run directly, and a simulated card that did not
+    record the writes it stalled on.
+- Each safety test was checked by putting its defect back and confirming the
+  test fails. New and updated tests: `test_stfmr_field_output.py` and
+  `test_stfmr_visa_timeout.py`.
+
 ## KEPCO 4886: device clear removed, stalled card needs a power cycle (2026-09-29)
 
 - A root-cause review of the NI traces, every 4886 code path and all 64 run

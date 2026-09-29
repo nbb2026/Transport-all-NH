@@ -1713,6 +1713,7 @@ class STFMRKepco4886Controller:
                 self.instrument = instrument
                 self.resource_name = resource_name
                 self.identity = "KEPCO BOP 4886 20-10 (not queried)"
+                self.last_command = ""
                 self.logger(
                     "STFMR KEPCO VISA session opened; no query or output command sent"
                 )
@@ -1867,6 +1868,7 @@ class STFMRKepco4886Controller:
             # Each write is attempted on its own: a supply that refuses the
             # zero setpoint must still be sent OUTP OFF.
             for command in (zero, "OUTP OFF"):
+                self.last_command = command
                 try:
                     self._write_exact(command)
                 except BaseException as error:
@@ -1886,6 +1888,42 @@ class STFMRKepco4886Controller:
     def zero_output(self) -> dict[str, object]:
         self.safe_output_off()
         return self._cached_state()
+
+    def force_output_off(self) -> dict[str, object]:
+        """Operator Zero / OFF: always send zero and OUTP OFF.
+
+        safe_output_off only undoes an output this object switched on, which
+        is right for automatic clean-up.  The red button is an explicit request
+        and must act even when the output was switched on elsewhere: the front
+        panel, LabVIEW, another page, or a session that crashed.  With the mode
+        unknown both setpoints are zeroed; in current mode a zero voltage limit,
+        and in voltage mode a zero current limit, only drive the output down.
+        """
+        with self.lock:
+            if self.instrument is None:
+                raise RuntimeError("KEPCO is not connected")
+            zeros = {"CURR": ("CURR 0.000000",), "VOLT": ("VOLT 0.000000",)}.get(
+                self.active_mode, ("CURR 0.000000", "VOLT 0.000000")
+            )
+            failures = []
+            for command in (*zeros, "OUTP OFF"):
+                self.last_command = command
+                try:
+                    self._write_exact(command)
+                except BaseException as error:
+                    failures.append((command, error))
+            if failures:
+                # Not confirmed, so keep treating the output as possibly on.
+                self.output_owned = True
+                raise RuntimeError(
+                    "KEPCO 4886 zero/OFF not confirmed: "
+                    + "; ".join(f"{command!r} {short_status_error(error, 70)}"
+                                for command, error in failures)
+                ) from failures[0][1]
+            self.output_owned = False
+            self.cached_current_a = 0.0
+            self.cached_voltage_v = 0.0
+            return self._cached_state()
 
     def disconnect(self) -> None:
         with self.lock:
@@ -12209,6 +12247,17 @@ class CombinedControlApp:
         self.stfmr_lockin_disconnect_buttons = {}
         self.stfmr_lockin_resource_widgets = {}
         self.stfmr_lockin_safety_var = tk.BooleanVar(value=False)
+        # Manual KEPCO field output, as on the FMR page.
+        self.stfmr_lockin_manual_safety_var = tk.BooleanVar(value=False)
+        self.stfmr_lockin_manual_mode_var = tk.StringVar(value="Current")
+        self.stfmr_lockin_manual_target_var = tk.StringVar(value="0")
+        self.stfmr_lockin_manual_limit_var = tk.StringVar(value="5")
+        self.stfmr_lockin_manual_target_label_var = tk.StringVar(value="Target current A:")
+        self.stfmr_lockin_manual_limit_label_var = tk.StringVar(value="Voltage limit V:")
+        self.stfmr_lockin_kepco_mode_var = tk.StringVar(value="Mode: --")
+        self.stfmr_lockin_kepco_current_var = tk.StringVar(value="I: -- A")
+        self.stfmr_lockin_kepco_voltage_var = tk.StringVar(value="V: -- V")
+        self.stfmr_lockin_kepco_output_var = tk.StringVar(value="OUTP: OFF")
         self.stfmr_lockin_meter_var = tk.StringVar(value="MFLI")
         self.stfmr_lockin_sr830_reference_var = tk.StringVar(
             value=STFMR_LOCKIN_SR830_DEFAULT_REFERENCE_INPUT
@@ -12335,6 +12384,36 @@ class CombinedControlApp:
         """Scale a requested pixel size for the active logical display."""
         scale = self.canvas_scale if canvas else self.ui_scale
         return max(int(minimum), int(round(float(value) * scale)))
+
+    def _arrange_pair_by_width(self, container, left, right, *, gap: int = 4) -> None:
+        """Place two sections side by side when both fit, otherwise stack them.
+
+        On a wide screen the program opens the control window at about 43 % of
+        the screen width (826 px on a 1920 display).  There the 4886 output and
+        the connection list do not fit on one row, and a fixed side-by-side
+        layout would clip the right-hand one.  Re-evaluated on every resize.
+        """
+        def arrange(_event=None) -> None:
+            try:
+                available = container.winfo_width()
+                needed = left.winfo_reqwidth() + right.winfo_reqwidth() + gap
+            except tk.TclError:
+                return
+            if available <= 1:
+                return  # not laid out yet; the first <Configure> decides
+            wide = available >= needed
+            if getattr(container, "_pair_side_by_side", None) is wide:
+                return
+            container._pair_side_by_side = wide
+            if wide:
+                left.grid_configure(row=0, column=0, columnspan=1, padx=(0, gap), pady=0)
+                right.grid_configure(row=0, column=1, columnspan=1, padx=0, pady=0)
+            else:
+                left.grid_configure(row=0, column=0, columnspan=2, padx=0, pady=(0, gap))
+                right.grid_configure(row=1, column=0, columnspan=2, padx=0, pady=0)
+
+        container.bind("<Configure>", arrange, add="+")
+        arrange()
 
     def build_ui(self) -> None:
         self.root.rowconfigure(0, weight=1)
@@ -13636,81 +13715,21 @@ class CombinedControlApp:
         # added later without leaving large gaps between today's sections.
         outer.rowconfigure(6, weight=1)
 
-        instruments = ttk.LabelFrame(
-            outer, text="FMR instrument connections", padding=self._ui_px(6, 4)
-        )
-        instruments.grid(row=0, column=0, sticky="ew", pady=(0, 5))
-        instruments.columnconfigure(0, weight=1, uniform="stfmr_device")
-        instruments.columnconfigure(1, weight=1, uniform="stfmr_device")
-        labels = {
-            "kepco": "KEPCO4886",
-            "gauss": "LS475",
-            "vna": "PNA",
-        }
-        device_grid = (
-            ("kepco", "gauss"),
-            ("vna",),
-        )
-        for row, pair in enumerate(device_grid):
-            for column, key in enumerate(pair):
-                device = ttk.Frame(instruments)
-                device.grid(
-                    row=row,
-                    column=column,
-                    sticky="ew",
-                    padx=(0, 5) if column == 0 else (5, 0),
-                    pady=1,
-                )
-                device.columnconfigure(
-                    1,
-                    weight=1,
-                    minsize=self._ui_px(150, 128),
-                )
-                ttk.Label(
-                    device,
-                    text=f"{labels[key]}：",
-                    width=12,
-                    anchor="e",
-                ).grid(row=0, column=0, sticky="e")
-                entry = ttk.Entry(
-                    device,
-                    textvariable=self.stfmr_resource_vars[key],
-                    width=20,
-                )
-                entry.grid(row=0, column=1, sticky="ew", padx=(0, 4))
-                self.stfmr_device_resource_widgets[key] = entry
-                connect_button = ttk.Button(
-                    device,
-                    text="Connect",
-                    width=4,
-                    command=lambda selected=key: self.connect_stfmr_device(selected),
-                )
-                connect_button.grid(row=0, column=2, padx=1)
-                disconnect_button = ttk.Button(
-                    device,
-                    text="Disconnect",
-                    width=4,
-                    state="disabled",
-                    command=lambda selected=key: self.disconnect_stfmr_device(selected),
-                )
-                disconnect_button.grid(row=0, column=3, padx=1)
-                self.stfmr_device_connect_buttons[key] = connect_button
-                self.stfmr_device_disconnect_buttons[key] = disconnect_button
-                self._create_connection_indicator(device, f"stfmr_{key}").grid(
-                    row=0, column=4, padx=(5, 1)
-                )
-                ttk.Label(
-                    device,
-                    textvariable=self.stfmr_device_connection_vars[key],
-                    width=8,
-                    anchor="w",
-                ).grid(row=0, column=5, sticky="w", padx=(1, 0))
+        # One row: the manual 4886 output on the left, the three instrument
+        # connections as a compact single column on the right.  Side by side
+        # the two sections share one height instead of stacking.
+        top = ttk.Frame(outer)
+        top.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+        top.columnconfigure(0, weight=1)
 
         output = ttk.LabelFrame(
-            outer, text="KEPCO 4886 BOP 20-10 field output", padding=8
+            top, text="KEPCO 4886 BOP 20-10 field output", padding=8
         )
-        output.grid(row=1, column=0, sticky="ew", pady=(0, 4))
+        # Left of the connections and as tall as them; spare width stays here.
+        output.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         output.columnconfigure(11, weight=1)
+        for panel_row in range(3):
+            output.rowconfigure(panel_row, weight=1)
         ttk.Checkbutton(
             output,
             text=(
@@ -13780,10 +13799,69 @@ class CombinedControlApp:
         ttk.Label(output, textvariable=self.stfmr_kepco_output_var).grid(
             row=2, column=6, columnspan=2, sticky="w", pady=(7, 0)
         )
+        instruments = ttk.LabelFrame(
+            top, text="FMR instrument connections", padding=self._ui_px(6, 4)
+        )
+        instruments.grid(row=0, column=1, sticky="nsew")
+        labels = {
+            "kepco": "KEPCO4886",
+            "gauss": "LS475",
+            "vna": "PNA",
+        }
+        for row, key in enumerate(("kepco", "gauss", "vna")):
+            device = ttk.Frame(instruments)
+            device.grid(row=row, column=0, sticky="ew", pady=1)
+            # Fixed-width address field; spare width goes to the tail column.
+            # When the row is too narrow the field shrinks first, so the
+            # status text is never squeezed.
+            device.columnconfigure(1, weight=1)
+            device.columnconfigure(6, weight=1000)
+            ttk.Label(
+                device,
+                text=f"{labels[key]}:",
+                width=12,
+                anchor="e",
+            ).grid(row=0, column=0, sticky="e")
+            entry = ttk.Entry(
+                device,
+                textvariable=self.stfmr_resource_vars[key],
+                width=18,
+            )
+            entry.grid(row=0, column=1, sticky="w", padx=(0, 4))
+            self.stfmr_device_resource_widgets[key] = entry
+            connect_button = ttk.Button(
+                device,
+                text="Connect",
+                width=4,
+                command=lambda selected=key: self.connect_stfmr_device(selected),
+            )
+            connect_button.grid(row=0, column=2, padx=1)
+            disconnect_button = ttk.Button(
+                device,
+                text="Disconnect",
+                width=4,
+                state="disabled",
+                command=lambda selected=key: self.disconnect_stfmr_device(selected),
+            )
+            disconnect_button.grid(row=0, column=3, padx=1)
+            self.stfmr_device_connect_buttons[key] = connect_button
+            self.stfmr_device_disconnect_buttons[key] = disconnect_button
+            self._create_connection_indicator(device, f"stfmr_{key}").grid(
+                row=0, column=4, padx=(5, 1)
+            )
+            ttk.Label(
+                device,
+                textvariable=self.stfmr_device_connection_vars[key],
+                width=13,
+                anchor="w",
+            ).grid(row=0, column=5, sticky="w", padx=(1, 0))
+
+        self._arrange_pair_by_width(top, output, instruments)
+
         gauss = ttk.LabelFrame(
             outer, text="Lake Shore 475 field readback", padding=8
         )
-        gauss.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+        gauss.grid(row=1, column=0, sticky="ew", pady=(0, 4))
         gauss.columnconfigure(5, weight=1)
         ttk.Label(
             gauss,
@@ -13815,7 +13893,7 @@ class CombinedControlApp:
             text="FMR scan: sweep 4886 current, x-axis is the measured 475 field (signed)",
             padding=8,
         )
-        scan.grid(row=3, column=0, sticky="ew", pady=(0, 4))
+        scan.grid(row=2, column=0, sticky="ew", pady=(0, 4))
         scan.columnconfigure(14, weight=1)
         parameter_grid = ttk.Frame(scan)
         parameter_grid.grid(row=0, column=0, columnspan=15, sticky="w")
@@ -13969,7 +14047,7 @@ class CombinedControlApp:
         ).grid(row=0, column=1, sticky="w")
 
         plots = ttk.Frame(outer)
-        plots.grid(row=4, column=0, sticky="nsew", pady=(0, 4))
+        plots.grid(row=3, column=0, sticky="nsew", pady=(0, 4))
         plots.rowconfigure(0, weight=1)
         plots.columnconfigure(0, weight=3, uniform="stfmr_plot")
         plots.columnconfigure(1, weight=2, uniform="stfmr_plot")
@@ -14021,10 +14099,96 @@ class CombinedControlApp:
         outer.columnconfigure(0, weight=1)
         outer.rowconfigure(4, weight=1)
 
-        instruments = ttk.LabelFrame(outer, text="STFMR instrument connections", padding=6)
-        instruments.grid(row=0, column=0, sticky="ew", pady=(0, 4))
-        instruments.columnconfigure(0, weight=1, uniform="stfmr_lockin_device")
-        instruments.columnconfigure(1, weight=1, uniform="stfmr_lockin_device")
+        # One row: the manual 4886 output on the left, the instrument
+        # connections as a compact single column on the right.  Side by side
+        # they take the height of the five-row list instead of two stacked
+        # sections, which gives the plots more room.
+        top = ttk.Frame(outer)
+        top.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        top.columnconfigure(0, weight=1)
+
+        # Manual field output, as on the FMR page: set the 4886 by hand to
+        # check polarity and the field on the LS475 without running a sweep.
+        field_output = ttk.LabelFrame(
+            top, text="KEPCO 4886 BOP 20-10 field output", padding=6
+        )
+        # Left of the connections and as tall as them; spare width stays here
+        # so the connection list keeps its natural width at the right.
+        field_output.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        field_output.columnconfigure(12, weight=1)
+        # The panel is as tall as the five-row connection list; share that
+        # height between its three rows rather than leaving a gap below them.
+        for panel_row in range(3):
+            field_output.rowconfigure(panel_row, weight=1)
+        ttk.Checkbutton(
+            field_output,
+            text=(
+                "Electromagnet polarity, cooling, wiring, front-panel limits and personnel safety confirmed, "
+                "and no other program controls this KEPCO"
+            ),
+            variable=self.stfmr_lockin_manual_safety_var,
+        ).grid(row=0, column=0, columnspan=13, sticky="w", pady=(0, 4))
+        ttk.Label(field_output, text="Output mode:").grid(row=1, column=0, sticky="e")
+        manual_mode = ttk.Combobox(
+            field_output,
+            textvariable=self.stfmr_lockin_manual_mode_var,
+            values=("Current", "Voltage"),
+            state="readonly",
+            width=8,
+        )
+        manual_mode.grid(row=1, column=1, padx=(0, 8))
+        manual_mode.bind(
+            "<<ComboboxSelected>>", self._on_stfmr_lockin_manual_mode_changed, add="+"
+        )
+        ttk.Label(
+            field_output, textvariable=self.stfmr_lockin_manual_target_label_var
+        ).grid(row=1, column=2, sticky="e")
+        ttk.Entry(
+            field_output, textvariable=self.stfmr_lockin_manual_target_var, width=10
+        ).grid(row=1, column=3, padx=(0, 8))
+        ttk.Label(
+            field_output, textvariable=self.stfmr_lockin_manual_limit_label_var
+        ).grid(row=1, column=4, sticky="e")
+        ttk.Entry(
+            field_output, textvariable=self.stfmr_lockin_manual_limit_var, width=10
+        ).grid(row=1, column=5, padx=(0, 8))
+        self.stfmr_lockin_apply_output_button = ttk.Button(
+            field_output,
+            text="Apply output",
+            command=self.apply_stfmr_lockin_kepco_output,
+            state="disabled",
+        )
+        self.stfmr_lockin_apply_output_button.grid(row=1, column=6, padx=2)
+        self.stfmr_lockin_read_output_button = ttk.Button(
+            field_output,
+            text="Show sent values",
+            command=self.read_stfmr_lockin_kepco_once,
+            state="disabled",
+        )
+        self.stfmr_lockin_read_output_button.grid(row=1, column=7, padx=2)
+        self.stfmr_lockin_zero_output_button = tk.Button(
+            field_output,
+            text="Zero / OFF",
+            command=self.zero_stfmr_lockin_kepco_output,
+            bg="#c62828",
+            fg="white",
+            activebackground="#8e0000",
+            activeforeground="white",
+            state="disabled",
+        )
+        self.stfmr_lockin_zero_output_button.grid(row=1, column=8, padx=(8, 2))
+        for column, variable in (
+            (0, self.stfmr_lockin_kepco_mode_var),
+            (2, self.stfmr_lockin_kepco_current_var),
+            (4, self.stfmr_lockin_kepco_voltage_var),
+            (6, self.stfmr_lockin_kepco_output_var),
+        ):
+            ttk.Label(field_output, textvariable=variable).grid(
+                row=2, column=column, columnspan=2, sticky="w", pady=(4, 0)
+            )
+
+        instruments = ttk.LabelFrame(top, text="STFMR instrument connections", padding=6)
+        instruments.grid(row=0, column=1, sticky="nsew")
         labels = {
             "kepco": "KEPCO4886",
             "gauss": "LS475",
@@ -14032,54 +14196,59 @@ class CombinedControlApp:
             "830": "SR830",
             "mfli": "MFLI",
         }
-        grid = (("kepco", "830"), ("gauss", "mfli"), ("smb",))
-        for row, pair in enumerate(grid):
-            for column, key in enumerate(pair):
-                frame = ttk.Frame(instruments)
-                frame.grid(
-                    row=row, column=column, sticky="ew", pady=1,
-                    padx=(0, 5) if column == 0 else (5, 0),
-                )
-                frame.columnconfigure(1, weight=1)
-                ttk.Label(frame, text=f"{labels[key]}：", width=11, anchor="e").grid(
-                    row=0, column=0, sticky="e"
-                )
-                entry = ttk.Entry(
-                    frame, textvariable=self.stfmr_lockin_resource_vars[key], width=20
-                )
-                entry.grid(row=0, column=1, sticky="ew", padx=(0, 4))
-                connect = ttk.Button(
-                    frame, text="Connect", width=8,
-                    command=lambda selected=key: self.connect_stfmr_lockin_device(selected),
-                )
-                disconnect = ttk.Button(
-                    frame, text="Disconnect", width=10, state="disabled",
-                    command=lambda selected=key: self.disconnect_stfmr_lockin_device(selected),
-                )
-                connect.grid(row=0, column=2, padx=1)
-                disconnect.grid(row=0, column=3, padx=1)
-                self.stfmr_lockin_resource_widgets[key] = entry
-                self.stfmr_lockin_connect_buttons[key] = connect
-                self.stfmr_lockin_disconnect_buttons[key] = disconnect
-                self._create_connection_indicator(frame, f"stfmr_lockin_{key}").grid(
-                    row=0, column=4, padx=(5, 1)
-                )
-                ttk.Label(
-                    frame, textvariable=self.stfmr_lockin_connection_vars[key],
-                    width=8, anchor="w",
-                ).grid(row=0, column=5, sticky="w")
+        # The magnet path first, then the lock-ins.
+        for row, key in enumerate(("kepco", "gauss", "smb", "830", "mfli")):
+            frame = ttk.Frame(instruments)
+            frame.grid(row=row, column=0, sticky="ew", pady=1)
+            # Addresses fit in 18 characters (GPIB0::28::INSTR is 16).  The
+            # tail column takes nearly all spare width so the field does not
+            # stretch.  If the row is too narrow, grid shrinks the weighted
+            # columns; the empty tail is already 0 px, so the field gives way
+            # and the status text stays visible.
+            frame.columnconfigure(1, weight=1)
+            frame.columnconfigure(6, weight=1000)
+            ttk.Label(frame, text=f"{labels[key]}:", width=11, anchor="e").grid(
+                row=0, column=0, sticky="e"
+            )
+            entry = ttk.Entry(
+                frame, textvariable=self.stfmr_lockin_resource_vars[key], width=18
+            )
+            entry.grid(row=0, column=1, sticky="w", padx=(0, 4))
+            connect = ttk.Button(
+                frame, text="Connect", width=8,
+                command=lambda selected=key: self.connect_stfmr_lockin_device(selected),
+            )
+            disconnect = ttk.Button(
+                frame, text="Disconnect", width=10, state="disabled",
+                command=lambda selected=key: self.disconnect_stfmr_lockin_device(selected),
+            )
+            connect.grid(row=0, column=2, padx=1)
+            disconnect.grid(row=0, column=3, padx=1)
+            self.stfmr_lockin_resource_widgets[key] = entry
+            self.stfmr_lockin_connect_buttons[key] = connect
+            self.stfmr_lockin_disconnect_buttons[key] = disconnect
+            self._create_connection_indicator(frame, f"stfmr_lockin_{key}").grid(
+                row=0, column=4, padx=(5, 1)
+            )
+            ttk.Label(
+                frame, textvariable=self.stfmr_lockin_connection_vars[key],
+                width=13, anchor="w",
+            ).grid(row=0, column=5, sticky="w")
+
+        self._arrange_pair_by_width(top, field_output, instruments)
 
         controls = ttk.LabelFrame(outer, text="STFMR field-sweep parameters", padding=7)
         controls.grid(row=1, column=0, sticky="ew", pady=(0, 4))
-        for column in range(5):
-            controls.columnconfigure(column, weight=1, uniform="stfmr_lockin_parameter")
+        # Compact, as on the PPMS page: fixed-width fields packed from the left
+        # in aligned columns, one row per group, spare width in a tail column.
+        controls.columnconfigure(6, weight=1)
 
         def parameter_cell(
-            row, column, label, variable, *, kind="entry", values=()
+            row, column, label, variable, *, kind="entry", values=(), width=8,
+            parent=None,
         ):
-            cell = ttk.Frame(controls)
-            cell.grid(row=row, column=column, sticky="ew", padx=3, pady=1)
-            cell.columnconfigure(1, weight=1)
+            cell = ttk.Frame(controls if parent is None else parent)
+            cell.grid(row=row, column=column, sticky="w", padx=(0, 12), pady=1)
             ttk.Label(cell, text=label).grid(row=0, column=0, sticky="e")
             if kind == "spinbox":
                 widget = ttk.Spinbox(
@@ -14088,13 +14257,14 @@ class CombinedControlApp:
             elif kind == "combo":
                 widget = ttk.Combobox(
                     cell, textvariable=variable, values=values,
-                    state="readonly", width=8,
+                    state="readonly", width=width,
                 )
             else:
-                widget = ttk.Entry(cell, textvariable=variable, width=8)
-            widget.grid(row=0, column=1, sticky="ew", padx=(3, 0))
+                widget = ttk.Entry(cell, textvariable=variable, width=width)
+            widget.grid(row=0, column=1, sticky="w", padx=(3, 0))
             return widget
 
+        # Row 0: microwave carrier and modulation.
         for column, (label, variable) in enumerate((
             ("f start GHz:", self.stfmr_lockin_frequency_start_var),
             ("f stop GHz:", self.stfmr_lockin_frequency_stop_var),
@@ -14103,14 +14273,7 @@ class CombinedControlApp:
             ("Mod. Hz:", self.stfmr_lockin_lfo_var),
         )):
             parameter_cell(0, column, label, variable)
-        meter_combo = parameter_cell(
-            2, 1, "Meter:", self.stfmr_lockin_meter_var,
-            kind="combo", values=("SR830", "MFLI", "MFLI + SR830"),
-        )
-        meter_combo.bind(
-            "<<ComboboxSelected>>", self._on_stfmr_lockin_meter_changed, add="+"
-        )
-        self.stfmr_lockin_meter_combo = meter_combo
+        # Row 1: the magnet current sweep.
         for column, (label, variable) in enumerate((
             ("Start A:", self.stfmr_lockin_start_var),
             ("Stop A:", self.stfmr_lockin_stop_var),
@@ -14118,64 +14281,61 @@ class CombinedControlApp:
             ("Comp. V:", self.stfmr_lockin_limit_var),
             ("Wait/pt s:", self.stfmr_lockin_delay_var),
         )):
-            parameter_cell(
-                1, column, label, variable,
-            )
-
-        parameter_cell(
-            2, 0, "Loop：", self.stfmr_lockin_loop_var, kind="spinbox",
+            parameter_cell(1, column, label, variable)
+        parameter_cell(1, 5, "Loop:", self.stfmr_lockin_loop_var, kind="spinbox")
+        # Row 2: the lock-in settings, SR830 group then MFLI group.  They share
+        # one row when the window is wide enough and wrap onto two rows when it
+        # is not, as the output panel and the connection list do above.
+        # Dropdowns are sized to their longest choice ("MFLI + SR830",
+        # "TTL Falling", "Trigger In 1"), since they no longer stretch.
+        lockins = ttk.Frame(controls)
+        lockins.grid(row=2, column=0, columnspan=7, sticky="ew")
+        lockins.columnconfigure(1, weight=1)
+        sr830_group = ttk.Frame(lockins)
+        sr830_group.grid(row=0, column=0, sticky="w")
+        mfli_group = ttk.Frame(lockins)
+        mfli_group.grid(row=0, column=1, sticky="w")
+        meter_combo = parameter_cell(
+            0, 0, "Meter:", self.stfmr_lockin_meter_var,
+            kind="combo", values=("SR830", "MFLI", "MFLI + SR830"), width=12,
+            parent=sr830_group,
         )
+        meter_combo.bind(
+            "<<ComboboxSelected>>", self._on_stfmr_lockin_meter_changed, add="+"
+        )
+        self.stfmr_lockin_meter_combo = meter_combo
         parameter_cell(
-            2,
-            2,
-            "SR830 REF IN：",
-            self.stfmr_lockin_sr830_reference_var,
-            kind="combo",
-            values=tuple(STFMR_LOCKIN_SR830_REFERENCE_INPUTS),
+            0, 1, "SR830 REF IN:", self.stfmr_lockin_sr830_reference_var,
+            kind="combo", values=tuple(STFMR_LOCKIN_SR830_REFERENCE_INPUTS), width=12,
+            parent=sr830_group,
         )
         ttk.Checkbutton(
-            controls,
+            sr830_group,
             text="SR830 autorange",
             variable=self.stfmr_lockin_sr830_auto_range_var,
-        ).grid(row=2, column=3, sticky="w", padx=3, pady=1)
-
+        ).grid(row=0, column=2, sticky="w", padx=(0, 12), pady=1)
+        parameter_cell(
+            0, 0, "MFLI reference:", self.stfmr_lockin_reference_var,
+            kind="combo", values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS), width=12,
+            parent=mfli_group,
+        )
+        parameter_cell(
+            0, 1, "MFLI time constant s:", self.stfmr_lockin_mfli_timeconstant_var,
+            width=7, parent=mfli_group,
+        )
+        self.stfmr_lockin_mfli_auto_range_check = ttk.Checkbutton(
+            mfli_group, text="MFLI autorange",
+            variable=self.stfmr_lockin_mfli_auto_range_var,
+        )
+        self.stfmr_lockin_mfli_auto_range_check.grid(
+            row=0, column=2, sticky="w", padx=(0, 12), pady=1,
+        )
+        self._arrange_pair_by_width(lockins, sr830_group, mfli_group, gap=0)
         ttk.Checkbutton(
             controls,
             text="Magnet polarity, cooling, wiring, microwave power and personnel safety confirmed",
             variable=self.stfmr_lockin_safety_var,
-        ).grid(
-            row=4,
-            column=0,
-            columnspan=5,
-            sticky="w",
-            padx=3,
-            pady=(5, 1),
-        )
-
-        auxiliary = ttk.Frame(controls)
-        auxiliary.grid(row=3, column=0, columnspan=5, sticky="ew", padx=3, pady=(1, 0))
-        auxiliary.columnconfigure(4, weight=1)
-        ttk.Label(auxiliary, text="MFLI reference:").grid(row=0, column=0, sticky="e")
-        ttk.Combobox(
-            auxiliary, textvariable=self.stfmr_lockin_reference_var,
-            values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS), state="readonly", width=12,
-        ).grid(row=0, column=1, padx=(3, 10))
-        ttk.Label(auxiliary, text="MFLI time constant s:").grid(
-            row=0, column=2, sticky="e"
-        )
-        ttk.Entry(
-            auxiliary,
-            textvariable=self.stfmr_lockin_mfli_timeconstant_var,
-            width=7,
-        ).grid(row=0, column=3, padx=(3, 10))
-
-        self.stfmr_lockin_mfli_auto_range_check = ttk.Checkbutton(
-            auxiliary, text="MFLI autorange",
-            variable=self.stfmr_lockin_mfli_auto_range_var,
-        )
-        self.stfmr_lockin_mfli_auto_range_check.grid(
-            row=0, column=4, sticky="w", padx=3,
-        )
+        ).grid(row=3, column=0, columnspan=7, sticky="w", pady=(5, 1))
 
         actions = ttk.Frame(outer)
         actions.grid(row=2, column=0, sticky="ew", pady=(0, 4))
@@ -14440,6 +14600,144 @@ class CombinedControlApp:
             and not self.stfmr_lockin_gauss_busy
             else "disabled"
         )
+        if hasattr(self, "stfmr_lockin_apply_output_button"):
+            kepco_connected = self._stfmr_lockin_connected("kepco")
+            # A running sweep owns the supply, so manual set-points wait; the
+            # red Zero / OFF stays live whenever the KEPCO is connected.
+            manual = "normal" if kepco_connected and not self.stfmr_lockin_running else "disabled"
+            self.stfmr_lockin_apply_output_button.configure(state=manual)
+            self.stfmr_lockin_read_output_button.configure(state=manual)
+            self.stfmr_lockin_zero_output_button.configure(
+                state="normal" if kepco_connected else "disabled"
+            )
+            self._show_stfmr_lockin_kepco_state()
+
+    def _on_stfmr_lockin_manual_mode_changed(self, _event=None) -> None:
+        if self.stfmr_lockin_manual_mode_var.get() == "Voltage":
+            self.stfmr_lockin_manual_target_label_var.set("Target voltage V:")
+            self.stfmr_lockin_manual_limit_label_var.set("Current limit A:")
+        else:
+            self.stfmr_lockin_manual_target_label_var.set("Target current A:")
+            self.stfmr_lockin_manual_limit_label_var.set("Voltage limit V:")
+
+    def _show_stfmr_lockin_kepco_state(self) -> None:
+        """Show the values last sent to the 4886, which has no hardware readback."""
+        if not hasattr(self, "stfmr_lockin_kepco_mode_var"):
+            return
+        controller = self.stfmr_lockin_controllers["kepco"]
+        if not controller.connected or not getattr(controller, "last_command", ""):
+            # The 4886 cannot be read back, so before this session has sent it
+            # anything its state is unknown.  An output left possibly on by a
+            # failed zero/OFF is flagged rather than shown as off.
+            self.stfmr_lockin_kepco_mode_var.set("Mode: --")
+            self.stfmr_lockin_kepco_current_var.set("I: -- A")
+            self.stfmr_lockin_kepco_voltage_var.set("V: -- V")
+            self.stfmr_lockin_kepco_output_var.set(
+                "OUTP: NOT CONFIRMED OFF" if controller.output_owned else "OUTP: --"
+            )
+            return
+        # _cached_state takes no lock, so the display never waits on a sweep
+        # holding the controller on the worker thread.
+        state = controller._cached_state()
+        mode = {"CURR": "Current", "VOLT": "Voltage"}.get(controller.active_mode, "--")
+        self.stfmr_lockin_kepco_mode_var.set(f"Mode: {mode}")
+        self.stfmr_lockin_kepco_current_var.set(f"I: {float(state['current_a']):+.6g} A")
+        self.stfmr_lockin_kepco_voltage_var.set(f"V: {float(state['voltage_v']):+.6g} V")
+        self.stfmr_lockin_kepco_output_var.set("OUTP: ON" if state["output"] else "OUTP: OFF")
+
+    def apply_stfmr_lockin_kepco_output(self) -> None:
+        controller = self.stfmr_lockin_controllers["kepco"]
+        if self.stfmr_lockin_running:
+            messagebox.showwarning(
+                "STFMR KEPCO",
+                "A sweep is running and owns the KEPCO. Stop the sweep first.",
+                parent=self.root,
+            )
+            return
+        if not controller.connected:
+            return
+        if not self.stfmr_lockin_manual_safety_var.get():
+            messagebox.showwarning(
+                "STFMR KEPCO",
+                "Please tick the magnet, cooling, wiring, limits and personnel safety confirmation first.",
+                parent=self.root,
+            )
+            return
+        try:
+            target = float(self.stfmr_lockin_manual_target_var.get())
+            limit = float(self.stfmr_lockin_manual_limit_var.get())
+        except (TypeError, ValueError, tk.TclError):
+            messagebox.showerror(
+                "STFMR KEPCO", "Target and limit must be numbers.", parent=self.root
+            )
+            return
+        mode = "CURR" if self.stfmr_lockin_manual_mode_var.get() == "Current" else "VOLT"
+        self.stfmr_lockin_status_var.set("Writing to KEPCO…")
+        try:
+            with visa_operation("KEPCO 4886", "applying the manual output"):
+                controller.set_output(mode, target, limit)
+        except BaseException as error:
+            self._show_stfmr_lockin_kepco_state()
+            self.stfmr_lockin_status_var.set(f"KEPCO write failed: {short_status_error(error)}")
+            if not self.closing:
+                messagebox.showerror("STFMR KEPCO", str(error), parent=self.root)
+            return
+        self._show_stfmr_lockin_kepco_state()
+        self.stfmr_lockin_status_var.set(
+            "KEPCO command sent as in the LabVIEW trace; check the front panel and the LS475"
+        )
+
+    def read_stfmr_lockin_kepco_once(self) -> None:
+        if not self.stfmr_lockin_controllers["kepco"].connected:
+            return
+        self._show_stfmr_lockin_kepco_state()
+        self.stfmr_lockin_status_var.set(
+            "Showing the last values sent by this program, not a 4886 hardware readback"
+        )
+
+    def zero_stfmr_lockin_kepco_output(self, *, deferred: bool = False) -> None:
+        if self.closing:
+            return
+        controller = self.stfmr_lockin_controllers["kepco"]
+        if not controller.connected:
+            return
+        if deferred and not self.stfmr_lockin_running:
+            # The sweep ended while this press was waiting, and its own
+            # zero/OFF path has run and reported; do not send it twice.
+            self._show_stfmr_lockin_kepco_state()
+            return
+        if self.stfmr_lockin_running:
+            # The emergency control stays live during a sweep: stop it first.
+            # If that ends the sweep here, its own zero/OFF path has run.
+            self.stop_stfmr_lockin_scan()
+            if not self.stfmr_lockin_running:
+                self._show_stfmr_lockin_kepco_state()
+                return
+        # Never wait for the controller on the Tk thread.  During start-up or a
+        # carrier change the sweep worker holds it for a whole write sequence,
+        # up to 15 s against a stalled card, and the window would freeze.  The
+        # stop request above makes the sweep zero the supply as soon as that
+        # transfer returns; this press is retried until then.
+        if not controller.lock.acquire(blocking=False):
+            self.stfmr_lockin_status_var.set(
+                "Zero / OFF requested: the KEPCO is finishing a transfer and "
+                "will be zeroed when it returns"
+            )
+            self.root.after(200, lambda: self.zero_stfmr_lockin_kepco_output(deferred=True))
+            return
+        try:
+            self.stfmr_lockin_status_var.set("Zeroing and turning the KEPCO output off…")
+            controller.force_output_off()
+        except BaseException as error:
+            self._show_stfmr_lockin_kepco_state()
+            self.stfmr_lockin_status_var.set(f"KEPCO zeroing failed: {short_status_error(error)}")
+            if not self.closing:
+                messagebox.showerror("STFMR KEPCO", str(error), parent=self.root)
+            return
+        finally:
+            controller.lock.release()
+        self._show_stfmr_lockin_kepco_state()
+        self.stfmr_lockin_status_var.set("KEPCO zeroed and output off")
 
     def connect_stfmr_lockin_device(self, key: str) -> None:
         resource = self.stfmr_lockin_resource_vars[key].get().strip()
@@ -15095,6 +15393,7 @@ class CombinedControlApp:
             if self.stfmr_lockin_stop_event.is_set():
                 self._finish_stfmr_lockin_scan(stopped=True)
                 return
+            self._show_stfmr_lockin_kepco_state()
             if not self._stfmr_lockin_log_event("frequency_ready", frequency_ghz=frequency_ghz):
                 return
             self.stfmr_lockin_status_var.set(
@@ -15539,6 +15838,8 @@ class CombinedControlApp:
             except BaseException as error:
                 self._finish_stfmr_lockin_scan(error=error)
                 return
+            # Keep the field-output panel on the current the sweep just sent.
+            self._show_stfmr_lockin_kepco_state()
             self.stfmr_lockin_after_id = self.root.after(
                 max(1, int(self.stfmr_lockin_delay_s * 1000)),
                 self._read_next_stfmr_lockin_point,
@@ -17429,9 +17730,14 @@ class CombinedControlApp:
             self.stfmr_device_connection_vars[key].set("Not connected")
             self._set_stfmr_device_ui(key, False)
             self.stfmr_kepco_mode_var.set("Mode: --")
-            self.stfmr_kepco_current_var.set("I：-- A")
-            self.stfmr_kepco_voltage_var.set("V：-- V")
-            self.stfmr_kepco_output_var.set("OUTP：OFF")
+            self.stfmr_kepco_current_var.set("I: -- A")
+            self.stfmr_kepco_voltage_var.set("V: -- V")
+            # A failed zero/OFF during disconnect leaves the output possibly on.
+            self.stfmr_kepco_output_var.set(
+                "OUTP: NOT CONFIRMED OFF"
+                if self.stfmr_controllers["kepco"].output_owned
+                else "OUTP: OFF"
+            )
             return
         if key == "mfli":
             future = self.stfmr_executor.submit(
@@ -17452,9 +17758,14 @@ class CombinedControlApp:
             self._set_stfmr_device_ui(key, False)
             if key == "kepco":
                 self.stfmr_kepco_mode_var.set("Mode: --")
-                self.stfmr_kepco_current_var.set("I：-- A")
-                self.stfmr_kepco_voltage_var.set("V：-- V")
-                self.stfmr_kepco_output_var.set("OUTP：OFF")
+                self.stfmr_kepco_current_var.set("I: -- A")
+                self.stfmr_kepco_voltage_var.set("V: -- V")
+                # A failed zero/OFF during disconnect leaves the output possibly on.
+                self.stfmr_kepco_output_var.set(
+                    "OUTP: NOT CONFIRMED OFF"
+                    if self.stfmr_controllers["kepco"].output_owned
+                    else "OUTP: OFF"
+                )
             elif key == "gauss":
                 self.stfmr_gauss_field_var.set("-- G")
                 self.stfmr_gauss_status_var.set("Waiting for gaussmeter connection")
@@ -17522,7 +17833,9 @@ class CombinedControlApp:
             return
         self.stfmr_status_var.set("Zeroing and turning the KEPCO output off…")
         try:
-            result = self.stfmr_controllers["kepco"].zero_output()
+            # Explicit operator request: act even on an output this page did
+            # not switch on (front panel, LabVIEW, another page, a crash).
+            result = self.stfmr_controllers["kepco"].force_output_off()
         except BaseException as error:
             self.stfmr_status_var.set(f"KEPCO zeroing failed: {error}")
             if not self.closing:

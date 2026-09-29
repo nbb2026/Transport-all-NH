@@ -120,8 +120,6 @@ class KepcoTimeoutTests(unittest.TestCase):
         self.assertEqual(found, [3000])
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class FakeBit4886:
@@ -131,11 +129,13 @@ class FakeBit4886:
         self.stall = set(stall)
         self.acts_on_stall = acts_on_stall
         self.writes = []
+        self.attempts = []
         self.clears = 0
         self.output_on = False
 
     def write_raw(self, payload):
         command = payload.decode("ascii")
+        self.attempts.append(command)
         if command in self.stall:
             if self.acts_on_stall and command == "OUTP ON":
                 self.output_on = True   # the card acted, then stalled the handshake
@@ -170,14 +170,38 @@ class KepcoWriteOnlyTests(unittest.TestCase):
         self.assertEqual(fake.writes, self.SEQUENCE)
 
     def test_a_stall_is_never_answered_with_a_device_clear_or_a_resend(self):
-        for stalled in self.SEQUENCE:
+        for index, stalled in enumerate(self.SEQUENCE):
             fake = FakeBit4886(stall={stalled})
             with self.assertRaises(BaseException):
                 self.enable(self.controller(fake))
             self.assertEqual(fake.clears, 0, f"device clear sent after {stalled!r}")
-            self.assertEqual(fake.writes.count("FUNC:MODE CURR"),
-                             0 if stalled == "FUNC:MODE CURR" else 1,
-                             f"sequence resent after {stalled!r}")
+            # Every command up to the stall is attempted exactly once; after
+            # OUTP ON has been claimed, only the zero/OFF may follow.
+            expected = self.SEQUENCE[:index + 1]
+            if index >= self.SEQUENCE.index("OUTP ON"):
+                expected = expected + ["CURR 0.000000", "OUTP OFF"]
+            self.assertEqual(fake.attempts, expected, f"stall at {stalled!r}")
+
+    def test_force_off_writes_without_ownership_and_zeroes_both_when_mode_unknown(self):
+        fake = FakeBit4886()
+        made = self.controller(fake)
+        made.force_output_off()
+        self.assertEqual(fake.writes, ["CURR 0.000000", "VOLT 0.000000", "OUTP OFF"])
+        self.assertFalse(made.output_owned)
+
+    def test_force_off_in_a_known_mode_zeroes_that_setpoint_only(self):
+        fake = FakeBit4886()
+        made = self.controller(fake)
+        self.enable(made)
+        made.force_output_off()
+        self.assertEqual(fake.writes[-2:], ["CURR 0.000000", "OUTP OFF"])
+
+    def test_unconfirmed_force_off_keeps_the_output_marked_possibly_on(self):
+        fake = FakeBit4886(stall={"OUTP OFF"})
+        made = self.controller(fake)
+        with self.assertRaises(RuntimeError):
+            made.force_output_off()
+        self.assertTrue(made.output_owned)
 
     def test_stall_before_output_on_leaves_nothing_to_switch_off(self):
         fake = FakeBit4886(stall={"CURR 0;VOLT 10"})
@@ -225,6 +249,10 @@ class KepcoWriteOnlyTests(unittest.TestCase):
                 self.enable(made)
         self.assertIn("KEPCO 4886", str(caught.exception))
         self.assertEqual(made.last_command, "FUNC:MODE CURR")
+
+
+if __name__ == "__main__":
+    unittest.main()
 
 
 if __name__ == "__main__":
