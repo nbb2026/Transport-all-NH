@@ -13901,18 +13901,17 @@ class CombinedControlApp:
             state="disabled",
         )
         self.stfmr_zero_output_button.grid(row=1, column=8, padx=(8, 2))
-        ttk.Label(output, textvariable=self.stfmr_kepco_mode_var).grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=(7, 0)
-        )
-        ttk.Label(output, textvariable=self.stfmr_kepco_current_var).grid(
-            row=2, column=2, columnspan=2, sticky="w", pady=(7, 0)
-        )
-        ttk.Label(output, textvariable=self.stfmr_kepco_voltage_var).grid(
-            row=2, column=4, columnspan=2, sticky="w", pady=(7, 0)
-        )
-        ttk.Label(output, textvariable=self.stfmr_kepco_output_var).grid(
-            row=2, column=6, columnspan=2, sticky="w", pady=(7, 0)
-        )
+        # Each readout fills the control group above it (label and field, or
+        # the two buttons), so the four boxes line up with those controls.
+        for column, variable, padx in (
+            (0, self.stfmr_kepco_mode_var, (0, 8)),
+            (2, self.stfmr_kepco_current_var, (0, 8)),
+            (4, self.stfmr_kepco_voltage_var, (0, 8)),
+            (6, self.stfmr_kepco_output_var, (2, 2)),
+        ):
+            ttk.Label(output, textvariable=variable, anchor="w").grid(
+                row=2, column=column, columnspan=2, sticky="ew", padx=padx, pady=(7, 0)
+            )
         instruments = ttk.LabelFrame(
             top, text="FMR instrument connections", padding=self._ui_px(6, 4)
         )
@@ -13979,10 +13978,14 @@ class CombinedControlApp:
         )
         gauss.grid(row=1, column=0, sticky="ew", pady=(0, 4))
         gauss.columnconfigure(5, weight=1)
+        # A fixed width, so Read once and the checkbox never shift sideways
+        # when a reading such as "-1234.5678 Oe" replaces "-- G".
         ttk.Label(
             gauss,
             textvariable=self.stfmr_gauss_field_var,
             style="LargeMetric.TLabel",
+            width=14,
+            anchor="w",
         ).grid(row=0, column=0, padx=(0, 14), sticky="w")
         self.stfmr_read_gauss_button = ttk.Button(
             gauss,
@@ -13996,9 +13999,16 @@ class CombinedControlApp:
             text="Continuous read (0.5 s)",
             variable=self.stfmr_gauss_auto_var,
         ).grid(row=0, column=2, padx=(8, 2))
+        # Beside the controls it reports on, not alone at the far right, and
+        # at least as wide as the scan status boxes below; a longer error
+        # message still shows in full (a negative width is a minimum).
         ttk.Label(
-            gauss, textvariable=self.stfmr_gauss_status_var, style="Status.TLabel"
-        ).grid(row=0, column=5, sticky="e")
+            gauss,
+            textvariable=self.stfmr_gauss_status_var,
+            style="Status.TLabel",
+            width=-48,
+            anchor="w",
+        ).grid(row=0, column=3, padx=(12, 0), sticky="w")
 
         ttk.Label(
             outer, textvariable=self.stfmr_status_var, style="Status.TLabel"
@@ -14300,14 +14310,15 @@ class CombinedControlApp:
             state="disabled",
         )
         self.stfmr_lockin_zero_output_button.grid(row=1, column=8, padx=(8, 2))
-        for column, variable in (
-            (0, self.stfmr_lockin_kepco_mode_var),
-            (2, self.stfmr_lockin_kepco_current_var),
-            (4, self.stfmr_lockin_kepco_voltage_var),
-            (6, self.stfmr_lockin_kepco_output_var),
+        # As on the FMR page: each readout fills the control group above it.
+        for column, variable, padx in (
+            (0, self.stfmr_lockin_kepco_mode_var, (0, 8)),
+            (2, self.stfmr_lockin_kepco_current_var, (0, 8)),
+            (4, self.stfmr_lockin_kepco_voltage_var, (0, 8)),
+            (6, self.stfmr_lockin_kepco_output_var, (2, 2)),
         ):
-            ttk.Label(field_output, textvariable=variable).grid(
-                row=2, column=column, columnspan=2, sticky="w", pady=(4, 0)
+            ttk.Label(field_output, textvariable=variable, anchor="w").grid(
+                row=2, column=column, columnspan=2, sticky="ew", padx=padx, pady=(4, 0)
             )
 
         instruments = ttk.LabelFrame(top, text="STFMR instrument connections", padding=6)

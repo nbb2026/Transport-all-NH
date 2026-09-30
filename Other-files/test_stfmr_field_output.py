@@ -317,6 +317,56 @@ class FieldOutputTests(unittest.TestCase):
             self.a.stfmr_lockin_voltage_var.set("-- V")
             self.a.stfmr_lockin_reference_status_var.set("Ref: --")
 
+    def test_kepco_readouts_line_up_with_the_controls_above(self):
+        """Mode, I, V and OUTP each fill the control group above them."""
+        pages = (
+            ("FMR", self.a.stfmr_tab, self.a.stfmr_device_resource_widgets,
+             (self.a.stfmr_kepco_mode_var, self.a.stfmr_kepco_current_var,
+              self.a.stfmr_kepco_voltage_var, self.a.stfmr_kepco_output_var)),
+            ("STFMR", self.a.stfmr_lockin_tab, self.a.stfmr_lockin_resource_widgets,
+             (self.a.stfmr_lockin_kepco_mode_var, self.a.stfmr_lockin_kepco_current_var,
+              self.a.stfmr_lockin_kepco_voltage_var, self.a.stfmr_lockin_kepco_output_var)),
+        )
+        try:
+            for page, tab, widgets, variables in pages:
+                with self.subTest(page=page):
+                    self.arranged(1900, page, widgets)
+                    panel = self.page_frames(tab)["KEPCO 4886 BOP 20-10 field output"]
+                    for index, variable in enumerate(variables):
+                        readout = self.label_showing(variable)
+                        self.assertIs(readout.master, panel)
+                        first = panel.grid_slaves(row=1, column=2 * index)[0]
+                        second = panel.grid_slaves(row=1, column=2 * index + 1)[0]
+                        self.assertLessEqual(abs(readout.winfo_rootx() - first.winfo_rootx()), 1,
+                                             f"{variable.get()} starts under {first}")
+                        self.assertLessEqual(
+                            abs(readout.winfo_rootx() + readout.winfo_width()
+                                - second.winfo_rootx() - second.winfo_width()), 1,
+                            f"{variable.get()} ends under {second}")
+        finally:
+            self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+
+    def test_fmr_gaussmeter_status_sits_beside_its_controls(self):
+        """It sat alone at the far right, and readings shifted the buttons."""
+        self.arranged(1900, "FMR", self.a.stfmr_device_resource_widgets)
+        status = self.label_showing(self.a.stfmr_gauss_status_var)
+        check = next(w for w in status.master.winfo_children() if w.winfo_class() == "TCheckbutton")
+        gap = status.winfo_rootx() - check.winfo_rootx() - check.winfo_width()
+        self.assertTrue(0 <= gap <= 30, f"status is {gap} px from the checkbox")
+        field = self.label_showing(self.a.stfmr_gauss_field_var)
+        read = self.a.stfmr_read_gauss_button
+        before = read.winfo_rootx()
+        font = tkinter.font.Font(font=field.cget("font") or "TkDefaultFont")
+        try:
+            for text in ("-1234.5678 Oe", "+272.03412 G"):
+                self.a.stfmr_gauss_field_var.set(text)
+                self.root.update()
+                self.assertEqual(read.winfo_rootx(), before, "a reading must not shift the buttons")
+                self.assertLessEqual(font.measure(text), field.winfo_width(), f"{text} is cut")
+        finally:
+            self.a.stfmr_gauss_field_var.set("-- G")
+            self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+
     def test_side_by_side_only_when_the_table_gets_its_full_width(self):
         """The decision must allow for the parameter box's padding and border."""
         table = self.a.stfmr_lockin_meter_combo.master
