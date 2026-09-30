@@ -261,6 +261,8 @@ class StreamingTests(unittest.TestCase):
         history = events(recorder)
         self.assertEqual(history[0]['settings']['meter'], 'MFLI')
         self.assertEqual(history[0]['settings']['mfli_timeconstant_s'], 0.1)
+        # Two Zurich lock-ins exist; the run log names the one used.
+        self.assertEqual(history[0]['settings']['mfli_device'], 'dev4435')
         self.assertEqual(sum(r['event']=='startup_point_discarded' for r in history), 4)
         self.assertEqual(history[-1]['outcome'], 'completed')
         self.assertEqual(history[-1]['saved_points'], 6)

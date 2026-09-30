@@ -5,6 +5,7 @@ exercised here inside the fully built application, with the real KEPCO
 controller writing to a simulated BIT 4886, so the safety interlocks are
 tested end to end rather than against a stub.
 """
+import time
 import tkinter as tk
 import tkinter.font
 import unittest
@@ -498,7 +499,12 @@ class FieldOutputTests(unittest.TestCase):
         ):
             for key, entry in widgets.items():
                 with self.subTest(page=page, key=key):
-                    self.assertEqual(int(entry.cget("width")), 18)
+                    if entry.winfo_class() == "TCombobox":
+                        # The Zurich chooser: as wide on screen as an address field.
+                        self.root.update()
+                        self.assertEqual(entry.winfo_width(), widgets["kepco"].winfo_width())
+                    else:
+                        self.assertEqual(int(entry.cget("width")), 18)
                     self.assertNotIn("e", entry.grid_info()["sticky"], "field must not stretch")
                     # The field may only give way when the row is too narrow;
                     # the tail column takes practically all spare width.
@@ -508,6 +514,69 @@ class FieldOutputTests(unittest.TestCase):
                                   if isinstance(w, tk.ttk.Label)
                                   and str(w.cget("textvariable")) == str(statuses[key]))
                     self.assertGreaterEqual(int(status.cget("width")), len("Not connected"))
+
+    # ------------------------------------------------------------ two Zuriches
+    def test_mfli_row_offers_both_zurich_lockins_with_the_super_one_marked(self):
+        self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+        chooser = self.a.stfmr_lockin_resource_widgets["mfli"]
+        self.assertEqual(chooser.winfo_class(), "TCombobox")
+        self.assertEqual(str(chooser.cget("state")), "readonly", "chosen, never typed")
+        self.assertEqual(tuple(chooser.cget("values")), ("DEV4435 (USB)", "DEV4414 (Super)"))
+        self.assertEqual(chooser.get(), "DEV4435 (USB)", "the default lock-in is unchanged")
+        font = tkinter.font.Font(font=chooser.cget("font") or "TkTextFont")
+        for label in chooser.cget("values"):
+            self.assertLess(font.measure(label) + 30, chooser.winfo_width(), f"{label} is cut")
+        # Same column as every address field and Connect button above it.
+        widgets = self.a.stfmr_lockin_resource_widgets
+        self.assertEqual({(w.winfo_rootx(), w.winfo_width()) for w in widgets.values()},
+                         {(widgets["kepco"].winfo_rootx(), widgets["kepco"].winfo_width())})
+        self.assertEqual({b.winfo_rootx() for b in self.a.stfmr_lockin_connect_buttons.values()},
+                         {self.a.stfmr_lockin_connect_buttons["kepco"].winfo_rootx()})
+
+    def test_each_zurich_choice_tries_the_data_server_that_can_reach_it(self):
+        """The bug: choosing DEV4414 still probed only DEV4435's servers."""
+        probed = []
+
+        def refuse(address, timeout=None):
+            probed.append(tuple(address))
+            raise OSError("refused (test)")
+
+        controller = self.a.stfmr_lockin_mfli_controller
+        self.addCleanup(self.a.stfmr_lockin_resource_vars["mfli"].set, "DEV4435 (USB)")
+        self.addCleanup(setattr, controller, "mfli_server_candidates", None)
+        with mock.patch.object(app.socket, "create_connection", refuse):
+            for label, servers in (
+                    ("DEV4414 (Super)", [("192.168.68.250", 8004)]),
+                    ("DEV4435 (USB)", [("127.0.0.1", 8004), ("192.168.69.78", 8004)])):
+                with self.subTest(choice=label):
+                    probed.clear()
+                    self.errors.clear()
+                    self.a.stfmr_lockin_resource_vars["mfli"].set(label)
+                    self.a.connect_stfmr_lockin_device("mfli")
+                    for _ in range(500):
+                        self.root.update()
+                        if self.errors:
+                            break
+                        time.sleep(0.01)
+                    self.assertEqual(probed, servers)
+                    self.assertEqual(len(self.errors), 1)
+                    message = self.errors[0][1]
+                    self.assertIn("192.168.68.250", message, "the Super Zurich's address is named")
+                    self.assertIn("Super Zurich", message)
+                    self.assertEqual(str(self.a.stfmr_lockin_resource_widgets["mfli"].cget("state")),
+                                     "readonly", "after a failure the list is choosable again, not typable")
+                    self.assertFalse(controller.mfli_connected)
+
+    def test_bare_device_names_find_their_own_servers(self):
+        for text, expected in (("dev4414", ("dev4414", (("192.168.68.250", 8004),))),
+                               ("MF-DEV4414", ("dev4414", (("192.168.68.250", 8004),))),
+                               ("DEV4414 (Super)", ("dev4414", (("192.168.68.250", 8004),))),
+                               ("dev4435", ("dev4435", None)),
+                               ("dev9999", ("dev9999", None))):
+            with self.subTest(text=text):
+                self.assertEqual(app.zurich_mfli_choice(text), expected)
+        self.assertEqual(app.zurich_mfli_label("dev4414"), "DEV4414 (Super)")
+        self.assertEqual(app.zurich_mfli_label("dev9999"), "dev9999")
 
     def test_rendered_address_field_is_much_narrower_than_before(self):
         self.root.update()

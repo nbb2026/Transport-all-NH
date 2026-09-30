@@ -1132,6 +1132,106 @@ NONLOCAL_MFLI_SERVER_CANDIDATES = (
     ("127.0.0.1", NONLOCAL_MFLI_SERVER_PORT),
     (NONLOCAL_MFLI_SERVER_HOST, NONLOCAL_MFLI_SERVER_PORT),
 )
+# The lab's second Zurich MFLI, the "Super Zurich" DEV4414, is on the lab
+# network at 192.168.68.250, where MF Device Finder lists it, and serves its
+# own LabOne Data Server there.  The candidates above cannot reach it: the
+# 192.168.69.78 server belongs to DEV4435's USB link and sees only DEV4435.
+SUPER_ZURICH_MFLI_DEVICE = "dev4414"
+SUPER_ZURICH_MFLI_SERVERS = (("192.168.68.250", NONLOCAL_MFLI_SERVER_PORT),)
+# Every page's Zurich list offers both lock-ins by name, each with the Data
+# Servers that can reach it.  None keeps DEV4435's own search: a PC-side
+# LabOne server first, then the MFLI's server over the USB link.
+ZURICH_MFLI_CHOICES = {
+    "DEV4435 (USB)": (NONLOCAL_MFLI_DEVICE, None),
+    "DEV4414 (Super)": (SUPER_ZURICH_MFLI_DEVICE, SUPER_ZURICH_MFLI_SERVERS),
+}
+def zurich_mfli_choice(text: str) -> tuple[str, tuple[tuple[str, int], ...] | None]:
+    """(device, Data Servers) for a Zurich list entry or a bare device name."""
+    text = str(text).strip()
+    if text in ZURICH_MFLI_CHOICES:
+        return ZURICH_MFLI_CHOICES[text]
+    device = text.lower()
+    if device.startswith("mf-"):
+        device = device[3:]
+    for known_device, servers in ZURICH_MFLI_CHOICES.values():
+        if device == known_device:
+            return known_device, servers
+    return device, None
+
+
+def zurich_mfli_label(text: str) -> str:
+    """The Zurich list entry for a device name; unknown names are kept as typed."""
+    device, _servers = zurich_mfli_choice(text)
+    return next((label for label, (known, _) in ZURICH_MFLI_CHOICES.items()
+                 if known == device), str(text).strip())
+
+
+def create_zurich_chooser(parent, variable, *, match_chars: int | None = None, width: int = 16):
+    """A selection-only list of the lab's Zurich MFLIs, bound to ``variable``.
+
+    A bare device name already in ``variable`` (``dev4435``, ``MF-DEV4414``)
+    is shown as its list entry.  With ``match_chars`` the list is as wide on
+    screen as an entry of that many characters, to the pixel, so it lines up
+    with the address fields around it; ``zurich_shortfall`` on the returned
+    list is any width a theme would not take, for the caller's grid padding.
+    """
+    variable.set(zurich_mfli_label(variable.get()))
+    chooser = ttk.Combobox(
+        parent, textvariable=variable, values=tuple(ZURICH_MFLI_CHOICES),
+        state="readonly", width=match_chars or width,
+    )
+    chooser.zurich_chooser = True
+    chooser.zurich_shortfall = 0
+    if not match_chars:
+        return chooser
+    try:
+        probe = ttk.Entry(parent, width=match_chars)
+        target = int(probe.winfo_reqwidth())
+        probe.destroy()
+        # At equal character width a combobox is wider by its arrow.
+        while int(chooser.cget("width")) > 8 and int(chooser.winfo_reqwidth()) > target:
+            chooser.configure(width=int(chooser.cget("width")) - 1)
+        spare = target - int(chooser.winfo_reqwidth())
+        if spare > 0:
+            # The last few pixels go into the list's own right padding.
+            style = ttk.Style(parent)
+            raw = [int(round(float(str(value)))) for value in parent.tk.splitlist(
+                style.lookup("TCombobox", "padding"))] or [0]
+            pad_left = raw[0]
+            pad_top = raw[1] if len(raw) > 1 else pad_left
+            pad_right = raw[2] if len(raw) > 2 else pad_left
+            pad_bottom = raw[3] if len(raw) > 3 else pad_top
+            name = f"Zurich{spare}.TCombobox"
+            style.configure(name, padding=(pad_left, pad_top, pad_right + spare, pad_bottom))
+            chooser.configure(style=name)
+        chooser.zurich_shortfall = max(0, target - int(chooser.winfo_reqwidth()))
+    except (tk.TclError, TypeError, ValueError, AttributeError):
+        chooser.zurich_shortfall = 0  # stubbed widgets, as in offline tests
+    return chooser
+
+
+def zurich_choice_hint(device: str) -> str:
+    """Point a failed connection at the lab's other Zurich, by its list entry.
+
+    Only the Super Zurich's address is given: DEV4435's USB address would send
+    someone checking DEV4414 to the wrong cable.
+    """
+    device = zurich_mfli_choice(device)[0]
+    if device == SUPER_ZURICH_MFLI_DEVICE:
+        return ('This is the Super Zurich, DEV4414. If MF Device Finder lists DEV4435 '
+                'instead, choose "DEV4435 (USB)" in the page\'s Zurich list.')
+    if device == NONLOCAL_MFLI_DEVICE:
+        return ('If MF Device Finder lists DEV4414 at 192.168.68.250 instead, that is the '
+                'Super Zurich: choose "DEV4414 (Super)" in the page\'s Zurich list.')
+    return ('The page\'s Zurich list offers the lab\'s two MFLIs: "DEV4435 (USB)" and '
+            '"DEV4414 (Super)", the Super Zurich at 192.168.68.250.')
+
+
+def widget_idle_state(widget) -> str:
+    """"readonly" for a selection-only list, which "normal" would make typable."""
+    return "readonly" if getattr(widget, "zurich_chooser", False) is True else "normal"
+
+
 PPMS_HARMONIC_COLORS = {"1": "#0072B2", "2": "#E69F00", "3": "#009E73"}
 # Natural height requested per compact plot row.  Six rows (three SR830 plus
 # three Zurich harmonics) must fit under the settings blocks on a 1080 px
@@ -6956,7 +7056,8 @@ class NonLocalACController:
                         'Verify the device address in MF Device Finder, its power and Ethernet/USB connection. '
                         'Run on the measurement PC:\n' + checks + '\n\n'
                         'TCP reachability is required but does not prove API compatibility. '
-                        'Do not change the PC IP based on settings for another instrument.'
+                        'Do not change the PC IP based on settings for another instrument.\n\n'
+                        + zurich_choice_hint(requested)
                     )
                 raise RuntimeError(
                     "The Zurich MFLI Data Server is currently unreachable; the program has not entered the "
@@ -6968,7 +7069,8 @@ class NonLocalACController:
                     "192.168.69.77；\n"
                     "3. Run in PowerShell: ping 192.168.69.78;\n"
                     "4. Run: Test-NetConnection 192.168.69.78 -Port 8004.\n\n"
-                    "Only after TcpTestSucceeded=True can the Python API connect."
+                    "Only after TcpTestSucceeded=True can the Python API connect.\n\n"
+                    + zurich_choice_hint(requested)
                 )
 
             mfli_lease_resource = f"LABONE::{requested}"
@@ -7322,7 +7424,8 @@ class NonLocalACController:
             advice = (
                 "Check the device name in the panel (it must be this MFLI's own DEV number) and make sure it is "
                 "connected to this PC by USB or Ethernet and attached to this PC's Data Server in LabOne; "
-                "the other MFLI's built-in 192.168.69.78 server can only see itself."
+                "the other MFLI's built-in 192.168.69.78 server can only see itself. "
+                + zurich_choice_hint(requested)
             )
         else:
             last_error = (
@@ -12021,7 +12124,7 @@ class CombinedControlApp:
             value=NONLOCAL_2182_RESOURCE
         )
         self.nonlocal_vi_mfli_device_var = tk.StringVar(
-            value=NONLOCAL_MFLI_DEVICE
+            value=zurich_mfli_label(NONLOCAL_MFLI_DEVICE)
         )
         self.nonlocal_vi_mfli_coupling_var = tk.StringVar(value="AC")
         self.nonlocal_vi_mfli_reference_source_var = tk.StringVar(
@@ -12236,7 +12339,7 @@ class CombinedControlApp:
         )
         self.stfmr_lockin_closed = False
         self.stfmr_lockin_resource_vars = {
-            key: tk.StringVar(value=value)
+            key: tk.StringVar(value=zurich_mfli_label(value) if key == "mfli" else value)
             for key, value in STFMR_LOCKIN_DEFAULT_RESOURCES.items()
         }
         self.stfmr_lockin_connection_vars = {
@@ -14229,10 +14332,20 @@ class CombinedControlApp:
             ttk.Label(frame, text=f"{labels[key]}:", width=11, anchor="e").grid(
                 row=0, column=0, sticky="e"
             )
-            entry = ttk.Entry(
-                frame, textvariable=self.stfmr_lockin_resource_vars[key], width=18
-            )
-            entry.grid(row=0, column=1, sticky="w", padx=(0, 4))
+            if key == "mfli":
+                # Two Zurich lock-ins: pick one by name, so the Data Server
+                # that can reach that MFLI is the one tried.  As wide on
+                # screen as the address fields, so the Connect buttons and
+                # lamps stay in one column.
+                entry = create_zurich_chooser(
+                    frame, self.stfmr_lockin_resource_vars[key], match_chars=18
+                )
+                entry.grid(row=0, column=1, sticky="w", padx=(0, 4 + entry.zurich_shortfall))
+            else:
+                entry = ttk.Entry(
+                    frame, textvariable=self.stfmr_lockin_resource_vars[key], width=18
+                )
+                entry.grid(row=0, column=1, sticky="w", padx=(0, 4))
             connect = ttk.Button(
                 frame, text="Connect", width=8,
                 command=lambda selected=key: self.connect_stfmr_lockin_device(selected),
@@ -14544,8 +14657,10 @@ class CombinedControlApp:
         self.stfmr_lockin_disconnect_buttons[key].configure(
             state="normal" if connected and not self.stfmr_lockin_running else "disabled"
         )
-        self.stfmr_lockin_resource_widgets[key].configure(
-            state="disabled" if connected or self.stfmr_lockin_running else "normal"
+        widget = self.stfmr_lockin_resource_widgets[key]
+        widget.configure(
+            state="disabled" if connected or self.stfmr_lockin_running
+            else widget_idle_state(widget)
         )
         self._update_stfmr_lockin_ui()
 
@@ -14784,11 +14899,15 @@ class CombinedControlApp:
                 return
             self._set_stfmr_lockin_device_ui(key, True)
             return
-        operation = (
-            lambda: self.stfmr_lockin_mfli_controller.connect_mfli(resource)
-            if key == "mfli"
-            else self.stfmr_lockin_controllers[key].connect(resource)
-        )
+        if key == "mfli":
+            # Each MFLI has its own Data Server: DEV4435's USB link cannot see
+            # DEV4414, and DEV4414's network server cannot see DEV4435.
+            device, servers = zurich_mfli_choice(resource)
+            controller = self.stfmr_lockin_mfli_controller
+            controller.mfli_server_candidates = servers
+            operation = lambda: controller.connect_mfli(device)
+        else:
+            operation = lambda: self.stfmr_lockin_controllers[key].connect(resource)
         future = self.stfmr_lockin_executor.submit(operation)
 
         def finished() -> None:
@@ -15257,6 +15376,9 @@ class CombinedControlApp:
             "python_version": sys.version,
             "resources": {key: var.get() for key, var in self.stfmr_lockin_resource_vars.items()},
             "connected": {key: self._stfmr_lockin_connected(key) for key in self.stfmr_lockin_resource_vars},
+            # Two Zurich lock-ins exist, so record which one took the data.
+            "mfli_device": zurich_mfli_choice(self.stfmr_lockin_resource_vars["mfli"].get())[0],
+            "mfli_identity": str(getattr(self.stfmr_lockin_mfli_controller, "mfli_identity", "") or ""),
             "meter": meter, "frequencies_ghz": frequencies_ghz,
             "acquisition_mode": "sequential_same_current" if meter == "MFLI + SR830" else "single",
             "csv_pair_key": "index + meter; dual mode saves two rows per retained field point",
@@ -19914,11 +20036,15 @@ class CombinedControlApp:
         ttk.Label(connection, text="Zurich MFLI：").grid(
             row=4, column=0, sticky="e", pady=(4, 0)
         )
-        ttk.Entry(
-            connection,
-            textvariable=self.nonlocal_vi_mfli_device_var,
-            width=21,
-        ).grid(row=4, column=1, padx=(0, 12), pady=(4, 0), sticky="w")
+        # Which Zurich: chosen from the lab's two, so the Data Server that can
+        # reach it is used.  As wide as the SR830 address fields above.
+        vi_mfli_chooser = create_zurich_chooser(
+            connection, self.nonlocal_vi_mfli_device_var, match_chars=21
+        )
+        vi_mfli_chooser.grid(
+            row=4, column=1, padx=(0, 12 + vi_mfli_chooser.zurich_shortfall),
+            pady=(4, 0), sticky="w",
+        )
         vi_mfli_options = ttk.Frame(connection)
         vi_mfli_options.grid(
             row=4, column=2, columnspan=7, pady=(4, 0), sticky="w"
@@ -27661,7 +27787,11 @@ class CombinedControlApp:
             label = f"SR830 #{key}"
         elif key == "mfli":
             resource = self.nonlocal_vi_mfli_device_var.get().strip()
-            connector = self.nonlocal_vi_ac_controller.connect_mfli
+            device, servers = zurich_mfli_choice(resource)
+            # Each MFLI has its own Data Server: DEV4435's USB link cannot
+            # see DEV4414, and DEV4414's network server cannot see DEV4435.
+            self.nonlocal_vi_ac_controller.mfli_server_candidates = servers
+            connector = lambda _choice: self.nonlocal_vi_ac_controller.connect_mfli(device)
             label = "Zurich MFLI"
         elif key == "2182":
             resource = self.nonlocal_vi_nanovoltmeter_resource_var.get().strip()
@@ -27804,7 +27934,10 @@ class CombinedControlApp:
         }
         use_nanovoltmeter = bool(self.nonlocal_vi_use_2182_var.get())
         use_mfli = bool(self.nonlocal_vi_use_mfli_var.get())
-        mfli_device = self.nonlocal_vi_mfli_device_var.get().strip()
+        mfli_device, mfli_servers = zurich_mfli_choice(
+            self.nonlocal_vi_mfli_device_var.get()
+        )
+        self.nonlocal_vi_ac_controller.mfli_server_candidates = mfli_servers
         nanovoltmeter_resource = (
             self.nonlocal_vi_nanovoltmeter_resource_var.get().strip()
         )
@@ -28092,7 +28225,12 @@ class CombinedControlApp:
                     "reference_source": self.nonlocal_vi_mfli_reference_source_var.get().strip(),
                     "harmonic": int(self.nonlocal_vi_mfli_harmonic_var.get()),
                     "channel": self.nonlocal_vi_mfli_channel_var.get().strip().upper(),
-                    "resource": self.nonlocal_vi_mfli_device_var.get().strip(),
+                    # The device actually connected, which the list may no
+                    # longer show if it was changed afterwards.
+                    "resource": (
+                        getattr(self.nonlocal_vi_ac_controller, "mfli_device", "")
+                        or zurich_mfli_choice(self.nonlocal_vi_mfli_device_var.get())[0]
+                    ),
                     "input_impedance": self.nonlocal_vi_mfli_input_impedance_var.get().strip(),
                     "input_scaling": float(
                         self.nonlocal_vi_mfli_input_scaling_var.get()
@@ -34231,7 +34369,7 @@ class PPMSPanel(CombinedControlApp):
         self.zurich_busy = False
         self.zurich_closed = False
         self.zurich_after_id = None
-        self.zurich_resource = tk.StringVar(value="MF-DEV4414")
+        self.zurich_resource = tk.StringVar(value=zurich_mfli_label("MF-DEV4414"))
         self.zurich_reference = tk.StringVar(value="Trigger In 1")
         self.zurich_harmonic = tk.StringVar(value="1+2+3")
         self.zurich_timeconstant = tk.StringVar(value="0.1")
@@ -34245,10 +34383,16 @@ class PPMSPanel(CombinedControlApp):
         ttk.Label(row, text="Zurich MFLI", **({'width': 16} if compact else {})).grid(row=0, column=0)
         self.zurich_entries = []
         for column, variable, width in ((1, self.zurich_resource, 12), (5, self.zurich_timeconstant, 7)):
-            entry = ttk.Entry(row, textvariable=variable, width=width)
-            if compact and column == 1:
-                entry.configure(width=23)
-            entry.grid(row=0, column=(9 if column == 5 else 1) if compact else column, padx=0 if compact else 3)
+            if column == 1:
+                # Which Zurich: chosen from the lab's two, never typed, so the
+                # Data Server that can reach it is used.
+                entry = create_zurich_chooser(row, variable, match_chars=23 if compact else None)
+                extra = entry.zurich_shortfall
+            else:
+                entry = ttk.Entry(row, textvariable=variable, width=width)
+                extra = 0
+            entry.grid(row=0, column=(9 if column == 5 else 1) if compact else column,
+                       padx=(0, extra) if compact else (3, 3 + extra))
             self.zurich_entries.append(entry)
         ttk.Label(row, text="Ref." if compact else "Reference").grid(row=0, column=6 if compact else 2)
         self.zurich_reference_combo = ttk.Combobox(row, textvariable=self.zurich_reference,
@@ -34333,9 +34477,10 @@ class PPMSPanel(CombinedControlApp):
         self.zurich_connect_button.configure(state="disabled" if locked else "normal")
         self.zurich_disconnect_button.configure(state="normal" if not locked and self.zurich_controller.mfli_connected else "disabled")
         for entry in self.zurich_entries:
-            entry.configure(state="disabled" if locked else "normal")
+            entry.configure(state="disabled" if locked else widget_idle_state(entry))
         self.zurich_entries[0].configure(
-            state="disabled" if locked or self.zurich_controller.mfli_connected else "normal")
+            state="disabled" if locked or self.zurich_controller.mfli_connected
+            else widget_idle_state(self.zurich_entries[0]))
         for combo in (self.zurich_reference_combo, self.zurich_harmonic_combo):
             combo.configure(state="disabled" if locked else "readonly")
 
@@ -34675,7 +34820,7 @@ class PPMSPanel(CombinedControlApp):
         if self.zurich_busy or self.zurich_closed or self.ppms_field_scan_running:
             return
         try:
-            device = self.zurich_resource.get().strip()
+            device, servers = zurich_mfli_choice(self.zurich_resource.get())
             reference = self.zurich_reference.get()
             harmonic = str(self.zurich_harmonic.get())
             tau = float(self.zurich_timeconstant.get())
@@ -34685,6 +34830,10 @@ class PPMSPanel(CombinedControlApp):
         except (ValueError, tk.TclError) as error:
             messagebox.showerror("PPMS Zurich settings", str(error), parent=self.root)
             return
+        if not apply_only:
+            # Each MFLI has its own Data Server: DEV4435's USB link cannot see
+            # DEV4414, and DEV4414's network server cannot see DEV4435.
+            self.zurich_controller.mfli_server_candidates = servers
         self._set_zurich_busy(True)
         self.zurich_status.set("Updating harmonic and verifying configuration…" if apply_only else "Connecting and configuring…")
         self._set_connection_indicator("zurich_reference", False)
@@ -34876,8 +35025,8 @@ class RTEPanel(PPMSPanel):
         }
         super().__init__(parent, tab)
         # This rack uses DEV4414, not the other modules' DEV4435 server.
-        self.zurich_controller.mfli_server_candidates = (('192.168.68.250', 8004),)
-        self.zurich_resource.set('MF-DEV4414')
+        self.zurich_controller.mfli_server_candidates = SUPER_ZURICH_MFLI_SERVERS
+        self.zurich_resource.set(zurich_mfli_label(SUPER_ZURICH_MFLI_DEVICE))
         for controller in self.ppms_instrument_controllers.values():
             controller.owner_scope = 'RT-E'
         self.rte_controllers['gauss'].owner_scope = 'RT-E'

@@ -340,7 +340,7 @@ class RTE(unittest.TestCase):
                 self.assertNotIn('text', entry.parent.options)
             self.assertNotIn('text', panel.ppms_instruments_frame.options)
             self.assertEqual(panel.zurich_harmonic.get(), '1+2+3')
-            self.assertEqual(panel.zurich_resource.get(), 'MF-DEV4414')
+            self.assertEqual(panel.zurich_resource.get(), 'DEV4414 (Super)')
             self.assertEqual(panel.zurich_controller.mfli_server_candidates, (('192.168.68.250', 8004),))
             self.assertFalse(hasattr(app.NonLocalACController(lambda _: None), 'mfli_server_candidates'))
             self.assertEqual(len(panel.ppms_harmonic_canvases), 9)

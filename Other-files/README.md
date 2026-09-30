@@ -1,5 +1,34 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Both Zurich lock-ins selectable on every page (2026-09-30)
+
+- **Bug:** STFMR could not connect the Super Zurich. Its MFLI connect only
+  tried DEV4435's Data Servers, a PC-side LabOne server at 127.0.0.1 and
+  DEV4435's own server over USB at 192.168.69.78. DEV4414, the Super Zurich, is
+  on the lab network at 192.168.68.250, where MF Device Finder lists it, and
+  each MFLI's server sees only that MFLI. PPMS had the same bug (see the
+  2026-09-18 entry). Only RT-E had the right address.
+- The Zurich field on STFMR, Gate-VI, PPMS and RT-E is now a list with two
+  entries: "DEV4435 (USB)" and "DEV4414 (Super)". Each entry tries only the
+  servers that can reach it. DEV4414 uses 192.168.68.250:8004. DEV4435 keeps
+  its previous search.
+- Each page keeps its previous lock-in by default: DEV4435 on STFMR and
+  Gate-VI, DEV4414 on PPMS and RT-E. The lists can be chosen from but not
+  typed in. On STFMR, Gate-VI and RT-E they are as wide as the address fields
+  around them, so the Connect buttons stay in line.
+- A failed connection now names the other lock-in by its list entry. The
+  DEV4414 message leaves out DEV4435's USB address, so it never sends anyone
+  to the wrong cable.
+- Records: the STFMR run log gains `mfli_device` and `mfli_identity`. The
+  Gate-VI CSV `resource` column now holds the device actually connected
+  rather than the text in the field.
+- Known gap, next: PPMS and RT-E files do not yet record which Zurich took
+  the data. That matters now that RT-E can choose DEV4435. As before, the
+  Gate-VI list can still be changed while connected.
+- New tests in `test_zurich_choice.py` cover the lists, the servers each page
+  tries, and the messages. They fail on the previous commit. Checked on the
+  Mac against the emulated lab screen; not yet on the lab PC.
+
 ## STFMR status lamps aligned (2026-09-30)
 
 - The live readouts and the Ref and MFLI Overload lamps under the STFMR sweep

@@ -450,7 +450,7 @@ class TwoPanelTests(unittest.TestCase):
         parent, panel, controller = self.make_panel()
         self.assertEqual(panel.ppms_host_var.get(), app.PPMS_DEFAULT_HOST)
         self.assertEqual(parent.ppms_host_var.get(), app.PPMS_DEFAULT_HOST)
-        self.assertEqual(panel.zurich_resource.get(), 'MF-DEV4414')
+        self.assertEqual(panel.zurich_resource.get(), 'DEV4414 (Super)')
         self.assertEqual(panel.ppms_resource_vars['830_b'].get(), 'GPIB0::9::INSTR')
         self.assertEqual(panel.zurich_reference.get(), 'Trigger In 1')
         self.assertIsNot(panel.ppms_environment_controller, parent.ppms_environment_controller)
@@ -468,7 +468,9 @@ class TwoPanelTests(unittest.TestCase):
         _, panel, controller = self.make_panel()
         panel.zurich_harmonic.set('2')
         panel.connect_ppms2_zurich()
-        controller.connect_mfli.assert_called_once_with('MF-DEV4414')
+        controller.connect_mfli.assert_called_once_with('dev4414')
+        # The Super Zurich's own Data Server, not DEV4435's USB-link server.
+        self.assertEqual(controller.mfli_server_candidates, (('192.168.68.250', 8004),))
         controller.configure_mfli.assert_called_once_with('AC', 2, 'R',
             reference_source='Trigger In 1', sample_rate_hz=app.NONLOCAL_SAMPLE_HZ,
             input_impedance='10 MΩ', input_scaling=1.0, timeconstant_s=.1, external_reference_demodulator=3)
