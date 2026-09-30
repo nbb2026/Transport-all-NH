@@ -7,6 +7,7 @@ import tkinter as tk
 import tkinter.font
 import unittest
 
+from lab_screen import LAB_WIDE, build_lab_app, lab_window
 from test_ppms_motor_debug import app
 
 
@@ -90,10 +91,22 @@ class NotebookTabTests(unittest.TestCase):
 
 
 class RTEStatusRowTests(unittest.TestCase):
-    """The RT-E scan status has to stay on one line, however long it gets."""
+    """The RT-E scan status stays on one line in the widened lab window.
 
-    LONGEST = ("Stopping the Current scan; field, current, temperature and "
-               "angle setpoints are kept, nothing zeroed\u2026")
+    These are the messages RT-E itself shows.  Failures are cut at the first
+    "; " by short_status_error, and the full text goes to the error dialog and
+    the log.  (The long "Stopping the Current scan; ..." text is the PPMS
+    page's; RT-E overrides the stop.)
+    """
+
+    MESSAGES = (
+        "Failed: " + app.short_status_error(
+            RuntimeError("6221 hit compliance; scan stopped and output turned off"), 100),
+        "Failed: " + app.short_status_error(
+            RuntimeError("LS475 field drifted during acquisition; point discarded"), 100),
+        "RT-E Current: 3 harmonic pass(es), 300 points",
+        "Stopping; completed CSV points and outputs kept",
+    )
 
     @classmethod
     def setUpClass(cls):
@@ -101,8 +114,8 @@ class RTEStatusRowTests(unittest.TestCase):
             cls.root = tk.Tk()
         except tk.TclError as error:  # headless build server
             raise unittest.SkipTest(f"no display: {error}")
-        cls.root.geometry("1900x1000+0+0")
-        cls.app = app.CombinedControlApp(cls.root)
+        cls.app = build_lab_app(app, cls.root)  # as the lab PC shows it
+        cls.root.geometry(f"{LAB_WIDE}x{lab_window(cls.app)[1]}+0+0")
         notebook = next(w for w in cls.app.__dict__.values()
                         if isinstance(w, tk.ttk.Notebook))
         for index in range(notebook.index("end")):
@@ -133,9 +146,7 @@ class RTEStatusRowTests(unittest.TestCase):
 
     def test_longest_status_fits_on_one_line(self):
         label = self.status_label()
-        for message in ("Failed: 6221 hit compliance; scan stopped and output turned off",
-                        "RT-E Current: 3 harmonic pass(es), 300 points",
-                        self.LONGEST):
+        for message in self.MESSAGES:
             self.app.rte_panel.ppms_field_scan_status_var.set(message)
             self.root.update()
             font = tkinter.font.Font(font=label.cget("font") or "TkDefaultFont")

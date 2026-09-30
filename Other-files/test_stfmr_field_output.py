@@ -11,6 +11,7 @@ import tkinter.font
 import unittest
 from unittest import mock
 
+from lab_screen import LAB_WIDE, build_lab_app, lab_window
 from test_ppms_motor_debug import app
 
 
@@ -56,8 +57,11 @@ class FieldOutputTests(unittest.TestCase):
             cls.root = tk.Tk()
         except tk.TclError as error:  # headless build server
             raise unittest.SkipTest(f"no display: {error}")
-        cls.root.geometry("1900x1000+0+0")
-        cls.app = app.CombinedControlApp(cls.root)
+        # As the lab PC shows it (2560x1440 at 96 DPI), whatever runs the tests.
+        cls.app = build_lab_app(app, cls.root)
+        cls.LAB_DEFAULT, cls.LAB_HEIGHT = lab_window(cls.app)
+        cls.NARROWEST = int(cls.root.minsize()[0])
+        cls.root.geometry(f"{LAB_WIDE}x{cls.LAB_HEIGHT}+0+0")
         notebook = next(w for w in cls.app.__dict__.values() if isinstance(w, tk.ttk.Notebook))
         for index in range(notebook.index("end")):
             if notebook.tab(index, "text") == "STFMR":
@@ -119,7 +123,7 @@ class FieldOutputTests(unittest.TestCase):
         for tab_name, tab, title in (("STFMR", self.a.stfmr_lockin_tab, "STFMR instrument connections"),
                                      ("FMR", self.a.stfmr_tab, "FMR instrument connections")):
             with self.subTest(page=tab_name):
-                self.arranged(1420, tab_name, self.a.stfmr_lockin_resource_widgets
+                self.arranged(LAB_WIDE, tab_name, self.a.stfmr_lockin_resource_widgets
                               if tab_name == "STFMR" else self.a.stfmr_device_resource_widgets)
                 frames = self.page_frames(tab)
                 panel = frames["KEPCO 4886 BOP 20-10 field output"]
@@ -130,7 +134,7 @@ class FieldOutputTests(unittest.TestCase):
                 self.assertLess(connections.winfo_rootx(), panel.winfo_rootx())
                 self.assertEqual(int(panel.master.columnconfigure(1)["weight"]), 1,
                                  "the panel takes the spare width; the list stays compact")
-        self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+        self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
         frames = self.page_frames(self.a.stfmr_lockin_tab)
         self.assertEqual(int(frames["STFMR field-sweep parameters"].grid_info()["row"]), 1)
         outer = frames["KEPCO 4886 BOP 20-10 field output"].master.master
@@ -145,44 +149,46 @@ class FieldOutputTests(unittest.TestCase):
                           for e in self.a.stfmr_lockin_resource_widgets.values()}, {0})
 
     def arranged(self, width, tab_name, widgets):
-        self.root.geometry(f"{width}x900+0+40")
+        """Show a page at a window width; the width is checked, not assumed."""
+        self.root.geometry(f"{width}x{self.LAB_HEIGHT}+0+0")
         notebook = next(w for w in self.a.__dict__.values() if isinstance(w, tk.ttk.Notebook))
         for index in range(notebook.index("end")):
             if notebook.tab(index, "text") == tab_name:
                 notebook.select(index)
         for _ in range(3):
             self.root.update()
+        self.assertEqual(self.root.winfo_width(), width, "the window did not take this width")
         return getattr(widgets["kepco"].master.master.master, "_pair_side_by_side", None)
 
     def test_top_row_stacks_when_the_window_is_narrow(self):
-        """The default split-screen window is 826 px on a 1920 display."""
+        """Stacked in the 1101 px window the program opens, side by side at 2000 px."""
         try:
             for tab_name, widgets in (("STFMR", self.a.stfmr_lockin_resource_widgets),
                                       ("FMR", self.a.stfmr_device_resource_widgets)):
                 with self.subTest(page=tab_name):
-                    self.assertFalse(self.arranged(820, tab_name, widgets), "narrow: stacked")
+                    self.assertFalse(self.arranged(self.LAB_DEFAULT, tab_name, widgets), "narrow: stacked")
                     connections = widgets["kepco"].master.master
                     self.assertEqual(int(connections.grid_info()["row"]), 0, "stacked: connections first")
-                    self.assertTrue(self.arranged(1420, tab_name, widgets), "wide: side by side")
+                    self.assertTrue(self.arranged(LAB_WIDE, tab_name, widgets), "wide: side by side")
         finally:
-            self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+            self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
 
     def test_nothing_is_clipped_in_a_narrow_window(self):
         try:
             for tab_name, tab, widgets in (
                     ("STFMR", self.a.stfmr_lockin_tab, self.a.stfmr_lockin_resource_widgets),
                     ("FMR", self.a.stfmr_tab, self.a.stfmr_device_resource_widgets)):
-                self.arranged(820, tab_name, widgets)
+                self.arranged(self.LAB_DEFAULT, tab_name, widgets)
                 right = tab.winfo_rootx() + tab.winfo_width()
                 over = [w for w in descendants(tab)
                         if w.winfo_ismapped() and w.winfo_rootx() + w.winfo_width() > right + 1]
                 self.assertEqual(over, [], f"{tab_name}: widgets past the right edge")
         finally:
-            self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+            self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
 
     def test_parameter_table_is_aligned(self):
         """Every field in a column starts at the same x and has the same width."""
-        self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+        self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
         table = self.a.stfmr_lockin_meter_combo.master
         compared = 0
         for column in range(1, 12, 2):
@@ -203,7 +209,7 @@ class FieldOutputTests(unittest.TestCase):
                     self.assertEqual(label.grid_info()["sticky"], "e", "labels sit against their field")
 
     def test_sweep_controls_sit_right_of_the_parameters(self):
-        self.arranged(1420, "STFMR", self.a.stfmr_lockin_resource_widgets)
+        self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
         table = self.a.stfmr_lockin_meter_combo.master
         column = self.a.stfmr_lockin_start_button.master.master
         self.assertIs(column.master, table.master, "both inside the field-sweep parameters box")
@@ -230,7 +236,7 @@ class FieldOutputTests(unittest.TestCase):
             self.a._stfmr_lockin_connected = original
 
     def test_fmr_scan_has_two_columns(self):
-        self.arranged(1420, "FMR", self.a.stfmr_device_resource_widgets)
+        self.arranged(LAB_WIDE, "FMR", self.a.stfmr_device_resource_widgets)
         frames = self.page_frames(self.a.stfmr_tab)
         sweep = frames["FMR scan: sweep 4886 current, x-axis is the measured 475 field (signed)"]
         frequency = frames["Fixed-field frequency sweep"]
@@ -240,7 +246,7 @@ class FieldOutputTests(unittest.TestCase):
         self.assertIs(self.a.stfmr_fmr_start_button.master.master, sweep)
 
     def test_fmr_buttons_and_labels_show_their_whole_text(self):
-        self.arranged(1420, "FMR", self.a.stfmr_device_resource_widgets)
+        self.arranged(LAB_WIDE, "FMR", self.a.stfmr_device_resource_widgets)
         font = tkinter.font.nametofont("TkDefaultFont")
         cut = []
         for widget in descendants(self.a.stfmr_tab):
@@ -258,7 +264,7 @@ class FieldOutputTests(unittest.TestCase):
 
     def test_live_readouts_fit_their_longest_text_without_resizing_the_column(self):
         """Dual MFLI + SR830 lines and SR830 autorange messages were cut."""
-        self.arranged(1420, "STFMR", self.a.stfmr_lockin_resource_widgets)
+        self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
         column = self.a.stfmr_lockin_start_button.master.master
         width_before = column.winfo_reqwidth()
         font = tkinter.font.nametofont("TkDefaultFont")
@@ -284,7 +290,7 @@ class FieldOutputTests(unittest.TestCase):
         Before, the texts started at 0, 18 and 22 px, the boxes ended at 464,
         414 and 126 px, and the two dots were 2 px apart and 4 px off level.
         """
-        self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+        self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
         field, voltage, reference, overload = (self.label_showing(v) for v in (
             self.a.stfmr_lockin_field_var, self.a.stfmr_lockin_voltage_var,
             self.a.stfmr_lockin_reference_status_var, self.a.stfmr_lockin_overload_var))
@@ -330,7 +336,7 @@ class FieldOutputTests(unittest.TestCase):
         try:
             for page, tab, widgets, variables in pages:
                 with self.subTest(page=page):
-                    self.arranged(1900, page, widgets)
+                    self.arranged(LAB_WIDE, page, widgets)
                     panel = self.page_frames(tab)["KEPCO 4886 BOP 20-10 field output"]
                     for index, variable in enumerate(variables):
                         readout = self.label_showing(variable)
@@ -344,11 +350,11 @@ class FieldOutputTests(unittest.TestCase):
                                 - second.winfo_rootx() - second.winfo_width()), 1,
                             f"{variable.get()} ends under {second}")
         finally:
-            self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+            self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
 
     def test_fmr_gaussmeter_status_sits_beside_its_controls(self):
         """It sat alone at the far right, and readings shifted the buttons."""
-        self.arranged(1900, "FMR", self.a.stfmr_device_resource_widgets)
+        self.arranged(LAB_WIDE, "FMR", self.a.stfmr_device_resource_widgets)
         status = self.label_showing(self.a.stfmr_gauss_status_var)
         check = next(w for w in status.master.winfo_children() if w.winfo_class() == "TCheckbutton")
         gap = status.winfo_rootx() - check.winfo_rootx() - check.winfo_width()
@@ -365,14 +371,14 @@ class FieldOutputTests(unittest.TestCase):
                 self.assertLessEqual(font.measure(text), field.winfo_width(), f"{text} is cut")
         finally:
             self.a.stfmr_gauss_field_var.set("-- G")
-            self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+            self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
 
     def test_side_by_side_only_when_the_table_gets_its_full_width(self):
         """The decision must allow for the parameter box's padding and border."""
         table = self.a.stfmr_lockin_meter_combo.master
         decided = set()
         try:
-            for width in range(900, 1441, 20):
+            for width in range(self.NARROWEST, LAB_WIDE + 1, 40):
                 self.arranged(width, "STFMR", self.a.stfmr_lockin_resource_widgets)
                 side = getattr(table.master, "_pair_side_by_side", None)
                 self.assertIsNotNone(side, f"no layout decision at {width} px")
@@ -381,13 +387,13 @@ class FieldOutputTests(unittest.TestCase):
                     self.assertGreaterEqual(table.winfo_width(), table.winfo_reqwidth(),
                                             f"side by side at {width} px but the table is squeezed")
         finally:
-            self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+            self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
         self.assertEqual(decided, {True, False}, "both layouts should occur across this range")
 
     def test_narrow_window_keeps_dropdowns_whole_and_fields_readable(self):
         font = tkinter.font.nametofont("TkTextFont")
         try:
-            self.arranged(700, "STFMR", self.a.stfmr_lockin_resource_widgets)
+            self.arranged(self.NARROWEST, "STFMR", self.a.stfmr_lockin_resource_widgets)
             combo = self.a.stfmr_lockin_meter_combo
             self.assertGreaterEqual(combo.winfo_width(), combo.winfo_reqwidth(), "MFLI + SR830 was cut")
             table = combo.master
@@ -396,11 +402,10 @@ class FieldOutputTests(unittest.TestCase):
                     if field.winfo_class() in ("TEntry", "TSpinbox"):
                         self.assertGreaterEqual(field.winfo_width(), font.measure("0" * 6))
         finally:
-            self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+            self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
 
     def test_fmr_plots_fill_the_page_down_to_the_status_line(self):
-        self.root.geometry("1420x1000+0+40")
-        self.arranged(1420, "FMR", self.a.stfmr_device_resource_widgets)
+        self.arranged(LAB_WIDE, "FMR", self.a.stfmr_device_resource_widgets)
         tab = self.a.stfmr_tab
         status = self.label_showing(self.a.stfmr_status_var)
         blank = (tab.winfo_rooty() + tab.winfo_height()) - (status.winfo_rooty() + status.winfo_height())
@@ -410,8 +415,7 @@ class FieldOutputTests(unittest.TestCase):
 
     # ------------------------------------------------------------ MOKE-6221
     def test_moke_6221_sections_pair_up_and_plots_take_the_height(self):
-        self.root.geometry("1420x1000+0+40")
-        self.arranged(1420, "MOKE-6221", self.a.stfmr_lockin_resource_widgets)
+        self.arranged(LAB_WIDE, "MOKE-6221", self.a.stfmr_lockin_resource_widgets)
         frames = self.page_frames(self.a.k6221_tab)
         connection = frames["Keithley 6221 / VISA"]
         continuous = frames["AC/DC continuous output and live readback"]
@@ -429,7 +433,7 @@ class FieldOutputTests(unittest.TestCase):
     def test_moke_6221_red_stop_button_is_never_clipped(self):
         """At narrow widths it used to extend 62 px past the window edge."""
         try:
-            for width in (820, 1000, 1420):
+            for width in (self.NARROWEST, self.LAB_DEFAULT, 1500, LAB_WIDE):
                 self.arranged(width, "MOKE-6221", self.a.stfmr_lockin_resource_widgets)
                 tab = self.a.k6221_tab
                 right = tab.winfo_rootx() + tab.winfo_width()
@@ -440,7 +444,7 @@ class FieldOutputTests(unittest.TestCase):
                 self.assertTrue(stop.winfo_ismapped())
                 self.assertLessEqual(stop.winfo_rootx() + stop.winfo_width(), right)
         finally:
-            self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+            self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
 
     # ------------------------------------------------------------ field at 0 A
     def test_field_at_zero_current_is_interpolated_or_taken_exactly(self):
@@ -484,7 +488,7 @@ class FieldOutputTests(unittest.TestCase):
         try:
             for button in buttons:   # as when connected; disabled buttons are skipped anyway
                 button.configure(state="normal")
-            self.arranged(1420, "MOKE-6221", self.a.stfmr_lockin_resource_widgets)
+            self.arranged(LAB_WIDE, "MOKE-6221", self.a.stfmr_lockin_resource_widgets)
             nxt = self.a.k6221_off_button.tk_focusNext()
             self.assertEqual(str(nxt.cget("textvariable")), str(self.a.k6221_start_var),
                              f"Tab went to {nxt.winfo_class()} {nxt.cget('text') if 'text' in nxt.keys() else ''}")
@@ -567,15 +571,19 @@ class FieldOutputTests(unittest.TestCase):
 
     # ------------------------------------------------------------ two Zuriches
     def test_mfli_row_offers_both_zurich_lockins_with_the_super_one_marked(self):
-        self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+        self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
         chooser = self.a.stfmr_lockin_resource_widgets["mfli"]
         self.assertEqual(chooser.winfo_class(), "TCombobox")
         self.assertEqual(str(chooser.cget("state")), "readonly", "chosen, never typed")
         self.assertEqual(tuple(chooser.cget("values")), ("DEV4435 (Normal)", "DEV4414 (Super)"))
         self.assertEqual(chooser.get(), "DEV4435 (Normal)", "the default lock-in is unchanged")
         font = tkinter.font.Font(font=chooser.cget("font") or "TkTextFont")
+        # The text area: ttk sizes it as width x the width of "0"; the rest of
+        # the requested width is arrow, border and padding.
+        room = chooser.winfo_width() - (
+            chooser.winfo_reqwidth() - int(chooser.cget("width")) * font.measure("0"))
         for label in chooser.cget("values"):
-            self.assertLess(font.measure(label) + 30, chooser.winfo_width(), f"{label} is cut")
+            self.assertLessEqual(font.measure(label), room, f"{label} is cut")
         # Same column as every address field and Connect button above it.
         widgets = self.a.stfmr_lockin_resource_widgets
         self.assertEqual({(w.winfo_rootx(), w.winfo_width()) for w in widgets.values()},

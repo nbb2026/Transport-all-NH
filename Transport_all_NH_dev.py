@@ -12508,9 +12508,16 @@ class CombinedControlApp:
                 if container.winfo_class() == "TLabelframe":
                     inset += 4
                 available = container.winfo_width() - inset
-                needed = left.winfo_reqwidth() + right.winfo_reqwidth() + gap
+                needed = (
+                    self._pair_natural_width(left)
+                    + self._pair_natural_width(right)
+                    + gap
+                )
             except (tk.TclError, ValueError):
                 return
+            # What this container needs for side by side, for any pair that
+            # contains it (see _pair_natural_width).
+            container._pair_wide_need = needed + inset
             if available <= 1:
                 return  # not laid out yet; the first <Configure> decides
             wide = available >= needed
@@ -12529,6 +12536,27 @@ class CombinedControlApp:
 
         container.bind("<Configure>", arrange, add="+")
         arrange()
+
+    @staticmethod
+    def _pair_natural_width(section) -> int:
+        """Width a section requests with every pair inside it side by side.
+
+        A section that holds its own pair (MOKE-6221's continuous output
+        does) requests less while that pair is stacked.  Judged by its current
+        request, both "outer side, inner stacked" and "outer stacked, inner
+        side" were stable at the same width, so the layout depended on how
+        the window had been resized.  Judging by the side-by-side width makes
+        the outer pair wait until the inner one fits side by side too.
+        """
+        extra = 0
+        pending = list(section.winfo_children())
+        while pending:
+            child = pending.pop()
+            need = getattr(child, "_pair_wide_need", None)
+            if need is not None and getattr(child, "_pair_side_by_side", None) is False:
+                extra = max(extra, int(need) - child.winfo_reqwidth())
+            pending.extend(child.winfo_children())
+        return section.winfo_reqwidth() + max(0, extra)
 
     def build_ui(self) -> None:
         self.root.rowconfigure(0, weight=1)
@@ -14256,7 +14284,7 @@ class CombinedControlApp:
         ttk.Checkbutton(
             field_output,
             text=(
-                "Electromagnet polarity, cooling, wiring, front-panel limits, microwave power and "
+                "Electromagnet polarity, cooling, wiring, front-panel limits, microwave power and\n"
                 "personnel safety confirmed, and no other program controls this KEPCO"
             ),
             variable=self.stfmr_lockin_manual_safety_var,
@@ -14425,7 +14453,7 @@ class CombinedControlApp:
         # give way, down to a six-character floor.  The dropdown columns (1
         # and 3) keep their width, so "MFLI + SR830" is never cut.
         field_floor = tkfont.nametofont("TkTextFont").measure("0" * 6) + 8
-        for field_column in (5, 7, 9, 11):
+        for field_column in (5, 7, 9):
             params.columnconfigure(field_column, weight=1, minsize=field_floor)
 
         def option(row, pair, text, variable):
@@ -14452,7 +14480,6 @@ class CombinedControlApp:
             ("Wait/pt s:", self.stfmr_lockin_delay_var),
         )):
             parameter(1, pair, label, variable)
-        parameter(1, 5, "Loop:", self.stfmr_lockin_loop_var, kind="spinbox")
         # Rows 2 and 3: SR830, then MFLI.  Two rows keep the table narrow
         # enough for the sweep buttons to sit on its right.  Dropdowns are
         # sized to their longest choice ("MFLI + SR830", "TTL Falling",
@@ -14470,6 +14497,10 @@ class CombinedControlApp:
             kind="combo", values=tuple(STFMR_LOCKIN_SR830_REFERENCE_INPUTS), width=12,
         )
         option(2, 2, "SR830 autorange", self.stfmr_lockin_sr830_auto_range_var)
+        # Loop fills the free cell at the end of this row.  As a sixth pair on
+        # row 1 it made the table too wide for the 1101 px window the program
+        # opens with, which pushed the spinbox off the page on Windows.
+        parameter(2, 3, "Loop:", self.stfmr_lockin_loop_var, kind="spinbox")
         parameter(
             3, 0, "MFLI reference:", self.stfmr_lockin_reference_var,
             kind="combo", values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS), width=12,

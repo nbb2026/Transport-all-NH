@@ -12,6 +12,7 @@ import tkinter.font
 import unittest
 from unittest import mock
 
+from lab_screen import LAB_WIDE, build_lab_app, lab_window
 from test_ppms_motor_debug import app
 
 SUPER = [("192.168.68.250", 8004)]
@@ -26,8 +27,8 @@ class ZurichChoiceTests(unittest.TestCase):
             cls.root = tk.Tk()
         except tk.TclError as error:  # headless build server
             raise unittest.SkipTest(f"no display: {error}")
-        cls.root.geometry("1900x1000+0+0")
-        cls.app = app.CombinedControlApp(cls.root)
+        cls.app = build_lab_app(app, cls.root)  # as the lab PC shows it
+        cls.root.geometry(f"{LAB_WIDE}x{lab_window(cls.app)[1]}+0+0")
         cls.root.update()
 
     @classmethod
@@ -99,8 +100,11 @@ class ZurichChoiceTests(unittest.TestCase):
                 self.assertEqual(str(chooser.cget("state")), "readonly", "chosen, never typed")
                 self.assertEqual(variable.get(), default, "each page keeps its lock-in")
                 font = tkinter.font.Font(font=chooser.cget("font") or "TkTextFont")
+                # The text area: ttk sizes it as width x the width of "0".
+                room = chooser.winfo_width() - (
+                    chooser.winfo_reqwidth() - int(chooser.cget("width")) * font.measure("0"))
                 for label in CHOICES:
-                    self.assertLess(font.measure(label) + 30, chooser.winfo_width(), f"{label} is cut")
+                    self.assertLessEqual(font.measure(label), room, f"{label} is cut")
 
     def test_gate_vi_list_is_as_wide_as_the_sr830_address_fields(self):
         self.show("Gate-VI")
