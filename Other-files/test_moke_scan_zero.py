@@ -8,7 +8,7 @@ import types
 import unittest
 
 SOURCE = Path(__file__).resolve().parents[1] / 'Transport_all_NH_dev.py'
-tree = ast.parse(SOURCE.read_text())
+tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
 names = {'_magnet_scan_worker', '_magnet_scan_zero_readback'}
 methods = [n for c in tree.body if isinstance(c, ast.ClassDef)
            for n in c.body if isinstance(n, ast.FunctionDef) and n.name in names]

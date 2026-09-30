@@ -6,8 +6,14 @@ name: GUI tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, "ci/**"]
   workflow_dispatch:
+
+env:
+  # The program's text includes non-ASCII characters; Windows consoles
+  # default to cp1252 and would fail to print them.
+  PYTHONIOENCODING: utf-8
+  PYTHONUTF8: "1"
 
 jobs:
   linux:

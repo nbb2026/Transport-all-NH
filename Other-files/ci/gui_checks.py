@@ -19,6 +19,7 @@ they were never compacted and already clip in narrow windows.
 import argparse
 import importlib.util
 import sys
+import time
 import tkinter as tk
 import tkinter.font
 import types
@@ -125,20 +126,46 @@ def inspect(tab):
 
 
 def screenshot(root, tab, path):
+    """Save the page as shown, even when it is larger than the machine's screen.
+
+    GitHub's Windows machines have a 1024x768 desktop, so the page is shot in
+    screen-sized tiles, moving the window so each tile is on screen, and the
+    tiles are stitched together.
+    """
     try:
-        from PIL import ImageGrab
+        from PIL import Image, ImageGrab
     except ImportError:
         return "Pillow missing"
     root.lift()
     root.attributes("-topmost", True)
     for _ in range(4):
         root.update()
-    box = (tab.winfo_rootx(), tab.winfo_rooty(),
-           tab.winfo_rootx() + tab.winfo_width(), tab.winfo_rooty() + tab.winfo_height())
+    width, height = tab.winfo_width(), tab.winfo_height()
+    screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()
+    page = Image.new("RGB", (width, height), "black")
     try:
-        ImageGrab.grab(bbox=box).save(path)
+        for top in range(0, height, screen_h):
+            for left in range(0, width, screen_w):
+                # Move the window until this tile's corner is at the screen's.
+                for _ in range(3):
+                    dx = tab.winfo_rootx() + left
+                    dy = tab.winfo_rooty() + top
+                    if (dx, dy) == (0, 0):
+                        break
+                    root.geometry(f"+{root.winfo_x() - dx}+{root.winfo_y() - dy}")
+                    for _ in range(4):
+                        root.update()
+                time.sleep(0.2)
+                root.update()
+                tile_w = min(screen_w, width - left)
+                tile_h = min(screen_h, height - top)
+                page.paste(ImageGrab.grab(bbox=(0, 0, tile_w, tile_h)), (left, top))
     except Exception as error:  # no grabbable display
         return f"screenshot failed: {error}"
+    finally:
+        root.geometry("+0+0")
+        root.update()
+    page.save(path)
     return str(path)
 
 
@@ -197,9 +224,11 @@ def main():
                 marker = "FAIL" if name in COMPACT and problem else ("note" if problem else "ok  ")
                 print(f"  {marker} {name:9s} layouts {pairs} | clipped {clipped or 'none'} | "
                       f"text cut {cut or 'none'}")
-                if args.shots and (screen_w, window_w) == (2560, 2000) and name in SHOT_PAGES:
+                if args.shots and screen_w == 2560 and name in SHOT_PAGES:
+                    # The lab PC: the widened 2000 px window and the default one.
                     args.shots.mkdir(parents=True, exist_ok=True)
-                    print(f"       screenshot: {screenshot(root, tab, args.shots / f'{name}.png')}")
+                    shot = args.shots / f"{name}_{root.winfo_width()}px.png"
+                    print(f"       screenshot: {screenshot(root, tab, shot)}")
         finally:
             app.closing = True
             app.safe_close_hardware()
