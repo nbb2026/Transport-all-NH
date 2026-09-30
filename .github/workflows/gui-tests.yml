@@ -1,0 +1,75 @@
+# Runs every offline test and the layout checks on GitHub's machines, so none
+# of it opens windows on a desk computer.  Linux draws on a virtual display;
+# Windows is closest to the lab PC (native theme and fonts at 96 DPI).
+# Screenshots of each page are attached to the run as artifacts.
+name: GUI tests
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Virtual display and fonts
+        run: sudo apt-get update && sudo apt-get install -y xvfb fonts-dejavu-core
+      - name: Python packages (as on the development Mac)
+        run: python -m pip install numpy pillow opencv-python-headless pyvisa pyserial
+      - name: Other-files suite
+        working-directory: Other-files
+        run: xvfb-run -a -s "-screen 0 2560x1440x24 -dpi 96" python -m unittest discover -s . -p "test_*.py"
+      - name: test/ suite
+        if: success() || failure()
+        working-directory: Other-files/test
+        env:
+          PYTHONPATH: ../..
+        run: python -m unittest test_instrument_safety_logic test_mfli_autorange test_mfli_overload test_stfmr_realtime_recording
+      - name: Layout checks and screenshots
+        if: success() || failure()
+        run: xvfb-run -a -s "-screen 0 2560x1440x24 -dpi 96" python Other-files/ci/gui_checks.py --shots shots
+      - uses: actions/upload-artifact@v4
+        if: success() || failure()
+        with:
+          name: screenshots-linux
+          path: shots
+          if-no-files-found: ignore
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Screen like the lab PC
+        continue-on-error: true
+        shell: pwsh
+        run: Set-DisplayResolution -Width 2560 -Height 1440 -Force
+      - name: Python packages (as on the development Mac)
+        run: python -m pip install numpy pillow opencv-python pyvisa pyserial
+      - name: Other-files suite
+        working-directory: Other-files
+        run: python -m unittest discover -s . -p "test_*.py"
+      - name: test/ suite
+        if: success() || failure()
+        working-directory: Other-files/test
+        env:
+          PYTHONPATH: ../..
+        run: python -m unittest test_instrument_safety_logic test_mfli_autorange test_mfli_overload test_stfmr_realtime_recording
+      - name: Layout checks and screenshots
+        if: success() || failure()
+        run: python Other-files/ci/gui_checks.py --shots shots
+      - uses: actions/upload-artifact@v4
+        if: success() || failure()
+        with:
+          name: screenshots-windows
+          path: shots
+          if-no-files-found: ignore

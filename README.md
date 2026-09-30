@@ -96,6 +96,13 @@ That is 352 and 104 tests respectively, all passing as of 2026-09-30.
 On macOS they hang while the display is asleep, because Tk waits for the
 window server; wake it first, or run them under `caffeinate -u`.
 
+The same tests, plus layout checks with a screenshot of each page, run on
+GitHub's Linux and Windows machines on every push to `main`
+([`.github/workflows/gui-tests.yml`](.github/workflows/gui-tests.yml),
+[`Other-files/ci/gui_checks.py`](Other-files/ci/gui_checks.py)). Results and
+screenshots are on the repository's Actions tab. Running them there keeps
+test windows off the desk computer's screen.
+
 Passing tests are not hardware acceptance. They build panels from stubs and
 never run the real constructor, so a change should also be checked by starting
 the application and opening every page.
