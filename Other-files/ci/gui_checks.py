@@ -142,6 +142,8 @@ def screenshot(root, tab, path):
         root.update()
     width, height = tab.winfo_width(), tab.winfo_height()
     screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()
+    if sys.platform == "win32":
+        screen_h -= 80  # stay clear of the taskbar, which stays on top
     page = Image.new("RGB", (width, height), "black")
     try:
         for top in range(0, height, screen_h):
