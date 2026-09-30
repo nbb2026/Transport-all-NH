@@ -277,6 +277,45 @@ class FieldOutputTests(unittest.TestCase):
             self.a.stfmr_lockin_voltage_var.set("-- V")
             self.a.stfmr_lockin_reference_status_var.set("Ref: --")
 
+    def test_status_readouts_and_lamps_are_aligned(self):
+        """Texts share a left edge, boxes a right edge, lamps one column.
+
+        Before, the texts started at 0, 18 and 22 px, the boxes ended at 464,
+        414 and 126 px, and the two dots were 2 px apart and 4 px off level.
+        """
+        self.arranged(1900, "STFMR", self.a.stfmr_lockin_resource_widgets)
+        field, voltage, reference, overload = (self.label_showing(v) for v in (
+            self.a.stfmr_lockin_field_var, self.a.stfmr_lockin_voltage_var,
+            self.a.stfmr_lockin_reference_status_var, self.a.stfmr_lockin_overload_var))
+        single_line = field.winfo_height()
+        try:
+            for voltage_text, reference_text in (
+                    ("V: +1.79187e-06 V", "Ref: 317.3 Hz WARNING"),
+                    ("MFLI X=+1.2346e-05 Y=-1.2346e-05 V θ=+123.456°\n"
+                     "SR830 X=+1.2346e-05 Y=-1.2346e-05 V θ=+123.456°",
+                     "MFLI: 317.3 Hz LOCK\nSR830: 317.3 Hz WARNING")):
+                self.a.stfmr_lockin_voltage_var.set(voltage_text)
+                self.a.stfmr_lockin_reference_status_var.set(reference_text)
+                self.root.update()
+                self.assertEqual({w.winfo_rootx() for w in (field, reference, overload)},
+                                 {field.winfo_rootx()}, "texts must start at one x")
+                self.assertEqual({w.winfo_rootx() + w.winfo_width() for w in (voltage, reference, overload)},
+                                 {voltage.winfo_rootx() + voltage.winfo_width()},
+                                 "boxes must end at one x")
+                dots = []
+                for (canvas, item), text in ((self.a.stfmr_lockin_reference_indicator, reference),
+                                             (self.a.stfmr_lockin_overload_indicator, overload)):
+                    x0, y0, x1, y1 = canvas.coords(item)
+                    dots.append(canvas.winfo_rootx() + (x0 + x1) / 2)
+                    self.assertLess(canvas.winfo_rootx() + x1, text.winfo_rootx(), "dot left of its text")
+                    # Level with the first line of text, even when there are two.
+                    self.assertLessEqual(
+                        abs(canvas.winfo_rooty() + (y0 + y1) / 2 - (text.winfo_rooty() + single_line / 2)), 1)
+                self.assertEqual(dots[0], dots[1], "both dots in one column")
+        finally:
+            self.a.stfmr_lockin_voltage_var.set("-- V")
+            self.a.stfmr_lockin_reference_status_var.set("Ref: --")
+
     def test_side_by_side_only_when_the_table_gets_its_full_width(self):
         """The decision must allow for the parameter box's padding and border."""
         table = self.a.stfmr_lockin_meter_combo.master

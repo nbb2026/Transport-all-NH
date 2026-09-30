@@ -14388,52 +14388,49 @@ class CombinedControlApp:
             text="Continuous field read (0.5 s)",
             variable=self.stfmr_lockin_gauss_continuous_var,
         ).pack(side="left", padx=(0, 12))
-        # Each readout is as wide as the longest text it can hold, so the column
-        # never changes width, and never flips the layout, as readings arrive:
-        # 47 characters per line for the two-line MFLI + SR830 readout and 55
-        # for an SR830 autorange message.  Only the height grows, in dual mode.
-        values_row = ttk.Frame(sweep_actions)
-        values_row.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        # Live values and the two status lamps share one grid, so every text
+        # starts at the same x and the right-hand boxes end at the same x.
+        # Column 0 is the lamp gutter (empty beside the values), columns 1-2
+        # the text.  Each readout is as wide as the longest text it can hold,
+        # so the column never changes width, and never flips the layout, as
+        # readings arrive: 47 characters per line for the two-line MFLI +
+        # SR830 readout and 55 for an SR830 autorange message.  Only the
+        # height grows, in dual mode.
+        status = ttk.Frame(sweep_actions)
+        status.grid(row=2, column=0, sticky="w", pady=(4, 0))
         ttk.Label(
-            values_row, textvariable=self.stfmr_lockin_field_var, width=16, anchor="nw"
-        ).pack(side="left", anchor="n", padx=(0, 8))
+            status, textvariable=self.stfmr_lockin_field_var, width=16, anchor="nw"
+        ).grid(row=0, column=1, sticky="nw", padx=(0, 8))
         ttk.Label(
-            values_row, textvariable=self.stfmr_lockin_voltage_var,
+            status, textvariable=self.stfmr_lockin_voltage_var,
             width=48, anchor="nw", justify="left",
-        ).pack(side="left", anchor="n")
-        reference_row = ttk.Frame(sweep_actions)
-        reference_row.grid(row=3, column=0, sticky="w", pady=(4, 0))
-        reference_indicator_canvas = tk.Canvas(
-            reference_row,
-            width=16,
-            height=16,
-            highlightthickness=0,
-            background=self.root.cget("background"),
+        ).grid(row=0, column=2, sticky="new")
+
+        def status_lamp(row: int, variable: tk.StringVar, width: int):
+            text = ttk.Label(
+                status, textvariable=variable, width=width, anchor="nw", justify="left"
+            )
+            text.grid(row=row, column=1, columnspan=2, sticky="new", pady=(4, 0))
+            # One text line tall with the dot centred, so the dot sits level
+            # with the first line even when the text runs to two lines.
+            height = max(16, text.winfo_reqheight())
+            canvas = tk.Canvas(
+                status, width=16, height=height, highlightthickness=0,
+                background=self.root.cget("background"),
+            )
+            middle = height // 2
+            item = canvas.create_oval(
+                3, middle - 5, 13, middle + 5, fill="#9aa0a6", outline="#6f757b"
+            )
+            canvas.grid(row=row, column=0, sticky="nw", padx=(0, 4), pady=(4, 0))
+            return canvas, item
+
+        self.stfmr_lockin_reference_indicator = status_lamp(
+            1, self.stfmr_lockin_reference_status_var, 56
         )
-        reference_indicator_item = reference_indicator_canvas.create_oval(
-            3, 3, 13, 13, fill="#9aa0a6", outline="#6f757b"
+        self.stfmr_lockin_overload_indicator = status_lamp(
+            2, self.stfmr_lockin_overload_var, 56
         )
-        reference_indicator_canvas.pack(side="left", anchor="n", padx=(0, 2))
-        self.stfmr_lockin_reference_indicator = (
-            reference_indicator_canvas,
-            reference_indicator_item,
-        )
-        ttk.Label(
-            reference_row, textvariable=self.stfmr_lockin_reference_status_var,
-            width=56, anchor="nw", justify="left",
-        ).pack(side="left")
-        overload_row = ttk.Frame(sweep_actions)
-        overload_row.grid(row=4, column=0, sticky="w", pady=(4, 0))
-        overload_canvas = tk.Canvas(
-            overload_row, width=16, height=16, highlightthickness=0,
-            background=self.root.cget("background"),
-        )
-        overload_item = overload_canvas.create_oval(
-            3, 3, 13, 13, fill="#9aa0a6", outline="#6f757b"
-        )
-        overload_canvas.pack(side="left", padx=(2, 4))
-        self.stfmr_lockin_overload_indicator = (overload_canvas, overload_item)
-        ttk.Label(overload_row, textvariable=self.stfmr_lockin_overload_var).pack(side="left")
         self._arrange_pair_by_width(controls, params, sweep_actions, gap=24, stack_gap=6)
 
         # The save path can be long, so it keeps the full width below.

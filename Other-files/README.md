@@ -1,5 +1,17 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## STFMR status lamps aligned (2026-09-30)
+
+- The live readouts and the Ref and MFLI Overload lamps under the STFMR sweep
+  buttons now share one grid. The field, Ref and Overload texts start at one
+  x, and the voltage, Ref and Overload boxes end at one x. Before, the texts
+  started at 0, 18 and 22 px and the boxes ended at 464, 414 and 126 px. The
+  two lamps sit in one column, each level with the first line of its text,
+  including the two-line MFLI + SR830 readout.
+- The column is 20 px wider, for the lamp gutter. It still sits beside the
+  parameter table at the lab's 2000 px window and stacks as before at
+  1101, 826 and 1586 px, with nothing clipped.
+
 ## Compact MOKE-6221 page, and the STFMR field at 0 A (2026-09-30)
 
 - The MOKE-6221 page is compacted like STFMR. The 6221 connection sits
