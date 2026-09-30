@@ -1,5 +1,15 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Zurich list entry renamed (2026-09-30)
+
+- "DEV4435 (USB)" is now "DEV4435 (Normal)", at the user's request, to pair
+  with "DEV4414 (Super)". Only the label changes. It still connects DEV4435
+  over its USB link, and the failure messages use the new name.
+- Checked without opening windows: the program compiles, the four `test/`
+  suites pass, and the name fits the narrowest list (STFMR, about 98 of the
+  112 px available at the lab setting, from font metrics). The GUI suites
+  were not rerun on the Mac, because they take over its screen.
+
 ## Both Zurich lock-ins selectable on every page (2026-09-30)
 
 - **Bug:** STFMR could not connect the Super Zurich. Its MFLI connect only

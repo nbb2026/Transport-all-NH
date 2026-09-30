@@ -1139,10 +1139,11 @@ NONLOCAL_MFLI_SERVER_CANDIDATES = (
 SUPER_ZURICH_MFLI_DEVICE = "dev4414"
 SUPER_ZURICH_MFLI_SERVERS = (("192.168.68.250", NONLOCAL_MFLI_SERVER_PORT),)
 # Every page's Zurich list offers both lock-ins by name, each with the Data
-# Servers that can reach it.  None keeps DEV4435's own search: a PC-side
-# LabOne server first, then the MFLI's server over the USB link.
+# Servers that can reach it: DEV4435, the normal Zurich, and DEV4414, the
+# Super Zurich.  None keeps DEV4435's own search: a PC-side LabOne server
+# first, then the MFLI's server over the USB link.
 ZURICH_MFLI_CHOICES = {
-    "DEV4435 (USB)": (NONLOCAL_MFLI_DEVICE, None),
+    "DEV4435 (Normal)": (NONLOCAL_MFLI_DEVICE, None),
     "DEV4414 (Super)": (SUPER_ZURICH_MFLI_DEVICE, SUPER_ZURICH_MFLI_SERVERS),
 }
 def zurich_mfli_choice(text: str) -> tuple[str, tuple[tuple[str, int], ...] | None]:
@@ -1219,11 +1220,11 @@ def zurich_choice_hint(device: str) -> str:
     device = zurich_mfli_choice(device)[0]
     if device == SUPER_ZURICH_MFLI_DEVICE:
         return ('This is the Super Zurich, DEV4414. If MF Device Finder lists DEV4435 '
-                'instead, choose "DEV4435 (USB)" in the page\'s Zurich list.')
+                'instead, choose "DEV4435 (Normal)" in the page\'s Zurich list.')
     if device == NONLOCAL_MFLI_DEVICE:
         return ('If MF Device Finder lists DEV4414 at 192.168.68.250 instead, that is the '
                 'Super Zurich: choose "DEV4414 (Super)" in the page\'s Zurich list.')
-    return ('The page\'s Zurich list offers the lab\'s two MFLIs: "DEV4435 (USB)" and '
+    return ('The page\'s Zurich list offers the lab\'s two MFLIs: "DEV4435 (Normal)" and '
             '"DEV4414 (Super)", the Super Zurich at 192.168.68.250.')
 
 

@@ -521,8 +521,8 @@ class FieldOutputTests(unittest.TestCase):
         chooser = self.a.stfmr_lockin_resource_widgets["mfli"]
         self.assertEqual(chooser.winfo_class(), "TCombobox")
         self.assertEqual(str(chooser.cget("state")), "readonly", "chosen, never typed")
-        self.assertEqual(tuple(chooser.cget("values")), ("DEV4435 (USB)", "DEV4414 (Super)"))
-        self.assertEqual(chooser.get(), "DEV4435 (USB)", "the default lock-in is unchanged")
+        self.assertEqual(tuple(chooser.cget("values")), ("DEV4435 (Normal)", "DEV4414 (Super)"))
+        self.assertEqual(chooser.get(), "DEV4435 (Normal)", "the default lock-in is unchanged")
         font = tkinter.font.Font(font=chooser.cget("font") or "TkTextFont")
         for label in chooser.cget("values"):
             self.assertLess(font.measure(label) + 30, chooser.winfo_width(), f"{label} is cut")
@@ -542,12 +542,12 @@ class FieldOutputTests(unittest.TestCase):
             raise OSError("refused (test)")
 
         controller = self.a.stfmr_lockin_mfli_controller
-        self.addCleanup(self.a.stfmr_lockin_resource_vars["mfli"].set, "DEV4435 (USB)")
+        self.addCleanup(self.a.stfmr_lockin_resource_vars["mfli"].set, "DEV4435 (Normal)")
         self.addCleanup(setattr, controller, "mfli_server_candidates", None)
         with mock.patch.object(app.socket, "create_connection", refuse):
             for label, servers in (
                     ("DEV4414 (Super)", [("192.168.68.250", 8004)]),
-                    ("DEV4435 (USB)", [("127.0.0.1", 8004), ("192.168.69.78", 8004)])):
+                    ("DEV4435 (Normal)", [("127.0.0.1", 8004), ("192.168.69.78", 8004)])):
                 with self.subTest(choice=label):
                     probed.clear()
                     self.errors.clear()

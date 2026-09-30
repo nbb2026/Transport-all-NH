@@ -16,7 +16,7 @@ from test_ppms_motor_debug import app
 
 SUPER = [("192.168.68.250", 8004)]
 USB = [("127.0.0.1", 8004), ("192.168.69.78", 8004)]
-CHOICES = ("DEV4435 (USB)", "DEV4414 (Super)")
+CHOICES = ("DEV4435 (Normal)", "DEV4414 (Super)")
 
 
 class ZurichChoiceTests(unittest.TestCase):
@@ -75,8 +75,8 @@ class ZurichChoiceTests(unittest.TestCase):
                   and str(w.cget("textvariable")) == str(self.a.nonlocal_vi_mfli_device_var))
         return (
             ("STFMR", self.a.stfmr_lockin_resource_widgets["mfli"],
-             self.a.stfmr_lockin_resource_vars["mfli"], "DEV4435 (USB)"),
-            ("Gate-VI", vi, self.a.nonlocal_vi_mfli_device_var, "DEV4435 (USB)"),
+             self.a.stfmr_lockin_resource_vars["mfli"], "DEV4435 (Normal)"),
+            ("Gate-VI", vi, self.a.nonlocal_vi_mfli_device_var, "DEV4435 (Normal)"),
             ("PPMS", self.a.ppms_panel.zurich_entries[0], self.a.ppms_panel.zurich_resource,
              "DEV4414 (Super)"),
             ("RT-E", self.a.rte_panel.zurich_entries[0], self.a.rte_panel.zurich_resource,
@@ -126,9 +126,9 @@ class ZurichChoiceTests(unittest.TestCase):
              lambda: self.a.connect_nonlocal_vi_device("mfli"), self.a.nonlocal_vi_ac_controller),
         )
         for page, variable, connect, controller in pages:
-            self.addCleanup(variable.set, "DEV4435 (USB)")
+            self.addCleanup(variable.set, "DEV4435 (Normal)")
             self.addCleanup(setattr, controller, "mfli_server_candidates", None)
-            for label, servers in (("DEV4414 (Super)", SUPER), ("DEV4435 (USB)", USB)):
+            for label, servers in (("DEV4414 (Super)", SUPER), ("DEV4435 (Normal)", USB)):
                 with self.subTest(page=page, choice=label):
                     self.probed.clear()
                     self.errors.clear()
@@ -141,7 +141,7 @@ class ZurichChoiceTests(unittest.TestCase):
     def test_gate_vi_connect_all_hands_the_chosen_device_and_servers_on(self):
         variable = self.a.nonlocal_vi_mfli_device_var
         controller = self.a.nonlocal_vi_ac_controller
-        self.addCleanup(variable.set, "DEV4435 (USB)")
+        self.addCleanup(variable.set, "DEV4435 (Normal)")
         self.addCleanup(setattr, controller, "mfli_server_candidates", None)
         self.addCleanup(setattr, self.a, "nonlocal_vi_busy", False)
         self.addCleanup(self.a.nonlocal_vi_use_mfli_var.set, self.a.nonlocal_vi_use_mfli_var.get())
@@ -157,7 +157,7 @@ class ZurichChoiceTests(unittest.TestCase):
         """PPMS asked DEV4435's 192.168.69.78 server for DEV4414 (2026-09-18 log)."""
         for page, panel in (("PPMS", self.a.ppms_panel), ("RT-E", self.a.rte_panel)):
             self.addCleanup(panel.zurich_resource.set, "DEV4414 (Super)")
-            for label, servers in (("DEV4414 (Super)", SUPER), ("DEV4435 (USB)", USB)):
+            for label, servers in (("DEV4414 (Super)", SUPER), ("DEV4435 (Normal)", USB)):
                 with self.subTest(page=page, choice=label):
                     self.probed.clear()
                     self.errors.clear()
@@ -172,7 +172,7 @@ class ZurichChoiceTests(unittest.TestCase):
     # --------------------------------------------------------------- messages
     def test_failure_points_at_the_other_lockin_without_misleading_addresses(self):
         for device, servers, present, absent in (
-                ("dev4414", SUPER, ("Super Zurich", '"DEV4435 (USB)"', "192.168.68.250"),
+                ("dev4414", SUPER, ("Super Zurich", '"DEV4435 (Normal)"', "192.168.68.250"),
                  ("192.168.69.78", "192.168.69.77")),
                 ("dev4435", None, ('"DEV4414 (Super)"', "192.168.68.250", "192.168.69.78"), ())):
             with self.subTest(device=device):
