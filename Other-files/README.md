@@ -1,5 +1,35 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Windows layout fixes, checked on GitHub's machines (2026-10-01)
+
+Every page is now photographed on GitHub's Windows and Linux machines at the
+lab PC's settings: a 2560x1440 screen at 96 DPI, with the 2000 px widened
+window and the 1101 px window the program opens with. Windows uses the same
+fonts and theme as the lab PC. These runs found several problems that the
+Mac's narrower fonts had hidden. Fixed:
+
+- FMR: the gaussmeter status sits beside its controls instead of alone at
+  the far right. The field readout has a fixed width, so a reading no longer
+  shifts Read once and the checkbox. The KEPCO Mode, I, V and OUTP readouts
+  each fill the control group above them, here and on STFMR.
+- STFMR, 1101 px window: the Loop box moves to the end of the SR830 row. As
+  a sixth field on the current row it was pushed off the page on Windows.
+  The KEPCO safety sentence now wraps onto two lines, word for word.
+- MOKE-6221, 2000 px window: the scan and ROI-editing boxes now sit side by
+  side on Windows, so the plots are about 170 px taller. The ROI buttons
+  have their own row, and the ROI mean has a fixed width. The page's layout
+  no longer depends on how the window was resized.
+- RT-E: a long status message is cut to fit with an ellipsis ("…"). The
+  full text is still in the error dialog and the log.
+- Tests: they now build the program at the lab settings
+  (`Other-files/lab_screen.py`) and use the lab's 2000 and 1101 px widths.
+  Before, they used the computer they ran on, so they only held on the Mac.
+  The cloud check fails if the lab screen shows clipping or cut text on
+  MOKE-6221, STFMR or FMR, or if STFMR or FMR stop sitting side by side at
+  2000 px. Both machines pass. The 1920x1080 screen's 826 px window still
+  clips the KEPCO buttons; that is reported only, since the lab screen is
+  2560 px.
+
 ## Zurich list entry renamed (2026-09-30)
 
 - "DEV4435 (USB)" is now "DEV4435 (Normal)", at the user's request, to pair
