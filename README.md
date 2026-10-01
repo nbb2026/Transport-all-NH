@@ -92,7 +92,7 @@ cd Other-files/test && PYTHONPATH=../.. python3 -m unittest \
   test_stfmr_realtime_recording
 ```
 
-That is 352 and 104 tests respectively, all passing as of 2026-09-30.
+That is 355 and 104 tests respectively, all passing as of 2026-10-01.
 On macOS they hang while the display is asleep, because Tk waits for the
 window server; wake it first, or run them under `caffeinate -u`.
 

@@ -1,5 +1,34 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Other pages tidied for the lab PC (2026-10-01)
+
+MOKE light, MOKE motor, MOKE magnet, MOKE-2410, Gate-VI, PPMS and RT-E were
+reviewed from the Windows screenshots at the lab settings, and their layouts
+fixed. Commands, texts, variables and instrument behaviour are unchanged:
+the program's string constants, command bindings and attribute assignments
+were compared before and after.
+
+- At the lab's 2000 px window, every page now has nothing clipped and no
+  text cut on Windows. Before:
+  - MOKE magnet cut nine button labels, among them Apply exposure,
+    Histogram, Recapture BG, Start recording and Zero current.
+  - MOKE-2410 cut "Start recording".
+  - Gate-VI cut the end of its interlock sentence.
+  - PPMS showed "Conne" and "Discor" on its instrument buttons.
+  - RT-E hid most of the Zurich "TC (s)" box.
+- At the 1101 px window the program opens with, MOKE light, MOKE motor,
+  MOKE magnet, MOKE-2410, Gate-VI and RT-E now fit too. Before, buttons such
+  as Stop now and Query all ran past the edge. PPMS still clips some
+  controls at 1101 px; widen the window for that page.
+- Columns are aligned, readouts have fixed widths so a new reading does not
+  shift its neighbours, and long safety texts wrap word for word. Long
+  status messages (the MOKE stage, the PPMS Zurich line, RT-E) are cut to
+  fit with an ellipsis ("…"); the full text is still in the log and in the
+  dialogs.
+- The cloud check now also draws the MOKE motor page, which it used to
+  leave blank, and no longer reports wrapped text as cut. All tests pass on
+  GitHub's Windows and Linux machines (355 + 104).
+
 ## Windows layout fixes, checked on GitHub's machines (2026-10-01)
 
 Every page is now photographed on GitHub's Windows and Linux machines at the
