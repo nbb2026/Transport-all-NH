@@ -12,9 +12,10 @@ Zurich list entry whose text does not fit.  It also checks that the compact
 pages end in the same layout whatever the resize history, and it saves a
 screenshot of each page at the lab's 2000 px window.
 
-Exit status is 1 if a compact page (MOKE-6221, STFMR, FMR) clips or cuts
-anything, or depends on resize history.  The other pages are reported only:
-they were never compacted and already clip in narrow windows.
+Exit status is 1 if, on the lab PC's 2560x1440 screen, a compact page
+(MOKE-6221, STFMR, FMR) clips or cuts anything, if STFMR or FMR do not sit
+side by side at the 2000 px window, or if a layout depends on resize history.
+Other screens and the other pages are reported only.
 """
 import argparse
 import importlib.util
@@ -97,7 +98,10 @@ def text_fits(widget):
     except (tk.TclError, KeyError):
         font = tkinter.font.nametofont("TkDefaultFont")
     slack = {"TButton": 10, "TCheckbutton": 22, "TLabel": 0}.get(widget.winfo_class(), 0)
-    return font.measure(text) <= widget.winfo_width() - slack
+    # Tk measures a string as one line; a wrapped label is as wide as its
+    # longest line.
+    longest = max(font.measure(line) for line in str(text).splitlines() or [""])
+    return longest <= widget.winfo_width() - slack
 
 
 def inspect(tab):
@@ -222,9 +226,14 @@ def main():
                 tab = show(root, notebook, name)
                 clipped, cut, pairs = inspect(tab)
                 problem = bool(clipped or cut)
-                if name in COMPACT and problem:
-                    failed = True
-                marker = "FAIL" if name in COMPACT and problem else ("note" if problem else "ok  ")
+                lab = screen_w == 2560
+                if lab and window_w == 2000 and name in ("STFMR", "FMR") and (
+                        not pairs or "stack" in pairs):
+                    problem = True
+                    cut = cut + ["not side by side at the widened lab window"]
+                fatal = lab and name in COMPACT and problem
+                failed = failed or fatal
+                marker = "FAIL" if fatal else ("note" if problem else "ok  ")
                 print(f"  {marker} {name:9s} layouts {pairs} | clipped {clipped or 'none'} | "
                       f"text cut {cut or 'none'}")
                 if args.shots and screen_w == 2560 and name in SHOT_PAGES:

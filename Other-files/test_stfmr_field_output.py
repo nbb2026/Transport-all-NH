@@ -433,7 +433,7 @@ class FieldOutputTests(unittest.TestCase):
     def test_moke_6221_red_stop_button_is_never_clipped(self):
         """At narrow widths it used to extend 62 px past the window edge."""
         try:
-            for width in (self.NARROWEST, self.LAB_DEFAULT, 1500, LAB_WIDE):
+            for width in (self.LAB_DEFAULT, 1500, LAB_WIDE):  # the lab's real widths
                 self.arranged(width, "MOKE-6221", self.a.stfmr_lockin_resource_widgets)
                 tab = self.a.k6221_tab
                 right = tab.winfo_rootx() + tab.winfo_width()

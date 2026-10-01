@@ -1228,6 +1228,48 @@ def zurich_choice_hint(device: str) -> str:
             '"DEV4414 (Super)", the Super Zurich at 192.168.68.250.')
 
 
+def show_trimmed(label, variable) -> None:
+    """Show ``variable`` in ``label`` on one line, cut to fit with "…".
+
+    The variable keeps the whole text, and the log and error dialogs carry it
+    in full; only the display is shortened.  Recomputed when the text changes
+    and when the label is resized.
+    """
+    if not isinstance(label, tk.Widget):  # stand-in widgets in offline tests
+        label.configure(textvariable=variable)
+        return
+    spec = (str(label.cget("font"))
+            or ttk.Style(label).lookup(label.winfo_class(), "font")
+            or "TkDefaultFont")
+
+    def measure(text: str) -> int:
+        return int(label.tk.call("font", "measure", spec, "-displayof", label, text))
+
+    def refresh(*_args) -> None:
+        try:
+            text = str(variable.get())
+            room = label.winfo_width()
+            if room <= 1 or measure(text) <= room:
+                shown = text
+            else:
+                low, high = 0, len(text)
+                while low < high:  # longest start of the text that fits with "…"
+                    middle = (low + high + 1) // 2
+                    if measure(text[:middle].rstrip() + "…") <= room:
+                        low = middle
+                    else:
+                        high = middle - 1
+                shown = text[:low].rstrip() + "…"
+            if str(label.cget("text")) != shown:
+                label.configure(text=shown)
+        except tk.TclError:
+            pass  # the window is closing
+
+    variable.trace_add("write", refresh)
+    label.bind("<Configure>", refresh, add="+")
+    refresh()
+
+
 def widget_idle_state(widget) -> str:
     """"readonly" for a selection-only list, which "normal" would make typable."""
     return "readonly" if getattr(widget, "zurich_chooser", False) is True else "normal"
@@ -19839,10 +19881,14 @@ class CombinedControlApp:
             self.edit_k6221_roi,
             self.k6221_roi_edit_buttons,
         )
+        # Wide enough for "ROI mean: waiting for the next frame", so a reading
+        # never widens the box and flips the scan/ROI pair.
         ttk.Label(
             actions,
             textvariable=self.k6221_roi_mean_var,
             style="Metric.TLabel",
+            width=36,
+            anchor="e",
         ).pack(side="right", padx=(8, 2))
         steps = ttk.Frame(roi_edit)
         steps.grid(row=1, column=0, columnspan=10, sticky="w", pady=(6, 0))
@@ -19867,11 +19913,14 @@ class CombinedControlApp:
             roi_edit, from_=10, to=10000, increment=10,
             textvariable=self.roi_live_max_points_var, width=8,
         ).grid(row=2, column=5, sticky="w", pady=(6, 0))
-        ttk.Button(
-            roi_edit, text="Apply live settings", command=self.apply_roi_live_settings
-        ).grid(row=2, column=6, columnspan=2, pady=(6, 0))
+        # The buttons have their own row.  Beside the two spinboxes they made
+        # this box so wide that, at the 2000 px window on Windows, it no
+        # longer fitted beside the scan box and the pair stacked.
         image_buttons = ttk.Frame(roi_edit)
-        image_buttons.grid(row=2, column=8, columnspan=2, sticky="e", pady=(6, 0))
+        image_buttons.grid(row=3, column=0, columnspan=10, sticky="w", pady=(6, 0))
+        ttk.Button(
+            image_buttons, text="Apply live settings", command=self.apply_roi_live_settings
+        ).pack(side="left", padx=(0, 6))
         ttk.Button(
             image_buttons,
             text="Save processed image",
@@ -35270,8 +35319,12 @@ class RTEPanel(PPMSPanel):
         scan_status.columnconfigure(1, weight=1)
         self.ppms_field_scan_progress = ttk.Progressbar(scan_status, mode='determinate', length=110)
         self.ppms_field_scan_progress.grid(row=0, column=0, padx=(4, 8))
-        ttk.Label(scan_status, textvariable=self.ppms_field_scan_status_var,
-                  width=1, wraplength=0).grid(row=0, column=1, sticky='ew')
+        # A long failure is shown cut to fit, ending in "…"; the whole message
+        # is in the error dialog and the log.  Its own row would cost the
+        # plots a row of height.
+        self.rte_status_label = ttk.Label(scan_status, width=1, wraplength=0)
+        self.rte_status_label.grid(row=0, column=1, sticky='ew')
+        show_trimmed(self.rte_status_label, self.ppms_field_scan_status_var)
         scan_notes = ttk.Frame(scan)
         scan_notes.grid(row=4, column=0, columnspan=7, sticky='ew')
         scan_notes.columnconfigure(0, weight=1)

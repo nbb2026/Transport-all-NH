@@ -130,30 +130,44 @@ class RTEStatusRowTests(unittest.TestCase):
         cls.root.destroy()
 
     def status_label(self):
-        variable = str(self.app.rte_panel.ppms_field_scan_status_var)
-        found = []
-
-        def walk(widget):
-            for child in widget.winfo_children():
-                if (isinstance(child, tk.ttk.Label)
-                        and str(child.cget("textvariable")) == variable):
-                    found.append(child)
-                walk(child)
-
-        walk(self.root)
-        self.assertEqual(len(found), 1, "expected exactly one status label")
-        return found[0]
+        return self.app.rte_panel.rte_status_label
 
     def test_longest_status_fits_on_one_line(self):
         label = self.status_label()
+        variable = self.app.rte_panel.ppms_field_scan_status_var
+        variable.set("Ready")
+        self.root.update()
+        one_line = label.winfo_height()
+        font = tkinter.font.Font(font=label.cget("font") or "TkDefaultFont")
         for message in self.MESSAGES:
-            self.app.rte_panel.ppms_field_scan_status_var.set(message)
+            variable.set(message)
             self.root.update()
-            font = tkinter.font.Font(font=label.cget("font") or "TkDefaultFont")
+            self.assertEqual(str(label.cget("text")), message, "shown in full")
             self.assertLessEqual(font.measure(message), label.winfo_width(),
                                  f"status too narrow for: {message}")
-            self.assertLess(label.winfo_height(), 26,
-                            f"status wrapped onto a second line: {message}")
+            self.assertEqual(label.winfo_height(), one_line,
+                             f"status wrapped onto a second line: {message}")
+
+    def test_a_long_failure_is_cut_with_an_ellipsis(self):
+        """The status shows what fits and ends in "…"; the variable keeps it all."""
+        label = self.status_label()
+        variable = self.app.rte_panel.ppms_field_scan_status_var
+        message = "Failed: " + "VI_ERROR_TMO (-1073807339): Timeout expired before operation completed " * 3
+        try:
+            variable.set("Ready")
+            self.root.update()
+            one_line = label.winfo_height()
+            variable.set(message)
+            self.root.update()
+            shown = str(label.cget("text"))
+            font = tkinter.font.Font(font=label.cget("font") or "TkDefaultFont")
+            self.assertTrue(shown.endswith("\u2026"), shown)
+            self.assertTrue(message.startswith(shown[:-1].rstrip()), shown)
+            self.assertLessEqual(font.measure(shown), label.winfo_width())
+            self.assertEqual(variable.get(), message, "the full text is kept")
+            self.assertEqual(label.winfo_height(), one_line)
+        finally:
+            variable.set("Ready")
 
     def test_status_never_wraps(self):
         self.assertEqual(int(self.status_label().cget("wraplength")), 0)
