@@ -6,7 +6,9 @@ Builds the program in simulation mode (no instruments) at 96 DPI, as on the
 lab PC, at its own 1360x860 window, at its 1000 px minimum and widened to
 2000 px.  Reports widgets that stick out past the window and text that does
 not fit, and saves a screenshot of each.  Exit status 1 if anything is clipped
-or cut at 1360 or 2000 px.
+or cut at 1360 or 2000 px on Windows, the lab PC's system.  On Linux the
+program keeps Tk's plain theme, whose widths the text check only estimates, so
+there the results are reported only.
 """
 import argparse
 import importlib.util
@@ -41,8 +43,9 @@ def main():
         page = root.winfo_children()[0]
         clipped, cut, _pairs = inspect(page)
         problem = bool(clipped or cut)
-        failed = failed or (must_fit and problem)
-        marker = "FAIL" if must_fit and problem else ("note" if problem else "ok  ")
+        fatal = must_fit and problem and sys.platform == "win32"
+        failed = failed or fatal
+        marker = "FAIL" if fatal else ("note" if problem else "ok  ")
         print(f"  {marker} window {root.winfo_width()}x{root.winfo_height()} | clipped {clipped or 'none'} | "
               f"text cut {cut or 'none'}")
         if args.shots:

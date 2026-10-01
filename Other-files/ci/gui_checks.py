@@ -136,8 +136,12 @@ def inspect(tab):
                     cut.append(str(child.cget("text"))[:28])
                 if getattr(child, "zurich_chooser", False) is True:
                     font = tkinter.font.nametofont("TkTextFont")
+                    # The text area: ttk sizes it as width x the width of "0";
+                    # the rest of the requested width is arrow, border, padding.
+                    room = child.winfo_width() - (
+                        child.winfo_reqwidth() - int(child.cget("width")) * font.measure("0"))
                     for value in child.cget("values"):
-                        if font.measure(value) + 30 > child.winfo_width():
+                        if font.measure(value) > room:
                             cut.append(f"Zurich list: {value}")
             if hasattr(child, "_pair_side_by_side"):
                 pairs.append("side" if child._pair_side_by_side else "stack")

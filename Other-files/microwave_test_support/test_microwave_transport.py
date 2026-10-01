@@ -53,12 +53,12 @@ class EngineTests(unittest.TestCase):
         self.assertGreater(float(rows[-1]['field_after_g']),float(rows[0]['field_g']))
         self.assertEqual(self.devices['mfli'].reads,16) # 2 discard + 2 save for EACH cell
     def test_wait_monitors_without_current_feedback(self):
-        e,r=self.setup_engine()
+        e,r=self.setup_engine();self.addCleanup(r.close,'test')  # closed even if a check fails (Windows locks open files)
         m.GridEngine.wait(e,.01)
-        self.assertEqual(self.devices['gauss'].reads,1)
+        # At least one field reading: Windows' coarser clock can fit a second one into the wait.
+        self.assertGreaterEqual(self.devices['gauss'].reads,1)
         self.assertEqual(self.devices['kepco'].calls,[])
         self.assertTrue(any(kind=='field' for kind,data in self.events))
-        r.close('test')
     def test_reapply_failure_cleans_up(self):
         e,r=self.setup_engine()
         self.devices['kepco'].set_scan_current=lambda value:(_ for _ in ()).throw(RuntimeError('reapply failed'))
