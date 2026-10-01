@@ -19788,37 +19788,39 @@ class CombinedControlApp:
                 width=5,
             ).pack(side="left")
             ttk.Label(roi_steps, text=unit).pack(side="left", padx=(1, 0))
-        ttk.Label(roi_edit, text="Live refresh (s/point):").grid(
-            row=2, column=0, columnspan=2, sticky="e", pady=(6, 0)
-        )
+        # The live settings in a row of their own at natural width.  Gridded
+        # into columns shared with the full-width rows, the label and button
+        # cells came out narrower than their text on Windows ("Apply li",
+        # "Max points" without its colon).
+        live_row = ttk.Frame(roi_edit)
+        live_row.grid(row=2, column=0, columnspan=10, sticky="w", pady=(6, 0))
+        ttk.Label(live_row, text="Live refresh (s/point):").pack(side="left")
         ttk.Spinbox(
-            roi_edit,
+            live_row,
             from_=0.05,
             to=3600.0,
             increment=0.1,
             textvariable=self.roi_live_interval_var,
             width=8,
-        ).grid(row=2, column=2, sticky="w", pady=(6, 0))
-        ttk.Label(roi_edit, text="Max points:").grid(
-            row=2, column=3, columnspan=2, sticky="e", pady=(6, 0)
-        )
+        ).pack(side="left", padx=(3, 12))
+        ttk.Label(live_row, text="Max points:").pack(side="left")
         ttk.Spinbox(
-            roi_edit,
+            live_row,
             from_=10,
             to=10000,
             increment=10,
             textvariable=self.roi_live_max_points_var,
             width=8,
-        ).grid(row=2, column=5, sticky="w", pady=(6, 0))
-        ttk.Button(
-            roi_edit,
-            text="Apply live settings",
-            command=self.apply_roi_live_settings,
-        ).grid(row=2, column=6, columnspan=2, pady=(6, 0))
-        # The image buttons on a row of their own: beside the live settings
-        # they made ROI editing too wide to sit next to the voltage scan.
+        ).pack(side="left", padx=(3, 0))
+        # Apply and the image buttons share the next row: beside the live
+        # settings they made ROI editing too wide to sit next to the scan.
         image_buttons = ttk.Frame(roi_edit)
         image_buttons.grid(row=3, column=0, columnspan=10, pady=(6, 0), sticky="w")
+        ttk.Button(
+            image_buttons,
+            text="Apply live settings",
+            command=self.apply_roi_live_settings,
+        ).pack(side="left", padx=(0, 6))
         ttk.Button(
             image_buttons,
             text="Save processed image",

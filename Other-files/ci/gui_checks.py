@@ -98,6 +98,17 @@ def text_fits(widget):
     except (tk.TclError, KeyError):
         font = tkinter.font.nametofont("TkDefaultFont")
     slack = {"TButton": 10, "TCheckbutton": 22, "TLabel": 0}.get(widget.winfo_class(), 0)
+    # Text with a wrap width shows in full on several lines, as long as the
+    # wrap width fits the widget.
+    try:
+        wrap = widget.cget("wraplength") if "wraplength" in widget.keys() else ""
+        if not str(wrap) and "style" in widget.keys():
+            wrap = tk.ttk.Style(widget).lookup(str(widget.cget("style")) or widget.winfo_class(), "wraplength")
+        wrap = int(float(str(wrap or 0)))
+    except (tk.TclError, ValueError):
+        wrap = 0
+    if wrap > 0:
+        return wrap <= widget.winfo_width() - slack + 2
     # Tk measures a string as one line; a wrapped label is as wide as its
     # longest line.
     longest = max(font.measure(line) for line in str(text).splitlines() or [""])
