@@ -1,5 +1,39 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Test_Microwave_NH_dev.py: English, both Zurich lock-ins, tidier window (2026-10-01)
+
+The standalone fixed-current microwave x modulation grid test is in the
+repository root as `Test_Microwave_NH_dev.py`. Its first commit is the file
+exactly as received.
+
+- All text is English: comments, messages, logs, dialogs and the window.
+  The controller code changed only in text. A comparison of the program's
+  syntax tree with every string blanked shows no other change, and the
+  wording follows the main program wherever the code is shared. The lock-in
+  lamps now read "Locked", "Not locked", "Range OK" and "Overload", and
+  durations read like "1 h 4 min 37 s".
+- The MFLI field is the same list as on the main program's pages:
+  "DEV4435 (Normal)" and "DEV4414 (Super)". Each entry tries only the Data
+  Servers that can reach it, so DEV4414 uses 192.168.68.250 and DEV4435
+  keeps its previous search. A failed connection names the other lock-in,
+  and the run record names the MFLI device and identity.
+- Window: the five connections form one aligned grid in two groups. The
+  parameters form an aligned table with each label beside its field. The
+  lamp texts are wide enough for their English, and the status wraps to the
+  window width, so a saved-folder path is never cut. On Windows at 96 DPI
+  nothing is clipped or cut at the program's 1360 px window or at 2000 px.
+- Tests run on GitHub's Windows and Linux machines:
+  `Other-files/test_microwave_test.py`, the layout check
+  `Other-files/ci/microwave_checks.py` with screenshots, and the 25 existing
+  grid-scan tests in `Other-files/microwave_test_support/`. Those tests now
+  load this file; before, they imported a module that no longer existed, so
+  they never ran.
+- Not changed, and worth deciding: this program's SR830 setup sends
+  `ILIN 1`, while the main program sends `ILIN 0` and then `SYNC 0`. There
+  is also an older English copy, `Calibrations/Microwave_Transport_Test_NH_dev.py`
+  (17 September), and the build sources in `Other-files/microwave_test_support/`
+  (`app_body.py.txt`, `controller_snapshot.py.txt`) still hold the old text.
+
 ## Other pages tidied for the lab PC (2026-10-01)
 
 MOKE light, MOKE motor, MOKE magnet, MOKE-2410, Gate-VI, PPMS and RT-E were
