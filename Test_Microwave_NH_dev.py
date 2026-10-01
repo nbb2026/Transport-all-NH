@@ -1306,7 +1306,8 @@ class STFMRSR830Controller(SafeVisaIdentityController):
                 "ISRC 0",       # voltage input A
                 "IGND 0",
                 "ICPL 0",
-                "ILIN 1",
+                "ILIN 0",      # disable both line notch filters, as the main program does
+                "SYNC 0",      # disable optional synchronous filter
                 f"SENS {STFMR_LOCKIN_SR830_SENSITIVITY_CODE}",
                 f"OFLT {STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE}",
                 "OFSL 1",

@@ -74,7 +74,7 @@ Default VISA addresses are set in the code and editable in the interface.
 | `Other-files/README.md` | Dated change log, newest first |
 | `Other-files/docs/` | Generated user manual |
 | `Other-files/MEO_Transport_V3_Windows_Build_Package/` | Frozen Windows release |
-| `Calibrations/` | Standalone calibration scripts |
+| `Test_Microwave_NH_dev.py` | Standalone fixed-current microwave x modulation grid test (`Other-files/Test_Microwave_NH_dev_README.md`) |
 
 ## Tests
 

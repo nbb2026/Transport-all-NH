@@ -1,5 +1,18 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Test_Microwave_NH_dev.py: SR830 setup as in the main program; old copies removed (2026-10-01)
+
+- The SR830 setup now sends `ILIN 0` (both line notch filters off) and then
+  `SYNC 0` (synchronous filter off), as the main program does. It used to
+  send `ILIN 1`. This is the only change to instrument commands.
+- Removed: the older English copy `Calibrations/Microwave_Transport_Test_NH_dev.py`
+  (17 September), and the files in `Other-files/microwave_test_support/`
+  that once generated the program (`app_body.py.txt`, `controller_snapshot.py.txt`,
+  `build_standalone.py`, `extract_controllers.py`, `controller_provenance.json`).
+  The program is now edited directly. Git history keeps the removed files.
+  The grid-scan tests in that folder stay and run in the cloud check.
+- The program's README is now `Other-files/Test_Microwave_NH_dev_README.md`.
+
 ## Test_Microwave_NH_dev.py: English, both Zurich lock-ins, tidier window (2026-10-01)
 
 The standalone fixed-current microwave x modulation grid test is in the

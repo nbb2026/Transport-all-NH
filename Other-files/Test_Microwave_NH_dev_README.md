@@ -1,19 +1,19 @@
-# Microwave_Transport_Test_NH_dev
+# Test_Microwave_NH_dev
 
-A standalone fixed-current two-dimensional frequency-sweep program. The entry point is `Microwave_Transport_Test_NH_dev.py` in the same folder; it does not import the main combined program and contains no other measurement modules. The combined program is unchanged.
+A standalone fixed-current two-dimensional frequency-sweep program. The entry point is `Test_Microwave_NH_dev.py` in the repository root; it does not import the main combined program and contains no other measurement modules. Saved runs are still named `Microwave_Transport_Test_NH_dev_<time>`.
 
 ## Usage
 
 Run in the instrument Python environment on the original experiment PC:
 
 ```console
-python Microwave_Transport_Test_NH_dev.py
+python Test_Microwave_NH_dev.py
 ```
 
 Simulation mode without instruments:
 
 ```console
-python Microwave_Transport_Test_NH_dev.py --demo
+python Test_Microwave_NH_dev.py --demo
 ```
 
 In simulation mode the connect buttons must still be clicked, but all connections and readings are simulated; the title shows SIMULATION and the saved settings record simulation=true.
@@ -32,10 +32,12 @@ At scan start the KEPCO output is initialised first; after a wait the same fixed
 | KEPCO4886 | GPIB0::6::INSTR |
 | SR830 | GPIB0::9::INSTR |
 | LS475 | GPIB0::15::INSTR |
-| MFLI | dev4435 |
+| MFLI | DEV4435 (Normal) |
 | SMB100A | GPIB0::28::INSTR |
 
-The original VISA and MFLI/LabOne (including legacy bridge) controllers and commands are kept. The KEPCO still uses the original write_raw protocol without terminator and no added queries. SMB modulation uses the original LFO/AM configuration; changing the modulation frequency still sends `LFO:FREQ … Hz`. The reference-input wiring is unchanged; the UI can select the reference input and autorange.
+The MFLI field is a list with the lab's two Zurich lock-ins, as on the main program's pages. "DEV4435 (Normal)" is reached over its rear-panel USB link (a PC-side LabOne Data Server, then its own server at 192.168.69.78). "DEV4414 (Super)" is on the lab network at 192.168.68.250, where MF Device Finder lists it. Each entry tries only the Data Servers that can reach it, and the run's settings record `mfli_device` and `mfli_identity`.
+
+The original VISA and MFLI/LabOne (including legacy bridge) controllers and commands are kept, except that the SR830 setup now matches the main program: both line notch filters and the synchronous filter are off (`ILIN 0`, `SYNC 0`; this program used to send `ILIN 1`). The KEPCO still uses the original write_raw protocol without terminator and no added queries. SMB modulation uses the original LFO/AM configuration; changing the modulation frequency still sends `LFO:FREQ … Hz`. The reference-input wiring is unchanged; the UI can select the reference input and autorange.
 
 Runtime dependencies are Tkinter, NumPy and Pillow; real instruments additionally need the original PyVISA/VISA driver and the matching Zurich Instruments/LabOne environment. Copying the main `.py` alone is enough to run; the support folder is not needed, but the external runtime used by the legacy LabOne bridge must remain.
 
@@ -60,15 +62,18 @@ The Theta colour bar is labelled −180, −90, 0, 90, 180° in the UI and the P
 
 After completion, stop or error the RF is switched off first, then the KEPCO is zeroed/switched off; each instrument is cleaned up separately and a failure is reported clearly. Stop waits for the instrument communication in progress to return. Output-off uses the original controllers and is not verified with additional queries. Raw samples of partial cells are kept but not filled into the completed-cell heat maps.
 
-## Local verification and maintenance
+## Tests
 
-Offline unit tests passed under Python 3.9.6 and 3.11.9, plus a simulated Tk UI check under 3.11.9; no real instruments were connected and no Windows or hardware acceptance was done. No EXE was compiled or packaged.
+The tests run on GitHub's Windows and Linux machines on every push (see the repository README), so they never open windows on a desk computer. On a lab PC they can also be run by hand:
 
 ```console
-python microwave_test_support/test_microwave_transport.py
+cd Other-files/microwave_test_support && python -m unittest test_microwave_transport
+cd Other-files && python -m unittest test_microwave_test
 ```
 
-The support folder keeps the controller snapshot, source SHA256, application body and tests. After editing `app_body.py.txt`, run `build_standalone.py` to generate the main file; run `extract_controllers.py` to re-extract the controllers from the combined program only when the drivers are deliberately updated.
+`test_microwave_transport` covers the scan engine, recording, axis parsing and timing without any window. `test_microwave_test` checks that no Chinese or full-width text remains, the Zurich list and the servers each entry tries. `Other-files/ci/microwave_checks.py` builds the window at 96 DPI and saves screenshots. No hardware acceptance has been done.
+
+The program is edited directly. The build files that once generated it from a frozen controller snapshot were removed on 2026-10-01, together with an older copy in `Calibrations/`.
 
 A green instrument indicator means the controller session is connected, grey means not connected; no extra hardware probe commands are sent. The lock-in reference and range indicators update during scan reads, wait for a new reading after a frequency change, and turn grey after the end or a lock-in change. Green means locked/range OK, yellow waiting for lock/autoranging, red reference lost/overload, grey no reading yet or status unavailable. MFLI range status comes from the device overload flags, SR830 from the LIAS input/filter/output overload bits; a missing status is never shown as normal.
 
