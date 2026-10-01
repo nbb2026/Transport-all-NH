@@ -3,8 +3,10 @@ import csv, json, math, sys, tempfile, threading, unittest
 from dataclasses import replace, asdict
 from pathlib import Path
 from unittest.mock import patch
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-import Microwave_Transport_Test_NH_dev as m
+# The program under test is Test_Microwave_NH_dev.py at the repository root.
+import importlib.util
+_spec=importlib.util.spec_from_file_location('Test_Microwave_NH_dev',Path(__file__).resolve().parents[2]/'Test_Microwave_NH_dev.py')
+m=importlib.util.module_from_spec(_spec);sys.modules['Test_Microwave_NH_dev']=m;_spec.loader.exec_module(m)
 
 class Fake(m.DemoDevice):
     def __init__(self,bank,key):super().__init__(bank,key);self.connected=True;self.calls=[];self.reads=0;self.fail=None
@@ -142,8 +144,8 @@ class InputTests(unittest.TestCase):
             with self.subTest(a=a,b=b),self.assertRaises(ValueError):m.prime_axis(a,b)
         self.assertEqual(m.GridSettings((1.,),(5.,)).power_dbm,18.)
     def test_lockin_indicators(self):
-        self.assertEqual(m.lockin_indicators({'reference_valid':True,'input_overload':False}), (('green','已锁定'),('green','量程正常')))  # kept: used as key
-        self.assertEqual(m.lockin_indicators({'reference_valid':False,'input_overload':True}), (('red','未锁定'),('red','过载')))  # kept: used as key
+        self.assertEqual(m.lockin_indicators({'reference_valid':True,'input_overload':False}), (('green','Locked'),('green','Range OK')))
+        self.assertEqual(m.lockin_indicators({'reference_valid':False,'input_overload':True}), (('red','Not locked'),('red','Overload')))
         self.assertEqual(m.lockin_indicators({})[1][0],'gray')
         self.assertEqual(m.lockin_indicators({'auto_range':'SENS 1->2'})[1][0],'amber')
         self.assertEqual(m.lockin_indicators({'status':8,'sensitivity_index':13})[1][0],'green')
@@ -151,7 +153,7 @@ class InputTests(unittest.TestCase):
     def test_estimated_scan_time(self):
         settings=m.GridSettings(tuple(float(i) for i in range(1,18)),m.prime_axis(5,400))
         self.assertAlmostEqual(m.estimated_scan_seconds(settings),3876.6)
-        self.assertEqual(m.format_duration(m.estimated_scan_seconds(settings)),'1 小时 4 分 37 秒')  # kept: used as key
+        self.assertEqual(m.format_duration(m.estimated_scan_seconds(settings)),'1 h 4 min 37 s')
         self.assertAlmostEqual(m.estimated_scan_seconds(replace(settings,meter='SR830')),15504.6)
         short=m.GridSettings((1.,),(2.,),samples_per_cell=1,point_delay_s=.1,timeconstant_s=.01)
         self.assertAlmostEqual(m.estimated_scan_seconds(short),3.3)

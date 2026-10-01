@@ -175,7 +175,7 @@ except ImportError:
 def short_status_error(error: BaseException, limit: int = 120) -> str:
     """One-line error summary suitable for a fixed-height Tk status bar."""
     text = " ".join(str(error).replace("\r", "\n").split())
-    first_sentence = re.split(r"(?<=[。；;])\s+|\n", text, maxsplit=1)[0]
+    first_sentence = re.split(r"(?<=[\u3002\uff1b;])\s+|\n", text, maxsplit=1)[0]
     if len(first_sentence) <= limit:
         return first_sentence
     return first_sentence[: max(1, limit - 1)].rstrip() + "…"
@@ -192,12 +192,12 @@ class LabOneDotNetAdapter:
 
     def __init__(self, host: str, port: int, api_level: int) -> None:
         if sys.platform != "win32":
-            raise RuntimeError("LabOne .NET API 仅可在 Windows 控制电脑加载")
+            raise RuntimeError("The LabOne .NET API can only be loaded on the Windows control PC")
         try:
             import clr
         except ImportError as error:
             raise RuntimeError(
-                "当前 Python 缺少 pythonnet，无法加载 LabOne 自带的 .NET API"
+                "The current Python lacks pythonnet; cannot load the .NET API bundled with LabOne"
             ) from error
 
         dll_directory, api_dll = self._find_dotnet_api()
@@ -234,11 +234,11 @@ class LabOneDotNetAdapter:
                         None,
                     )
             if api_type is None or enum_type is None:
-                raise RuntimeError("DLL 中找不到 ziDotNET 或 API level 枚举")
+                raise RuntimeError("ziDotNET or the API level enum was not found in the DLL")
         except BaseException as error:
             self._close_dll_directory()
             raise RuntimeError(
-                f"LabOne .NET DLL 加载失败（{api_dll}）：{error}"
+                f"Failed to load the LabOne .NET DLL ({api_dll}): {error}"
             ) from error
 
         self._daq = Activator.CreateInstance(api_type)
@@ -259,7 +259,7 @@ class LabOneDotNetAdapter:
                 pass
             self._close_dll_directory()
             raise RuntimeError(
-                f"LabOne .NET API 连接 {host}:{port} 失败：{error}"
+                f"LabOne .NET API failed to connect to {host}:{port}: {error}"
             ) from error
 
     @staticmethod
@@ -312,14 +312,14 @@ class LabOneDotNetAdapter:
                     )
                     if not core_dll.is_file():
                         raise RuntimeError(
-                            f"找到 {candidate.name}，但同目录缺少 {core_dll.name}"
+                            f"Found {candidate.name}, but the same directory is missing {core_dll.name}"
                         )
                     return candidate.parent, candidate
             except OSError:
                 continue
         raise RuntimeError(
-            "未找到 LabOne 自带的匹配版 .NET API。请确认已安装完整的 "
-            "LabOne（包含 API/DotNet）。已检查：" + "；".join(checked)
+            "No matching-version .NET API bundled with LabOne was found. Please confirm that the full "
+            "LabOne (including API/DotNet) is installed. Checked: " + "; ".join(checked)
         )
 
     def _close_dll_directory(self) -> None:
@@ -380,7 +380,7 @@ class LabOneCAPIAdapter:
 
     def __init__(self, host: str, port: int, api_level: int) -> None:
         if sys.platform != "win32":
-            raise RuntimeError("LabOne C API 仅可在 Windows 控制电脑加载")
+            raise RuntimeError("The LabOne C API can only be loaded on the Windows control PC")
         self.api_dll = self._find_c_api()
         self._dll_directory_handle = None
         if hasattr(os, "add_dll_directory"):
@@ -527,8 +527,8 @@ class LabOneCAPIAdapter:
             except OSError:
                 continue
         raise RuntimeError(
-            f"未找到匹配位数的 {filename}。请安装 LabOne C API，或将环境变量 "
-            f"MOKE_LABONE_C_API 指向该 DLL。已检查：{'；'.join(checked)}"
+            f"No {filename} with a matching bitness was found. Please install the LabOne C API, or point the environment variable "
+            f"MOKE_LABONE_C_API to that DLL. Checked: {'; '.join(checked)}"
         )
 
     @staticmethod
@@ -538,7 +538,7 @@ class LabOneCAPIAdapter:
     @staticmethod
     def _check(code: int, operation: str) -> None:
         if int(code) != 0:
-            raise RuntimeError(f"{operation} 失败，LabOne C API code={int(code)}")
+            raise RuntimeError(f"{operation} failed, LabOne C API code={int(code)}")
 
     def setInt(self, path: str, value: int) -> None:
         self._check(
@@ -729,7 +729,7 @@ def acquire_shared_visa_manager():
     global _SHARED_VISA_MANAGER, _SHARED_VISA_MANAGER_USERS
     if pyvisa is None:
         raise RuntimeError(
-            "缺少 pyvisa；请运行：py -m pip install pyvisa pyvisa-py"
+            "pyvisa is missing; please run: py -m pip install pyvisa pyvisa-py"
         )
     with _SHARED_VISA_MANAGER_LOCK:
         manager = _SHARED_VISA_MANAGER
@@ -739,8 +739,8 @@ def acquire_shared_visa_manager():
             except BaseException as error:
                 if _SHARED_VISA_MANAGER_USERS:
                     raise RuntimeError(
-                        "共享 VISA 管理器会话意外失效；请关闭仍显示已连接的"
-                        "仪器后重新连接"
+                        "The shared VISA resource manager session became invalid unexpectedly; please close the instruments "
+                        "that still show as connected and reconnect"
                     ) from error
                 _SHARED_VISA_MANAGER = None
                 manager = None
@@ -782,13 +782,13 @@ def acquire_instrument_lease(
 ) -> str:
     key = str(resource).strip().upper()
     if not key:
-        raise ValueError("仪器资源地址不能为空")
+        raise ValueError("The instrument resource address cannot be empty")
     with _INSTRUMENT_LEASE_LOCK:
         current = _INSTRUMENT_LEASES.get(key)
         if current is not None:
             raise RuntimeError(
-                f"{resource} 已由“{current[1]}”连接；"
-                f"请先在该模块断开，再由“{owner_label}”连接"
+                f"{resource} is already connected by \"{current[1]}\"; "
+                f"please disconnect it in that module first, then connect from \"{owner_label}\""
             )
         _INSTRUMENT_LEASES[key] = (owner, str(owner_label))
     return key
@@ -843,7 +843,7 @@ class SafeVisaIdentityController:
     def connect(self, resource_name: str) -> str:
         if pyvisa is None:
             raise RuntimeError(
-                "缺少 pyvisa；请运行：py -m pip install pyvisa pyvisa-py"
+                "pyvisa is missing; please run: py -m pip install pyvisa pyvisa-py"
             )
         resource_name = str(resource_name).strip()
         with self.lock:
@@ -897,12 +897,12 @@ class SafeVisaIdentityController:
                     identity = instrument.query("*IDN?").strip()
                 except BaseException as error:
                     raise RuntimeError(
-                        f"{self.label} 身份查询 *IDN? 失败：{error}；"
-                        "本次未向设备发送任何输出/设定命令，已关闭 VISA 会话"
+                        f"{self.label} identity query *IDN? failed: {error}; "
+                        "no output/setting command was sent to the device this time; the VISA session has been closed"
                     ) from error
                 if self.identity_token not in identity.upper():
                     raise RuntimeError(
-                        f"{resource_name} 返回的设备不是 {self.label}：{identity}"
+                        f"{resource_name} returned a device that is not {self.label}: {identity}"
                     )
                 identity_verified = True
                 # Connecting a source must never inherit an output left on by
@@ -913,14 +913,14 @@ class SafeVisaIdentityController:
                             instrument.write(command)
                         except BaseException as error:
                             raise RuntimeError(
-                                f"{self.label} 连接安全命令 {command!r} 失败：{error}"
+                                f"{self.label} connection safety command {command!r} failed: {error}"
                             ) from error
                 self.resource_manager = manager
                 self.instrument = instrument
                 self.resource_name = resource_name
                 self.identity = identity
                 self.logger(
-                    f"{self.owner_scope} {self.label} 已连接：{identity}"
+                    f"{self.owner_scope} {self.label} connected: {identity}"
                 )
                 return identity
             except BaseException:
@@ -956,7 +956,7 @@ class SafeVisaIdentityController:
                     errors.append(f"{command}: {error}")
             if errors:
                 raise RuntimeError(
-                    f"{self.label} 关闭输出失败：" + "; ".join(errors)
+                    f"{self.label} failed to turn output off: " + "; ".join(errors)
                 )
 
     def disconnect(self) -> None:
@@ -986,7 +986,7 @@ class SafeVisaIdentityController:
             self.resource_name = ""
             self.identity = ""
             release_instrument_lease(resource_name, self)
-            self.logger(f"{self.owner_scope} {self.label} 已断开")
+            self.logger(f"{self.owner_scope} {self.label} disconnected")
             if shutdown_error is not None:
                 raise shutdown_error
 
@@ -1017,10 +1017,10 @@ class STFMRKepco4886Controller:
 
     def connect(self, resource_name: str) -> str:
         if pyvisa is None:
-            raise RuntimeError("缺少 pyvisa；请运行：py -m pip install pyvisa")
+            raise RuntimeError("pyvisa is missing; please run: py -m pip install pyvisa")
         resource_name = str(resource_name).strip()
         if not resource_name:
-            raise ValueError("KEPCO VISA 资源地址不能为空")
+            raise ValueError("The KEPCO VISA resource address cannot be empty")
         with self.lock:
             if self.instrument is not None:
                 return self.identity
@@ -1040,9 +1040,9 @@ class STFMRKepco4886Controller:
                 self.resource_manager = manager
                 self.instrument = instrument
                 self.resource_name = resource_name
-                self.identity = "KEPCO BOP 4886 20-10（未查询）"
+                self.identity = "KEPCO BOP 4886 20-10 (not queried)"
                 self.logger(
-                    "STFMR KEPCO VISA 会话已打开；未发送查询或输出命令"
+                    "STFMR KEPCO VISA session opened; no query or output command sent"
                 )
                 return self.identity
             except BaseException:
@@ -1057,7 +1057,7 @@ class STFMRKepco4886Controller:
 
     def _write_exact(self, command: str) -> None:
         if self.instrument is None:
-            raise RuntimeError("KEPCO 尚未连接")
+            raise RuntimeError("KEPCO is not connected")
         payload = str(command).encode("ascii")
         writer = getattr(self.instrument, "write_raw", None)
         if callable(writer):
@@ -1080,7 +1080,7 @@ class STFMRKepco4886Controller:
         # LabVIEW trace.  The Lake Shore 475 is the independent field readback.
         with self.lock:
             if self.instrument is None:
-                raise RuntimeError("KEPCO 尚未连接")
+                raise RuntimeError("KEPCO is not connected")
             return self._cached_state()
 
     def set_output(
@@ -1090,23 +1090,23 @@ class STFMRKepco4886Controller:
         target = float(target)
         limit = abs(float(complementary_limit))
         if not math.isfinite(target) or not math.isfinite(limit):
-            raise ValueError("KEPCO 目标值和限值必须是有限数")
+            raise ValueError("KEPCO target value and limit must be finite numbers")
         if selected == "CURR":
             if abs(target) > STFMR_KEPCO_MAX_CURRENT_A:
-                raise ValueError("BOP 20-10 电流目标必须在 ±10 A 内")
+                raise ValueError("BOP 20-10 current target must be within ±10 A")
             if not 0.0 < limit <= STFMR_KEPCO_MAX_VOLTAGE_V:
-                raise ValueError("电流模式的电压限值必须在 0–20 V 内")
+                raise ValueError("Voltage limit in current mode must be within 0–20 V")
         elif selected == "VOLT":
             if abs(target) > STFMR_KEPCO_MAX_VOLTAGE_V:
-                raise ValueError("BOP 20-10 电压目标必须在 ±20 V 内")
+                raise ValueError("BOP 20-10 voltage target must be within ±20 V")
             if not 0.0 < limit <= STFMR_KEPCO_MAX_CURRENT_A:
-                raise ValueError("电压模式的电流限值必须在 0–10 A 内")
+                raise ValueError("Current limit in voltage mode must be within 0–10 A")
         else:
-            raise ValueError(f"不支持的 KEPCO 模式：{mode}")
+            raise ValueError(f"Unsupported KEPCO mode: {mode}")
 
         with self.lock:
             if self.instrument is None:
-                raise RuntimeError("KEPCO 尚未连接")
+                raise RuntimeError("KEPCO is not connected")
             commands = [f"FUNC:MODE {selected}"]
             if selected == "CURR":
                 commands.extend(
@@ -1159,14 +1159,14 @@ class STFMRKepco4886Controller:
         """
         current = float(current_a)
         if not math.isfinite(current):
-            raise ValueError("KEPCO 扫描电流必须是有限数")
+            raise ValueError("KEPCO sweep current must be a finite number")
         if abs(current) > STFMR_KEPCO_MAX_CURRENT_A:
-            raise ValueError("BOP 20-10 扫描电流必须在 ±10 A 内")
+            raise ValueError("BOP 20-10 sweep current must be within ±10 A")
         with self.lock:
             if self.instrument is None:
-                raise RuntimeError("KEPCO 尚未连接")
+                raise RuntimeError("KEPCO is not connected")
             if not self.output_owned or self.active_mode != "CURR":
-                raise RuntimeError("KEPCO 尚未处于本程序启用的电流输出模式")
+                raise RuntimeError("KEPCO is not in the current-output mode enabled by this program")
             self._write_exact(f"CURR {current:.6f}")
             self.cached_current_a = current
             return self._cached_state()
@@ -1214,7 +1214,7 @@ class STFMRKepco4886Controller:
             self.identity = ""
             self.active_mode = ""
             release_instrument_lease(resource_name, self)
-            self.logger("STFMR KEPCO VISA 会话已关闭")
+            self.logger("STFMR KEPCO VISA session closed")
             if shutdown_error is not None:
                 raise shutdown_error
 
@@ -1227,7 +1227,7 @@ class STFMRGauss475Controller(SafeVisaIdentityController):
     def __init__(self, logger: Callable[[str], None]) -> None:
         super().__init__(
             logger,
-            "Lake Shore 475 高斯计",
+            "Lake Shore 475 gaussmeter",
             "MODEL475",
             owner_scope="STFMR",
         )
@@ -1235,11 +1235,11 @@ class STFMRGauss475Controller(SafeVisaIdentityController):
     def read_field(self) -> dict[str, object]:
         with self.lock:
             if self.instrument is None:
-                raise RuntimeError("Lake Shore 475 尚未连接")
+                raise RuntimeError("Lake Shore 475 is not connected")
             value = float(self.instrument.query("RDGFIELD?"))
             unit_code = int(float(self.instrument.query("UNIT?")))
             if not math.isfinite(value):
-                raise RuntimeError("Lake Shore 475 回读包含非有限数值")
+                raise RuntimeError("Lake Shore 475 readback contains non-finite values")
             return {
                 "field": value,
                 "unit_code": unit_code,
@@ -1258,7 +1258,7 @@ class STFMRGauss475Controller(SafeVisaIdentityController):
             4: 4.0 * math.pi / 1000.0,  # A/m -> G in air/vacuum
         }
         if unit_code not in factors:
-            raise RuntimeError(f"无法把 Lake Shore UNIT {unit_code} 换算为 G")
+            raise RuntimeError(f"Cannot convert Lake Shore UNIT {unit_code} to G")
         return value * factors[unit_code]
 
 
@@ -1282,7 +1282,7 @@ class STFMRSR830Controller(SafeVisaIdentityController):
     def _numbers(response: str, expected: int) -> list[float]:
         values = [float(item.strip()) for item in str(response).split(",")]
         if len(values) != expected or not all(math.isfinite(v) for v in values):
-            raise RuntimeError(f"SR830 回读无法解析：{response!r}")
+            raise RuntimeError(f"SR830 readback cannot be parsed: {response!r}")
         return values
 
     def configure(
@@ -1292,12 +1292,12 @@ class STFMRSR830Controller(SafeVisaIdentityController):
     ) -> dict[str, object]:
         reference_input = str(reference_input).strip()
         if reference_input not in STFMR_LOCKIN_SR830_REFERENCE_INPUTS:
-            choices = "、".join(STFMR_LOCKIN_SR830_REFERENCE_INPUTS)
-            raise ValueError(f"SR830 REF IN 必须选择：{choices}")
+            choices = ", ".join(STFMR_LOCKIN_SR830_REFERENCE_INPUTS)
+            raise ValueError(f"SR830 REF IN must be one of: {choices}")
         reference_slope = STFMR_LOCKIN_SR830_REFERENCE_INPUTS[reference_input]
         with self.lock:
             if self.instrument is None:
-                raise RuntimeError("SR830 尚未连接")
+                raise RuntimeError("SR830 is not connected")
             for command in (
                 "*CLS",
                 "FMOD 0",       # external reference
@@ -1333,15 +1333,15 @@ class STFMRSR830Controller(SafeVisaIdentityController):
                 or actual_harmonic != 1
             ):
                 raise RuntimeError(
-                    "SR830 REF IN 配置回读不符："
+                    "SR830 REF IN configuration readback mismatch: "
                     f"FMOD={actual_reference_mode}, "
                     f"RSLP={actual_reference_slope}, HARM={actual_harmonic}"
                 )
             if actual_sensitivity != STFMR_LOCKIN_SR830_SENSITIVITY_CODE:
                 raise RuntimeError(
-                    "SR830 初始量程回读不符："
-                    f"请求 SENS {STFMR_LOCKIN_SR830_SENSITIVITY_CODE}，"
-                    f"回读 {actual_sensitivity}"
+                    "SR830 initial sensitivity readback mismatch: "
+                    f"requested SENS {STFMR_LOCKIN_SR830_SENSITIVITY_CODE}, "
+                    f"readback {actual_sensitivity}"
                 )
             self.reference_input = reference_input
             self.sensitivity_index = actual_sensitivity
@@ -1362,14 +1362,14 @@ class STFMRSR830Controller(SafeVisaIdentityController):
     ) -> dict[str, object]:
         expected = float(expected_frequency_hz)
         if not math.isfinite(expected) or expected <= 0:
-            raise ValueError("SR830 预期参考频率必须是有限正数")
+            raise ValueError("SR830 expected reference frequency must be a finite positive number")
         deadline = time.monotonic() + max(float(timeout_s), 0.1)
         frequency = math.nan
         status = 8
         while time.monotonic() < deadline:
             with self.lock:
                 if self.instrument is None:
-                    raise RuntimeError("SR830 尚未连接")
+                    raise RuntimeError("SR830 is not connected")
                 frequency = float(self.instrument.query("FREQ?").strip())
                 status = int(round(float(
                     self.instrument.query("LIAS?").strip()
@@ -1387,10 +1387,10 @@ class STFMRSR830Controller(SafeVisaIdentityController):
                 }
             time.sleep(0.1)
         raise RuntimeError(
-            f"SR830 REF IN 未锁定：已选择 {self.reference_input}，"
-            f"期望 {expected:g} Hz，回读 {frequency:g} Hz，LIAS={status}；"
-            "请确认 SMB100A LFO OUTPUT 已接到 SR830 REF IN，"
-            "并选择与波形匹配的 Sine/TTL 边沿"
+            f"SR830 REF IN not locked: selected {self.reference_input}, "
+            f"expected {expected:g} Hz, readback {frequency:g} Hz, LIAS={status}; "
+            "please confirm that SMB100A LFO OUTPUT is connected to SR830 REF IN, "
+            "and select the Sine/TTL edge matching the waveform"
         )
 
     def _auto_range_locked(self, r_value: float, status: int) -> str:
@@ -1398,7 +1398,7 @@ class STFMRSR830Controller(SafeVisaIdentityController):
             return ""
         old = int(self.sensitivity_index)
         if not 0 <= old < len(NONLOCAL_SR830_FULL_SCALE_V):
-            raise RuntimeError(f"SR830 当前 SENS 索引无效：{old}")
+            raise RuntimeError(f"SR830 current SENS index is invalid: {old}")
         utilization = abs(float(r_value)) / NONLOCAL_SR830_FULL_SCALE_V[old]
         requested = old
         reason = ""
@@ -1425,7 +1425,7 @@ class STFMRSR830Controller(SafeVisaIdentityController):
         )))
         if actual != requested:
             raise RuntimeError(
-                f"SR830 自动量程回读不一致：请求 {requested}，回读 {actual}"
+                f"SR830 auto-range readback mismatch: requested {requested}, readback {actual}"
             )
         self.sensitivity_index = actual
         self.range_cooldown = 3
@@ -1434,7 +1434,7 @@ class STFMRSR830Controller(SafeVisaIdentityController):
     def auto_phase(self) -> float:
         with self.lock:
             if self.instrument is None:
-                raise RuntimeError("SR830 尚未连接")
+                raise RuntimeError("SR830 is not connected")
             self.instrument.write("APHS")
             time.sleep(0.25)
             return float(self.instrument.query("PHAS?").strip())
@@ -1442,7 +1442,7 @@ class STFMRSR830Controller(SafeVisaIdentityController):
     def read_sample(self, expected_frequency_hz: float) -> dict[str, object]:
         with self.lock:
             if self.instrument is None:
-                raise RuntimeError("SR830 尚未连接")
+                raise RuntimeError("SR830 is not connected")
             x, y, r_value, theta, frequency = self._numbers(
                 self.instrument.query("SNAP? 1,2,3,4,9"), 5
             )
@@ -1491,14 +1491,14 @@ class STFMRSMB100AController(SafeVisaIdentityController):
         power_dbm = float(power_dbm)
         lfo_hz = float(lfo_hz)
         if not all(math.isfinite(v) for v in (frequency_ghz, power_dbm, lfo_hz)):
-            raise ValueError("SMB100A 频率和功率必须是有限数")
+            raise ValueError("SMB100A frequency and power must be finite numbers")
         if frequency_ghz <= 0.0 or lfo_hz <= 0.0:
-            raise ValueError("SMB100A 微波频率和低频调制频率必须大于 0")
+            raise ValueError("SMB100A microwave frequency and low-frequency modulation frequency must be greater than 0")
         if power_dbm > 25.0:
-            raise ValueError("SMB100A 功率软件上限为 25 dBm")
+            raise ValueError("SMB100A power software limit is 25 dBm")
         with self.lock:
             if self.instrument is None:
-                raise RuntimeError("SMB100A 尚未连接")
+                raise RuntimeError("SMB100A is not connected")
             # Exact setup order recovered from the supplied full LabVIEW trace.
             for command in (
                 ":AM:DEPT:LIN 1.0E+2",
@@ -1516,10 +1516,10 @@ class STFMRSMB100AController(SafeVisaIdentityController):
         """Change only the carrier frequency while AM/LFO/RF remain enabled."""
         frequency_ghz = float(frequency_ghz)
         if not math.isfinite(frequency_ghz) or frequency_ghz <= 0.0:
-            raise ValueError("SMB100A 微波频率必须是有限正数")
+            raise ValueError("SMB100A microwave frequency must be a finite positive number")
         with self.lock:
             if self.instrument is None:
-                raise RuntimeError("SMB100A 尚未连接")
+                raise RuntimeError("SMB100A is not connected")
             self.instrument.write(f"FREQ {frequency_ghz:.9g}GHz")
 
     def rf_off(self) -> None:
@@ -1848,19 +1848,19 @@ def _find_mfli_legacy_python() -> Path:
             )
             if check.returncode == 0:
                 return candidate
-            detail = (check.stderr or check.stdout or "验证失败").strip()
-            rejected.append(f"{candidate}（{short_status_error(detail, 160)}）")
+            detail = (check.stderr or check.stdout or "verification failed").strip()
+            rejected.append(f"{candidate} ({short_status_error(detail, 160)})")
         except (OSError, subprocess.SubprocessError) as error:
-            rejected.append(f"{candidate}（{short_status_error(error, 160)}）")
+            rejected.append(f"{candidate} ({short_status_error(error, 160)})")
             continue
-    searched = "；".join(str(path) for path in candidates)
-    rejected_text = "；".join(rejected) if rejected else "无"
+    searched = "; ".join(str(path) for path in candidates)
+    rejected_text = "; ".join(rejected) if rejected else "none"
     raise RuntimeError(
-        "找不到通过验证的 Python 3.7 + zhinst 18.12.59443 环境。请先运行 "
-        r"INSTALL_MFLI_LABONE_18_12.bat，或确认 "
+        "No verified Python 3.7 + zhinst 18.12.59443 environment was found. Please run "
+        r"INSTALL_MFLI_LABONE_18_12.bat first, or confirm that "
         r"C:\ProgramData\miniconda3\envs\GMS_VENV_PYTHON\python.exe "
-        f"存在，或设置环境变量 {NONLOCAL_MFLI_LEGACY_PYTHON_ENV}。"
-        f"已检查：{searched}。不合格环境：{rejected_text}"
+        f"exists, or set the environment variable {NONLOCAL_MFLI_LEGACY_PYTHON_ENV}. "
+        f"Checked: {searched}. Rejected environments: {rejected_text}"
     )
 
 
@@ -1906,7 +1906,7 @@ class LegacyMFLIBridge:
             ).start()
             ready = self._receive(timeout_s)
             if ready.get("event") != "ready":
-                raise RuntimeError(f"MFLI 桥接启动回复异常：{ready!r}")
+                raise RuntimeError(f"MFLI bridge start reply is abnormal: {ready!r}")
             self.device = str(ready.get("device", device_id)).strip().lower()
             self.version = str(ready.get("version", ""))
             self.options = str(ready.get("options", ""))
@@ -1937,7 +1937,7 @@ class LegacyMFLIBridge:
                             json.loads(line[len(_MFLI_BRIDGE_PREFIX):])
                         )
                     except BaseException as error:
-                        self._append_diagnostic(f"JSON 解析失败：{error}: {line}")
+                        self._append_diagnostic(f"JSON parse failed: {error}: {line}")
                 else:
                     self._append_diagnostic(line)
         finally:
@@ -1953,26 +1953,26 @@ class LegacyMFLIBridge:
     def _diagnostic_suffix(self) -> str:
         if not self.diagnostics:
             return ""
-        return "；旧环境输出：" + " | ".join(self.diagnostics[-5:])
+        return "; legacy environment output: " + " | ".join(self.diagnostics[-5:])
 
     def _receive(self, timeout_s: float) -> dict[str, object]:
         try:
             reply = self.responses.get(timeout=max(0.1, float(timeout_s)))
         except queue.Empty as error:
             raise RuntimeError(
-                f"旧版 LabOne 桥接在 {timeout_s:g} s 内没有回复"
+                f"The legacy LabOne bridge did not reply within {timeout_s:g} s"
                 + self._diagnostic_suffix()
             ) from error
         if reply.get("_eof"):
             exit_code = self.process.poll() if self.process is not None else None
             raise RuntimeError(
-                f"旧版 LabOne 桥接意外退出（code={exit_code}）"
+                f"The legacy LabOne bridge exited unexpectedly (code={exit_code})"
                 + self._diagnostic_suffix()
             )
         if not reply.get("ok"):
-            detail = str(reply.get("error", "未知错误")).strip()
+            detail = str(reply.get("error", "unknown error")).strip()
             raise RuntimeError(
-                "旧版 LabOne 桥接失败：" + detail + self._diagnostic_suffix()
+                "Legacy LabOne bridge failed: " + detail + self._diagnostic_suffix()
             )
         return reply
 
@@ -1981,10 +1981,10 @@ class LegacyMFLIBridge:
     ) -> dict[str, object]:
         if self.process is None or self.process.poll() is not None:
             raise RuntimeError(
-                "旧版 LabOne 桥接未运行" + self._diagnostic_suffix()
+                "Legacy LabOne bridge is not running" + self._diagnostic_suffix()
             )
         if self.process.stdin is None:
-            raise RuntimeError("旧版 LabOne 桥接 stdin 不可用")
+            raise RuntimeError("Legacy LabOne bridge stdin is unavailable")
         payload = {"command": str(command)}
         payload.update(parameters)
         try:
@@ -1992,7 +1992,7 @@ class LegacyMFLIBridge:
             self.process.stdin.flush()
         except (BrokenPipeError, OSError) as error:
             raise RuntimeError(
-                "无法向旧版 LabOne 桥接发送命令" + self._diagnostic_suffix()
+                "Cannot send a command to the legacy LabOne bridge" + self._diagnostic_suffix()
             ) from error
         return self._receive(timeout_s)
 
@@ -2078,49 +2078,70 @@ class NonLocalACController:
     @staticmethod
     def _mfli_reachable_servers(
         timeout_s: float = 1.2,
+        candidates=None,
     ) -> tuple[list[tuple[str, int]], list[str]]:
         """Return reachable LabOne endpoints without entering a 20 s API wait."""
         reachable = []
         diagnostics = []
-        for host, port in NONLOCAL_MFLI_SERVER_CANDIDATES:
+        for host, port in (NONLOCAL_MFLI_SERVER_CANDIDATES if candidates is None else candidates):
             try:
                 with socket.create_connection((host, int(port)), timeout_s):
                     reachable.append((host, int(port)))
-                    diagnostics.append(f"{host}:{port}=TCP可达")
+                    diagnostics.append(f"{host}:{port}=TCP reachable")
             except OSError as error:
-                diagnostics.append(f"{host}:{port}=不可达（{error}）")
+                diagnostics.append(f"{host}:{port}=unreachable ({error})")
         return reachable, diagnostics
 
     def connect_mfli(self, device_id: str) -> str:
         """Prefer the current Python API, with the legacy bridge as fallback."""
         requested = str(device_id).strip().lower()
         if not requested:
-            raise ValueError("请输入 Zurich MFLI API 设备名，例如 dev4435")
+            raise ValueError("Please enter the Zurich MFLI API device name, e.g. dev4435")
         if requested.startswith("mf-"):
             requested = requested[3:]
         with self.lock:
             if self.mfli_connected:
                 return self.mfli_identity
             direct_errors: list[str] = []
-            reachable_servers, tcp_diagnostics = self._mfli_reachable_servers()
-            self.logger("MFLI 网络预检：" + "；".join(tcp_diagnostics))
+            # The Data Servers that can reach the chosen MFLI (see
+            # ZURICH_MFLI_CHOICES); None keeps DEV4435's own search.
+            server_override = getattr(self, "mfli_server_candidates", None)
+            reachable_servers, tcp_diagnostics = self._mfli_reachable_servers(
+                candidates=server_override
+            )
+            self.logger("MFLI network pre-check: " + "; ".join(tcp_diagnostics))
 
             # Do not start Core/Discovery or search for another Python when no
             # LabOne Data Server is listening.  Neither a pip install nor a
             # legacy interpreter can repair a disconnected USB/RNDIS link.
             if not reachable_servers:
-                diagnostic_text = "；".join(tcp_diagnostics)
+                diagnostic_text = "; ".join(tcp_diagnostics)
+                if server_override is not None:
+                    checks = "\n".join(
+                        f"Test-NetConnection {host} -Port {port}"
+                        for host, port in server_override
+                    )
+                    raise RuntimeError(
+                        f"Zurich {requested}: its Data Server is unreachable; "
+                        "the LabOne API handshake has not started.\n\n"
+                        f"Quick check: {diagnostic_text}\n\n"
+                        "Check the device's address in MF Device Finder, its power and its "
+                        "network cable. Run on this PC:\n" + checks + "\n\n"
+                        "TCP reachability is required but does not prove the API will connect.\n\n"
+                        + zurich_choice_hint(requested)
+                    )
                 raise RuntimeError(
-                    "Zurich MFLI Data Server 当前不可达，程序尚未进入 "
-                    "LabOne API 握手。\n\n"
-                    f"快速检测：{diagnostic_text}\n\n"
-                    "请依次检查：\n"
-                    "1. MFLI 已开机，并用后面板 USB Device 口连接电脑；\n"
-                    "2. Windows 的 USB/RNDIS 网卡已启用，电脑地址应为 "
-                    "192.168.69.77；\n"
-                    "3. PowerShell 执行：ping 192.168.69.78；\n"
-                    "4. 执行：Test-NetConnection 192.168.69.78 -Port 8004。\n\n"
-                    "只有 TcpTestSucceeded=True 后，Python API 才可能连接。"
+                    "The Zurich MFLI Data Server is currently unreachable; the program has not entered the "
+                    "LabOne API handshake.\n\n"
+                    f"Quick check: {diagnostic_text}\n\n"
+                    "Please check in order:\n"
+                    "1. The MFLI is powered on and connected to the PC via the rear-panel USB Device port;\n"
+                    "2. The Windows USB/RNDIS network adapter is enabled and the PC address should be "
+                    "192.168.69.77;\n"
+                    "3. Run in PowerShell: ping 192.168.69.78;\n"
+                    "4. Run: Test-NetConnection 192.168.69.78 -Port 8004.\n\n"
+                    "Only after TcpTestSucceeded=True can the Python API connect.\n\n"
+                    + zurich_choice_hint(requested)
                 )
 
             mfli_lease_resource = f"LABONE::{requested}"
@@ -2148,17 +2169,17 @@ class NonLocalACController:
                 self.mfli_config = {}
                 self.mfli_identity = bridge.identity
                 self.logger(
-                    "Non-local Zurich MFLI 已通过精确匹配的 LabOne 18.12 "
-                    f"环境连接：{bridge.identity}"
+                    "Non-local Zurich MFLI connected through the exactly matching LabOne 18.12 "
+                    f"environment: {bridge.identity}"
                 )
                 return bridge.identity
             except BaseException as bridge_error:
                 if bridge is not None:
                     bridge.close(force=True)
-                direct_errors.append(f"18.12 Python 3.7 桥接：{bridge_error}")
+                direct_errors.append(f"18.12 Python 3.7 bridge: {bridge_error}")
                 self.logger(
-                    "精确匹配的 LabOne 18.12 桥接暂不可用，继续尝试当前 "
-                    f"Python 的本机 API：{bridge_error}"
+                    "The exactly matching LabOne 18.12 bridge is currently unavailable; continuing to try the current "
+                    f"Python's native API: {bridge_error}"
                 )
 
             # Then try version-matched native APIs installed with LabOne or its
@@ -2192,7 +2213,7 @@ class NonLocalACController:
                                 daq.sync()
                                 daq.getSample(sample_node)
                             except BaseException as initial_error:
-                                attachment_errors = [f"已挂接读取：{initial_error}"]
+                                attachment_errors = [f"attached read: {initial_error}"]
                                 for interface in ("PCIe", "1GbE", "USB"):
                                     try:
                                         daq.connectDevice(requested, interface)
@@ -2206,7 +2227,7 @@ class NonLocalACController:
                                         )
                                 else:
                                     raise RuntimeError(
-                                        "Data Server 已连接，但无法读取 DEV4435："
+                                        "Data Server connected, but DEV4435 cannot be read: "
                                         + " | ".join(attachment_errors)
                                     )
                             version = ""
@@ -2237,14 +2258,14 @@ class NonLocalACController:
                             self.mfli_config = {}
                             self.mfli_identity = identity
                             self.logger(
-                                "Non-local Zurich MFLI 已由当前 Python 加载 "
-                                f"{adapter_label}：{identity} @ "
+                                "Non-local Zurich MFLI loaded by the current Python "
+                                f"{adapter_label}: {identity} @ "
                                 f"{server_host}:{server_port}"
                             )
                             return identity
                         except BaseException as error:
                             direct_errors.append(
-                                f"{adapter_label} {server_host}:{server_port}："
+                                f"{adapter_label} {server_host}:{server_port}: "
                                 f"{error}"
                             )
                             if daq is not None:
@@ -2253,8 +2274,8 @@ class NonLocalACController:
                                 except BaseException:
                                     pass
                             self.logger(
-                                f"当前 Python 加载 {adapter_label} 连接 "
-                                f"{server_host}:{server_port} 失败：{error}"
+                                f"The current Python loaded {adapter_label} but connecting to "
+                                f"{server_host}:{server_port} failed: {error}"
                             )
 
             # Modern Core remains a secondary path, useful after LabOne is
@@ -2263,8 +2284,8 @@ class NonLocalACController:
                 for server_host, server_port in reachable_servers:
                     if server_host == NONLOCAL_MFLI_SERVER_HOST:
                         direct_errors.append(
-                            "新版 Core：已跳过已确认运行 LabOne 18.12.59443 "
-                            f"的 {server_host}:{server_port}，避免重复等待 20 s"
+                            "Modern Core: skipped the server confirmed to run LabOne 18.12.59443 "
+                            f"at {server_host}:{server_port} to avoid waiting another 20 s"
                         )
                         continue
                     daq = None
@@ -2297,7 +2318,7 @@ class NonLocalACController:
                                     )
                             else:
                                 raise RuntimeError(
-                                    "Data Server 已连接，但无法挂接设备："
+                                    "Data Server connected, but the device cannot be attached: "
                                     + " | ".join(attachment_errors)
                                 )
                         daq.setInt(
@@ -2335,13 +2356,13 @@ class NonLocalACController:
                         self.mfli_config = {}
                         self.mfli_identity = identity
                         self.logger(
-                            "Non-local Zurich MFLI 已由当前 Python Core API "
-                            f"直接连接：{identity} @ {server_host}:{server_port}"
+                            "Non-local Zurich MFLI connected directly by the current Python Core API"
+                            f": {identity} @ {server_host}:{server_port}"
                         )
                         return identity
                     except BaseException as error:
                         direct_errors.append(
-                            f"Core {server_host}:{server_port}：{error}"
+                            f"Core {server_host}:{server_port}: {error}"
                         )
                         if daq is not None:
                             try:
@@ -2349,8 +2370,8 @@ class NonLocalACController:
                             except BaseException:
                                 pass
                         self.logger(
-                            f"当前 Python Core API 连接 {server_host}:{server_port} "
-                            f"失败：{error}"
+                            f"The current Python Core API connection to {server_host}:{server_port} "
+                            f"failed: {error}"
                         )
 
             # Discovery is only worth attempting after a server endpoint has
@@ -2364,12 +2385,12 @@ class NonLocalACController:
                     )
                     if not isinstance(session, tuple) or len(session) < 3:
                         raise RuntimeError(
-                            f"create_api_session 返回格式异常：{session!r}"
+                            f"create_api_session returned an unexpected format: {session!r}"
                         )
                     daq, discovered, props = session[:3]
                     device = str(discovered).strip().lower()
                     if not device:
-                        raise RuntimeError("LabOne Discovery 未返回 MFLI 设备名")
+                        raise RuntimeError("LabOne Discovery did not return an MFLI device name")
                     daq.setInt(
                         f"/{device}/demods/"
                         f"{NONLOCAL_MFLI_DEMODULATOR}/enable",
@@ -2396,19 +2417,19 @@ class NonLocalACController:
                     self.mfli_config = {}
                     self.mfli_identity = identity
                     self.logger(
-                        "Non-local Zurich MFLI 已由当前 Python Discovery "
-                        f"连接：{identity}"
+                        "Non-local Zurich MFLI connected by the current Python Discovery"
+                        f": {identity}"
                     )
                     return identity
                 except BaseException as error:
-                    direct_errors.append(f"Discovery：{error}")
+                    direct_errors.append(f"Discovery: {error}")
                     if daq is not None:
                         try:
                             daq.disconnect()
                         except BaseException:
                             pass
                     self.logger(
-                        "当前 Python Discovery 失败，最后尝试旧环境桥接："
+                        "The current Python Discovery failed; trying the legacy environment bridge as a last resort: "
                         f"{error}"
                     )
 
@@ -2416,10 +2437,10 @@ class NonLocalACController:
             release_instrument_lease(self.mfli_lease_resource, self)
             self.mfli_lease_resource = ""
             raise RuntimeError(
-                "Zurich MFLI 的 TCP 8004 已可达，但 LabOne API 握手失败。\n"
-                f"连接诊断：{direct_detail}\n\n"
-                "该仪器运行 LabOne 18.12.59443；请先关闭本程序，运行同目录 "
-                "INSTALL_MFLI_LABONE_18_12.bat，安装完成后重启程序。"
+                "Zurich MFLI TCP 8004 is reachable, but the LabOne API handshake failed.\n"
+                f"Connection diagnostics: {direct_detail}\n\n"
+                "This instrument runs LabOne 18.12.59443; first close this program, then run "
+                "INSTALL_MFLI_LABONE_18_12.bat from the same folder, and restart the program after installation."
             )
 
     @staticmethod
@@ -2428,20 +2449,20 @@ class NonLocalACController:
         try:
             candidate = value[field]
         except (KeyError, TypeError) as error:
-            raise RuntimeError(f"MFLI sample 缺少 {field!r} 字段") from error
+            raise RuntimeError(f"MFLI sample lacks the {field!r} field") from error
         if np is not None:
             array = np.asarray(candidate).reshape(-1)
             if array.size == 0:
-                raise RuntimeError(f"MFLI sample 的 {field!r} 字段为空")
+                raise RuntimeError(f"MFLI sample field {field!r} is empty")
             result = float(array[-1])
         elif isinstance(candidate, (tuple, list)):
             if not candidate:
-                raise RuntimeError(f"MFLI sample 的 {field!r} 字段为空")
+                raise RuntimeError(f"MFLI sample field {field!r} is empty")
             result = float(candidate[-1])
         else:
             result = float(candidate)
         if not math.isfinite(result):
-            raise RuntimeError(f"MFLI sample 的 {field!r} 字段不是有限数值")
+            raise RuntimeError(f"MFLI sample field {field!r} is not a finite value")
         return result
 
     @staticmethod
@@ -2462,7 +2483,7 @@ class NonLocalACController:
     ) -> dict[str, object]:
         """Route the selected external reference, then configure Demod 1."""
         if not self.mfli_connected:
-            raise RuntimeError("Zurich MFLI 尚未连接")
+            raise RuntimeError("Zurich MFLI is not connected")
         coupling = str(coupling).strip().upper()
         channel = str(channel).strip().upper()
         reference_source = str(reference_source).strip()
@@ -2472,25 +2493,25 @@ class NonLocalACController:
         input_scaling = float(input_scaling)
         timeconstant_s = float(timeconstant_s)
         if coupling not in {"AC", "DC"}:
-            raise ValueError("MFLI 输入耦合只能选择 AC 或 DC")
+            raise ValueError("MFLI input coupling can only be AC or DC")
         if harmonic < 1:
-            raise ValueError("MFLI 倍频必须是正整数")
+            raise ValueError("MFLI harmonic must be a positive integer")
         if not math.isfinite(sample_rate_hz) or sample_rate_hz <= 0:
-            raise ValueError("MFLI 采样率必须是有限正数")
+            raise ValueError("MFLI sampling rate must be a finite positive number")
         transfer_rate_hz = max(10.0, min(1000.0, sample_rate_hz * 5.0))
         if channel not in {"X", "Y", "R"}:
-            raise ValueError("MFLI 读取通道只能选择 X、Y 或 R")
+            raise ValueError("MFLI read channel can only be X, Y or R")
         if reference_source not in NONLOCAL_MFLI_REFERENCE_INPUTS:
-            choices = "、".join(NONLOCAL_MFLI_REFERENCE_INPUTS)
-            raise ValueError(f"MFLI 外参考接口必须选择：{choices}")
+            choices = ", ".join(NONLOCAL_MFLI_REFERENCE_INPUTS)
+            raise ValueError(f"MFLI external reference input must be one of: {choices}")
         impedance_choices = {"10 MΩ": 0, "50 Ω": 1}
         if input_impedance not in impedance_choices:
-            raise ValueError("MFLI Signal Input 1 输入阻抗只能选择 10 MΩ 或 50 Ω")
+            raise ValueError("MFLI Signal Input 1 input impedance can only be 10 MΩ or 50 Ω")
         requested_imp50 = impedance_choices[input_impedance]
         if not math.isfinite(input_scaling) or input_scaling <= 0:
-            raise ValueError("MFLI Signal Input 1 Scaling 必须是有限正数")
+            raise ValueError("MFLI Signal Input 1 Scaling must be a finite positive number")
         if not math.isfinite(timeconstant_s) or timeconstant_s <= 0:
-            raise ValueError("MFLI 时间常数必须是有限正数")
+            raise ValueError("MFLI time constant must be a finite positive number")
         reference_adcselect = NONLOCAL_MFLI_REFERENCE_INPUTS[
             reference_source
         ]
@@ -2614,8 +2635,8 @@ class NonLocalACController:
                 self.mfli_daq.sync()
                 if selected_extref_input != reference_adcselect:
                     raise RuntimeError(
-                        f"MFLI 单解调器外参未能选择 {reference_source}："
-                        f"期望 {reference_adcselect}，回读 "
+                        f"MFLI single-demodulator external reference failed to select {reference_source}: "
+                        f"expected {reference_adcselect}, readback "
                         f"{selected_extref_input}"
                     )
                 self.mfli_daq.setInt(measurement_adc_node, 0)
@@ -2655,11 +2676,11 @@ class NonLocalACController:
                     pass
             extref_adcselect = selected_extref_input
         if actual_ac != (1 if coupling == "AC" else 0):
-            raise RuntimeError(f"MFLI AC/DC 回读不符：{actual_ac}")
+            raise RuntimeError(f"MFLI AC/DC readback mismatch: {actual_ac}")
         if actual_imp50 != requested_imp50:
             raise RuntimeError(
-                "MFLI Signal Input 1 输入阻抗回读不符："
-                f"期望{input_impedance}，imp50={actual_imp50}"
+                "MFLI Signal Input 1 input impedance readback mismatch: "
+                f"expected {input_impedance}, imp50={actual_imp50}"
             )
         if not math.isclose(
             actual_scaling,
@@ -2668,27 +2689,27 @@ class NonLocalACController:
             abs_tol=1e-12,
         ):
             raise RuntimeError(
-                "MFLI Signal Input 1 Scaling回读不符："
-                f"期望{input_scaling:g}，回读{actual_scaling:g}"
+                "MFLI Signal Input 1 Scaling readback mismatch: "
+                f"expected {input_scaling:g}, readback {actual_scaling:g}"
             )
         if actual_harmonic != harmonic:
             raise RuntimeError(
-                f"MFLI 倍频回读不符：请求 {harmonic}，回读 {actual_harmonic}"
+                f"MFLI harmonic readback mismatch: requested {harmonic}, readback {actual_harmonic}"
             )
         if actual_extref_harmonic != 1:
             raise RuntimeError(
-                "MFLI 外参考PLL倍频必须为1："
-                f"回读 {actual_extref_harmonic}"
+                "MFLI external-reference PLL harmonic must be 1: "
+                f"readback {actual_extref_harmonic}"
             )
         if extref_enabled != 1:
             raise RuntimeError(
-                f"MFLI {reference_source} 外部参考未成功启用"
+                f"MFLI {reference_source} external reference was not enabled successfully"
             )
         if extref_adcselect != reference_adcselect:
             raise RuntimeError(
-                "MFLI 外部参考输入回读不符："
-                f"期望 {reference_source}({reference_adcselect})，"
-                f"回读 {extref_adcselect}"
+                "MFLI external reference input readback mismatch: "
+                f"expected {reference_source}({reference_adcselect}), "
+                f"readback {extref_adcselect}"
             )
         if not math.isclose(
             actual_timeconstant,
@@ -2697,16 +2718,16 @@ class NonLocalACController:
             abs_tol=1e-6,
         ):
             raise RuntimeError(
-                "MFLI 时间常数回读不符："
-                f"请求 {timeconstant_s:g} s，回读 {actual_timeconstant:g} s"
+                "MFLI time constant readback mismatch: "
+                f"requested {timeconstant_s:g} s, readback {actual_timeconstant:g} s"
             )
         if actual_filter_order != NONLOCAL_LOCKIN_FILTER_ORDER:
             raise RuntimeError(
-                f"MFLI 滤波阶数回读不符：{actual_filter_order}"
+                f"MFLI filter order readback mismatch: {actual_filter_order}"
             )
         if not math.isfinite(actual_sample_rate) or actual_sample_rate < sample_rate_hz:
             raise RuntimeError(
-                f"MFLI 数据传输率不足：{actual_sample_rate:g} Sa/s"
+                f"MFLI data transfer rate is insufficient: {actual_sample_rate:g} Sa/s"
             )
         self.mfli_config = {
             "meter_type": "MFLI",
@@ -2734,7 +2755,7 @@ class NonLocalACController:
 
     def read_mfli(self, expected_frequency_hz: float) -> dict[str, object]:
         if not self.mfli_connected:
-            raise RuntimeError("Zurich MFLI 尚未连接")
+            raise RuntimeError("Zurich MFLI is not connected")
         if self.mfli_bridge is not None:
             sample = self.mfli_bridge.request("read")["sample"]
         else:
@@ -2832,11 +2853,11 @@ class NonLocalACController:
                     NONLOCAL_MFLI_DEFAULT_REFERENCE_INPUT,
                 )
             )
-            status_parts.append(f"{reference_source} 外部参考未锁定")
+            status_parts.append(f"{reference_source} external reference not locked")
         elif extref_locked is None and frequency_valid:
-            status_parts.append("LabOne 18.12 按参考频率收敛判定 LOCK")
+            status_parts.append("LabOne 18.12 judges LOCK by reference-frequency convergence")
         if not frequency_valid:
-            status_parts.append("参考频率不符")
+            status_parts.append("reference frequency mismatch")
         input_range_v = self._mfli_scalar(sample, "input_range_v")
         input_extrema = []
         for field in ("input_max_normalized", "input_min_normalized"):
@@ -2887,7 +2908,7 @@ class NonLocalACController:
     def _run_mfli_autorange(self, reason: str) -> str:
         """Run the MFLI firmware autorange and verify its range readback."""
         if not self.mfli_connected:
-            raise RuntimeError("Zurich MFLI 尚未连接")
+            raise RuntimeError("Zurich MFLI is not connected")
         configured_old = float(self.mfli_config.get("input_range_v", math.nan))
         if self.mfli_bridge is not None:
             result = self.mfli_bridge.request("autorange")["autorange"]
@@ -2902,7 +2923,7 @@ class NonLocalACController:
             deadline = time.monotonic() + 8.0
             while int(self.mfli_daq.getInt(autorange_node)) != 0:
                 if time.monotonic() >= deadline:
-                    raise RuntimeError("MFLI Signal Input 1 自动量程超时")
+                    raise RuntimeError("MFLI Signal Input 1 auto-range timed out")
                 time.sleep(0.02)
             self.mfli_daq.sync()
             new_range = float(self.mfli_daq.getDouble(range_node))
@@ -2916,7 +2937,7 @@ class NonLocalACController:
         if not math.isfinite(old_range) or old_range <= 0:
             old_range = configured_old
         if not math.isfinite(new_range) or new_range <= 0:
-            raise RuntimeError(f"MFLI 自动量程回读无效：{new_range!r}")
+            raise RuntimeError(f"MFLI auto-range readback is invalid: {new_range!r}")
         self.mfli_config["input_range_v"] = new_range
         self.mfli_low_range_count = 0
         self.mfli_range_cooldown = 3
@@ -2961,8 +2982,8 @@ class NonLocalACController:
         if attempts >= 3:
             if overloaded or high or initial:
                 raise RuntimeError(
-                    "MFLI 自动量程重试 3 次仍过载或接近满量程，当前点未保存；"
-                    "请检查输入信号及接线"
+                    "MFLI auto-range still overloaded or near full scale after 3 retries; the current point was not saved; "
+                    "please check the input signal and wiring"
                 )
             return sample
         if overloaded:
@@ -3037,7 +3058,7 @@ class NonLocalACController:
             self.mfli_initial_autorange_pending = False
             release_instrument_lease(mfli_lease_resource, self)
             self._close_manager_if_unused()
-            self.logger("Non-local Zurich MFLI 已断开")
+            self.logger("Non-local Zurich MFLI disconnected")
 
 
 
@@ -3099,7 +3120,7 @@ class STFMRScanRecorder:
 
     def event(self, name: str, **details) -> None:
         if self.closed:
-            raise RuntimeError("STFMR 日志已关闭")
+            raise RuntimeError("STFMR log is closed")
         record = {
             "timestamp": datetime_module.datetime.now().astimezone().isoformat(timespec="milliseconds"),
             "event": name,
@@ -3110,7 +3131,7 @@ class STFMRScanRecorder:
 
     def append_point(self, row: dict[str, object]) -> None:
         if self.closed:
-            raise RuntimeError("STFMR 实时 CSV 已关闭")
+            raise RuntimeError("STFMR live CSV is closed")
         self.writer.writerow(row)
         self._sync(self.csv_handle)
         self.rows_written += 1
@@ -3123,19 +3144,19 @@ class STFMRScanRecorder:
         try:
             self.event("run_finished", outcome=outcome, saved_points=self.rows_written, **details)
         except BaseException as error:
-            errors.append(f"写入结束日志失败：{error}")
+            errors.append(f"Failed to write the closing log entry: {error}")
         self.closed = True
         for name, handle in (("CSV", self.csv_handle), ("log", self.log_handle)):
             if handle is not None:
                 try:
                     self._sync(handle)
                 except BaseException as error:
-                    errors.append(f"刷新 {name} 失败：{error}")
+                    errors.append(f"Failed to flush {name}: {error}")
                 finally:
                     try:
                         handle.close()
                     except BaseException as error:
-                        errors.append(f"关闭 {name} 失败：{error}")
+                        errors.append(f"Failed to close {name}: {error}")
         return errors
 
 # ---- Fixed-field microwave/modulation grid application ----
@@ -3149,18 +3170,18 @@ APP_NAME = 'Microwave_Transport_Test_NH_dev'
 
 def parse_axis(value: str, limit: int = 10000) -> tuple[float, ...]:
     """Positive, unique values; comma lists or inclusive start:stop:step."""
-    value = value.strip().replace('，', ',').replace('；', ',').replace(';', ',')
+    value = value.strip().replace('\uff0c', ',').replace('\uff1b', ',').replace(';', ',')
     try:
         if ':' in value:
             parts = value.split(':')
             if len(parts) != 3:
-                raise ValueError('范围格式：起点:终点:步长')
+                raise ValueError('Range format: start:stop:step')
             a, b, step = map(Decimal, parts)
             if not all(v.is_finite() for v in (a, b, step)) or step == 0 or (b-a)*step < 0:
-                raise ValueError('范围必须有限，步长方向必须正确')
+                raise ValueError('Range must be finite and the step direction must be correct')
             count = int((b-a)/step) + 1
             if count > limit or count < 1:
-                raise ValueError('单轴点数超限')
+                raise ValueError('Too many points on one axis')
             values = [a+i*step for i in range(count)]
             if values[-1] != b:
                 values.append(b)
@@ -3168,11 +3189,11 @@ def parse_axis(value: str, limit: int = 10000) -> tuple[float, ...]:
             values = [Decimal(v.strip()) for v in value.split(',')]
         out = tuple(float(v) for v in values)
     except (InvalidOperation, OverflowError) as e:
-        raise ValueError('请输入数值列表或起点:终点:步长') from e
+        raise ValueError('Please enter a list of numbers or start:stop:step') from e
     if not out or len(out) > limit or any(not math.isfinite(v) or v <= 0 for v in out):
-        raise ValueError('频率必须为有限正数，单轴最多 10000 点')
+        raise ValueError('Frequencies must be finite positive numbers; at most 10000 points per axis')
     if len(set(out)) != len(out):
-        raise ValueError('频率列表不能重复')
+        raise ValueError('The frequency list must not contain duplicates')
     return out
 
 
@@ -3181,31 +3202,31 @@ def prime_axis(start, stop):
     try:
         a, b = Decimal(str(start)), Decimal(str(stop))
         if not all(v.is_finite() and v == v.to_integral_value() for v in (a, b)):
-            raise ValueError('调制起止频率须为整数 Hz')
+            raise ValueError('Modulation start and stop frequencies must be integers in Hz')
         a, b = int(a), int(b)
     except (InvalidOperation, OverflowError):
-        raise ValueError('调制起止频率须为整数 Hz')
+        raise ValueError('Modulation start and stop frequencies must be integers in Hz')
     if not 1 <= a <= b <= 1000000:
-        raise ValueError('调制范围须满足 1 ≤ 起点 ≤ 终点 ≤ 1000000 Hz')
+        raise ValueError('Modulation range must satisfy 1 ≤ start ≤ stop ≤ 1000000 Hz')
     sieve = bytearray(b'\x01') * (b + 1)
     sieve[:2] = b'\x00\x00'
     for n in range(2, math.isqrt(b) + 1):
         if sieve[n]:sieve[n*n:b+1:n] = b'\x00' * ((b-n*n)//n+1)
     values = tuple(float(n) for n in range(a,b+1) if sieve[n])
-    if not values:raise ValueError('此范围内没有质数，请调整起止频率')
-    if len(values)>10000:raise ValueError('调制频率最多 10000 个质数，请缩小范围')
+    if not values:raise ValueError('No primes in this range; please adjust the start and stop frequencies')
+    if len(values)>10000:raise ValueError('At most 10000 prime modulation frequencies; please narrow the range')
     return values
 
 
 def lockin_indicators(sample):
     locked = sample.get('reference_valid')
-    lock = ('green','已锁定') if locked is True else ('red','未锁定') if locked is False else ('gray','未知')
+    lock = ('green','Locked') if locked is True else ('red','Not locked') if locked is False else ('gray','Unknown')
     if sample.get('auto_range'):
-        return lock, ('amber','调整量程中')
+        return lock, ('amber','Adjusting range')
     if 'status' in sample and 'sensitivity_index' in sample:
         overloaded = bool(int(sample['status']) & 0x07)
     else:overloaded = sample.get('input_overload')
-    level = ('red','过载') if overloaded is True else ('green','量程正常') if overloaded is False else ('gray','量程未知')
+    level = ('red','Overload') if overloaded is True else ('green','Range OK') if overloaded is False else ('gray','Range unknown')
     return lock, level
 
 
@@ -3229,25 +3250,25 @@ class GridSettings:
     def validate(self):
         for axis in (self.microwave_ghz, self.modulation_hz):
             if not axis or len(set(axis)) != len(axis) or any(not math.isfinite(v) or v <= 0 for v in axis):
-                raise ValueError('频率必须是有限正数且不能重复')
+                raise ValueError('Frequencies must be finite positive numbers without duplicates')
         if len(self.microwave_ghz)*len(self.modulation_hz) > 20000:
-            raise ValueError('二维网格最多 20000 格')
+            raise ValueError('The 2D grid allows at most 20000 cells')
         if self.meter not in ('MFLI', 'SR830'):
-            raise ValueError('请选择 MFLI 或 SR830')
+            raise ValueError('Please select MFLI or SR830')
         values = (self.fixed_current_a,self.voltage_limit_v,
                   self.power_dbm,self.point_delay_s,self.field_settle_s,self.timeconstant_s)
         if not all(math.isfinite(v) for v in values):
-            raise ValueError('所有参数必须有限')
+            raise ValueError('All parameters must be finite')
         if abs(self.fixed_current_a)>10:
-            raise ValueError('固定电流必须在 ±10 A 内')
+            raise ValueError('Fixed current must be within ±10 A')
         if not 0 < self.voltage_limit_v <= 20 or not -120 <= self.power_dbm <= 25:
-            raise ValueError('限压须在 0–20 V，功率须在 −120–25 dBm')
+            raise ValueError('Voltage limit must be within 0–20 V and power within −120–25 dBm')
         if self.point_delay_s < 0.05 or self.field_settle_s < 0.1 or self.timeconstant_s <= 0:
-            raise ValueError('点等待至少 0.05 s，电流设置后等待至少 0.1 s，时间常数须为正')
+            raise ValueError('Wait per point must be at least 0.05 s, wait after setting current at least 0.1 s, and the time constant must be positive')
         if not isinstance(self.samples_per_cell,int) or not 1 <= self.samples_per_cell <= 1000:
-            raise ValueError('每格采样数须为 1–1000 的整数')
+            raise ValueError('Samples per cell must be an integer from 1 to 1000')
         if self.mfli_reference not in NONLOCAL_MFLI_REFERENCE_INPUTS or self.sr830_reference not in STFMR_LOCKIN_SR830_REFERENCE_INPUTS:
-            raise ValueError('参考输入选择无效')
+            raise ValueError('Invalid reference input selection')
         return self
 
 
@@ -3268,7 +3289,7 @@ def format_duration(seconds):
     total = math.ceil(seconds)
     hours, rem = divmod(total, 3600)
     minutes, secs = divmod(rem, 60)
-    return (f'{hours} 小时 ' if hours else '') + (f'{minutes} 分 ' if minutes or hours else '') + f'{secs} 秒'
+    return (f'{hours} h ' if hours else '') + (f'{minutes} min ' if minutes or hours else '') + f'{secs} s'
 
 
 class GridRecorder(STFMRScanRecorder):
@@ -3306,7 +3327,7 @@ def component(sample, name):
     keys={'x':('x_v','X'),'y':('y_v','Y'),'r':('r_v','R','voltage')}[name]
     for k in keys:
         if k in sample and math.isfinite(float(sample[k])):return float(sample[k])
-    raise RuntimeError(f'锁相回读缺少有效 {name.upper()}')
+    raise RuntimeError(f'Lock-in readback is missing a valid {name.upper()}')
 
 
 class GridEngine:
@@ -3335,7 +3356,7 @@ class GridEngine:
     def field(self):
         self.check()
         b=STFMRGauss475Controller.value_in_gauss(self.devices['gauss'].read_field())
-        if not math.isfinite(b):raise RuntimeError('LS475 返回无效磁场')
+        if not math.isfinite(b):raise RuntimeError('LS475 returned an invalid field')
         return b
 
     def settle_seconds(self,modulation):
@@ -3353,20 +3374,20 @@ class GridEngine:
             if action:
                 attempts+=1;initial=False
                 self.event('autorange_retry',action=action,attempt=attempts,modulation_hz=modulation)
-                if attempts>3:raise RuntimeError('量程调整超过 3 次，当前格不保存')
+                if attempts>3:raise RuntimeError('Range adjusted more than 3 times; current cell not saved')
                 self.wait(self.settle_seconds(modulation));continue
             if sample.get('input_overload') is True:
-                raise RuntimeError('MFLI 输入过载，当前格不保存')
+                raise RuntimeError('MFLI input overload; current cell not saved')
             ref=float(sample.get('reference_frequency_hz',math.nan))
             locked=bool(sample.get('reference_valid',False)) and math.isfinite(ref) and math.isclose(ref,modulation,rel_tol=.005,abs_tol=.1)
             if not locked:
                 self.wait(max(.1, min(.5, self.s.point_delay_s)));continue
             if not bool(sample.get('measurement_valid',True)):
-                raise RuntimeError('锁相输入状态无效，当前格不保存')
+                raise RuntimeError('Lock-in input status invalid; current cell not saved')
             for name in ('x','y','r'):component(sample,name)
-            if not math.isfinite(float(sample.get('phase_deg',math.nan))):raise RuntimeError('无效锁相相位')
+            if not math.isfinite(float(sample.get('phase_deg',math.nan))):raise RuntimeError('Invalid lock-in phase')
             return sample
-        raise RuntimeError(f'参考未锁定到 {modulation:g} Hz，当前格不保存')
+        raise RuntimeError(f'Reference not locked to {modulation:g} Hz; current cell not saved')
 
     def row(self,sample,b,after,mi,fi,k):
         return dict(index=self.rec.rows_written+1,microwave_index=fi,modulation_index=mi,
@@ -3514,7 +3535,7 @@ def export_grid(directory,settings,cells):
                 'x_v','y_v','phase_deg','field_g','current_a','samples')
         w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(cells.values())
     (directory/'settings.json').write_text(json.dumps(asdict(settings),ensure_ascii=False,indent=2))
-    if Image is None:raise RuntimeError('矩阵 CSV 已保存；缺少 Pillow，未生成 PNG')
+    if Image is None:raise RuntimeError('Matrix CSV saved; Pillow is missing, PNG not generated')
     from PIL import ImageDraw,ImageFont
     scale=6;w,h=700,450
     for key,label in (('x_v','X'),('y_v','Y'),('phase_deg','Theta')):
@@ -3574,65 +3595,97 @@ class MicrowaveTransportApp:
         else:
             self.devices={'kepco':STFMRKepco4886Controller(logger),'gauss':STFMRGauss475Controller(logger),
                           'smb':STFMRSMB100AController(logger),'830':STFMRSR830Controller(logger),'mfli':NonLocalACController(logger)}
-        self.resources={k:tk.StringVar(value=v) for k,v in STFMR_LOCKIN_DEFAULT_RESOURCES.items()}
+        self.resources={k:tk.StringVar(value=zurich_mfli_label(v) if k=='mfli' else v) for k,v in STFMR_LOCKIN_DEFAULT_RESOURCES.items()}
         self.connection_labels={};self.connection_lamps={};self.connection_buttons=[];self.editable=[]
         self.vars={k:tk.StringVar(value=v) for k,v in {
             'microwave':'1:3:0.1','mod_start':'5','mod_stop':'400','current':'0','limit':'10','power':'18','delay':'0.5','fieldsettle':'0.3','tau':'0.1',
             'samples':'3','meter':'MFLI','mfli_ref':'Aux Input 1','sr_ref':'Sine'}.items()}
         self.autorange=tk.BooleanVar(value=True);self.safety=tk.BooleanVar(value=False)
-        self.status=tk.StringVar(value='就绪。先连接仪器，再设置固定电流及二维参数。')
+        self.status=tk.StringVar(value='Ready. Connect the instruments, then set the fixed current and the scan grid.')
         self.readback=tk.StringVar(value='B: — G     I: — A     X: — V     Y: — V     Theta: —°')
         self._build();self.root.protocol('WM_DELETE_WINDOW',self.close);self.root.after(80,self.poll)
 
     def _build(self):
         outer=ttk.Frame(self.root,padding=8);outer.pack(fill='both',expand=True)
-        instruments=ttk.LabelFrame(outer,text='STFMR 仪器连接'+('（模拟）' if self.demo else ''),padding=5);instruments.pack(fill='x')
-        for n,(key,name) in enumerate((('kepco','KEPCO4886'),('830','SR830'),('gauss','LS475'),('mfli','MFLI'),('smb','SMB100A'))):
-            frame=ttk.Frame(instruments);frame.grid(row=n//2,column=n%2,sticky='ew',padx=4,pady=2);instruments.columnconfigure(n%2,weight=1)
-            ttk.Label(frame,text=name,width=12).pack(side='left');e=ttk.Entry(frame,textvariable=self.resources[key],width=24);e.pack(side='left',fill='x',expand=True);self.editable.append((e,'normal'))
-            for action,label in (('connect','连接'),('disconnect','断开')):
-                b=ttk.Button(frame,text=label,width=5,command=lambda k=key,a=action:self.connection(k,a));b.pack(side='left',padx=2);self.connection_buttons.append(b)
-            self.connection_lamps[key]=self.make_lamp(frame, '未连接')
-            self.connection_labels[key]=self.connection_lamps[key][2]
-        params=ttk.LabelFrame(outer,text='固定电流 · 微波频率 × 调制频率',padding=6);params.pack(fill='x',pady=5)
-        specs=[('微波 GHz（列表/起:止:步）','microwave'),('调制起点 Hz（质数）','mod_start'),('调制终点 Hz（质数）','mod_stop'),('功率 dBm','power'),
-               ('固定电流 A','current'),('限压 V','limit'),
-               ('每点等待 s','delay'),('电流设置后等待 s','fieldsettle'),('每格采样数','samples'),('MFLI 时间常数 s','tau')]
-        for n,(label,key) in enumerate(specs):
-            frame=ttk.Frame(params);frame.grid(row=n//4,column=n%4,sticky='ew',padx=4,pady=3);params.columnconfigure(n%4,weight=1)
-            ttk.Label(frame,text=label).pack(anchor='w');e=ttk.Entry(frame,textvariable=self.vars[key],width=26 if n<2 else 12);e.pack(fill='x');self.editable.append((e,'normal'))
-        frame=ttk.Frame(params);frame.grid(row=3,column=0,columnspan=4,sticky='ew')
-        for label,key,values in [('读取','meter',('MFLI','SR830')),('MFLI REF','mfli_ref',tuple(NONLOCAL_MFLI_REFERENCE_INPUTS)),('SR830 REF','sr_ref',tuple(STFMR_LOCKIN_SR830_REFERENCE_INPUTS))]:
-            ttk.Label(frame,text=label).pack(side='left',padx=4);e=ttk.Combobox(frame,textvariable=self.vars[key],values=values,state='readonly',width=12);e.pack(side='left');self.editable.append((e,'readonly'))
-        a=ttk.Checkbutton(frame,text='锁相自动量程',variable=self.autorange);a.pack(side='left',padx=10);self.editable.append((a,'normal'))
-        a=ttk.Checkbutton(params,text='已确认磁体极性、冷却、接线、输出上限及人员安全',variable=self.safety);a.grid(row=4,column=0,columnspan=4,sticky='w',pady=4);self.editable.append((a,'normal'))
+        # Connections: one grid in two groups, so the fields, buttons, lamps
+        # and status texts line up straight down the list.
+        instruments=ttk.LabelFrame(outer,text='Instrument connections'+(' (simulation)' if self.demo else ''),padding=6)
+        instruments.pack(fill='x')
+        groups=((('kepco','KEPCO4886'),('gauss','LS475'),('smb','SMB100A')),(('830','SR830'),('mfli','MFLI')))
+        for g,group in enumerate(groups):
+            base=7*g
+            if g:instruments.columnconfigure(base-1,minsize=24)
+            for row,(key,name) in enumerate(group):
+                ttk.Label(instruments,text=f'{name}:').grid(row=row,column=base,sticky='e',padx=(0,4),pady=2)
+                if key=='mfli':
+                    # Which Zurich: chosen from the lab's two, so the Data
+                    # Server that can reach it is the one tried.
+                    field=create_zurich_chooser(instruments,self.resources[key],match_chars=18)
+                    field.grid(row=row,column=base+1,sticky='w',padx=(0,4+field.zurich_shortfall),pady=2)
+                    self.editable.append((field,'readonly'))
+                else:
+                    field=ttk.Entry(instruments,textvariable=self.resources[key],width=18)
+                    field.grid(row=row,column=base+1,sticky='w',padx=(0,4),pady=2)
+                    self.editable.append((field,'normal'))
+                for column,(action,label,width) in enumerate((('connect','Connect',8),('disconnect','Disconnect',10)),start=2):
+                    b=ttk.Button(instruments,text=label,width=width,command=lambda k=key,a=action:self.connection(k,a))
+                    b.grid(row=row,column=base+column,padx=1,pady=2);self.connection_buttons.append(b)
+                cell=ttk.Frame(instruments);cell.grid(row=row,column=base+4,sticky='w',padx=(4,0))
+                self.connection_lamps[key]=self.make_lamp(cell,'Not connected',width=13)
+                self.connection_labels[key]=self.connection_lamps[key][2]
+        # Parameters: one aligned table, each label right-aligned against its
+        # field and every field in a column the same width.
+        params=ttk.LabelFrame(outer,text='Fixed current \u00b7 microwave frequency \u00d7 modulation frequency',padding=6)
+        params.pack(fill='x',pady=5)
+        def label(row,column,text):
+            ttk.Label(params,text=text).grid(row=row,column=column,sticky='e',padx=(0 if column==0 else 14,4),pady=2)
+        label(0,0,'Microwave GHz:')
+        e=ttk.Entry(params,textvariable=self.vars['microwave'],width=30);e.grid(row=0,column=1,columnspan=3,sticky='ew',pady=2);self.editable.append((e,'normal'))
+        ttk.Label(params,text='a list such as 1, 2.5, 4, or start:stop:step',foreground='#5f6b76').grid(row=0,column=4,columnspan=4,sticky='w',padx=(10,0))
+        rows=((('Modulation start Hz (prime):','mod_start'),('Modulation stop Hz (prime):','mod_stop'),('Power dBm:','power')),
+              (('Fixed current A:','current'),('Voltage limit V:','limit'),('Samples per cell:','samples')),
+              (('Wait per point s:','delay'),('Wait after setting current s:','fieldsettle'),('MFLI time constant s:','tau')))
+        for r,pairs in enumerate(rows,start=1):
+            for p,(text,key) in enumerate(pairs):
+                label(r,2*p,text)
+                e=ttk.Entry(params,textvariable=self.vars[key],width=10);e.grid(row=r,column=2*p+1,sticky='ew',pady=2);self.editable.append((e,'normal'))
+        for p,(text,key,values) in enumerate((('Read:','meter',('MFLI','SR830')),('MFLI REF:','mfli_ref',tuple(NONLOCAL_MFLI_REFERENCE_INPUTS)),('SR830 REF:','sr_ref',tuple(STFMR_LOCKIN_SR830_REFERENCE_INPUTS)))):
+            label(4,2*p,text)
+            c=ttk.Combobox(params,textvariable=self.vars[key],values=values,state='readonly',width=12);c.grid(row=4,column=2*p+1,sticky='ew',pady=2);self.editable.append((c,'readonly'))
+        a=ttk.Checkbutton(params,text='Lock-in autorange',variable=self.autorange);a.grid(row=4,column=6,columnspan=2,sticky='w',padx=(14,0));self.editable.append((a,'normal'))
+        a=ttk.Checkbutton(params,text='Magnet polarity, cooling, wiring, output limits and personnel safety confirmed',variable=self.safety);a.grid(row=5,column=0,columnspan=8,sticky='w',pady=(6,0));self.editable.append((a,'normal'))
         actions=ttk.Frame(outer);actions.pack(fill='x')
-        self.start_button=ttk.Button(actions,text='开始二维扫描',command=self.start);self.start_button.pack(side='left',padx=3)
-        self.stop_button=ttk.Button(actions,text='停止 / 输出归零',command=self.stop,state='disabled');self.stop_button.pack(side='left',padx=3)
-        self.zero_button=ttk.Button(actions,text='归零并关闭输出',command=self.zero);self.zero_button.pack(side='left',padx=3)
-        self.export_button=ttk.Button(actions,text='导出当前热力图',command=self.export,state='disabled');self.export_button.pack(side='left',padx=3)
-        self.progress=ttk.Progressbar(actions,mode='determinate');self.progress.pack(side='left',fill='x',expand=True,padx=10)
-        lights=ttk.Frame(outer);lights.pack(fill='x',pady=3)
-        ttk.Label(lights,text='锁相参考：').pack(side='left');self.lock_lamp=self.make_lamp(lights,'待读取')
-        ttk.Label(lights,text='   输入量程：').pack(side='left');self.range_lamp=self.make_lamp(lights,'待读取')
+        self.start_button=ttk.Button(actions,text='Start 2D scan',command=self.start);self.start_button.pack(side='left',padx=(0,3))
+        self.stop_button=ttk.Button(actions,text='Stop / zero output',command=self.stop,state='disabled');self.stop_button.pack(side='left',padx=3)
+        self.zero_button=ttk.Button(actions,text='Zero and switch outputs off',command=self.zero);self.zero_button.pack(side='left',padx=3)
+        self.export_button=ttk.Button(actions,text='Export current heatmaps',command=self.export,state='disabled');self.export_button.pack(side='left',padx=3)
+        self.progress=ttk.Progressbar(actions,mode='determinate');self.progress.pack(side='left',fill='x',expand=True,padx=(10,0))
+        lights=ttk.Frame(outer);lights.pack(fill='x',pady=(6,2))
+        ttk.Label(lights,text='Lock-in reference:').pack(side='left');self.lock_lamp=self.make_lamp(lights,'Not read',width=16)
+        ttk.Label(lights,text='Input range:').pack(side='left',padx=(14,0));self.range_lamp=self.make_lamp(lights,'Not read',width=16)
         self.prime_info=tk.StringVar();ttk.Label(lights,textvariable=self.prime_info).pack(side='right')
         for key in ('mod_start','mod_stop'):self.vars[key].trace_add('write',lambda *args:self.update_prime_info())
         self.vars['meter'].trace_add('write',lambda *args:self.reset_lock_lamps())
         self.update_prime_info()
-        ttk.Label(outer,textvariable=self.readback).pack(fill='x',pady=3)
-        ttk.Label(outer,textvariable=self.status,wraplength=1250).pack(fill='x',pady=3)
+        ttk.Label(outer,textvariable=self.readback).pack(fill='x',pady=2)
+        # The status wraps to the window width rather than a fixed 1250 px, so
+        # a saved-folder path is never cut off.
+        status=ttk.Label(outer,textvariable=self.status,justify='left');status.pack(fill='x',pady=2)
+        status.bind('<Configure>',lambda event:status.configure(wraplength=max(200,event.width-8)))
         plots=ttk.Frame(outer);plots.pack(fill='both',expand=True);self.canvases={}
         for i,key in enumerate(('x_v','y_v','phase_deg')):
             c=tk.Canvas(plots,bg='white',highlightthickness=1,highlightbackground='#cad0d8');c.grid(row=0,column=i,sticky='nsew',padx=3);plots.columnconfigure(i,weight=1,uniform='heatmap');c.bind('<Configure>',lambda e:self.mark_dirty());c.bind('<Button-1>',lambda e,k=key:self.cell_click(e,k));self.canvases[key]=c
         plots.rowconfigure(0,weight=1)
-        ttk.Label(outer,text='灰格：未完成采集；X/Y 为各格均值，Theta 为均值复电压的相位。点击色块查看实测值。').pack(anchor='w')
+        ttk.Label(outer,text='Grey cells: not measured yet. X and Y are cell means; Theta is the phase of the mean complex voltage. Click a cell to see its values.').pack(anchor='w')
         self.log_widget=tk.Text(outer,height=4,state='disabled',font=('TkFixedFont',9));self.log_widget.pack(fill='x',pady=(4,0))
 
-    def make_lamp(self, parent, label):
+    def make_lamp(self, parent, label, width=11):
         canvas=tk.Canvas(parent,width=16,height=16,highlightthickness=0)
         canvas.pack(side='left',padx=(4,1))
         dot=canvas.create_oval(3,3,13,13,fill='#9ca3af',outline='')
-        text=tk.StringVar(value=label);ttk.Label(parent,textvariable=text,width=11).pack(side='left')
+        # Wide enough for the longest state text, so a change never shifts
+        # what follows it.
+        text=tk.StringVar(value=label);ttk.Label(parent,textvariable=text,width=width).pack(side='left')
         return canvas,dot,text
 
     def set_lamp(self, lamp, color, label):
@@ -3640,12 +3693,12 @@ class MicrowaveTransportApp:
         canvas.itemconfigure(dot,fill={'green':'#16a34a','red':'#dc2626','amber':'#d97706','gray':'#9ca3af'}[color]);text.set(label)
 
     def reset_lock_lamps(self):
-        for lamp in (self.lock_lamp,self.range_lamp):self.set_lamp(lamp,'gray','待读取')
+        for lamp in (self.lock_lamp,self.range_lamp):self.set_lamp(lamp,'gray','Not read')
 
     def update_prime_info(self):
         try:
             values=prime_axis(self.vars['mod_start'].get(),self.vars['mod_stop'].get())
-            self.prime_info.set(f'调制：{len(values)} 个质数，{values[0]:g}–{values[-1]:g} Hz')
+            self.prime_info.set(f'Modulation: {len(values)} primes, {values[0]:g}\u2013{values[-1]:g} Hz')
         except ValueError as exc:self.prime_info.set(str(exc))
 
     def mark_dirty(self):self.dirty=True
@@ -3670,6 +3723,11 @@ class MicrowaveTransportApp:
         if action=='connect' and self.connected(key):return
         if action=='disconnect' and not self.connected(key):return
         self.busy_ui(True);device=self.devices[key];resource=self.resources[key].get().strip()
+        if key=='mfli' and action=='connect':
+            # Each MFLI has its own Data Server: DEV4435's USB link cannot see
+            # DEV4414, and DEV4414's network server cannot see DEV4435.
+            resource,servers=zurich_mfli_choice(resource)
+            device.mfli_server_candidates=servers
         method=getattr(device,('connect_mfli' if key=='mfli' else 'connect') if action=='connect' else ('disconnect_mfli' if key=='mfli' else 'disconnect'))
         fn=(lambda:method(resource)) if action=='connect' else method
         # Preserve the integrated driver's main-thread-only KEPCO session opening.
@@ -3690,16 +3748,19 @@ class MicrowaveTransportApp:
         if self.busy or self.closing:return
         try:
             settings=self.inputs()
-            if not self.safety.get():raise ValueError('请先勾选接线、磁体冷却及输出安全确认')
+            if not self.safety.get():raise ValueError('Tick the wiring, magnet cooling and output safety confirmation first')
             for key in ('kepco','gauss','smb','mfli' if settings.meter=='MFLI' else '830'):
-                if not self.connected(key):raise ValueError(f'{key} 尚未连接')
+                if not self.connected(key):raise ValueError(f'{key} is not connected')
         except Exception as exc:messagebox.showerror(APP_NAME,str(exc),parent=self.root);return
         total=len(settings.microwave_ghz)*len(settings.modulation_hz)
-        if not messagebox.askyesno('开始固定电流二维扫描',f'固定电流 {settings.fixed_current_a:+g} A（LS475 仅监测，无反馈）\n微波 {len(settings.microwave_ghz)} 点 × 调制 {len(settings.modulation_hz)} 点 = {total} 格\n功率 {settings.power_dbm:g} dBm；限压 {settings.voltage_limit_v:g} V\n每格保存 {settings.samples_per_cell} 次采样，切换后先丢弃两次过渡读取。\n预计用时（等待时间基准）：{format_duration(estimated_scan_seconds(settings))}\n实际另加仪器通信、配置、自动量程/锁定重试及文件保存时间。\n完成、停止和异常均关闭 RF 并归零电流。',parent=self.root):return
-        parent=filedialog.askdirectory(title='选择本次数据保存位置',parent=self.root)
+        if not messagebox.askyesno('Start fixed-current 2D scan',f'Fixed current {settings.fixed_current_a:+g} A (LS475 monitors only, no feedback)\nMicrowave {len(settings.microwave_ghz)} points \u00d7 modulation {len(settings.modulation_hz)} points = {total} cells\nPower {settings.power_dbm:g} dBm; voltage limit {settings.voltage_limit_v:g} V\n{settings.samples_per_cell} samples are saved per cell; the first two transitional readings after each change are discarded.\nEstimated time (from the wait times): {format_duration(estimated_scan_seconds(settings))}\nInstrument communication, configuration, autorange/lock retries and file saving add to this.\nOn completion, stop or error the RF is switched off and the current zeroed.',parent=self.root):return
+        parent=filedialog.askdirectory(title='Choose where to save this run',parent=self.root)
         if not parent:return
-        try:rec=GridRecorder(parent,dict(asdict(settings),resources={k:v.get() for k,v in self.resources.items()},program=APP_NAME))
-        except Exception as exc:messagebox.showerror('创建记录失败',str(exc),parent=self.root);return
+        # Two Zurich lock-ins exist, so record which one took the data.
+        mfli=self.devices['mfli']
+        try:rec=GridRecorder(parent,dict(asdict(settings),resources={k:v.get() for k,v in self.resources.items()},program=APP_NAME,
+            mfli_device=zurich_mfli_choice(self.resources['mfli'].get())[0],mfli_identity=str(getattr(mfli,'mfli_identity','') or '')))
+        except Exception as exc:messagebox.showerror('Could not create the record',str(exc),parent=self.root);return
         self.reset_lock_lamps();self.settings=settings;self.cells={};self.last_directory=rec.directory;self.running=True;self.stop_event.clear();self.busy_ui(True)
         self.progress.configure(maximum=total,value=0);self.mark_dirty()
         engine=GridEngine(self.devices,settings,rec,self.stop_event,self.emit,self.call_on_main_thread)
@@ -3718,7 +3779,7 @@ class MicrowaveTransportApp:
         return box['result']
 
     def stop(self):
-        if self.running:self.stop_event.set();self.status.set('正在停止，等待当前仪器调用结束后关闭输出…')
+        if self.running:self.stop_event.set();self.status.set('Stopping: the outputs switch off when the current instrument call ends\u2026')
     def zero(self):
         if self.busy:return
         self.busy_ui(True)
@@ -3728,12 +3789,12 @@ class MicrowaveTransportApp:
                 try:fn()
                 except BaseException as exc:errors.append(str(exc))
             if errors:raise RuntimeError('; '.join(errors))
-            return 'RF 已关闭，电流已归零'
+            return 'RF off, current zeroed'
         self.submit(operation)
 
     def export(self):
         if self.busy or not self.settings:return
-        parent=filedialog.askdirectory(title='导出热力图',parent=self.root)
+        parent=filedialog.askdirectory(title='Export heatmaps',parent=self.root)
         if not parent:return
         out=Path(parent)/(APP_NAME+'_export_'+datetime_module.datetime.now().strftime('%Y%m%d_%H%M%S_%f'));out.mkdir()
         settings=self.settings;cells=dict(self.cells);self.busy_ui(True);self.submit(lambda:export_grid(out,settings,cells))
@@ -3742,7 +3803,7 @@ class MicrowaveTransportApp:
         for key,c in self.canvases.items():
             c.delete('all')
             if self.settings is None:
-                c.create_text(c.winfo_width()/2,c.winfo_height()/2,text={'x_v':'X','y_v':'Y','phase_deg':'Theta'}[key]+'\n等待二维扫描',fill='#777777');continue
+                c.create_text(c.winfo_width()/2,c.winfo_height()/2,text={'x_v':'X','y_v':'Y','phase_deg':'Theta'}[key]+'\nWaiting for a 2D scan',fill='#777777');continue
             shapes,_=heatmap_scene(c.winfo_width(),c.winfo_height(),self.settings,self.cells,key)
             for primitive in shapes:
                 if primitive[0]=='rect':_,a,b,d,e,col=primitive;c.create_rectangle(a,b,d,e,fill=col,outline='')
@@ -3756,8 +3817,8 @@ class MicrowaveTransportApp:
         if not(x0<=event.x<x1 and y0<=event.y<y1):return
         i=int((event.x-x0)/(x1-x0)*len(self.settings.microwave_ghz));j=int((y1-event.y)/(y1-y0)*len(self.settings.modulation_hz))
         cell=self.cells.get((j,i))
-        self.status.set(f'{self.settings.microwave_ghz[i]:g} GHz / {self.settings.modulation_hz[j]:g} Hz：'+
-            (f"X={cell['x_v']:.6g} V，Y={cell['y_v']:.6g} V，Theta={cell['phase_deg']:.4g}°，B={cell['field_g']:.5g} G，n={cell['samples']}" if cell else '未完成采集'))
+        self.status.set(f'{self.settings.microwave_ghz[i]:g} GHz / {self.settings.modulation_hz[j]:g} Hz: '+
+            (f"X={cell['x_v']:.6g} V, Y={cell['y_v']:.6g} V, Theta={cell['phase_deg']:.4g}°, B={cell['field_g']:.5g} G, n={cell['samples']}" if cell else 'not measured yet'))
 
     def poll(self):
         for _ in range(250):
@@ -3773,35 +3834,35 @@ class MicrowaveTransportApp:
             elif kind=='status':
                 self.status.set(str(data))
                 if data=='cell_configured':
-                    self.set_lamp(self.lock_lamp,'amber','等待锁定');self.set_lamp(self.range_lamp,'gray','待读取')
+                    self.set_lamp(self.lock_lamp,'amber','Waiting for lock');self.set_lamp(self.range_lamp,'gray','Not read')
             elif kind=='field':self.readback.set(f"B: {data['field_g']:+.6g} G     I(set): {data['current_a']:+.6g} A" + ("     X:" + self.readback.get().split("     X:",1)[1] if "     X:" in self.readback.get() else ""))
             elif kind=='readback':
                 lock,level=lockin_indicators(data)
                 self.set_lamp(self.lock_lamp,*lock);self.set_lamp(self.range_lamp,*level)
-                try:self.readback.set(self.readback.get().split('     X:')[0]+f"     X: {component(data,'x'):+.6g} V     Y: {component(data,'y'):+.6g} V     Theta: {float(data['phase_deg']):+.5g}°     REF: {'LOCK' if data.get('reference_valid') else '等待'}     Overload: {data.get('input_overload','—')}")
+                try:self.readback.set(self.readback.get().split('     X:')[0]+f"     X: {component(data,'x'):+.6g} V     Y: {component(data,'y'):+.6g} V     Theta: {float(data['phase_deg']):+.5g}°     REF: {'LOCK' if data.get('reference_valid') else 'waiting'}     Overload: {data.get('input_overload','—')}")
                 except Exception:pass
             elif kind=='cell':
                 self.cells[(data['modulation_index'],data['microwave_index'])]=data;self.progress.configure(value=len(self.cells));self.mark_dirty()
-                self.status.set(f"完成 {len(self.cells)}/{int(float(self.progress['maximum']))} 格；{data['microwave_frequency_ghz']:g} GHz / {data['modulation_frequency_hz']:g} Hz")
+                self.status.set(f"Done {len(self.cells)}/{int(float(self.progress['maximum']))} cells; {data['microwave_frequency_ghz']:g} GHz / {data['modulation_frequency_hz']:g} Hz")
             elif kind=='finished':
                 self.running=False;self.busy_ui(False);self.reset_lock_lamps()
                 issues=[data.get('error')]+data.get('shutdown_errors',[])+data.get('export_errors',[])+data.get('close_errors',[])
-                self.status.set(f"{data['outcome']}；完成 {data['completed_cells']} 格；保存于 {data['directory']}"+('；'+'；'.join(str(v) for v in issues if v) if any(issues) else ''))
-                if any(issues):messagebox.showerror('扫描结果 / 输出状态',self.status.get(),parent=self.root)
+                self.status.set(f"{data['outcome']}; {data['completed_cells']} cells done; saved in {data['directory']}"+('; '+'; '.join(str(v) for v in issues if v) if any(issues) else ''))
+                if any(issues):messagebox.showerror('Scan result / output state',self.status.get(),parent=self.root)
             elif kind in ('operation_done','operation_error'):
                 self.busy_ui(False)
-                for key,lamp in self.connection_lamps.items():self.set_lamp(lamp,'green' if self.connected(key) else 'gray','已连接' if self.connected(key) else '未连接')
+                for key,lamp in self.connection_lamps.items():self.set_lamp(lamp,'green' if self.connected(key) else 'gray','Connected' if self.connected(key) else 'Not connected')
                 if not self.connected('mfli' if self.vars['meter'].get()=='MFLI' else '830'):self.reset_lock_lamps()
                 if kind=='operation_error':messagebox.showerror(APP_NAME,str(data),parent=self.root)
                 elif data:self.status.set(str(data))
             elif kind=='idle_field':
                 self.idle_field_pending=False
                 if data.get('error'):
-                    self.status.set('LS475 实时读取失败：'+data['error'])
+                    self.status.set('LS475 live read failed: '+data['error'])
                 elif not self.running:
-                    self.readback.set(f"B: {data['field_g']:+.6g} G（LS475 实时监测，无电流反馈）")
+                    self.readback.set(f"B: {data['field_g']:+.6g} G (LS475 live monitor, no current feedback)")
             elif kind=='closed':
-                if data:messagebox.showerror('关闭仪器',str(data),parent=self.root)
+                if data:messagebox.showerror('Closing the instruments',str(data),parent=self.root)
                 self.executor.shutdown(wait=False);self.root.destroy();return
         if not self.busy and not self.closing and not self.idle_field_pending and self.connected('gauss') and time.monotonic()-self.last_idle_field_time>=1:
             self.idle_field_pending=True;self.last_idle_field_time=time.monotonic()
@@ -3825,7 +3886,81 @@ class MicrowaveTransportApp:
 
     def close(self):
         if self.closing:return
-        self.closing=True;self.stop();self.status.set('正在关闭输出和仪器连接…')
+        self.closing=True;self.stop();self.status.set('Switching the outputs off and closing the instrument connections\u2026')
+
+
+# The lab's two Zurich MFLI lock-ins, as in Transport_all_NH_dev.py.  DEV4435,
+# the normal Zurich, is reached over its rear-panel USB link (a PC-side
+# LabOne Data Server, then its own server at 192.168.69.78).  DEV4414, the
+# Super Zurich, is on the lab network at 192.168.68.250, where MF Device
+# Finder lists it, with its own Data Server.  Each server sees only its own
+# MFLI.  None keeps DEV4435's own search (NONLOCAL_MFLI_SERVER_CANDIDATES).
+SUPER_ZURICH_MFLI_SERVERS=(('192.168.68.250',NONLOCAL_MFLI_SERVER_PORT),)
+ZURICH_MFLI_CHOICES={
+    'DEV4435 (Normal)':('dev4435',None),
+    'DEV4414 (Super)':('dev4414',SUPER_ZURICH_MFLI_SERVERS),
+}
+
+
+def zurich_mfli_choice(text):
+    """(device, Data Servers) for a Zurich list entry or a bare device name."""
+    text=str(text).strip()
+    if text in ZURICH_MFLI_CHOICES:return ZURICH_MFLI_CHOICES[text]
+    device=text.lower()
+    if device.startswith('mf-'):device=device[3:]
+    for known,servers in ZURICH_MFLI_CHOICES.values():
+        if device==known:return known,servers
+    return device,None
+
+
+def zurich_mfli_label(text):
+    """The Zurich list entry for a device name; unknown names are kept as typed."""
+    device,_servers=zurich_mfli_choice(text)
+    return next((label for label,(known,_) in ZURICH_MFLI_CHOICES.items() if known==device),str(text).strip())
+
+
+def zurich_choice_hint(device):
+    """Point a failed connection at the lab's other Zurich, by its list entry.
+
+    Only the Super Zurich's address is given: DEV4435's USB address would send
+    someone checking DEV4414 to the wrong cable.
+    """
+    device=zurich_mfli_choice(device)[0]
+    if device=='dev4414':
+        return ('This is the Super Zurich, DEV4414. If MF Device Finder lists DEV4435 '
+                'instead, choose "DEV4435 (Normal)" in the MFLI list.')
+    if device=='dev4435':
+        return ('If MF Device Finder lists DEV4414 at 192.168.68.250 instead, that is the '
+                'Super Zurich: choose "DEV4414 (Super)" in the MFLI list.')
+    return ('The MFLI list offers the lab\'s two Zurich lock-ins: "DEV4435 (Normal)" and '
+            '"DEV4414 (Super)", the Super Zurich at 192.168.68.250.')
+
+
+def create_zurich_chooser(parent,variable,*,match_chars=None,width=16):
+    """A selection-only list of the lab's Zurich MFLIs, bound to ``variable``.
+
+    With ``match_chars`` it is as wide on screen as an entry of that many
+    characters, to the pixel, so it lines up with the address fields; the
+    returned list's ``zurich_shortfall`` is any width a theme would not take.
+    """
+    variable.set(zurich_mfli_label(variable.get()))
+    chooser=ttk.Combobox(parent,textvariable=variable,values=tuple(ZURICH_MFLI_CHOICES),state='readonly',width=match_chars or width)
+    chooser.zurich_chooser=True;chooser.zurich_shortfall=0
+    if not match_chars:return chooser
+    try:
+        probe=ttk.Entry(parent,width=match_chars);target=int(probe.winfo_reqwidth());probe.destroy()
+        while int(chooser.cget('width'))>8 and int(chooser.winfo_reqwidth())>target:
+            chooser.configure(width=int(chooser.cget('width'))-1)
+        spare=target-int(chooser.winfo_reqwidth())
+        if spare>0:
+            style=ttk.Style(parent)
+            raw=[int(round(float(str(value)))) for value in parent.tk.splitlist(style.lookup('TCombobox','padding'))] or [0]
+            left=raw[0];top=raw[1] if len(raw)>1 else left;right=raw[2] if len(raw)>2 else left;bottom=raw[3] if len(raw)>3 else top
+            name=f'Zurich{spare}.TCombobox';style.configure(name,padding=(left,top,right+spare,bottom));chooser.configure(style=name)
+        chooser.zurich_shortfall=max(0,target-int(chooser.winfo_reqwidth()))
+    except (tk.TclError,TypeError,ValueError,AttributeError):
+        chooser.zurich_shortfall=0
+    return chooser
 
 
 def main():

@@ -31,6 +31,10 @@ jobs:
       - name: Other-files suite
         working-directory: Other-files
         run: xvfb-run -a -s "-screen 0 2560x1440x24 -dpi 96" python -m unittest discover -s . -p "test_*.py"
+      - name: Microwave test program, offline tests
+        if: success() || failure()
+        working-directory: Other-files/microwave_test_support
+        run: python -m unittest test_microwave_transport
       - name: test/ suite
         if: success() || failure()
         working-directory: Other-files/test
@@ -40,6 +44,9 @@ jobs:
       - name: Layout checks and screenshots
         if: success() || failure()
         run: xvfb-run -a -s "-screen 0 2560x1440x24 -dpi 96" python Other-files/ci/gui_checks.py --shots shots
+      - name: Microwave test program, layout and screenshots
+        if: success() || failure()
+        run: xvfb-run -a -s "-screen 0 2560x1440x24 -dpi 96" python Other-files/ci/microwave_checks.py --shots shots/microwave
       - uses: actions/upload-artifact@v4
         if: success() || failure()
         with:
@@ -64,6 +71,10 @@ jobs:
       - name: Other-files suite
         working-directory: Other-files
         run: python -m unittest discover -s . -p "test_*.py"
+      - name: Microwave test program, offline tests
+        if: success() || failure()
+        working-directory: Other-files/microwave_test_support
+        run: python -m unittest test_microwave_transport
       - name: test/ suite
         if: success() || failure()
         working-directory: Other-files/test
@@ -73,6 +84,9 @@ jobs:
       - name: Layout checks and screenshots
         if: success() || failure()
         run: python Other-files/ci/gui_checks.py --shots shots
+      - name: Microwave test program, layout and screenshots
+        if: success() || failure()
+        run: python Other-files/ci/microwave_checks.py --shots shots/microwave
       - uses: actions/upload-artifact@v4
         if: success() || failure()
         with:
