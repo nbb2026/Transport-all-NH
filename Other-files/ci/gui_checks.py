@@ -69,6 +69,11 @@ def build(module, screen_w, screen_h, window_w):
         app = module.CombinedControlApp(root)
     finally:
         module.calculate_window_layout = original
+    try:  # as main() does, so the MOKE motor page is drawn; it opens no port
+        motor_class, _self_test = module.create_motor_subsystem()
+        app.attach_motor(motor_class)
+    except Exception as error:
+        print(f"  note: MOKE motor page not attached: {error}")
     width = window_w or app.window_layout["control"][0]
     root.geometry(f"{width}x1300+0+0")
     root.update()
@@ -108,7 +113,8 @@ def text_fits(widget):
     except (tk.TclError, ValueError):
         wrap = 0
     if wrap > 0:
-        return wrap <= widget.winfo_width() - slack + 2
+        longest = max(font.measure(line) for line in str(text).splitlines() or [""])
+        return min(wrap, longest) <= widget.winfo_width() - slack + 2
     # Tk measures a string as one line; a wrapped label is as wide as its
     # longest line.
     longest = max(font.measure(line) for line in str(text).splitlines() or [""])
