@@ -12661,8 +12661,11 @@ class CombinedControlApp:
 
         outer = ttk.Frame(self.led_tab, padding=8)
         outer.grid(row=0, column=0, sticky="nsew")
-        outer.columnconfigure(0, weight=5, uniform="led_body")
-        outer.columnconfigure(1, weight=4, uniform="led_body")
+        # The LED channels keep their natural width and the ROI graph beside
+        # them takes the rest, so a wide window widens the graph instead of
+        # opening a gap inside each channel row.
+        outer.columnconfigure(0, weight=0)
+        outer.columnconfigure(1, weight=1)
         # Keep the raw-ROI graph at its requested height.  A dedicated blank
         # row absorbs the extra height of the full-screen control window.
         outer.rowconfigure(4, weight=0)
@@ -12730,56 +12733,75 @@ class CombinedControlApp:
 
         global_frame = ttk.LabelFrame(outer, text="Global control", padding=8)
         global_frame.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 7))
-        ttk.Label(global_frame, text="All 4 currents:").grid(row=0, column=0)
-        for column, value in enumerate((0, 10, 50, 100, 500), start=1):
+        # Labels right-aligned in column 0 and each row's controls in a frame
+        # of its own in column 1, so the presets, the continuous-current field
+        # and the options share one left edge and no button stretches a
+        # column of another row.  The three all-channel buttons move below the
+        # presets when the window is too narrow for one row.
+        global_frame.columnconfigure(1, weight=1)
+        ttk.Label(global_frame, text="All 4 currents:").grid(
+            row=0, column=0, sticky="e", padx=(0, 6)
+        )
+        preset_row = ttk.Frame(global_frame)
+        preset_row.grid(row=0, column=1, sticky="ew")
+        presets = ttk.Frame(preset_row)
+        presets.grid(row=0, column=0, sticky="w")
+        for index, value in enumerate((0, 10, 50, 100, 500)):
             button = ttk.Button(
-                global_frame,
+                presets,
                 text=str(value),
                 width=6,
                 command=lambda selected=value: self.apply_preset(selected),
             )
-            button.grid(row=0, column=column, padx=2)
+            button.grid(row=0, column=index, padx=(0 if index == 0 else 4, 0))
             self.action_widgets.append(button)
+        all_channel_buttons = ttk.Frame(preset_row)
+        all_channel_buttons.grid(row=0, column=1, sticky="w")
         continuous = ttk.Button(
-            global_frame, text="All 4 continuous on", command=self.all_continuous
+            all_channel_buttons, text="All 4 continuous on", command=self.all_continuous
         )
-        continuous.grid(row=0, column=6, padx=(10, 2))
+        continuous.grid(row=0, column=0)
         self.action_widgets.append(continuous)
-        apply_all = ttk.Button(global_frame, text="Apply all", command=self.apply_all)
-        apply_all.grid(row=0, column=7, padx=2)
+        apply_all = ttk.Button(all_channel_buttons, text="Apply all", command=self.apply_all)
+        apply_all.grid(row=0, column=1, padx=(4, 0))
         self.action_widgets.append(apply_all)
-        query_all = ttk.Button(global_frame, text="Query all", command=self.query_all)
-        query_all.grid(row=0, column=8, padx=2)
+        query_all = ttk.Button(all_channel_buttons, text="Query all", command=self.query_all)
+        query_all.grid(row=0, column=2, padx=(4, 0))
         self.action_widgets.append(query_all)
-        ttk.Label(global_frame, text="Continuous current, all 4:").grid(
-            row=1, column=0, sticky="w", pady=(6, 0)
+        self._arrange_pair_by_width(
+            preset_row, presets, all_channel_buttons, gap=12, stack_gap=4
         )
+        ttk.Label(global_frame, text="Continuous current, all 4:").grid(
+            row=1, column=0, sticky="e", padx=(0, 6), pady=(6, 0)
+        )
+        continuous_row = ttk.Frame(global_frame)
+        continuous_row.grid(row=1, column=1, sticky="w", pady=(6, 0))
         ttk.Spinbox(
-            global_frame,
+            continuous_row,
             from_=0,
             to=CURRENT_LIMIT,
             increment=1,
             textvariable=self.global_current_var,
             width=9,
-        ).grid(row=1, column=1, sticky="w", pady=(6, 0))
+        ).grid(row=0, column=0, sticky="w")
         set_continuous_current = ttk.Button(
-            global_frame,
+            continuous_row,
             text="Set continuous current on all 4",
             command=self.apply_global_continuous_current,
         )
-        set_continuous_current.grid(
-            row=1, column=2, columnspan=2, sticky="w", padx=(6, 0), pady=(6, 0)
-        )
+        set_continuous_current.grid(row=0, column=1, sticky="w", padx=(6, 0))
         self.action_widgets.append(set_continuous_current)
+        options_row = ttk.Frame(global_frame)
+        options_row.grid(row=2, column=1, sticky="w", pady=(6, 0))
         ttk.Checkbutton(
-            global_frame, text="Read back after setting", variable=self.auto_readback_var
-        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+            options_row, text="Read back after setting", variable=self.auto_readback_var
+        ).grid(row=0, column=0, sticky="w")
         ttk.Checkbutton(
-            global_frame,
+            options_row,
             text="Show and edit advanced parameters p/g/d/f",
             variable=self.raw_edit_var,
             command=self.update_raw_state,
-        ).grid(row=2, column=3, columnspan=3, sticky="w", pady=(6, 0))
+        ).grid(row=0, column=1, sticky="w", padx=(16, 0))
 
         channels_frame = ttk.Frame(outer)
         channels_frame.grid(
@@ -12802,16 +12824,25 @@ class CombinedControlApp:
         led_plot.columnconfigure(0, weight=1)
         plot_header = ttk.Frame(led_plot)
         plot_header.grid(row=0, column=0, sticky="ew", pady=(0, 4))
-        ttk.Label(
+        # A fixed-width readout, wide enough for "waiting for the next
+        # frame", so a new value never moves the hint.  The hint goes below
+        # the readout when the graph is too narrow for both on one line.
+        roi_mean_label = ttk.Label(
             plot_header,
             textvariable=self.led_roi_mean_var,
             style="Metric.TLabel",
-        ).pack(side="left")
-        ttk.Label(
+            width=37,
+        )
+        roi_mean_label.grid(row=0, column=0, sticky="w")
+        roi_hint_label = ttk.Label(
             plot_header,
             text="Shift + left-drag on the camera view to select an ROI",
             style="Muted.TLabel",
-        ).pack(side="right")
+        )
+        roi_hint_label.grid(row=0, column=1, sticky="w")
+        self._arrange_pair_by_width(
+            plot_header, roi_mean_label, roi_hint_label, gap=12, stack_gap=2
+        )
         self.led_intensity_canvas = tk.Canvas(
             led_plot,
             bg="#fbfcfd",
@@ -13058,8 +13089,15 @@ class CombinedControlApp:
 
         content = ttk.Frame(outer)
         content.grid(row=0, column=0, sticky="ew")
-        content.columnconfigure(0, weight=3, uniform="ppms_columns")
-        content.columnconfigure(1, weight=2, uniform="ppms_columns")
+        # Each column gets at least its natural width when both fit: the
+        # device rack and the settings table on the left, the readings and
+        # the scan box on the right.  A fixed 3:2 split gave the left column
+        # less than the settings need in the widened lab window, which hid
+        # the Measure ticks and the autorange column.  Spare width, or a
+        # shortfall in a narrow window, is shared 2:1, about the ratio of
+        # the two columns' needs.
+        content.columnconfigure(0, weight=2)
+        content.columnconfigure(1, weight=1)
 
         environment = ttk.LabelFrame(
             content, text="PPMS MultiVu / EverCool II", padding=2
@@ -13149,11 +13187,29 @@ class CombinedControlApp:
             return 'break'
         metrics.columnconfigure(0, weight=1, uniform="ppms_metric")
         metrics.columnconfigure(1, weight=1, uniform="ppms_metric")
+
+        def fit_metric_value(metric_frame, metric_title, metric_value):
+            # The value wraps within the room beside its title (the frame
+            # has padding 2), so a long state, such as a setpoint with all
+            # its digits or a compliance warning, takes a second line
+            # instead of being cut.  A fixed 230 px was wider than that room
+            # in the widened lab window.
+            metric_frame.bind(
+                "<Configure>",
+                lambda event: metric_value.configure(
+                    wraplength=max(100, event.width - metric_title.winfo_reqwidth() - 8)
+                ),
+                add="+",
+            )
+
         self.ppms_current_live_var = tk.StringVar(value="Unknown / not read")
         current_metric = ttk.Frame(metrics, padding=2)
         current_metric.grid(row=0, column=1, sticky="ew")
-        ttk.Label(current_metric, text="6221 current:").pack(side="left")
-        ttk.Label(current_metric, textvariable=self.ppms_current_live_var, wraplength=230).pack(side="left")
+        current_title = ttk.Label(current_metric, text="6221 current:")
+        current_title.pack(side="left")
+        current_value = ttk.Label(current_metric, textvariable=self.ppms_current_live_var, wraplength=230)
+        current_value.pack(side="left")
+        fit_metric_value(current_metric, current_title, current_value)
         angle_metric = ttk.Frame(metrics, padding=2)
         ttk.Label(angle_metric, text="Angle:").pack(side="left")
         angle_metric.grid(row=2, column=0, sticky="ew")
@@ -13164,8 +13220,11 @@ class CombinedControlApp:
                                 (2, "He level:", self.ppms_helium_live_var)):
             frame = ttk.Frame(metrics, padding=2)
             frame.grid(row=row, column=1, sticky="ew")
-            ttk.Label(frame, text=title).pack(side="left")
-            ttk.Label(frame, textvariable=var, wraplength=230).pack(side="left")
+            metric_title = ttk.Label(frame, text=title)
+            metric_title.pack(side="left")
+            metric_value = ttk.Label(frame, textvariable=var, wraplength=230)
+            metric_value.pack(side="left")
+            fit_metric_value(frame, metric_title, metric_value)
         self.ppms_helium_canvas = tk.Canvas(metrics, height=120, width=320,
             background='white', highlightthickness=0)
         self.ppms_helium_canvas.grid(row=3, column=1, sticky='nsew', padx=2, pady=(2, 0))
@@ -13344,24 +13403,29 @@ class CombinedControlApp:
                 widget = ttk.Entry(scan, textvariable=variable, width=9)
             widget.grid(row=0, column=column + 1, padx=(0, 7))
             self.ppms_field_scan_entries.append(widget)
+        # The scan buttons share one row frame, so the compact layout can
+        # give them their own row without their widths stretching the
+        # parameter columns above them.
+        scan_actions = ttk.Frame(scan)
+        scan_actions.grid(row=0, column=12, columnspan=3)
         self.ppms_field_scan_start_button = ttk.Button(
-            scan, text="Start scan", command=self.start_ppms_field_scan
+            scan_actions, text="Start scan", command=self.start_ppms_field_scan
         )
-        self.ppms_field_scan_start_button.grid(row=0, column=12, padx=2)
+        self.ppms_field_scan_start_button.grid(row=0, column=0, padx=2)
         self.ppms_field_scan_stop_button = ttk.Button(
-            scan,
+            scan_actions,
             text="Stop",
             command=self.stop_ppms_field_scan,
             state="disabled",
         )
-        self.ppms_field_scan_stop_button.grid(row=0, column=13, padx=2)
+        self.ppms_field_scan_stop_button.grid(row=0, column=1, padx=2)
         self.ppms_field_scan_save_button = ttk.Button(
-            scan,
+            scan_actions,
             text="Save CSV",
             command=self.save_ppms_field_scan_csv,
             state="disabled",
         )
-        self.ppms_field_scan_save_button.grid(row=0, column=14, padx=2)
+        self.ppms_field_scan_save_button.grid(row=0, column=2, padx=2)
         self.ppms_field_scan_progress = ttk.Progressbar(
             scan, mode="determinate", maximum=1
         )
@@ -13513,8 +13577,10 @@ class CombinedControlApp:
             self.ppms_metrics_frame.configure(height=instruments.winfo_reqheight())
         instruments.bind('<Configure>', sync_metrics_height, add='+')
         instruments.after_idle(sync_metrics_height)
-        instruments.columnconfigure(0, weight=1, uniform="ppms_devices")
-        instruments.columnconfigure(1, weight=1, uniform="ppms_devices")
+        # Each device column at its own natural width: the SR830 labels are
+        # shorter than the Keithley ones, so an equal split wasted width.
+        instruments.columnconfigure(0, weight=1)
+        instruments.columnconfigure(1, weight=1)
         labels = {"6221": "Keithley 6221", "2400": "Keithley 2400", **PPMS_SR830_LABELS}
         # Keithleys in the left column, the three SR830 slots stacked on the right.
         for key, cell_row, cell_column in (("6221", 0, 0), ("830_a", 0, 1), ("2400", 1, 0),
@@ -13531,7 +13597,8 @@ class CombinedControlApp:
                     textvariable=self.ppms_resource_vars[key],
                     values=PPMS_SR830_RESOURCE_OPTIONS,
                     state="readonly",
-                    width=18,
+                    # As wide on screen as an 18-character address entry.
+                    width=16,
                 )
             else:
                 entry = ttk.Entry(
@@ -13541,11 +13608,12 @@ class CombinedControlApp:
                 )
             entry.grid(row=row, column=1, sticky="w", padx=(0, 3), pady=2)
             self.ppms_device_resource_widgets[key] = entry
+            # Sized to their text, as on the STFMR page (width 5 cut both).
             connect_button = ttk.Button(
                 cell,
                 text="Connect",
                 command=lambda selected=key: self.connect_ppms_device(selected),
-                width=5,
+                width=8,
             )
             connect_button.grid(row=row, column=3, padx=2, pady=2)
             disconnect_button = ttk.Button(
@@ -13553,7 +13621,7 @@ class CombinedControlApp:
                 text="Disconnect",
                 state="disabled",
                 command=lambda selected=key: self.disconnect_ppms_device(selected),
-                width=5,
+                width=10,
             )
             disconnect_button.grid(row=row, column=4, padx=2, pady=2)
             self.ppms_device_connect_buttons[key] = connect_button
@@ -13562,11 +13630,14 @@ class CombinedControlApp:
                 row=row, column=5, padx=(8, 1), pady=2
             )
             # SR830 cells report the lock-in state (Locked / Warning); the
-            # other instruments report their plain connection text.
+            # other instruments report their plain connection text.  A fixed
+            # box ("Not connected" is the longest summary) keeps a new state
+            # from shifting the cells; a failure is also shown in a dialog.
             ttk.Label(
                 cell,
                 textvariable=(self._ppms_compact_status(self.ppms_xy_vars[key])
                               if key in PPMS_SR830_KEYS else self.ppms_device_connection_vars[key]),
+                width=13,
             ).grid(row=row, column=6, sticky="w", padx=(1, 8), pady=2)
 
         ttk.Button(
@@ -13641,11 +13712,19 @@ class CombinedControlApp:
         self.ppms_simple_range = [tk.StringVar(value=v) for v in getattr(self, "ppms_default_field_range", ("0", "1000", "100"))]
         self.ppms_motor_confirm_var = self.ppms_control_safety_var
         self.ppms_scan_target_widgets = {}
-        ttk.Checkbutton(panel, text="Sample, ranges, wiring and motor clearance confirmed safe; no other program in control, MultiVu stays operable", variable=self.ppms_control_safety_var, command=self._update_ppms_control_ui).grid(row=0, column=0, columnspan=13, sticky="w")
+        # The tick wraps onto two lines, word for word, above the three
+        # control rows: on one line it was wider than the table under it.
+        safety_text = "Sample, ranges, wiring and motor clearance confirmed safe; no other program in control, MultiVu stays operable"
+        safety_font = tkfont.nametofont("TkDefaultFont", root=self.root)
+        ttk.Style(self.root).configure(
+            "PPMSSafety.TCheckbutton",
+            wraplength=safety_font.measure(safety_text) // 2 + safety_font.measure("0") * 6,
+        )
+        ttk.Checkbutton(panel, text=safety_text, style="PPMSSafety.TCheckbutton", variable=self.ppms_control_safety_var, command=self._update_ppms_control_ui).grid(row=0, column=0, columnspan=10, sticky="w")
         def entry(row, col, label, variable):
-            ttk.Label(panel, text=label).grid(row=row, column=col, sticky="e")
+            ttk.Label(panel, text=label).grid(row=row, column=col, sticky="e", padx=(0 if col == 0 else 8, 0))
             widget = ttk.Entry(panel, textvariable=variable, width=6)
-            widget.grid(row=row, column=col+1, padx=2)
+            widget.grid(row=row, column=col+1, sticky="ew", padx=2, pady=1)
             self.ppms_control_widgets.append(widget)
             target_mode = {"T K": "Temperature", "H Oe": "Field", "Angle °": "Angle", "I mA RMS": "Current"}.get(label)
             if target_mode:
@@ -13659,34 +13738,39 @@ class CombinedControlApp:
             if target_mode:
                 self.ppms_scan_target_widgets.setdefault(target_mode, []).append(widget)
             return widget
+        # Three aligned rows: temperature with the motor, the field, then the
+        # 6221 current.  Setpoint, rate and Set button share columns 0-4; the
+        # extra buttons sit right-aligned on the field column they follow.
+        # Two rows of eight groups made the table too wide for the lock-in
+        # choices and the scan box beside it in the widened lab window.
         entry(1, 0, "T K", self.ppms_temperature_target_var)
         entry(1, 2, "K/min", self.ppms_temperature_rate_var)
         button(1, 4, "Set T", self.set_ppms_temperature)
-        entry(1, 5, "H Oe", self.ppms_field_target_var)
-        entry(1, 7, "Oe/s", self.ppms_field_rate_var)
-        button(1, 9, "Set H", self.set_ppms_field)
-        button(1, 10, "Zero H", self.zero_ppms_field).grid_configure(sticky="ew")
-        self.ppms_persistent_button = button(1, 11, "Persist", self.switch_ppms_persistent)
-        self.ppms_persistent_button.grid_configure(columnspan=2)
-        entry(2, 0, "Angle °", self.ppms_motor_target_var)
-        entry(2, 2, "Decel 0–14", self.ppms_motor_speed_var)
-        self.ppms_motor_move_button = button(2, 4, "Move", lambda: self._ppms_motor_action("move"))
+        entry(1, 5, "Angle °", self.ppms_motor_target_var)
+        entry(1, 7, "Decel 0–14", self.ppms_motor_speed_var)
+        self.ppms_motor_move_button = button(1, 9, "Move", lambda: self._ppms_motor_action("move"))
         self.ppms_control_widgets.remove(self.ppms_motor_move_button)
-        entry(2, 5, "I mA RMS", self.ppms_transport_current_var)
-        entry(2, 7, "f Hz", self.ppms_transport_frequency_var)
-        button(2, 9, "Set I", self._ppms_set_current_direct)
-        ttk.Button(panel, text="I off", command=self.ppms_sources_off).grid(row=2, column=10, padx=2, sticky="ew")
-        entry(2, 11, "Comp. V", self.ppms_transport_compliance_var)
+        entry(2, 0, "H Oe", self.ppms_field_target_var)
+        entry(2, 2, "Oe/s", self.ppms_field_rate_var)
+        button(2, 4, "Set H", self.set_ppms_field)
+        button(2, 5, "Zero H", self.zero_ppms_field).grid_configure(columnspan=2, sticky="e")
+        self.ppms_persistent_button = button(2, 7, "Persist", self.switch_ppms_persistent)
+        self.ppms_persistent_button.grid_configure(columnspan=2, sticky="e")
+        entry(3, 0, "I mA RMS", self.ppms_transport_current_var)
+        entry(3, 2, "f Hz", self.ppms_transport_frequency_var)
+        button(3, 4, "Set I", self._ppms_set_current_direct)
+        ttk.Button(panel, text="I off", command=self.ppms_sources_off, width=8).grid(row=3, column=5, columnspan=2, padx=2, sticky="e")
+        entry(3, 7, "Comp. V", self.ppms_transport_compliance_var)
         self.ppms_lockin_choice_widgets = []
         # Harmonic rows start on the top row beside the safety tick so the block
         # sits level with the control rows instead of hanging below them.
         for row, key in enumerate(PPMS_SR830_KEYS, 0):
             col, label, var = 13, f"{PPMS_SR830_LABELS[key]} harm.", self._ppms_harmonic_var(key)
-            ttk.Label(panel, text=label).grid(row=row, column=col)
+            ttk.Label(panel, text=label).grid(row=row, column=col, sticky="e", padx=(12, 3))
             widget = ttk.Combobox(panel, values=PPMS_HARMONIC_CHOICES, textvariable=var, state="readonly", width=7)
             widget.bind('<<ComboboxSelected>>', lambda event, k=key: self._ppms_apply_selected_harmonic(k))
             self.ppms_lockin_choice_widgets.append((widget, 'readonly'))
-            widget.grid(row=row, column=col+1)
+            widget.grid(row=row, column=col+1, sticky="ew")
             self.ppms_control_widgets.append(widget)
             select = ttk.Checkbutton(panel, text="Measure", variable=self.ppms_lockin_selection[key],
                 command=lambda: self._refresh_ppms2_plot_layout() if isinstance(self, PPMS2Panel) else None)
@@ -13700,20 +13784,36 @@ class CombinedControlApp:
                 self.ppms_sr830_status_vars = {}
             self.ppms_sr830_status_vars[key] = tk.StringVar(value="Not read")
             self.ppms_sr830_range_vars[key] = tk.StringVar(value="Autorange ON")
-            ttk.Label(panel, textvariable=self.ppms_sr830_range_vars[key]).grid(
+            # As wide as the longest range text ("Autorange 500 mV").
+            ttk.Label(panel, textvariable=self.ppms_sr830_range_vars[key], width=16).grid(
                 row=row, column=18, sticky="w", padx=(6, 0))
         scan.grid(row=3, column=1, columnspan=1, sticky="nsew", padx=(6, 0), pady=(0, 2))
         scan.configure(text="PPMS scan", padding=3)
         for child in scan.winfo_children():
             child.grid_remove()
-        ttk.Label(scan, text="Mode").grid(row=0, column=0)
+        # Two aligned parameter rows (labels right-aligned against their
+        # fields), the buttons on a row of their own, then progress and
+        # status.  On one line the parameters made the scan box too wide to
+        # sit beside the settings.  The mode list is wide enough for its
+        # longest entry, "Current+Temperature".
+        ttk.Label(scan, text="Mode").grid(row=0, column=0, sticky="e", padx=(0, 2))
         mode = ttk.Combobox(scan, textvariable=self.ppms_simple_mode, values=("Temperature", "Field", "Angle", "Current", "Field+Temperature", "Angle+Temperature", "Current+Temperature"), state="readonly", width=19)
-        mode.grid(row=0, column=1)
+        mode.grid(row=0, column=1, columnspan=3, sticky="w", padx=2, pady=1)
         self.ppms_control_widgets.append(mode)
+        # Settle and Acquire share the mode row, so they are made right after
+        # the mode list: Tab then moves along each row in turn.
+        ttk.Label(scan, text="Settle s").grid(row=0, column=4, sticky="e", padx=(6, 2))
+        widget = ttk.Entry(scan, textvariable=self.ppms_field_scan_stable_var, width=6)
+        widget.grid(row=0, column=5, sticky="ew", padx=2, pady=1)
+        self.ppms_control_widgets.append(widget)
+        ttk.Label(scan, text="Acquire s").grid(row=0, column=6, sticky="e", padx=(6, 2))
+        acquisition_entry = ttk.Entry(scan, textvariable=self.ppms_acquisition_time_var, width=6)
+        acquisition_entry.grid(row=0, column=7, sticky="ew", padx=2, pady=1)
+        self.ppms_control_widgets.append(acquisition_entry)
         for i, (label, var) in enumerate(zip(("Start", "End", "Step"), self.ppms_simple_range)):
-            ttk.Label(scan, text=label).grid(row=0, column=2+i*2)
-            widget = ttk.Entry(scan, textvariable=var, width=8)
-            widget.grid(row=0, column=3+i*2)
+            ttk.Label(scan, text=label).grid(row=1, column=2*i, sticky="e", padx=(0 if i == 0 else 6, 2))
+            widget = ttk.Entry(scan, textvariable=var, width=6)
+            widget.grid(row=1, column=2*i+1, sticky="ew", padx=2, pady=1)
             self.ppms_control_widgets.append(widget)
         unit = tk.StringVar(value="Oe")
         self.ppms_simple_unit = unit
@@ -13732,7 +13832,7 @@ class CombinedControlApp:
             defaults["Current+Temperature"] = defaults["Current"]
             combined = self.ppms_simple_mode.get() in ("Field+Temperature", "Angle+Temperature", "Current+Temperature")
             if combined:
-                temperature_range_frame.grid(row=3, column=0, columnspan=11, sticky="w")
+                temperature_range_frame.grid(row=4, column=0, columnspan=9, sticky="w", pady=(2, 0))
             else:
                 temperature_range_frame.grid_remove()
             scan.configure(text="PPMS scan")
@@ -13744,51 +13844,44 @@ class CombinedControlApp:
                 self.ppms_plot_axis = {"Temperature": "temperature", "Field": "field", "Field+Temperature": "field", "Angle+Temperature": "angle", "Angle": "angle", "Current": "current", "Current+Temperature": "current"}[self.ppms_simple_mode.get()]
                 self._redraw_ppms_transport_plot()
         mode.bind("<<ComboboxSelected>>", change_mode)
-        ttk.Label(scan, textvariable=unit).grid(row=0, column=8)
-        ttk.Label(scan, text="Settle s").grid(row=0, column=9)
-        widget = ttk.Entry(scan, textvariable=self.ppms_field_scan_stable_var, width=6)
-        widget.grid(row=0, column=10)
-        self.ppms_control_widgets.append(widget)
-        ttk.Label(scan, text="Acquire s").grid(row=0, column=11)
-        acquisition_entry = ttk.Entry(scan, textvariable=self.ppms_acquisition_time_var, width=6)
-        acquisition_entry.grid(row=0, column=12, sticky="w", padx=(3, 0))
-        self.ppms_control_widgets.append(acquisition_entry)
-        for col, widget in enumerate((self.ppms_field_scan_start_button, self.ppms_field_scan_stop_button, self.ppms_field_scan_save_button), 13):
-            widget.grid(row=0, column=col)
-        self.ppms_field_scan_progress.grid(row=1, column=0, columnspan=10, sticky="ew")
-        ttk.Label(scan, textvariable=self.ppms_field_scan_status_var).grid(row=2, column=0, columnspan=14, sticky="w")
-        ttk.Label(scan, text="One-way start→end; 6221 AC + two SR830; current is turned off at the end, environment holds the last point").grid(row=3, column=0, columnspan=14, sticky="w")
-        # Keep mode/range/dwell on one line; actions and progress below it.
-        for child in scan.winfo_children():
-            info = child.grid_info()
-            if not info:
-                continue
-            row, col = int(info["row"]), int(info["column"])
-            if row == 0:
-                if col <= 12:
-                    child.grid_configure(row=0, column=col, columnspan=1)
-                    if isinstance(child, ttk.Entry): child.configure(width=6)
-                else:
-                    child.grid_configure(row=1, column=(col-13)*3, columnspan=3)
-            elif row == 1:
-                child.grid_configure(row=2, column=0, columnspan=6)
-            elif row == 2:
-                child.grid_configure(row=2, column=6, columnspan=7, padx=4, sticky="ew")
-                if isinstance(child, ttk.Label):
-                    child.configure(wraplength=0)
-                    child.bind("<Configure>", lambda event: event.widget.configure(wraplength=max(100, event.width-8)))
-            else:
-                child.grid_remove()
-        self.ppms_zero_persist_button = ttk.Button(scan, text='Zero field + persist after scan', command=self._queue_ppms_zero_persist)
-        self.ppms_zero_persist_button.grid(row=1, column=9, columnspan=4, sticky='ew', padx=2)
-        scan.columnconfigure(12, weight=1)
+        ttk.Label(scan, textvariable=unit).grid(row=1, column=6, sticky="w", padx=(2, 0))
+        # The buttons keep their own row frame, sized to their text.  The
+        # zero/persist button is as wide as its longer text, so switching to
+        # "Queued: zero + persist" does not resize the box.
+        actions = self.ppms_field_scan_start_button.master
+        actions.grid(row=2, column=0, columnspan=9, sticky="w", pady=(3, 0))
+        # Keyboard focus moves through siblings in stacking order, and the
+        # button row was made before the fields.  Put it after the Step
+        # field, as on screen (as on the MOKE-6221 page), so Tab goes through
+        # the parameters first instead of starting on "Start scan".
+        actions.lift([w for w in scan.winfo_children() if w.winfo_class() == "TEntry"][-1])
+        for col, (widget, width) in enumerate((
+                (self.ppms_field_scan_start_button, 10),
+                (self.ppms_field_scan_stop_button, 6),
+                (self.ppms_field_scan_save_button, 10))):
+            widget.configure(width=width)
+            widget.grid(row=0, column=col, padx=(0, 4))
+        self.ppms_field_scan_progress.grid(row=3, column=0, columnspan=2, sticky="ew", padx=(0, 6), pady=(3, 0))
+        # Long messages wrap to the width the status has, never wider.
+        status = ttk.Label(scan, textvariable=self.ppms_field_scan_status_var, wraplength=0)
+        status.grid(row=3, column=2, columnspan=7, sticky="ew", pady=(3, 0))
+        status.bind("<Configure>", lambda event: event.widget.configure(wraplength=max(100, event.width-8)))
+        # Built but not shown, as before.
+        ttk.Label(scan, text="One-way start→end; 6221 AC + two SR830; current is turned off at the end, environment holds the last point")
+        self.ppms_zero_persist_button = ttk.Button(actions, text='Zero field + persist after scan', command=self._queue_ppms_zero_persist, width=26)
+        self.ppms_zero_persist_button.grid(row=0, column=3)
+        # Spare width goes to the empty column after the table, so the
+        # fields keep their size and the status takes the extra room.
+        scan.columnconfigure(8, weight=1)
         instruments.configure(padding=3)
         for child in instruments.winfo_children():
             info = child.grid_info()
             if info and int(info.get("row", 0)) >= 4:
                 child.grid_remove()
             elif isinstance(child, ttk.Button):
-                child.grid_configure(row=0, column=2, rowspan=3, columnspan=1)
+                # Macro takes the free cell below the Keithley 2400; a
+                # column of its own made the rack too wide.
+                child.grid_configure(row=2, column=0, rowspan=1, columnspan=1, sticky="w", padx=2)
         plot.configure(text="SR830-1 / SR830-2 / SR830-3: X, Y, θ vs scan variable")
         plot.master.rowconfigure(3, weight=1, minsize=220)
 
@@ -18355,95 +18448,113 @@ class CombinedControlApp:
             sticky="ew",
             pady=(0, 7),
         )
-        frame.columnconfigure(11, weight=1)
+        # One table: labels right-aligned in column 0, entries in column 1 and
+        # each row's buttons in a frame of their own from column 2, so the
+        # entries and the first buttons line up down the panel and no button
+        # or status text widens a column of another row.
+        frame.columnconfigure(2, weight=1)
+        row_pad = (5, 0)
 
-        ttk.Label(frame, text="S/N：").grid(row=0, column=0, sticky="w")
+        ttk.Label(frame, text="S/N：").grid(row=0, column=0, sticky="e", padx=(0, 4))
         self.stage_serial_entry = ttk.Entry(
             frame, textvariable=self.stage_serial_var, width=10
         )
-        self.stage_serial_entry.grid(row=0, column=1, padx=(0, 4), sticky="w")
+        self.stage_serial_entry.grid(row=0, column=1, sticky="ew")
+        connection = ttk.Frame(frame)
+        connection.grid(row=0, column=2, sticky="ew", padx=(6, 0))
+        # The operation text is last and right-aligned; in a narrow window it
+        # is the one that gives way.
+        connection.columnconfigure(6, weight=1)
         self.stage_connect_button = ttk.Button(
-            frame, text="Connect", width=8, command=self.connect_stage
+            connection, text="Connect", width=8, command=self.connect_stage
         )
-        self.stage_connect_button.grid(row=0, column=2, padx=2)
+        self.stage_connect_button.grid(row=0, column=0, padx=(0, 2))
         self.stage_disconnect_button = ttk.Button(
-            frame, text="Disconnect", width=10, command=self.disconnect_stage
+            connection, text="Disconnect", width=10, command=self.disconnect_stage
         )
-        self.stage_disconnect_button.grid(row=0, column=3, padx=2)
+        self.stage_disconnect_button.grid(row=0, column=1, padx=2)
         self.stage_read_button = ttk.Button(
-            frame, text="Read status", width=11, command=self.refresh_stage_status
+            connection, text="Read status", width=11, command=self.refresh_stage_status
         )
-        self.stage_read_button.grid(row=0, column=4, padx=(8, 2))
+        self.stage_read_button.grid(row=0, column=2, padx=(8, 2))
         self.stage_identify_button = ttk.Button(
-            frame, text="Identify", width=8, command=self.identify_stage
+            connection, text="Identify", width=8, command=self.identify_stage
         )
-        self.stage_identify_button.grid(row=0, column=5, padx=2)
-        self._create_connection_indicator(frame, "stage").grid(
-            row=0, column=6, padx=(10, 1)
+        self.stage_identify_button.grid(row=0, column=3, padx=2)
+        self._create_connection_indicator(connection, "stage").grid(
+            row=0, column=4, padx=(10, 1)
         )
-        ttk.Label(frame, textvariable=self.stage_connection_var).grid(
-            row=0, column=7, padx=(1, 4), sticky="w"
+        ttk.Label(connection, textvariable=self.stage_connection_var).grid(
+            row=0, column=5, padx=(1, 4), sticky="w"
         )
-        ttk.Label(frame, textvariable=self.stage_operation_var).grid(
-            row=0, column=11, sticky="e"
-        )
+        # At the 1101 px window only about 90 px are left for the operation
+        # text once the stage is connected, so a busy message is shown cut to
+        # fit, ending in "…"; stage_operation_var keeps the whole text and
+        # only the display is shortened.  width=1 keeps a long message from
+        # widening the row.
+        stage_operation_label = ttk.Label(connection, width=1, anchor="e")
+        stage_operation_label.grid(row=0, column=6, sticky="ew")
+        show_trimmed(stage_operation_label, self.stage_operation_var)
 
+        # Fixed-width readouts, sized for "Position: -359.999999°" and
+        # "Homed yes | Enabled yes | Homing | ERROR", so a new reading never
+        # moves the safety tick.  The tick goes below the readouts when the
+        # window is too narrow for one row.
         ttk.Label(
             frame,
             textvariable=self.stage_position_var,
             style="Metric.TLabel",
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(5, 0))
-        ttk.Label(frame, textvariable=self.stage_state_var).grid(
-            row=1, column=2, columnspan=3, sticky="w", pady=(5, 0)
+            width=20,
+        ).grid(row=1, column=0, sticky="w", pady=row_pad)
+        state_row = ttk.Frame(frame)
+        state_row.grid(row=1, column=1, columnspan=2, sticky="ew", pady=row_pad)
+        stage_state_label = ttk.Label(
+            state_row, textvariable=self.stage_state_var, width=39
         )
+        stage_state_label.grid(row=0, column=0, sticky="w")
         self.stage_safety_check = ttk.Checkbutton(
-            frame,
+            state_row,
             text="Analyser, cables and motion direction confirmed safe",
             variable=self.stage_safety_var,
             command=self.update_stage_controls,
         )
-        self.stage_safety_check.grid(
-            row=1, column=5, columnspan=5, padx=(10, 0), sticky="w", pady=(5, 0)
+        self.stage_safety_check.grid(row=0, column=1, sticky="w")
+        self._arrange_pair_by_width(
+            state_row, stage_state_label, self.stage_safety_check, gap=10, stack_gap=5
         )
 
         ttk.Label(frame, text="Relative angle (°):").grid(
-            row=2, column=0, sticky="e", pady=(5, 0)
+            row=2, column=0, sticky="e", padx=(0, 4), pady=row_pad
         )
         ttk.Entry(frame, textvariable=self.stage_relative_var, width=8).grid(
-            row=2, column=1, sticky="w", pady=(5, 0)
+            row=2, column=1, sticky="ew", pady=row_pad
         )
         relative_button = ttk.Button(
             frame, text="Move relative", width=13, command=self.move_stage_relative
         )
-        relative_button.grid(row=2, column=2, padx=2, pady=(5, 0))
+        relative_button.grid(row=2, column=2, sticky="w", padx=(6, 0), pady=row_pad)
+
         ttk.Label(frame, text="Absolute angle (0–360°):").grid(
-            row=2, column=3, sticky="e", padx=(8, 0), pady=(5, 0)
+            row=3, column=0, sticky="e", padx=(0, 4), pady=row_pad
         )
         ttk.Entry(frame, textvariable=self.stage_absolute_var, width=8).grid(
-            row=2, column=4, sticky="w", pady=(5, 0)
+            row=3, column=1, sticky="ew", pady=row_pad
         )
+        absolute_actions = ttk.Frame(frame)
+        absolute_actions.grid(row=3, column=2, sticky="w", padx=(6, 0), pady=row_pad)
         absolute_button = ttk.Button(
-            frame, text="Go to absolute", width=14, command=self.move_stage_absolute
+            absolute_actions,
+            text="Go to absolute",
+            width=14,
+            command=self.move_stage_absolute,
         )
-        absolute_button.grid(row=2, column=5, padx=2, pady=(5, 0))
-        ttk.Label(frame, text="Diagnostic nudge (≤1°):").grid(
-            row=3, column=0, sticky="e", pady=(5, 0)
+        absolute_button.pack(side="left")
+        home_button = ttk.Button(
+            absolute_actions, text="Home", width=8, command=self.home_stage
         )
-        ttk.Entry(frame, textvariable=self.stage_nudge_var, width=6).grid(
-            row=3, column=1, sticky="w", pady=(5, 0)
-        )
-        nudge_minus = ttk.Button(
-            frame, text="− nudge", width=8, command=lambda: self.nudge_stage(-1)
-        )
-        nudge_minus.grid(row=3, column=2, padx=2, pady=(5, 0))
-        nudge_plus = ttk.Button(
-            frame, text="+ nudge", width=8, command=lambda: self.nudge_stage(1)
-        )
-        nudge_plus.grid(row=3, column=3, padx=2, pady=(5, 0))
-        home_button = ttk.Button(frame, text="Home", width=8, command=self.home_stage)
-        home_button.grid(row=2, column=6, padx=(10, 2), pady=(5, 0))
+        home_button.pack(side="left", padx=(10, 0))
         self.stage_stop_button = tk.Button(
-            frame,
+            absolute_actions,
             text="Stop now",
             command=self.stop_stage,
             bg="#c62828",
@@ -18452,13 +18563,46 @@ class CombinedControlApp:
             activeforeground="white",
             padx=8,
         )
-        self.stage_stop_button.grid(row=2, column=7, sticky="w", pady=(5, 0))
-        ttk.Label(
-            frame,
+        self.stage_stop_button.pack(side="left", padx=(4, 0))
+
+        ttk.Label(frame, text="Diagnostic nudge (≤1°):").grid(
+            row=4, column=0, sticky="e", padx=(0, 4), pady=row_pad
+        )
+        ttk.Entry(frame, textvariable=self.stage_nudge_var, width=6).grid(
+            row=4, column=1, sticky="ew", pady=row_pad
+        )
+        # The nudge buttons, then the Home rule beside them.  The rule fills
+        # the rest of the row and wraps to it, so in the default window it
+        # takes a second line instead of dropping below the buttons, and the
+        # label, entry, buttons and rule keep one centre line.
+        nudge_row = ttk.Frame(frame)
+        nudge_row.grid(row=4, column=2, sticky="ew", padx=(6, 0), pady=row_pad)
+        nudge_row.columnconfigure(1, weight=1)
+        nudge_buttons = ttk.Frame(nudge_row)
+        nudge_buttons.grid(row=0, column=0, sticky="w")
+        nudge_minus = ttk.Button(
+            nudge_buttons, text="− nudge", width=8, command=lambda: self.nudge_stage(-1)
+        )
+        nudge_minus.pack(side="left")
+        nudge_plus = ttk.Button(
+            nudge_buttons, text="+ nudge", width=8, command=lambda: self.nudge_stage(1)
+        )
+        nudge_plus.pack(side="left", padx=(4, 0))
+        nudge_rule = ttk.Label(
+            nudge_row,
             text="Only diagnostic nudges are allowed before Home; relative/absolute moves need Home first.",
             foreground="#9a4d00",
-        ).grid(row=3, column=4, columnspan=8, padx=(10, 0), sticky="w", pady=(5, 0))
-        ttk.Label(
+        )
+        nudge_rule.grid(row=0, column=1, sticky="ew", padx=(16, 0))
+        nudge_rule.bind(
+            "<Configure>",
+            lambda event: event.widget.configure(
+                wraplength=max(200, event.width - 4)
+            ),
+            add="+",
+        )
+
+        tip = ttk.Label(
             frame,
             text=(
                 "Tip: with the polariser at 90°, extinction is best near analyser reading 23°; "
@@ -18469,12 +18613,23 @@ class CombinedControlApp:
                 "position 4 is the 100× objective."
             ),
             style="Hint.TLabel",
-        ).grid(
-            row=4,
+        )
+        tip.grid(
+            row=5,
             column=0,
-            columnspan=12,
+            columnspan=3,
             sticky="ew",
             pady=(7, 0),
+        )
+        # Wrap to the panel width (less the label's side padding), so the
+        # first line is not cut in the default window.
+        tip_inset = 2 * self._ui_px(8, 4) + 6
+        tip.bind(
+            "<Configure>",
+            lambda event: event.widget.configure(
+                wraplength=max(200, event.width - tip_inset)
+            ),
+            add="+",
         )
         self.stage_motion_widgets.extend(
             (relative_button, absolute_button, nudge_minus, nudge_plus, home_button)
@@ -18484,15 +18639,16 @@ class CombinedControlApp:
         outer = ttk.Frame(self.difference_tab, padding=6)
         outer.grid(row=0, column=0, sticky="nsew")
         outer.columnconfigure(0, weight=1)
-        # Keep both plots at their requested 200 px height.  Extra vertical
-        # room belongs to a blank expansion row reserved for future controls.
-        outer.rowconfigure(4, weight=0)
-        outer.rowconfigure(6, weight=1)
+        # Spare window height goes to the plots (row 4), as on the 6221 page,
+        # so they fill the page down to the status line.  In a short window
+        # the plots give way first and the status line stays on screen.
+        outer.rowconfigure(4, weight=1)
 
+        # The ports keep their natural width and the display box takes the
+        # rest, so the display box's width never depends on its own layout.
         top_row = ttk.Frame(outer)
         top_row.grid(row=0, column=0, sticky="ew", pady=(0, 3))
         top_row.columnconfigure(0, weight=1)
-        top_row.columnconfigure(1, weight=1)
 
         mode_box = ttk.LabelFrame(top_row, text="MOKE difference display", padding=5)
         mode_box.grid(row=0, column=0, sticky="nsew", padx=(0, 3))
@@ -18503,8 +18659,12 @@ class CombinedControlApp:
             style="Metric.TLabel",
         ).grid(row=0, column=0, sticky="w")
 
+        # Mode choices, then the two buttons at natural width; the buttons
+        # move under the choices when the window is too narrow for both.
         mode_row = ttk.Frame(mode_box)
-        mode_row.grid(row=1, column=0, sticky="w", pady=(3, 0))
+        mode_row.grid(row=1, column=0, sticky="ew", pady=(3, 0))
+        mode_choices = ttk.Frame(mode_row)
+        mode_choices.grid(row=0, column=0, sticky="w")
         for column, (value, label) in enumerate(
             (
                 ("off", "Off"),
@@ -18513,7 +18673,7 @@ class CombinedControlApp:
             )
         ):
             button = ttk.Radiobutton(
-                mode_row,
+                mode_choices,
                 text=label,
                 value=value,
                 variable=self.difference_mode_var,
@@ -18522,30 +18682,35 @@ class CombinedControlApp:
             )
             button.grid(row=0, column=column, padx=(0, 6), sticky="w")
             self.difference_mode_buttons.append(button)
+        mode_actions = ttk.Frame(mode_row)
+        mode_actions.grid(row=0, column=1, sticky="w")
         self.difference_capture_button = ttk.Button(
-            mode_row,
+            mode_actions,
             text="Recapture BG",
             command=self.capture_difference_background,
             state="disabled",
-            width=8,
         )
-        self.difference_capture_button.grid(row=0, column=3, sticky="w")
+        self.difference_capture_button.grid(row=0, column=0, sticky="w")
+        # Wide enough for "Hide 100× marker" too, so the toggle never resizes.
         self.objective_100x_marker_button = ttk.Button(
-            mode_row,
+            mode_actions,
             text="Add 100× marker",
             command=self.toggle_100x_marker,
             state="disabled",
-            width=14,
+            width=15,
         )
         self.objective_100x_marker_button.grid(
-            row=0, column=4, sticky="w", padx=(6, 0)
+            row=0, column=1, sticky="w", padx=(6, 0)
+        )
+        self._arrange_pair_by_width(
+            mode_row, mode_choices, mode_actions, gap=0, stack_gap=3
         )
 
         ttk.Label(
             mode_box,
             textvariable=self.difference_detail_var,
             foreground="#9a4d00",
-            wraplength=360,
+            wraplength=380,
         ).grid(row=2, column=0, sticky="w", pady=(3, 0))
 
         connection = ttk.LabelFrame(top_row, text="KEPCO and gaussmeter ports", padding=5)
@@ -18587,21 +18752,38 @@ class CombinedControlApp:
             gauss_box.grid(row=row, column=5, sticky="ew", pady=1)
             self.magnet_port_combos[gauss_key] = gauss_box
 
+        # The connection summary wraps beside the buttons, three lines once
+        # connected, so the port box keeps the width of its port table and
+        # the display box beside it never resizes.  The row keeps room for
+        # three lines, so connecting does not push the page down, and the
+        # buttons stay at its top.
         button_row = ttk.Frame(connection)
-        button_row.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(2, 0))
+        button_row.grid(row=2, column=0, columnspan=6, sticky="new", pady=(2, 0))
         ttk.Button(
             button_row, text="Refresh", command=self.refresh_magnet_ports, width=7
-        ).pack(side="left", padx=2)
+        ).pack(side="left", anchor="n", padx=2)
         self.magnet_connect_button = ttk.Button(
             button_row, text="Connect", command=self.connect_magnets, width=8
         )
-        self.magnet_connect_button.pack(side="left", padx=2)
+        self.magnet_connect_button.pack(side="left", anchor="n", padx=2)
         self.magnet_disconnect_button = ttk.Button(
             button_row, text="Disconnect", command=self.disconnect_magnets, width=10
         )
-        self.magnet_disconnect_button.pack(side="left", padx=2)
-        ttk.Label(button_row, textvariable=self.magnet_connection_var).pack(
-            side="left", padx=(6, 0)
+        self.magnet_disconnect_button.pack(side="left", anchor="n", padx=2)
+        connection_summary = ttk.Label(
+            button_row,
+            textvariable=self.magnet_connection_var,
+            wraplength=self._ui_px(280),
+        )
+        connection_summary.pack(side="left", padx=(6, 0))
+        # Its one-line height ("Not connected") plus two more lines, plus the
+        # row's 2 px top gap.
+        summary_line = tkfont.Font(
+            root=self.root, family=self.ui_font_family, size=self.ui_font_size
+        ).metrics("linespace")
+        connection.rowconfigure(
+            2,
+            minsize=int(connection_summary.winfo_reqheight()) + 2 * summary_line + 2,
         )
 
         safety = ttk.Frame(outer, padding=(2, 2))
@@ -18617,7 +18799,6 @@ class CombinedControlApp:
             safety,
             text="Enable/zero active path",
             command=self.initialize_magnets,
-            width=15,
         )
         self.magnet_initialize_button.grid(row=0, column=1, padx=3)
         self.magnet_zero_button = tk.Button(
@@ -18633,10 +18814,14 @@ class CombinedControlApp:
         )
         self.magnet_zero_button.grid(row=0, column=2)
 
+        # The selector, then its warning; the warning moves under the
+        # selector, still whole, when the window is too narrow for both.
         switch_row = ttk.Frame(safety)
         switch_row.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        switch_choices = ttk.Frame(switch_row)
+        switch_choices.grid(row=0, column=0, sticky="w")
         ttk.Label(
-            switch_row,
+            switch_choices,
             text="Physical selector:",
             style="Warning.TLabel",
         ).pack(side="left")
@@ -18646,7 +18831,7 @@ class CombinedControlApp:
             ("In-plane", "Physically set to in-plane"),
         ):
             button = ttk.Radiobutton(
-                switch_row,
+                switch_choices,
                 text=text,
                 value=value,
                 variable=self.magnet_switch_var,
@@ -18654,11 +18839,15 @@ class CombinedControlApp:
             )
             button.pack(side="left", padx=(3, 0))
             self.magnet_switch_buttons.append(button)
-        ttk.Label(
+        switch_warning = ttk.Label(
             switch_row,
             text="Zero both paths before switching; the GUI must match the hardware",
             style="Warning.TLabel",
-        ).pack(side="left", padx=(10, 0))
+        )
+        switch_warning.grid(row=0, column=1, sticky="w")
+        self._arrange_pair_by_width(
+            switch_row, switch_choices, switch_warning, gap=10, stack_gap=2
+        )
 
         control_row = ttk.Frame(outer)
         control_row.grid(row=2, column=0, sticky="ew", pady=(2, 3))
@@ -18677,7 +18866,6 @@ class CombinedControlApp:
             read_row,
             text="Read active path",
             command=self.read_all_magnets,
-            width=11,
         )
         self.magnet_read_button.pack(side="left", padx=(0, 4))
         ttk.Checkbutton(
@@ -18700,52 +18888,72 @@ class CombinedControlApp:
             control_row, text="Magnet current scan and ROI acquisition", padding=5
         )
         scan_box.grid(row=0, column=1, sticky="nsew", padx=(3, 0))
-        ttk.Label(scan_box, text="Start A:").grid(row=0, column=0)
+        scan_box.columnconfigure(0, weight=1)
+        # One aligned table: each label right-aligned against its field and
+        # the fields of a column the same width.  It has its own frame, so
+        # the wider button row below does not stretch its columns.
+        scan_params = ttk.Frame(scan_box)
+        scan_params.grid(row=0, column=0, sticky="w")
+        ttk.Label(scan_params, text="Start A:").grid(
+            row=0, column=0, sticky="e", padx=(0, 3)
+        )
         ttk.Entry(
-            scan_box, textvariable=self.magnet_scan_start_current_var, width=7
-        ).grid(row=0, column=1, padx=(0, 5))
-        ttk.Label(scan_box, text="End A:").grid(row=0, column=2)
+            scan_params, textvariable=self.magnet_scan_start_current_var, width=7
+        ).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        ttk.Label(scan_params, text="End A:").grid(
+            row=0, column=2, sticky="e", padx=(0, 3)
+        )
         ttk.Entry(
-            scan_box, textvariable=self.magnet_scan_end_current_var, width=7
-        ).grid(row=0, column=3)
+            scan_params, textvariable=self.magnet_scan_end_current_var, width=7
+        ).grid(row=0, column=3, sticky="ew")
 
-        ttk.Label(scan_box, text="Step A:").grid(row=1, column=0, pady=(3, 0))
+        ttk.Label(scan_params, text="Step A:").grid(
+            row=1, column=0, sticky="e", padx=(0, 3), pady=(3, 0)
+        )
         ttk.Entry(
-            scan_box, textvariable=self.magnet_scan_step_current_var, width=7
-        ).grid(row=1, column=1, padx=(0, 5), pady=(3, 0))
-        ttk.Label(scan_box, text="Loop：").grid(row=1, column=2, pady=(3, 0))
+            scan_params, textvariable=self.magnet_scan_step_current_var, width=7
+        ).grid(row=1, column=1, sticky="ew", padx=(0, 8), pady=(3, 0))
+        ttk.Label(scan_params, text="Loop：").grid(
+            row=1, column=2, sticky="e", padx=(0, 3), pady=(3, 0)
+        )
         ttk.Spinbox(
-            scan_box,
+            scan_params,
             from_=1,
             to=1000,
             increment=1,
             textvariable=self.magnet_scan_loop_var,
             width=5,
-        ).grid(row=1, column=3, pady=(3, 0))
+        ).grid(row=1, column=3, sticky="ew", pady=(3, 0))
 
-        ttk.Label(scan_box, text="Settle s:").grid(row=2, column=0, pady=(3, 0))
-        ttk.Entry(
-            scan_box, textvariable=self.magnet_scan_settle_var, width=7
-        ).grid(row=2, column=1, padx=(0, 5), pady=(3, 0))
-        ttk.Label(scan_box, text="Acquire s:").grid(row=2, column=2, pady=(3, 0))
-        ttk.Entry(
-            scan_box, textvariable=self.magnet_scan_collect_var, width=7
-        ).grid(row=2, column=3, pady=(3, 0))
-
-        scan_buttons = ttk.Frame(scan_box)
-        scan_buttons.grid(
-            row=3, column=0, columnspan=4, sticky="ew", pady=(4, 0)
+        ttk.Label(scan_params, text="Settle s:").grid(
+            row=2, column=0, sticky="e", padx=(0, 3), pady=(3, 0)
         )
+        ttk.Entry(
+            scan_params, textvariable=self.magnet_scan_settle_var, width=7
+        ).grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(3, 0))
+        ttk.Label(scan_params, text="Acquire s:").grid(
+            row=2, column=2, sticky="e", padx=(0, 3), pady=(3, 0)
+        )
+        ttk.Entry(
+            scan_params, textvariable=self.magnet_scan_collect_var, width=7
+        ).grid(row=2, column=3, sticky="ew", pady=(3, 0))
+
+        # The three buttons, then the image option; the option moves under
+        # the buttons when the box is too narrow for both.
+        scan_buttons = ttk.Frame(scan_box)
+        scan_buttons.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        scan_actions = ttk.Frame(scan_buttons)
+        scan_actions.grid(row=0, column=0, sticky="w")
         self.magnet_scan_start_button = ttk.Button(
-            scan_buttons, text="Start scan", command=self.start_magnet_scan, width=10
+            scan_actions, text="Start scan", command=self.start_magnet_scan, width=10
         )
         self.magnet_scan_start_button.pack(side="left", padx=(0, 3))
         self.magnet_scan_stop_button = ttk.Button(
-            scan_buttons, text="Stop/zero", command=self.stop_magnet_scan, width=9
+            scan_actions, text="Stop/zero", command=self.stop_magnet_scan, width=9
         )
         self.magnet_scan_stop_button.pack(side="left", padx=3)
         self.magnet_scan_save_button = ttk.Button(
-            scan_buttons,
+            scan_actions,
             text="Save CSV + PNG",
             command=self.save_magnet_scan_csv,
             width=16,
@@ -18757,11 +18965,16 @@ class CombinedControlApp:
             variable=self.magnet_save_images_var,
             command=self.configure_magnet_image_saving,
         )
-        self.magnet_save_images_check.pack(side="left", padx=(8, 2))
-        progress_row = ttk.Frame(scan_box)
-        progress_row.grid(
-            row=4, column=0, columnspan=4, sticky="ew", pady=(5, 0)
+        self.magnet_save_images_check.grid(row=0, column=1, sticky="w")
+        self._arrange_pair_by_width(
+            scan_buttons,
+            scan_actions,
+            self.magnet_save_images_check,
+            gap=8,
+            stack_gap=4,
         )
+        progress_row = ttk.Frame(scan_box)
+        progress_row.grid(row=2, column=0, sticky="ew", pady=(5, 0))
         progress_row.columnconfigure(0, weight=1)
         self.magnet_scan_progress = ttk.Progressbar(
             progress_row,
@@ -18777,20 +18990,35 @@ class CombinedControlApp:
             foreground="#0068b5",
             font=(self.ui_font_family, self.ui_small_font_size, "bold"),
         ).grid(row=0, column=1, sticky="e")
-        ttk.Label(
+        scan_path_label = ttk.Label(
             scan_box,
             text=(
                 "Path: start→end→start; returns to start on completion, zeroed on stop/error."
             ),
             foreground="#9a4d00",
             wraplength=420,
-        ).grid(row=5, column=0, columnspan=4, sticky="w", pady=(2, 0))
-        ttk.Label(
+        )
+        scan_path_label.grid(row=3, column=0, sticky="w", pady=(2, 0))
+        scan_folder_label = ttk.Label(
             scan_box,
             textvariable=self.magnet_image_directory_var,
             foreground="#555555",
             wraplength=350,
-        ).grid(row=6, column=0, columnspan=4, sticky="w", pady=(2, 0))
+        )
+        scan_folder_label.grid(row=4, column=0, sticky="w", pady=(2, 0))
+        scan_wrap = {"width": None}
+
+        def wrap_scan_notes(event) -> None:
+            # Both notes wrap at the box's inner width (less its border and
+            # padding): one line in a wide window, whole lines in a narrow one.
+            width = max(200, int(event.width) - 20)
+            if scan_wrap["width"] == width:
+                return
+            scan_wrap["width"] = width
+            scan_path_label.configure(wraplength=width)
+            scan_folder_label.configure(wraplength=width)
+
+        scan_box.bind("<Configure>", wrap_scan_notes, add="+")
 
         roi_edit = ttk.LabelFrame(outer, text="MOKE ROI editing", padding=4)
         roi_edit.grid(row=3, column=0, sticky="ew", pady=(0, 3))
@@ -18803,41 +19031,29 @@ class CombinedControlApp:
             textvariable=self.moke_roi_mean_var,
             style="Metric.TLabel",
         ).pack(side="left", padx=(8, 0))
+        # Buttons at natural width, so no label is cut.
         self.moke_clear_plot_button = ttk.Button(
             roi_top,
             text="Clear curve",
             command=self.clear_moke_plot,
             state="disabled",
-            width=8,
         )
         self.moke_clear_plot_button.pack(side="right", padx=(4, 0))
         ttk.Button(
             roi_top,
             text="Save difference raw image",
             command=lambda: self.save_current_processed_image("MOKE"),
-            width=15,
         ).pack(side="right", padx=(4, 0))
         ttk.Button(
             roi_top,
             text="Save raw 16-bit",
             command=lambda: self.save_current_raw_image("MOKE"),
-            width=13,
         ).pack(side="right", padx=(4, 0))
         ttk.Button(
             roi_top,
             text="Save current display",
             command=lambda: self.save_current_display_image("MOKE"),
-            width=15,
         ).pack(side="right", padx=(4, 0))
-        self.moke_field_source_combo = ttk.Combobox(
-            roi_top,
-            textvariable=self.moke_field_source_var,
-            values=("Unconfirmed", "Out-of-plane", "In-plane"),
-            state="disabled",
-            width=5,
-        )
-        self.moke_field_source_combo.pack(side="right")
-        ttk.Label(roi_top, text="Field：").pack(side="right", padx=(6, 1))
 
         roi_actions = ttk.Frame(roi_edit)
         roi_actions.grid(row=1, column=0, sticky="ew", pady=(3, 0))
@@ -18877,7 +19093,7 @@ class CombinedControlApp:
         ).pack(side="left", padx=(4, 0))
 
         roi_steps = ttk.Frame(roi_edit)
-        roi_steps.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        roi_steps.grid(row=2, column=0, sticky="ew", pady=(4, 0))
         ttk.Label(roi_steps, text="Edit step:").pack(side="left")
         for key, unit in (("A", "°"), ("W", "px"), ("H", "px"), ("X", "px"), ("Y", "px")):
             ttk.Label(roi_steps, text=f"{key}=").pack(side="left", padx=(5, 1))
@@ -18887,22 +19103,51 @@ class CombinedControlApp:
                 width=5,
             ).pack(side="left")
             ttk.Label(roi_steps, text=unit).pack(side="left", padx=(1, 0))
+        # The field source for the scan plot's top axis sits at the right of
+        # this shorter line, which leaves the image buttons room above and
+        # shows "Unconfirmed" whole.
+        self.moke_field_source_combo = ttk.Combobox(
+            roi_steps,
+            textvariable=self.moke_field_source_var,
+            values=("Unconfirmed", "Out-of-plane", "In-plane"),
+            state="disabled",
+            width=12,
+        )
+        self.moke_field_source_combo.pack(side="right")
+        ttk.Label(roi_steps, text="Field：").pack(side="right", padx=(6, 1))
 
         data_frame = ttk.Frame(outer)
         data_frame.grid(row=4, column=0, sticky="nsew")
-        data_frame.rowconfigure(0, weight=1)
-        data_frame.columnconfigure(0, weight=1)
-        data_frame.columnconfigure(1, weight=1)
-
-        intensity_box = ttk.LabelFrame(
-            data_frame, text="ROI mean intensity vs time (live)", padding=6
+        data_frame.rowconfigure(1, weight=1)
+        # The live ROI trace stays the primary, wider plot, as on the 6221
+        # page.  The scan plot is never narrower than its title.
+        plot_title = "Magnet current vs ROI mean intensity (top axis: Magnetic field (Gs))"
+        plot_title_width = tkfont.Font(
+            root=self.root,
+            family=self.ui_font_family,
+            size=self.ui_font_size,
+            weight="bold",
+        ).measure(plot_title) + self._ui_px(24)
+        data_frame.columnconfigure(0, weight=2, uniform="moke_bottom_plots")
+        data_frame.columnconfigure(
+            1, weight=1, uniform="moke_bottom_plots", minsize=plot_title_width
         )
-        intensity_box.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
-        intensity_box.rowconfigure(4, weight=1)
-        intensity_box.columnconfigure(0, weight=1)
 
-        clim_bar = ttk.Frame(intensity_box)
-        clim_bar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        # Display, exposure and recording settings run across the page above
+        # both plots.  Two groups share a line when both fit; each pair stacks
+        # by itself when the window is too narrow.  Status texts that change
+        # sit at the end of a line or in a fixed-width box, so they never
+        # push other controls.
+        display_controls = ttk.Frame(data_frame, padding=(5, 2, 5, 0))
+        display_controls.grid(
+            row=0, column=0, columnspan=2, sticky="ew", pady=(0, 4)
+        )
+        display_controls.columnconfigure(0, weight=1)
+        clim_row = ttk.Frame(display_controls)
+        clim_row.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+
+        clim_bar = ttk.Frame(clim_row)
+        clim_bar.grid(row=0, column=0, sticky="w")
         ttk.Label(clim_bar, text="Difference CLim:").pack(side="left")
         low_entry = ttk.Entry(
             clim_bar,
@@ -18920,7 +19165,6 @@ class CombinedControlApp:
         manual_button = ttk.Button(
             clim_bar,
             text="Manual",
-            width=5,
             command=self.apply_difference_clim,
             state="disabled",
         )
@@ -18928,7 +19172,6 @@ class CombinedControlApp:
         auto_button = ttk.Button(
             clim_bar,
             text="Auto",
-            width=5,
             command=self.clear_difference_clim,
             state="disabled",
         )
@@ -18936,7 +19179,6 @@ class CombinedControlApp:
         histogram_button = ttk.Button(
             clim_bar,
             text="Histogram",
-            width=6,
             command=self.show_difference_histogram,
             state="disabled",
         )
@@ -18944,10 +19186,13 @@ class CombinedControlApp:
         self.difference_clim_buttons.extend(
             (manual_button, auto_button, histogram_button)
         )
+        # Room for "Fixed (waiting for a difference frame)".
         ttk.Label(
             clim_bar,
             textvariable=self.difference_clim_status_var,
             style="Muted.TLabel",
+            width=30,
+            anchor="w",
         ).pack(side="left", padx=(5, 0))
         low_entry.bind("<Return>", lambda _event: self.apply_difference_clim())
         high_entry.bind("<Return>", lambda _event: self.apply_difference_clim())
@@ -18958,8 +19203,8 @@ class CombinedControlApp:
             "write", self._schedule_difference_clim_live_update
         )
 
-        average_bar = ttk.Frame(intensity_box)
-        average_bar.grid(row=1, column=0, sticky="w", pady=(0, 4))
+        average_bar = ttk.Frame(clim_row)
+        average_bar.grid(row=0, column=1, sticky="w")
         ttk.Label(average_bar, text="Difference temporal average:").pack(side="left")
         for count in (1, 2, 4, 8):
             button = ttk.Radiobutton(
@@ -18986,35 +19231,14 @@ class CombinedControlApp:
             )
             button.pack(side="left", padx=(0, 3))
             self.difference_clim_buttons.append(button)
-        ttk.Label(average_bar, text="Exposure ms:").pack(
-            side="left", padx=(10, 2)
+        self._arrange_pair_by_width(
+            clim_row, clim_bar, average_bar, gap=12, stack_gap=4
         )
-        exposure_entry = ttk.Entry(
-            average_bar,
-            textvariable=self.camera_exposure_ms_var,
-            width=7,
-        )
-        exposure_entry.pack(side="left")
-        exposure_button = ttk.Button(
-            average_bar,
-            text="Apply exposure",
-            width=8,
-            command=self.apply_camera_exposure,
-            state="disabled",
-        )
-        exposure_button.pack(side="left", padx=(3, 2))
-        self.difference_clim_buttons.append(exposure_button)
-        exposure_entry.bind(
-            "<Return>", lambda _event: self.apply_camera_exposure()
-        )
-        ttk.Label(
-            average_bar,
-            textvariable=self.camera_exposure_status_var,
-            style="Muted.TLabel",
-        ).pack(side="left", padx=(2, 0))
 
-        filter_bar = ttk.Frame(intensity_box)
-        filter_bar.grid(row=2, column=0, sticky="w", pady=(0, 4))
+        filter_row = ttk.Frame(display_controls)
+        filter_row.grid(row=1, column=0, sticky="ew", pady=(0, 4))
+        filter_bar = ttk.Frame(filter_row)
+        filter_bar.grid(row=0, column=0, sticky="w")
         ttk.Label(filter_bar, text="Mean filter：").pack(side="left")
         for filter_size, label in ((1, "Off"), (2, "2×2"), (4, "4×4")):
             button = ttk.Radiobutton(
@@ -19033,20 +19257,54 @@ class CombinedControlApp:
             style="Muted.TLabel",
         ).pack(side="left", padx=(5, 0))
 
-        video_bar = ttk.Frame(intensity_box)
-        video_bar.grid(row=3, column=0, sticky="ew", pady=(0, 4))
+        exposure_bar = ttk.Frame(filter_row)
+        exposure_bar.grid(row=0, column=1, sticky="w")
+        ttk.Label(exposure_bar, text="Exposure ms:").pack(
+            side="left", padx=(0, 2)
+        )
+        exposure_entry = ttk.Entry(
+            exposure_bar,
+            textvariable=self.camera_exposure_ms_var,
+            width=7,
+        )
+        exposure_entry.pack(side="left")
+        exposure_button = ttk.Button(
+            exposure_bar,
+            text="Apply exposure",
+            command=self.apply_camera_exposure,
+            state="disabled",
+        )
+        exposure_button.pack(side="left", padx=(3, 2))
+        self.difference_clim_buttons.append(exposure_button)
+        exposure_entry.bind(
+            "<Return>", lambda _event: self.apply_camera_exposure()
+        )
+        ttk.Label(
+            exposure_bar,
+            textvariable=self.camera_exposure_status_var,
+            style="Muted.TLabel",
+        ).pack(side="left", padx=(2, 0))
+        self._arrange_pair_by_width(
+            filter_row, filter_bar, exposure_bar, gap=12, stack_gap=4
+        )
+
+        # Its own line, with room for the recording statistics.
+        video_bar = ttk.Frame(display_controls)
+        video_bar.grid(row=2, column=0, sticky="ew")
         ttk.Label(video_bar, text="Camera Live 8-bit recording: FPS").pack(side="left")
         ttk.Entry(
             video_bar,
             textvariable=self.camera_video_fps_var,
             width=5,
         ).pack(side="left", padx=(3, 4))
+        # Fits "Start recording" and "Stop recording", so the toggle never
+        # resizes the button.
         self.camera_video_button = ttk.Button(
             video_bar,
             text="Start recording",
             command=self.toggle_camera_video_recording,
             state="disabled",
-            width=9,
+            width=13,
         )
         self.camera_video_button.pack(side="left")
         self.camera_video_buttons.append(self.camera_video_button)
@@ -19055,6 +19313,13 @@ class CombinedControlApp:
             textvariable=self.camera_video_status_var,
             style="Muted.TLabel",
         ).pack(side="left", padx=(7, 0))
+
+        intensity_box = ttk.LabelFrame(
+            data_frame, text="ROI mean intensity vs time (live)", padding=6
+        )
+        intensity_box.grid(row=1, column=0, sticky="nsew", padx=(0, 5))
+        intensity_box.rowconfigure(0, weight=1)
+        intensity_box.columnconfigure(0, weight=1)
         self.moke_intensity_canvas = tk.Canvas(
             intensity_box,
             bg="#fbfcfd",
@@ -19062,17 +19327,17 @@ class CombinedControlApp:
             highlightbackground="#cfd6dd",
             height=self._ui_px(200, 125, canvas=True),
         )
-        self.moke_intensity_canvas.grid(row=4, column=0, sticky="nsew")
+        self.moke_intensity_canvas.grid(row=0, column=0, sticky="nsew")
         self.moke_intensity_canvas.bind(
             "<Configure>", lambda _event: self._redraw_live_intensity_plots()
         )
 
         plot_box = ttk.LabelFrame(
             data_frame,
-            text="Magnet current vs ROI mean intensity (top axis: Magnetic field (Gs))",
+            text=plot_title,
             padding=6,
         )
-        plot_box.grid(row=0, column=1, sticky="nsew")
+        plot_box.grid(row=1, column=1, sticky="nsew")
         plot_box.rowconfigure(0, weight=1)
         plot_box.columnconfigure(0, weight=1)
         self.moke_plot_canvas = tk.Canvas(
@@ -19112,45 +19377,44 @@ class CombinedControlApp:
             sticky="ew",
             pady=(0, 2) if row == 0 else 0,
         )
-        ttk.Label(panel, text="Target A:").grid(row=0, column=0, sticky="w")
+        # One aligned table: labels right-aligned against their fields, both
+        # fields the same width, and each button column one width, so Write
+        # sits over Down, Flip over Up and Zero current over Zero field.  The
+        # vista theme makes a button with no width at least 11 characters
+        # wide (about 127 px), so the short buttons get widths that just fit
+        # their text; Zero current needs the 11 characters.  Four button
+        # columns fit the half-page panel in the default window with the
+        # fields and the current readout at full width; a fifth would not.
+        ttk.Label(panel, text="Target A:").grid(row=0, column=0, sticky="e")
         target_entry = ttk.Entry(
             panel, textvariable=self.magnet_target_vars[key], width=7
         )
-        target_entry.grid(row=0, column=1, padx=(1, 3))
+        target_entry.grid(row=0, column=1, sticky="ew", padx=(1, 3))
         write_button = ttk.Button(
             panel,
             text="Write",
             command=lambda selected=key: self.set_magnet_current(selected),
             width=5,
         )
-        write_button.grid(row=0, column=2, padx=1)
+        write_button.grid(row=0, column=2, sticky="ew", padx=1)
         flip_button = ttk.Button(
             panel,
             text="Flip",
             command=lambda selected=key: self.flip_magnet_current(selected),
             width=5,
         )
-        flip_button.grid(row=0, column=3, padx=1)
+        flip_button.grid(row=0, column=3, sticky="ew", padx=1)
         zero_button = ttk.Button(
             panel,
             text="Zero current",
             command=lambda selected=key: self.zero_magnet(selected),
-            width=8,
         )
-        zero_button.grid(row=0, column=4, padx=1)
-        field_zero_button = ttk.Button(
-            panel,
-            text="Zero field",
-            command=lambda selected=key: self.zero_magnet_field(selected),
-            width=8,
-        )
-        field_zero_button.grid(row=0, column=5, padx=(1, 0))
+        zero_button.grid(row=0, column=4, sticky="ew", padx=(1, 0))
         self.magnet_channel_control_widgets[key] = {
             "target": target_entry,
             "write": write_button,
             "flip": flip_button,
             "zero": zero_button,
-            "field_zero": field_zero_button,
         }
         ttk.Label(panel, text="I：").grid(row=1, column=0, sticky="e", pady=(2, 0))
         ttk.Label(
@@ -19165,46 +19429,63 @@ class CombinedControlApp:
             panel,
             textvariable=self.magnet_field_vars[key],
             style="Metric.TLabel",
-        ).grid(row=1, column=3, columnspan=3, sticky="w", pady=(2, 0))
+        ).grid(row=1, column=3, columnspan=2, sticky="w", pady=(2, 0))
         ttk.Label(panel, text="Step A:").grid(
-            row=2, column=0, sticky="w", pady=(3, 0)
+            row=2, column=0, sticky="e", pady=(3, 0)
         )
         step_entry = ttk.Entry(
             panel,
             textvariable=self.magnet_manual_step_vars[key],
             width=7,
         )
-        step_entry.grid(row=2, column=1, sticky="w", padx=(1, 3), pady=(3, 0))
+        step_entry.grid(row=2, column=1, sticky="ew", padx=(1, 3), pady=(3, 0))
         down_button = ttk.Button(
             panel,
             text="↓ Down",
             command=lambda selected=key: self.step_magnet_current(selected, -1),
-            width=8,
+            width=7,
         )
-        down_button.grid(row=2, column=2, padx=1, pady=(3, 0))
+        down_button.grid(row=2, column=2, sticky="ew", padx=1, pady=(3, 0))
         up_button = ttk.Button(
             panel,
             text="↑ Up",
             command=lambda selected=key: self.step_magnet_current(selected, 1),
+            width=5,
+        )
+        up_button.grid(row=2, column=3, sticky="ew", padx=1, pady=(3, 0))
+        field_zero_button = ttk.Button(
+            panel,
+            text="Zero field",
+            command=lambda selected=key: self.zero_magnet_field(selected),
             width=8,
         )
-        up_button.grid(row=2, column=3, padx=1, pady=(3, 0), sticky="w")
+        field_zero_button.grid(
+            row=2, column=4, sticky="ew", padx=(1, 0), pady=(3, 0)
+        )
         self.magnet_channel_control_widgets[key].update(
             {
+                "field_zero": field_zero_button,
                 "step": step_entry,
                 "down": down_button,
                 "up": up_button,
             }
         )
+        # Spare width goes to an empty last column, so the table stays packed
+        # to the left.  Only in a window narrower than the table do the fields
+        # (column 1) give way, instead of a button being cut off.
         panel.columnconfigure(1, weight=1)
-        panel.columnconfigure(5, weight=1)
+        panel.columnconfigure(5, weight=1000)
 
     def build_keithley_ui(self) -> None:
         outer = ttk.Frame(self.keithley_tab, padding=7)
         outer.grid(row=0, column=0, sticky="nsew")
         outer.columnconfigure(0, weight=1)
-        outer.rowconfigure(5, weight=0)
-        outer.rowconfigure(7, weight=1)
+        # Spare window height goes to the two plot rows (|R| vs time in row 1,
+        # the ROI plots in row 5), so they fill the page down to the status
+        # line.  A shorter window shrinks both plots instead of pushing the
+        # ROI plots and the status line off the bottom of the page.
+        outer.rowconfigure(1, weight=1)
+        outer.rowconfigure(5, weight=1)
 
         connection = ttk.LabelFrame(outer, text="Keithley 2410 / VISA", padding=8)
         connection.grid(row=0, column=0, sticky="ew")
@@ -19233,16 +19514,27 @@ class CombinedControlApp:
         )
 
         safety = ttk.Frame(outer, padding=(2, 8))
-        safety.grid(row=1, column=0, sticky="ew")
+        safety.grid(row=1, column=0, sticky="nsew")
         safety.columnconfigure(0, weight=1)
-        ttk.Label(
+        safety.rowconfigure(1, weight=1)
+        hazard = ttk.Label(
             safety,
             text=(
                 f"High-voltage hazard: scans are software-limited to ±{KEITHLEY_MAX_ABS_VOLTAGE_V:g} V; "
                 "resistance measurement auto-sources 1 nA–1 mA with 5 V protection; the output is switched off on stop."
             ),
             foreground="#a34b00",
-        ).grid(row=0, column=0, sticky="w")
+        )
+        # Wraps to the width left beside the red button: one line in a wide
+        # window, a second line in the default one instead of running under
+        # the button.
+        hazard.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        hazard.bind(
+            "<Configure>",
+            lambda event: event.widget.configure(
+                wraplength=max(200, event.width - 4)
+            ),
+        )
         self.keithley_off_button = tk.Button(
             safety,
             text="2410 zero / output off",
@@ -19261,8 +19553,9 @@ class CombinedControlApp:
             text="Resistance · |R| vs time (continuous, rolling last 20 s)",
             padding=6,
         )
-        resistance_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(7, 0))
+        resistance_row.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(7, 0))
         resistance_row.columnconfigure(3, weight=1)
+        resistance_row.rowconfigure(2, weight=1)
         ttk.Checkbutton(
             resistance_row,
             text="Resistance wiring and sample confirmed safe for the test current",
@@ -19308,7 +19601,7 @@ class CombinedControlApp:
             row=2,
             column=0,
             columnspan=5,
-            sticky="ew",
+            sticky="nsew",
             pady=(6, 0),
         )
         self.keithley_resistance_canvas.bind(
@@ -19316,8 +19609,16 @@ class CombinedControlApp:
             lambda _event: self._redraw_keithley_resistance_plot(),
         )
 
-        scan = ttk.LabelFrame(outer, text="Voltage scan and ROI acquisition", padding=8)
-        scan.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        # As on the MOKE-6221 page: the voltage scan beside ROI editing in a
+        # wide window, stacked in the default one, so the plots below get the
+        # height ROI editing took on a row of its own.
+        acquisition = ttk.Frame(outer)
+        acquisition.grid(row=2, column=0, sticky="ew", pady=(0, 7))
+        acquisition.columnconfigure(1, weight=1)
+        scan = ttk.LabelFrame(
+            acquisition, text="Voltage scan and ROI acquisition", padding=8
+        )
+        scan.grid(row=0, column=0, sticky="nsew")
         ttk.Label(scan, text="Start V:").grid(row=0, column=0)
         ttk.Entry(scan, textvariable=self.keithley_start_var, width=8).grid(
             row=0, column=1, padx=(0, 8)
@@ -19449,8 +19750,13 @@ class CombinedControlApp:
             foreground="#555555",
         ).grid(row=5, column=0, columnspan=10, sticky="w", pady=(4, 0))
 
-        roi_edit = ttk.LabelFrame(outer, text="ROI editing", padding=7)
-        roi_edit.grid(row=3, column=0, sticky="ew", pady=(0, 7))
+        roi_edit = ttk.LabelFrame(acquisition, text="ROI editing", padding=7)
+        roi_edit.grid(row=0, column=1, sticky="nsew")
+        # Spare width goes to the empty column 9.  Without a weight, a
+        # full-width row (the toolbar with the ROI mean, or the recording bar)
+        # that grows with its text spreads the difference over all ten
+        # columns and pushes the live settings apart.
+        roi_edit.columnconfigure(9, weight=1)
         actions = ttk.Frame(roi_edit)
         actions.grid(row=0, column=0, columnspan=10, sticky="ew")
         toolbar = ttk.Frame(actions)
@@ -19460,10 +19766,16 @@ class CombinedControlApp:
             self.edit_2410_roi,
             self.keithley_roi_edit_buttons,
         )
+        # Close to one width for every reading (a negative width is a
+        # minimum).  A longer message ("waiting for the current difference
+        # frame") wraps to a second line: the pair below is re-checked only on
+        # a resize, so a wider ROI editing box would be cut beside the scan.
         ttk.Label(
             actions,
             textvariable=self.keithley_roi_mean_var,
             style="Metric.TLabel",
+            width=-30,
+            wraplength=self._ui_px(240),
         ).pack(side="right", padx=(8, 2))
         roi_steps = ttk.Frame(roi_edit)
         roi_steps.grid(row=1, column=0, columnspan=10, sticky="w", pady=(6, 0))
@@ -19476,35 +19788,39 @@ class CombinedControlApp:
                 width=5,
             ).pack(side="left")
             ttk.Label(roi_steps, text=unit).pack(side="left", padx=(1, 0))
-        ttk.Label(roi_edit, text="Live refresh (s/point):").grid(
-            row=2, column=0, columnspan=2, sticky="e", pady=(6, 0)
-        )
+        # The live settings in a row of their own at natural width.  Gridded
+        # into columns shared with the full-width rows, the label and button
+        # cells came out narrower than their text on Windows ("Apply li",
+        # "Max points" without its colon).
+        live_row = ttk.Frame(roi_edit)
+        live_row.grid(row=2, column=0, columnspan=10, sticky="w", pady=(6, 0))
+        ttk.Label(live_row, text="Live refresh (s/point):").pack(side="left")
         ttk.Spinbox(
-            roi_edit,
+            live_row,
             from_=0.05,
             to=3600.0,
             increment=0.1,
             textvariable=self.roi_live_interval_var,
             width=8,
-        ).grid(row=2, column=2, sticky="w", pady=(6, 0))
-        ttk.Label(roi_edit, text="Max points:").grid(
-            row=2, column=3, columnspan=2, sticky="e", pady=(6, 0)
-        )
+        ).pack(side="left", padx=(3, 12))
+        ttk.Label(live_row, text="Max points:").pack(side="left")
         ttk.Spinbox(
-            roi_edit,
+            live_row,
             from_=10,
             to=10000,
             increment=10,
             textvariable=self.roi_live_max_points_var,
             width=8,
-        ).grid(row=2, column=5, sticky="w", pady=(6, 0))
+        ).pack(side="left", padx=(3, 0))
+        # Apply and the image buttons share the next row: beside the live
+        # settings they made ROI editing too wide to sit next to the scan.
+        image_buttons = ttk.Frame(roi_edit)
+        image_buttons.grid(row=3, column=0, columnspan=10, pady=(6, 0), sticky="w")
         ttk.Button(
-            roi_edit,
+            image_buttons,
             text="Apply live settings",
             command=self.apply_roi_live_settings,
-        ).grid(row=2, column=6, columnspan=2, pady=(6, 0))
-        image_buttons = ttk.Frame(roi_edit)
-        image_buttons.grid(row=2, column=8, columnspan=2, pady=(6, 0), sticky="e")
+        ).pack(side="left", padx=(0, 6))
         ttk.Button(
             image_buttons,
             text="Save processed image",
@@ -19518,7 +19834,7 @@ class CombinedControlApp:
 
         video_bar = ttk.Frame(roi_edit)
         video_bar.grid(
-            row=3, column=0, columnspan=10, sticky="ew", pady=(6, 0)
+            row=4, column=0, columnspan=10, sticky="ew", pady=(6, 0)
         )
         ttk.Label(video_bar, text="Camera Live 8-bit recording: FPS").pack(side="left")
         ttk.Entry(
@@ -19526,20 +19842,29 @@ class CombinedControlApp:
             textvariable=self.camera_video_fps_var,
             width=5,
         ).pack(side="left", padx=(3, 4))
+        # A negative width is a minimum: wide enough for "Start recording" and
+        # "Stop recording", so the text is never cut and the status beside it
+        # does not move when the label changes.
         keithley_video_button = ttk.Button(
             video_bar,
             text="Start recording",
             command=self.toggle_camera_video_recording,
             state="disabled",
-            width=9,
+            width=-16,
         )
         keithley_video_button.pack(side="left")
         self.camera_video_buttons.append(keithley_video_button)
+        # As for the ROI mean: a long recording status (frames, seconds and
+        # dropped frames) wraps instead of widening ROI editing.
         ttk.Label(
             video_bar,
             textvariable=self.camera_video_status_var,
             style="Muted.TLabel",
+            width=-36,
+            wraplength=self._ui_px(290),
         ).pack(side="left", padx=(7, 0))
+
+        self._arrange_pair_by_width(acquisition, scan, roi_edit, gap=7)
 
         ttk.Label(
             outer,
@@ -19995,7 +20320,26 @@ class CombinedControlApp:
             padding=7,
         )
         connection.grid(row=0, column=0, sticky="ew")
-        connection.columnconfigure(8, weight=1)
+        # Columns 0-5 hold each device's name, address, Connect, Disconnect,
+        # lamp and status; column 6 its own settings.  Spare width goes to the
+        # empty tail column 7, so neither part stretches.
+        connection.columnconfigure(7, weight=1)
+        # Devices sit on the even rows.  Each device's settings share its row
+        # when the window is wide enough, else they move to the odd row under
+        # its address (see arrange_device_settings below).
+        settings_boxes: dict[int, ttk.Frame] = {}
+
+        def settings_box(row: int) -> ttk.Frame:
+            box = ttk.Frame(connection)
+            box.grid(
+                row=row, column=6, sticky="w", padx=(12, 0),
+                pady=(4 if row else 0, 0),
+            )
+            # A cell spanning to the tail puts any extra width there, so the
+            # columns shared with the other boxes keep their width.
+            box.columnconfigure(7, weight=1)
+            settings_boxes[row] = box
+            return box
 
         def indicator(key: str, row: int, column: int) -> None:
             canvas = tk.Canvas(
@@ -20008,37 +20352,47 @@ class CombinedControlApp:
             item = canvas.create_oval(
                 3, 3, 13, 13, fill="#9aa0a6", outline="#6f757b"
             )
-            canvas.grid(row=row, column=column, padx=(1, 4))
+            canvas.grid(
+                row=row, column=column, padx=(1, 4), pady=(4 if row else 0, 0)
+            )
             self.nonlocal_vi_connection_indicators[key] = (canvas, item)
 
         def device_actions(key: str, row: int) -> None:
+            # Natural width, so "Disconnect" is never cut.
             self.nonlocal_vi_device_connect_buttons[key] = ttk.Button(
                 connection,
                 text="Connect",
-                width=8,
                 command=lambda device_key=key:
                     self.connect_nonlocal_vi_device(device_key),
             )
             self.nonlocal_vi_device_connect_buttons[key].grid(
-                row=row, column=9, padx=(4, 2), pady=(4 if row else 0, 0)
+                row=row, column=2, padx=(4, 2), pady=(4 if row else 0, 0)
             )
             self.nonlocal_vi_device_disconnect_buttons[key] = ttk.Button(
                 connection,
                 text="Disconnect",
-                width=8,
                 command=lambda device_key=key:
                     self.disconnect_nonlocal_vi_device(device_key),
             )
             self.nonlocal_vi_device_disconnect_buttons[key].grid(
-                row=row, column=10, padx=2, pady=(4 if row else 0, 0)
+                row=row, column=3, padx=2, pady=(4 if row else 0, 0)
             )
-            indicator(key, row, 11)
+            # Keyboard focus moves through siblings in stacking order, and
+            # this device's settings box was created before its buttons,
+            # though it is drawn after them (beside them, or on the line
+            # below).  Put it back after Disconnect, as on screen, so Tab goes
+            # address, Connect, Disconnect, settings, next address.
+            box = settings_boxes.get(row)
+            if box is not None:
+                box.lift(self.nonlocal_vi_device_disconnect_buttons[key])
+            indicator(key, row, 4)
+            # As wide as the longest state, "Disconnecting…".
             ttk.Label(
                 connection,
                 textvariable=self.nonlocal_vi_device_connection_vars[key],
-                width=10,
+                width=14,
                 anchor="w",
-            ).grid(row=row, column=12, pady=(4 if row else 0, 0), sticky="w")
+            ).grid(row=row, column=5, pady=(4 if row else 0, 0), sticky="w")
 
         ttk.Label(connection, text="Keithley 2410：").grid(
             row=0, column=0, sticky="e"
@@ -20051,32 +20405,33 @@ class CombinedControlApp:
         device_actions("2410", 0)
 
         ttk.Label(connection, text="Keithley 6221：").grid(
-            row=1, column=0, sticky="e", pady=(4, 0)
+            row=2, column=0, sticky="e", pady=(4, 0)
         )
         ttk.Entry(
             connection,
             textvariable=self.nonlocal_vi_source_resource_var,
             width=21,
-        ).grid(row=1, column=1, padx=(0, 12), pady=(4, 0), sticky="w")
-        ttk.Label(connection, text="Output:").grid(
-            row=1, column=2, sticky="e", pady=(4, 0)
+        ).grid(row=2, column=1, padx=(0, 12), pady=(4, 0), sticky="w")
+        source_box = settings_box(2)
+        ttk.Label(source_box, text="Output:").grid(
+            row=0, column=0, sticky="e", padx=(0, 3)
         )
         self.nonlocal_vi_output_mode_combo = ttk.Combobox(
-            connection,
+            source_box,
             textvariable=self.nonlocal_vi_output_mode_var,
             values=("AC", "DC"),
             state="readonly",
             width=5,
         )
         self.nonlocal_vi_output_mode_combo.grid(
-            row=1, column=3, sticky="w", pady=(4, 0)
+            row=0, column=1, sticky="ew", padx=(0, 10)
         )
         self.nonlocal_vi_output_mode_var.trace_add(
             "write", lambda *_args: self._on_nonlocal_vi_output_mode_changed()
         )
-        device_actions("6221", 1)
+        device_actions("6221", 2)
 
-        for row, key in enumerate(("8", "9"), start=2):
+        for row, key in ((4, "8"), (6, "9")):
             ttk.Label(connection, text=f"SR830 #{key}：").grid(
                 row=row, column=0, sticky="e", pady=(4, 0)
             )
@@ -20087,46 +20442,47 @@ class CombinedControlApp:
             ).grid(
                 row=row, column=1, padx=(0, 12), pady=(4, 0), sticky="w"
             )
-            ttk.Label(connection, text="Input coupling AC/DC:").grid(
-                row=row, column=2, sticky="e", pady=(4, 0)
+            lockin_box = settings_box(row)
+            ttk.Label(lockin_box, text="Input coupling AC/DC:").grid(
+                row=0, column=0, sticky="e", padx=(0, 3)
             )
             ttk.Combobox(
-                connection,
+                lockin_box,
                 textvariable=self.nonlocal_vi_lockin_coupling_vars[key],
                 values=("AC", "DC"),
                 state="readonly",
                 width=5,
-            ).grid(row=row, column=3, pady=(4, 0), sticky="w")
-            ttk.Label(connection, text="Harmonic:").grid(
-                row=row, column=4, sticky="e", pady=(4, 0)
+            ).grid(row=0, column=1, sticky="ew", padx=(0, 10))
+            ttk.Label(lockin_box, text="Harmonic:").grid(
+                row=0, column=2, sticky="e", padx=(0, 3)
             )
             ttk.Spinbox(
-                connection,
+                lockin_box,
                 from_=1,
                 to=19999,
                 textvariable=self.nonlocal_vi_lockin_harmonic_vars[key],
                 width=7,
-            ).grid(row=row, column=5, padx=(0, 8), pady=(4, 0), sticky="w")
-            ttk.Label(connection, text="Read:").grid(
-                row=row, column=6, sticky="e", pady=(4, 0)
+            ).grid(row=0, column=3, sticky="ew", padx=(0, 10))
+            ttk.Label(lockin_box, text="Read:").grid(
+                row=0, column=4, sticky="e", padx=(0, 3)
             )
             ttk.Combobox(
-                connection,
+                lockin_box,
                 textvariable=self.nonlocal_vi_lockin_channel_vars[key],
                 values=("X", "Y", "R"),
                 state="readonly",
                 width=5,
-            ).grid(row=row, column=7, pady=(4, 0), sticky="w")
+            ).grid(row=0, column=5, sticky="ew", padx=(0, 10))
             ttk.Checkbutton(
-                connection,
+                lockin_box,
                 text="In scan",
                 variable=self.nonlocal_vi_measurement_enabled_vars[key],
                 command=self._redraw_nonlocal_vi_plots,
-            ).grid(row=row, column=8, pady=(4, 0), sticky="w")
+            ).grid(row=0, column=6, sticky="w")
             device_actions(key, row)
 
         ttk.Label(connection, text="Zurich MFLI：").grid(
-            row=4, column=0, sticky="e", pady=(4, 0)
+            row=8, column=0, sticky="e", pady=(4, 0)
         )
         # Which Zurich: chosen from the lab's two, so the Data Server that can
         # reach it is used.  As wide as the SR830 address fields above.
@@ -20134,93 +20490,204 @@ class CombinedControlApp:
             connection, self.nonlocal_vi_mfli_device_var, match_chars=21
         )
         vi_mfli_chooser.grid(
-            row=4, column=1, padx=(0, 12 + vi_mfli_chooser.zurich_shortfall),
+            row=8, column=1, padx=(0, 12 + vi_mfli_chooser.zurich_shortfall),
             pady=(4, 0), sticky="w",
         )
-        vi_mfli_options = ttk.Frame(connection)
-        vi_mfli_options.grid(
-            row=4, column=2, columnspan=7, pady=(4, 0), sticky="w"
+        # The first line matches the SR830 settings above it, field for
+        # field; the MFLI-only inputs follow on a second line.
+        vi_mfli_options = settings_box(8)
+        ttk.Label(vi_mfli_options, text="Input coupling AC/DC:").grid(
+            row=0, column=0, sticky="e", padx=(0, 3)
         )
-        ttk.Label(vi_mfli_options, text="Reference input:").grid(row=0, column=0)
+        ttk.Combobox(
+            vi_mfli_options, textvariable=self.nonlocal_vi_mfli_coupling_var,
+            values=("AC", "DC"), state="readonly", width=5,
+        ).grid(row=0, column=1, sticky="ew", padx=(0, 10))
+        ttk.Label(vi_mfli_options, text="Harmonic:").grid(
+            row=0, column=2, sticky="e", padx=(0, 3)
+        )
+        ttk.Spinbox(
+            vi_mfli_options, from_=1, to=1024,
+            textvariable=self.nonlocal_vi_mfli_harmonic_var, width=7,
+        ).grid(row=0, column=3, sticky="ew", padx=(0, 10))
+        ttk.Label(vi_mfli_options, text="Read:").grid(
+            row=0, column=4, sticky="e", padx=(0, 3)
+        )
+        ttk.Combobox(
+            vi_mfli_options, textvariable=self.nonlocal_vi_mfli_channel_var,
+            values=("X", "Y", "R"), state="readonly", width=5,
+        ).grid(row=0, column=5, sticky="ew", padx=(0, 10))
+        ttk.Checkbutton(
+            vi_mfli_options,
+            text="In scan (autorange)",
+            variable=self.nonlocal_vi_use_mfli_var,
+            command=self._redraw_nonlocal_vi_plots,
+        ).grid(row=0, column=6, sticky="w")
+        ttk.Label(vi_mfli_options, text="Reference input:").grid(
+            row=1, column=0, sticky="e", padx=(0, 3), pady=(4, 0)
+        )
         ttk.Combobox(
             vi_mfli_options,
             textvariable=self.nonlocal_vi_mfli_reference_source_var,
             values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS),
             state="readonly",
             width=13,
-        ).grid(row=0, column=1, padx=(0, 8))
-        ttk.Label(vi_mfli_options, text="Input coupling AC/DC:").grid(
-            row=0, column=2
+        ).grid(row=1, column=1, columnspan=2, sticky="w", pady=(4, 0))
+        vi_mfli_input = ttk.Frame(vi_mfli_options)
+        vi_mfli_input.grid(
+            row=1, column=3, columnspan=5, sticky="w", pady=(4, 0)
+        )
+        ttk.Label(vi_mfli_input, text="Signal Input 1 impedance:").grid(
+            row=0, column=0, sticky="e", padx=(0, 3)
         )
         ttk.Combobox(
-            vi_mfli_options, textvariable=self.nonlocal_vi_mfli_coupling_var,
-            values=("AC", "DC"), state="readonly", width=5,
-        ).grid(row=0, column=3, padx=(0, 8))
-        ttk.Label(vi_mfli_options, text="Harmonic:").grid(row=0, column=4)
-        ttk.Spinbox(
-            vi_mfli_options, from_=1, to=1024,
-            textvariable=self.nonlocal_vi_mfli_harmonic_var, width=7,
-        ).grid(row=0, column=5, padx=(0, 8))
-        ttk.Label(vi_mfli_options, text="Read:").grid(row=0, column=6)
-        ttk.Combobox(
-            vi_mfli_options, textvariable=self.nonlocal_vi_mfli_channel_var,
-            values=("X", "Y", "R"), state="readonly", width=5,
-        ).grid(row=0, column=7, padx=(0, 8))
-        ttk.Checkbutton(
-            vi_mfli_options,
-            text="In scan (autorange)",
-            variable=self.nonlocal_vi_use_mfli_var,
-            command=self._redraw_nonlocal_vi_plots,
-        ).grid(row=0, column=8, sticky="w")
-        ttk.Label(vi_mfli_options, text="Signal Input 1 impedance:").grid(
-            row=1, column=0, columnspan=2, pady=(4, 0), sticky="e"
-        )
-        ttk.Combobox(
-            vi_mfli_options,
+            vi_mfli_input,
             textvariable=self.nonlocal_vi_mfli_input_impedance_var,
             values=("10 MΩ", "50 Ω"),
             state="readonly",
             width=8,
-        ).grid(row=1, column=2, pady=(4, 0), padx=(0, 8), sticky="w")
-        ttk.Label(vi_mfli_options, text="Scaling：").grid(
-            row=1, column=3, pady=(4, 0), sticky="e"
+        ).grid(row=0, column=1, sticky="w", padx=(0, 10))
+        ttk.Label(vi_mfli_input, text="Scaling：").grid(
+            row=0, column=2, sticky="e", padx=(0, 3)
         )
         ttk.Entry(
-            vi_mfli_options,
+            vi_mfli_input,
             textvariable=self.nonlocal_vi_mfli_input_scaling_var,
             width=8,
-        ).grid(row=1, column=4, columnspan=2, pady=(4, 0), sticky="w")
-        device_actions("mfli", 4)
+        ).grid(row=0, column=3, sticky="w")
+        device_actions("mfli", 8)
 
         ttk.Label(connection, text="Keithley 2182A：").grid(
-            row=5, column=0, sticky="e", pady=(4, 0)
+            row=10, column=0, sticky="e", pady=(4, 0)
         )
         ttk.Entry(
             connection, textvariable=self.nonlocal_vi_nanovoltmeter_resource_var,
             width=21,
-        ).grid(row=5, column=1, padx=(0, 12), pady=(4, 0), sticky="w")
+        ).grid(row=10, column=1, padx=(0, 12), pady=(4, 0), sticky="w")
         ttk.Checkbutton(
-            connection, text="In scan (channel 1, NPLC 1, autorange)",
+            settings_box(10), text="In scan (channel 1, NPLC 1, autorange)",
             variable=self.nonlocal_vi_use_2182_var,
             command=self._redraw_nonlocal_vi_plots,
-        ).grid(row=5, column=2, columnspan=7, pady=(4, 0), sticky="w")
-        device_actions("2182", 5)
+        ).grid(row=0, column=0, columnspan=7, sticky="w")
+        device_actions("2182", 10)
         ttk.Checkbutton(
             connection,
             text="Voltage pulses, selected AC/DC read current and sample confirmed safe",
             variable=self.nonlocal_vi_safety_var,
             command=self._update_nonlocal_vi_controls,
         ).grid(
-            row=6,
+            row=12,
             column=0,
-            columnspan=13,
+            columnspan=6,
             sticky="w",
             pady=(6, 0),
         )
-        ttk.Label(
+        connection_summary = ttk.Label(
             connection, textvariable=self.nonlocal_vi_connection_var
-        ).grid(row=7, column=0, columnspan=13, pady=(5, 0), sticky="e")
+        )
+        connection_summary.grid(
+            row=13, column=0, columnspan=8, pady=(5, 0), sticky="e"
+        )
 
+        def grid_column_widths(frames) -> dict[int, int]:
+            """Each column's width in these grids: its widest one-column cell.
+
+            From requested sizes, so it is known before the first layout.
+            """
+            widths: dict[int, int] = {}
+            for frame in frames:
+                for cell in frame.grid_slaves():
+                    info = cell.grid_info()
+                    if int(info["columnspan"]) != 1:
+                        continue
+                    padx = info["padx"]
+                    pads = [
+                        int(float(str(value)))
+                        for value in (
+                            padx if isinstance(padx, (tuple, list))
+                            else str(padx).split()
+                        )
+                    ] or [0]
+                    column = int(info["column"])
+                    widths[column] = max(
+                        widths.get(column, 0),
+                        int(cell.winfo_reqwidth())
+                        + (2 * pads[0] if len(pads) == 1 else sum(pads)),
+                    )
+            return widths
+
+        # Each settings box is its own grid, so the 6221, SR830 and MFLI
+        # fields line up only if every column is equally wide in all of them.
+        try:
+            shared_widths = grid_column_widths(settings_boxes.values())
+            for box in settings_boxes.values():
+                for column, width in shared_widths.items():
+                    box.columnconfigure(column, minsize=width)
+        except (tk.TclError, TypeError, ValueError, KeyError, AttributeError):
+            pass  # stubbed widgets, as in offline tests
+
+        def arrange_device_settings(_event=None) -> None:
+            """Settings beside each device when all fit, else under it.
+
+            One decision for every row, so the boxes always share one left
+            edge.  At the lab's 1101 px default window the SR830 settings do
+            not fit beside Connect/Disconnect and would be clipped.
+            """
+            try:
+                # A LabelFrame's padding and border are not usable width.
+                available = int(connection.winfo_width()) - 2 * 7 - 4
+                devices = sum(
+                    width for column, width
+                    in grid_column_widths((connection,)).items() if column <= 5
+                )
+                needed = devices + 12 + max(
+                    int(box.winfo_reqwidth()) for box in settings_boxes.values()
+                )
+            except (tk.TclError, TypeError, ValueError, KeyError, AttributeError):
+                return
+            if available <= 1:
+                return  # not laid out yet; the first <Configure> decides
+            wide = available >= needed
+            if getattr(connection, "_pair_side_by_side", None) is wide:
+                return
+            connection._pair_side_by_side = wide
+            for row, box in settings_boxes.items():
+                if wide:
+                    box.grid_configure(
+                        row=row, column=6, columnspan=1, padx=(12, 0),
+                        pady=(4 if row else 0, 0),
+                    )
+                else:
+                    box.grid_configure(
+                        row=row + 1, column=1, columnspan=7, padx=0,
+                        pady=(3, 0),
+                    )
+            # Wide, the connection summary fits right of the safety check.
+            if wide:
+                connection_summary.grid_configure(
+                    row=12, column=6, columnspan=2, pady=(6, 0)
+                )
+            else:
+                connection_summary.grid_configure(
+                    row=13, column=0, columnspan=8, pady=(5, 0)
+                )
+
+        connection.bind("<Configure>", arrange_device_settings, add="+")
+        arrange_device_settings()
+
+        def wrap_to_width(label) -> None:
+            """Wrap a label's text at its current width, re-done on resize."""
+            label.bind(
+                "<Configure>",
+                lambda event: event.widget.configure(
+                    wraplength=max(100, event.width - 8)
+                ),
+                add="+",
+            )
+
+        # Trigger Link and the red stop button on one row, the interlock text
+        # (kept word for word) under them, where it has the full page width:
+        # one line in the 2000 px window, wrapped in narrower ones.
         safety = ttk.Frame(outer, padding=(2, 5))
         safety.grid(row=1, column=0, sticky="ew")
         safety.columnconfigure(2, weight=1)
@@ -20230,7 +20697,7 @@ class CombinedControlApp:
         ttk.Entry(
             safety, textvariable=self.nonlocal_vi_marker_line_var, width=5
         ).grid(row=0, column=1, padx=(0, 8), sticky="w")
-        ttk.Label(
+        interlock = ttk.Label(
             safety,
             text=(
                 "Interlock: the 6221 must be OFF during 2410 pulses and resistance measurement; "
@@ -20238,7 +20705,9 @@ class CombinedControlApp:
                 "the MFLI locks to the 6221 via the reference input chosen in the GUI."
             ),
             foreground="#a34b00",
-        ).grid(row=0, column=2, sticky="w")
+        )
+        interlock.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(4, 0))
+        wrap_to_width(interlock)
         self.nonlocal_vi_off_button = tk.Button(
             safety,
             text="Stop 2410 / 6221 now",
@@ -20250,7 +20719,9 @@ class CombinedControlApp:
             padx=12,
             pady=3,
         )
-        self.nonlocal_vi_off_button.grid(row=0, column=3, padx=(8, 0))
+        self.nonlocal_vi_off_button.grid(
+            row=0, column=3, padx=(8, 0), sticky="e"
+        )
 
         settings = ttk.LabelFrame(outer, text="Non-local VI voltage-pulse scan parameters", padding=7)
         settings.grid(row=2, column=0, sticky="ew", pady=(0, 5))
@@ -20268,21 +20739,64 @@ class CombinedControlApp:
             ("6221 compliance V", self.nonlocal_vi_compliance_var),
             ("Pulse gate MΩ", self.nonlocal_vi_gate_resistance_var),
         )
+        # One grid, made in reading order, so Tab goes along each row.  Six
+        # pairs per row, the same two-row table as before, when they fit;
+        # three per row when the window is too narrow (see
+        # arrange_parameters below).
+        field_gap = 10
+        parameter_pairs = []
         for index, (label, variable) in enumerate(entries):
             row, group = divmod(index, 6)
             column = group * 2
-            ttk.Label(settings, text=f"{label}：").grid(
-                row=row, column=column, sticky="e", pady=2
-            )
+            parameter_label = ttk.Label(settings, text=f"{label}：")
+            parameter_label.grid(row=row, column=column, sticky="e", pady=2)
             entry = ttk.Entry(settings, textvariable=variable, width=8)
             entry.grid(
-                row=row, column=column + 1, padx=(0, 10), pady=2
+                row=row, column=column + 1, sticky="ew",
+                padx=(0, field_gap), pady=2,
             )
+            parameter_pairs.append((parameter_label, entry))
             if variable is self.nonlocal_vi_frequency_var:
                 self.nonlocal_vi_frequency_entry = entry
+
+        def arrange_parameters(_event=None) -> None:
+            """Six label/field pairs per row when that fits, else three."""
+            try:
+                # A LabelFrame's padding and border are not usable width.
+                available = int(settings.winfo_width()) - 2 * 7 - 4
+                # Six to a row, each column is as wide as its widest label
+                # and field.  From requested sizes, so the answer does not
+                # depend on the current layout.
+                needed = sum(
+                    max(int(pair[0].winfo_reqwidth()) for pair in slot)
+                    + max(int(pair[1].winfo_reqwidth()) for pair in slot)
+                    + field_gap
+                    for slot in (parameter_pairs[i::6] for i in range(6))
+                )
+            except (tk.TclError, TypeError, ValueError, AttributeError):
+                return
+            if available <= 1:
+                return  # not laid out yet; the first <Configure> decides
+            wide = available >= needed
+            if getattr(settings, "_pair_side_by_side", None) is wide:
+                return
+            settings._pair_side_by_side = wide
+            per_row = 6 if wide else 3
+            for index, (parameter_label, entry) in enumerate(parameter_pairs):
+                row, slot = divmod(index, per_row)
+                parameter_label.grid_configure(row=row, column=2 * slot)
+                entry.grid_configure(row=row, column=2 * slot + 1)
+
+        settings.bind("<Configure>", arrange_parameters, add="+")
+        arrange_parameters()
+
+        # Buttons, progress and time left on the first row; the readouts on
+        # the second, each a fixed-width box so a new value never moves the
+        # others.  The lock-in reference text, which lists every locked
+        # meter, comes last and wraps rather than pushing anything off.
         actions = ttk.LabelFrame(outer, text="Run and data", padding=7)
         actions.grid(row=3, column=0, sticky="ew", pady=(0, 5))
-        actions.columnconfigure(6, weight=1)
+        actions.columnconfigure(2, weight=1)
         self.nonlocal_vi_start_button = ttk.Button(
             actions,
             text="Choose folder and start scan",
@@ -20293,46 +20807,68 @@ class CombinedControlApp:
             actions, text="Stop scan", command=self.stop_nonlocal_vi
         )
         self.nonlocal_vi_stop_button.grid(row=0, column=1, padx=(0, 10))
+        readouts = ttk.Frame(actions)
+        readouts.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(5, 0))
+        readouts.columnconfigure(3, weight=1)
         ttk.Label(
-            actions,
+            readouts,
             textvariable=self.nonlocal_vi_output_var,
             style="Metric.TLabel",
-        ).grid(row=0, column=2, padx=(0, 12))
-        ttk.Label(
-            actions,
+            width=44,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="nw", padx=(0, 12))
+        reference_readout = ttk.Label(
+            readouts,
             textvariable=self.nonlocal_vi_reference_var,
             style="Metric.TLabel",
-        ).grid(row=0, column=3, padx=(0, 12))
+            anchor="w",
+            justify="left",
+        )
+        reference_readout.grid(row=0, column=3, sticky="new")
+        wrap_to_width(reference_readout)
+        mfli_lock_readout = ttk.Label(
+            readouts,
+            textvariable=self.nonlocal_vi_mfli_lock_var,
+            style="Metric.TLabel",
+            width=22,
+            anchor="w",
+        )
+        # One text line tall with the dot centred, so the dot stays level
+        # with the text when the reference readout wraps to more lines.
+        try:
+            lamp_height = max(16, int(mfli_lock_readout.winfo_reqheight()))
+        except (tk.TclError, TypeError, ValueError, AttributeError):
+            lamp_height = 16
         vi_mfli_lock_canvas = tk.Canvas(
-            actions,
+            readouts,
             width=16,
-            height=16,
+            height=lamp_height,
             highlightthickness=0,
             background=self.root.cget("background"),
         )
+        lamp_middle = lamp_height // 2
         vi_mfli_lock_item = vi_mfli_lock_canvas.create_oval(
-            3, 3, 13, 13, fill="#9aa0a6", outline="#6f757b"
+            3, lamp_middle - 5, 13, lamp_middle + 5,
+            fill="#9aa0a6", outline="#6f757b",
         )
-        vi_mfli_lock_canvas.grid(row=0, column=4, padx=(0, 3))
+        vi_mfli_lock_canvas.grid(row=0, column=1, sticky="nw", padx=(0, 3))
         self.nonlocal_vi_mfli_lock_indicator = (
             vi_mfli_lock_canvas, vi_mfli_lock_item
         )
-        ttk.Label(
-            actions,
-            textvariable=self.nonlocal_vi_mfli_lock_var,
-            style="Metric.TLabel",
-        ).grid(row=0, column=5, padx=(0, 10))
+        mfli_lock_readout.grid(row=0, column=2, sticky="nw", padx=(0, 12))
         self.nonlocal_vi_progress = ttk.Progressbar(
             actions, mode="determinate", maximum=1, value=0, length=180
         )
         self.nonlocal_vi_progress.grid(
-            row=0, column=6, sticky="ew", padx=(8, 8)
+            row=0, column=2, sticky="ew", padx=(8, 8)
         )
         ttk.Label(
             actions,
             textvariable=self.nonlocal_vi_eta_var,
             style="Success.TLabel",
-        ).grid(row=0, column=7, sticky="e")
+            width=20,
+            anchor="w",
+        ).grid(row=0, column=3, sticky="e")
 
         plots = ttk.Frame(outer)
         self.nonlocal_vi_plot_container = plots
@@ -20499,7 +21035,8 @@ class CombinedControlApp:
 
     def build_channel(self, parent, channel: int, row: int, column: int) -> None:
         panel = ttk.LabelFrame(parent, text=f"LED channel {channel}", padding=7)
-        panel.grid(row=row, column=column, sticky="nsew", padx=3, pady=3)
+        # No side padding: the panels share the page's left edge.
+        panel.grid(row=row, column=column, sticky="nsew", padx=0, pady=3)
         panel.columnconfigure(0, weight=1)
         variables: dict[str, tk.Variable] = {
             "i": tk.IntVar(value=0),
@@ -20533,10 +21070,14 @@ class CombinedControlApp:
 
         actions = ttk.Frame(primary)
         actions.grid(row=0, column=5, sticky="e")
+        # Eight characters, as on the stage buttons, instead of the theme's
+        # eleven-character minimum: it keeps the channel column narrow enough
+        # for the ROI graph and its title in the default window.
         apply_button = ttk.Button(
             actions,
             text="Apply",
             style="Accent.TButton",
+            width=8,
             command=lambda selected=channel: self.apply_channel(selected),
         )
         apply_button.pack(side="left", padx=(0, 3))
@@ -20544,6 +21085,7 @@ class CombinedControlApp:
         query_button = ttk.Button(
             actions,
             text="Query",
+            width=8,
             command=lambda selected=channel: self.query_channel(selected),
         )
         query_button.pack(side="left")
@@ -20567,15 +21109,17 @@ class CombinedControlApp:
     def toggle_led_log(self) -> None:
         visible = not bool(self.led_log_visible_var.get())
         self.led_log_visible_var.set(visible)
+        # The log sits in row 6 (row 5 is the rotation stage).  Shown, it
+        # takes the spare height; hidden, the blank row 7 takes it again.
         if visible:
             self.led_log_frame.grid()
-            self.led_outer.rowconfigure(5, weight=1)
-            self.led_outer.rowconfigure(6, weight=0)
+            self.led_outer.rowconfigure(6, weight=1)
+            self.led_outer.rowconfigure(7, weight=0)
             self.led_log_toggle_button.configure(text="Hide log")
         else:
             self.led_log_frame.grid_remove()
-            self.led_outer.rowconfigure(5, weight=0)
-            self.led_outer.rowconfigure(6, weight=1)
+            self.led_outer.rowconfigure(6, weight=0)
+            self.led_outer.rowconfigure(7, weight=1)
             self.led_log_toggle_button.configure(text="Show log")
 
     def show_motor_window(self) -> None:
@@ -33836,25 +34380,39 @@ def create_motor_subsystem():
             self.connection_indicator_canvas.grid(
                 row=0, column=5, padx=(8, 1)
             )
-            ttk.Label(serial_box, textvariable=self.connection_var).grid(
-                row=0, column=6, padx=(1, 12)
-            )
+            # At least as wide as "Connected: COM10", so connecting does not
+            # move the Init state beside it.
+            ttk.Label(
+                serial_box, textvariable=self.connection_var, width=-16
+            ).grid(row=0, column=6, padx=(1, 12), sticky="w")
             ttk.Label(serial_box, textvariable=self.init_state_var).grid(
                 row=0, column=7, padx=12
             )
+            # The port settings take a line of their own: beside the buttons
+            # they were cut in the default window.
             ttk.Label(
                 serial_box,
                 text="115200 / 8N1 / address 1 / reopen per frame",
-            ).grid(row=0, column=8, sticky="e")
+            ).grid(row=1, column=0, columnspan=9, sticky="w", pady=(6, 0))
     
             safety = ttk.Frame(outer, padding=(2, 9))
             safety.grid(row=1, column=0, sticky="ew")
             safety.columnconfigure(0, weight=1)
-            ttk.Label(
+            safety_note = ttk.Label(
                 safety,
                 text="Check limits, direction and mechanical path before moving; keep the hardware emergency stop within reach.",
                 foreground="#a34b00",
-            ).grid(row=0, column=0, sticky="w")
+            )
+            # Fills the space left of the Init buttons and wraps to it, so the
+            # whole warning stays visible in the default window.
+            safety_note.grid(row=0, column=0, sticky="ew")
+            safety_note.bind(
+                "<Configure>",
+                lambda event: event.widget.configure(
+                    wraplength=max(200, event.width - 4)
+                ),
+                add="+",
+            )
             self.init_on_button = ttk.Button(safety, text="Init ON", command=self.init_on)
             self.init_on_button.grid(row=0, column=1, padx=5)
             self.init_off_button = tk.Button(
@@ -33886,9 +34444,11 @@ def create_motor_subsystem():
             status_box.grid(row=2, column=0, sticky="ew", pady=(0, 8))
             status_box.columnconfigure(6, weight=1)
             ttk.Label(status_box, text="Register 4:").grid(row=0, column=0)
-            ttk.Label(status_box, textvariable=self.status_word_var, style="LargeMetric.TLabel").grid(row=0, column=1, padx=6)
+            # Fixed-width readouts ("0xFFFF", "0  (not set)"), so the first
+            # reading does not move the buttons after them.
+            ttk.Label(status_box, textvariable=self.status_word_var, style="LargeMetric.TLabel", width=7).grid(row=0, column=1, padx=6)
             ttk.Label(status_box, text="Home flag (register 5):").grid(row=0, column=2, padx=(16, 0))
-            ttk.Label(status_box, textvariable=self.home_flag_var, style="LargeMetric.TLabel").grid(row=0, column=3, padx=6)
+            ttk.Label(status_box, textvariable=self.home_flag_var, style="LargeMetric.TLabel", width=10).grid(row=0, column=3, padx=6)
             self.read_button = ttk.Button(status_box, text="Read once", command=self.read_status_once)
             self.read_button.grid(row=0, column=4, padx=8)
             ttk.Checkbutton(status_box, text="Continuous read", variable=self.poll_var, command=self.poll_changed).grid(row=0, column=5)
@@ -33896,11 +34456,13 @@ def create_motor_subsystem():
             profile_box.grid(row=3, column=0, sticky="ew", pady=(0, 8))
             ttk.Label(profile_box, text="Direction: Mode1").grid(row=0, column=0, padx=(0, 14))
             ttk.Label(profile_box, text="Speed (rps):").grid(row=0, column=1)
-            ttk.Entry(profile_box, textvariable=self.speed_var, width=12).grid(row=0, column=2, padx=(4, 16))
+            # Nine-character fields (values such as 10.000): at twelve the row
+            # was wider than the default window and cut Apply profile.
+            ttk.Entry(profile_box, textvariable=self.speed_var, width=9).grid(row=0, column=2, padx=(4, 16))
             ttk.Label(profile_box, text="Acceleration (rps/s):").grid(row=0, column=3)
-            ttk.Entry(profile_box, textvariable=self.accel_var, width=12).grid(row=0, column=4, padx=(4, 16))
+            ttk.Entry(profile_box, textvariable=self.accel_var, width=9).grid(row=0, column=4, padx=(4, 16))
             ttk.Label(profile_box, text="Deceleration (rps/s):").grid(row=0, column=5)
-            ttk.Entry(profile_box, textvariable=self.decel_var, width=12).grid(row=0, column=6, padx=(4, 16))
+            ttk.Entry(profile_box, textvariable=self.decel_var, width=9).grid(row=0, column=6, padx=(4, 16))
             self.apply_button = ttk.Button(profile_box, text="Apply profile", command=self.apply_profile)
             self.apply_button.grid(row=0, column=7)
             self.action_widgets.append(self.apply_button)
@@ -33908,7 +34470,7 @@ def create_motor_subsystem():
             motion_box = ttk.LabelFrame(outer, text="Position and step (µm)", padding=10)
             motion_box.grid(row=4, column=0, sticky="ew", pady=(0, 8))
             motion_box.columnconfigure(4, weight=1)
-            ttk.Label(motion_box, text="Absolute position:").grid(row=0, column=0)
+            ttk.Label(motion_box, text="Absolute position:").grid(row=0, column=0, sticky="e")
             ttk.Entry(motion_box, textvariable=self.absolute_var, width=14).grid(row=0, column=1, padx=5)
             self.goto_button = ttk.Button(
                 motion_box, text="Go to absolute position", command=self.goto_absolute
@@ -33921,7 +34483,7 @@ def create_motor_subsystem():
             self.home_button = ttk.Button(motion_box, text="Home", command=self.home)
             self.home_button.grid(row=0, column=5, padx=(12, 0))
 
-            ttk.Label(motion_box, text="Step:").grid(row=1, column=0, pady=(8, 0))
+            ttk.Label(motion_box, text="Step:").grid(row=1, column=0, sticky="e", pady=(8, 0))
             ttk.Entry(motion_box, textvariable=self.step_var, width=14).grid(
                 row=1, column=1, padx=5, pady=(8, 0)
             )
@@ -33939,14 +34501,18 @@ def create_motor_subsystem():
                 ]
             )
     
-            ttk.Label(motion_box, text="Software-tracked command position:").grid(
-                row=2, column=0, pady=(10, 0), sticky="w"
+            # The readout line has a frame of its own, so its long label does
+            # not widen the label column of the two rows above.
+            command_row = ttk.Frame(motion_box)
+            command_row.grid(row=2, column=0, columnspan=6, pady=(10, 0), sticky="w")
+            ttk.Label(command_row, text="Software-tracked command position:").pack(
+                side="left"
             )
             ttk.Label(
-                motion_box,
+                command_row,
                 textvariable=self.command_position_var,
                 font=(self.ui_font_family, self.ui_font_size + 2, "bold"),
-            ).grid(row=2, column=1, columnspan=5, pady=(10, 0), sticky="w")
+            ).pack(side="left", padx=(5, 0))
             ttk.Label(
                 motion_box,
                 text="Capture scaling: absolute position ×102.4; step increment ×25.6. The command position is not encoder feedback.",
@@ -33958,12 +34524,14 @@ def create_motor_subsystem():
             progress_box.columnconfigure(0, weight=1)
             self.progress = ttk.Progressbar(progress_box, mode="indeterminate")
             self.progress.grid(row=0, column=0, sticky="ew")
+            # Twenty-two characters: the whole of "Show/Hide communication
+            # log" (twelve cut it), and the same width for both texts.
             self.log_toggle_button = ttk.Button(
                 progress_box,
                 text="Show communication log",
                 command=self._toggle_log,
                 style="Compact.TButton",
-                width=12,
+                width=22,
             )
             self.log_toggle_button.grid(row=0, column=1, padx=(8, 0))
     
@@ -34469,16 +35037,20 @@ class PPMSPanel(CombinedControlApp):
         self.zurich_status = tk.StringVar(value="Not connected")
         self.zurich_values = tk.StringVar(value="X: -- V    Y: -- V    R: -- V    θ: -- °    Ref: -- Hz")
         row = ttk.Frame(self.ppms_instruments_frame)
-        row.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(3, 0))
         compact = self.__dict__.get('compact_zurich_connection', False)
-        row.columnconfigure(10, weight=1)
-        ttk.Label(row, text="Zurich MFLI", **({'width': 16} if compact else {})).grid(row=0, column=0)
+        # On the PPMS page the row starts at the same x as the rack cells.
+        row.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(3, 0), padx=0 if compact else 2)
+        # Spare width: an empty tail (RT-E) or the status text (PPMS).
+        row.columnconfigure(10 if compact else 11, weight=1)
+        # RT-E: the label and list are as wide as the rack's label and
+        # address columns, so the Zurich row lines up with them.
+        ttk.Label(row, text="Zurich MFLI", **({'width': 13} if compact else {})).grid(row=0, column=0)
         self.zurich_entries = []
-        for column, variable, width in ((1, self.zurich_resource, 12), (5, self.zurich_timeconstant, 7)):
+        for column, variable, width in ((1, self.zurich_resource, 12), (5, self.zurich_timeconstant, 6 if compact else 7)):
             if column == 1:
                 # Which Zurich: chosen from the lab's two, never typed, so the
                 # Data Server that can reach it is used.
-                entry = create_zurich_chooser(row, variable, match_chars=23 if compact else None)
+                entry = create_zurich_chooser(row, variable, match_chars=18 if compact else None)
                 extra = entry.zurich_shortfall
             else:
                 entry = ttk.Entry(row, textvariable=variable, width=width)
@@ -34486,36 +35058,46 @@ class PPMSPanel(CombinedControlApp):
             entry.grid(row=0, column=(9 if column == 5 else 1) if compact else column,
                        padx=(0, extra) if compact else (3, 3 + extra))
             self.zurich_entries.append(entry)
-        ttk.Label(row, text="Ref." if compact else "Reference").grid(row=0, column=6 if compact else 2)
+        ttk.Label(row, text="Ref." if compact else "Reference").grid(row=0, column=6 if compact else 2, padx=(4, 2))
         self.zurich_reference_combo = ttk.Combobox(row, textvariable=self.zurich_reference,
             values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS), state="readonly", width=12)
         self.zurich_reference_combo.grid(row=0, column=7 if compact else 3)
-        ttk.Label(row, text="TC (s)" if compact else "Time constant s").grid(row=0, column=8 if compact else 4)
-        ttk.Label(self.ppms_settings_panel, text="Zurich harmonic").grid(row=3, column=13)
+        ttk.Label(row, text="TC (s)" if compact else "Time constant s").grid(row=0, column=8 if compact else 4, padx=(4, 2))
+        # Laid out as the SR830 harmonic rows above it.
+        ttk.Label(self.ppms_settings_panel, text="Zurich harmonic").grid(row=3, column=13, sticky="e", padx=(12, 3))
         # Every meter's autorange status sits in one column, right of Measure.
         self.zurich_range_var = tk.StringVar(value="Autorange ON")
-        ttk.Label(self.ppms_settings_panel, textvariable=self.zurich_range_var).grid(
+        ttk.Label(self.ppms_settings_panel, textvariable=self.zurich_range_var, width=16).grid(
             row=3, column=18, sticky="w", padx=(6, 0))
         self.zurich_harmonic_combo = ttk.Combobox(self.ppms_settings_panel, textvariable=self.zurich_harmonic,
             values=(1, 2, 3, "1+2", "1+2+3"), state="readonly", width=7)
-        self.zurich_harmonic_combo.grid(row=3, column=14)
+        self.zurich_harmonic_combo.grid(row=3, column=14, sticky="ew")
         self.zurich_harmonic_combo.bind('<<ComboboxSelected>>', lambda event: self._apply_ppms2_zurich_harmonic())
         self.ppms_lockin_selection['zurich'] = tk.BooleanVar(value=True)
         self.zurich_select = ttk.Checkbutton(self.ppms_settings_panel, text="Measure", variable=self.ppms_lockin_selection['zurich'],
             command=self._refresh_ppms2_plot_layout)
         self.zurich_select.grid(row=3, column=17, padx=3)
-        reference_indicator = self._create_connection_indicator(self.ppms_settings_panel, "zurich_reference")
-        if not compact:
-            reference_indicator.grid(row=3, column=15, padx=(3, 0))
-            ttk.Label(self.ppms_settings_panel, textvariable=self.zurich_status).grid(row=3, column=16, sticky="w")
-        self.zurich_connect_button = ttk.Button(row, text="Connect" if compact else "Connect / apply settings", command=self.connect_ppms2_zurich)
+        # Registered for status updates, but not shown a second time beside
+        # the harmonic controls, as for the SR830s: the Zurich row in the
+        # rack carries the Zurich state.  Here it pushed Measure and the
+        # autorange column out of the settings box.
+        self._create_connection_indicator(self.ppms_settings_panel, "zurich_reference")
+        self.zurich_connect_button = ttk.Button(row, text="Connect" if compact else "Connect / apply settings", command=self.connect_ppms2_zurich,
+                                                **({'width': 8} if compact else {}))
         self.zurich_connect_button.grid(row=0, column=2 if compact else 8, padx=0 if compact else 4)
-        self.zurich_disconnect_button = ttk.Button(row, text="Disconnect", command=self.disconnect_ppms2_zurich, state="disabled")
+        self.zurich_disconnect_button = ttk.Button(row, text="Disconnect", command=self.disconnect_ppms2_zurich, state="disabled", width=10)
         self.zurich_disconnect_button.grid(row=0, column=3 if compact else 9)
         self._create_connection_indicator(row, "zurich_connection").grid(row=0, column=4 if compact else 10, padx=3, sticky="w")
-        status_display = self._ppms_compact_status(self.zurich_status) if compact else self.zurich_status
-        ttk.Label(row, textvariable=status_display,
-                  **({'width': 13, 'wraplength': 0} if compact else {})).grid(row=0, column=5 if compact else 11, sticky="w")
+        if compact:
+            ttk.Label(row, textvariable=self._ppms_compact_status(self.zurich_status),
+                      width=13, wraplength=0).grid(row=0, column=5, sticky="w")
+        else:
+            # The whole status in the rest of the row, on one line: a long
+            # one is cut to fit with "…" instead of widening the rack.  A
+            # failed connect also shows the full text in a dialog.
+            status_label = ttk.Label(row, width=1, wraplength=0)
+            status_label.grid(row=0, column=11, sticky="ew")
+            show_trimmed(status_label, self.zurich_status)
         self.zurich_canvases = {}
         self.zurich_plot_frames = {}
         self.ppms_plot_frame.configure(text="SR830-1 / SR830-2 / SR830-3 / Zurich: X, Y, θ vs scan variable")
@@ -35178,30 +35760,42 @@ class RTEPanel(PPMSPanel):
         outer.grid(row=0, column=0, sticky='nsew')
         outer.columnconfigure(0, weight=1)
         outer.rowconfigure(4, weight=1)
+        # Sections sit side by side when they fit and stack in a narrower
+        # window, as on the STFMR page.  Only real widgets are arranged: the
+        # offline tests build this page from stand-ins with no geometry.
+        laid_out = isinstance(outer, tk.Widget)
         measurement = ttk.LabelFrame(outer, text='Measurement instruments', padding=4)
         measurement.grid(row=0, column=0, sticky='ew')
-        measurement.columnconfigure(0, weight=1)
+        # Spare width goes right of the two lists, so neither one stretches.
         measurement.columnconfigure(1, weight=1)
         rack = ttk.Frame(measurement)
         rack.grid(row=0, column=0, sticky='nw', padx=(0, 12))
         self.rte_resources, self.rte_connections, self.rte_connection_widgets = {}, {}, {}
+        # Every row has the same fixed columns (label, 18-character address,
+        # buttons sized to their text, lamp, 13-character status), so the
+        # rack, the SR830 rows and the Zurich row line up when stacked.
         for row, (key, label) in enumerate((('kepco', 'KEPCO 4886'), ('gauss', 'Lake Shore 475'))):
             self.rte_resources[key] = tk.StringVar(value=STFMR_LOCKIN_DEFAULT_RESOURCES[key])
             self.rte_connections[key] = tk.StringVar(value='Not connected')
-            ttk.Label(rack, text=label, width=16).grid(row=row, column=0, sticky='w')
-            entry = ttk.Entry(rack, textvariable=self.rte_resources[key], width=23)
+            ttk.Label(rack, text=label, width=13).grid(row=row, column=0, sticky='w')
+            entry = ttk.Entry(rack, textvariable=self.rte_resources[key], width=18)
             entry.grid(row=row, column=1)
-            connect = ttk.Button(rack, text='Connect', command=lambda k=key: self._rte_connect(k))
+            connect = ttk.Button(rack, text='Connect', width=8, command=lambda k=key: self._rte_connect(k))
             connect.grid(row=row, column=2)
-            disconnect = ttk.Button(rack, text='Disconnect', command=lambda k=key: self._rte_disconnect(k))
+            disconnect = ttk.Button(rack, text='Disconnect', width=10, command=lambda k=key: self._rte_disconnect(k))
             disconnect.grid(row=row, column=3)
             self._create_connection_indicator(rack, 'rte_' + key).grid(row=row, column=4, padx=3)
-            ttk.Label(rack, textvariable=self.rte_connections[key]).grid(row=row, column=5, sticky='w')
+            ttk.Label(rack, textvariable=self.rte_connections[key], width=13).grid(row=row, column=5, sticky='w')
             self.rte_connection_widgets[key] = (entry, connect, disconnect)
         self.rte_field_live = tk.StringVar(value='LS475 field: -- G')
         self.rte_drive_live = tk.StringVar(value='KEPCO: no output command sent')
-        ttk.Label(rack, textvariable=self.rte_field_live, wraplength=0).grid(row=1, column=6, padx=(10, 0), sticky='w')
-        ttk.Label(rack, textvariable=self.rte_drive_live, wraplength=0).grid(row=0, column=6, padx=(10, 0), sticky='w')
+        # Fixed boxes, so a new reading never shifts the lists.  A longer
+        # message, such as a failed read or OFF, wraps inside its box.
+        for row, variable in ((1, self.rte_field_live), (0, self.rte_drive_live)):
+            live = ttk.Label(rack, textvariable=variable, width=32)
+            live.grid(row=row, column=6, padx=(10, 0), sticky='w')
+            if laid_out:
+                live.configure(wraplength=32 * tkfont.nametofont('TkDefaultFont', root=live).measure('0'))
 
         instruments = self.ppms_instruments_frame = ttk.Frame(measurement)
         instruments.grid(row=0, column=1, sticky='new')
@@ -35213,40 +35807,60 @@ class RTEPanel(PPMSPanel):
             device_row = i + 2 if i < 2 else 0
             if i >= 2:
                 group.grid(row=i - 2, column=0, sticky='w', padx=0)
-            ttk.Label(group, text=self.ppms_instrument_controllers[key].label, width=16).grid(row=device_row, column=0, sticky='w')
+            ttk.Label(group, text=self.ppms_instrument_controllers[key].label, width=13).grid(row=device_row, column=0, sticky='w')
             variable = self.ppms_resource_vars[key]
-            entry = ttk.Entry(group, textvariable=variable, width=23)
+            entry = ttk.Entry(group, textvariable=variable, width=18)
             entry.grid(row=device_row, column=1)
             self.ppms_device_resource_widgets[key] = entry
-            connect = ttk.Button(group, text='Connect', command=lambda k=key: self.connect_ppms_device(k))
+            connect = ttk.Button(group, text='Connect', width=8, command=lambda k=key: self.connect_ppms_device(k))
             connect.grid(row=device_row, column=2)
-            disconnect = ttk.Button(group, text='Disconnect', command=lambda k=key: self.disconnect_ppms_device(k))
+            disconnect = ttk.Button(group, text='Disconnect', width=10, command=lambda k=key: self.disconnect_ppms_device(k))
             disconnect.grid(row=device_row, column=3)
             self.ppms_device_connect_buttons[key] = connect
             self.ppms_device_disconnect_buttons[key] = disconnect
             self._create_connection_indicator(group, 'ppms_' + key).grid(row=device_row, column=4, padx=3)
             status = self._ppms_compact_status(self.ppms_xy_vars[key]) if key in PPMS_SR830_KEYS else self.ppms_device_connection_vars[key]
             ttk.Label(group, textvariable=status, width=13).grid(row=device_row, column=5, sticky='w')
+        if laid_out:
+            # Side by side in the widened lab window; stacked in the 1101 px
+            # window the program opens with, where the two did not fit.
+            self._arrange_pair_by_width(measurement, rack, instruments, gap=12, stack_gap=4)
 
-        outer.columnconfigure(0, weight=3, uniform='rte_controls')
-        outer.columnconfigure(1, weight=2, uniform='rte_controls')
-        measurement.grid(columnspan=2)
-        settings = self.ppms_settings_panel = ttk.LabelFrame(outer, text='RT-E settings', padding=4)
-        settings.grid(row=2, column=0, sticky='ew')
+        # Settings and scan side by side when both fit, else stacked.
+        controls = ttk.Frame(outer)
+        controls.grid(row=2, column=0, sticky='ew')
+        controls.columnconfigure(1, weight=1)
+        settings = ttk.LabelFrame(controls, text='RT-E settings', padding=4)
+        settings.grid(row=0, column=0, sticky='nsew')
+        # The source settings on the left, the lock-in choices on the right,
+        # stacked when the settings box is narrower than both.  The pair's
+        # frame fills the box, so it sees the width it has, not only the
+        # width it uses.  Side by side, the rows of each share the height and
+        # stay level.  PPMSPanel adds the Zurich row to ppms_settings_panel.
+        body = ttk.Frame(settings)
+        body.grid(row=0, column=0, sticky='new')
+        settings.columnconfigure(0, weight=1)
+        params = ttk.Frame(body)
+        params.grid(row=0, column=0, sticky='nsw')
+        lockins = self.ppms_settings_panel = ttk.Frame(body)
+        lockins.grid(row=0, column=1, sticky='nsw')
+        for section in (params, lockins):
+            for section_row in range(4):
+                section.rowconfigure(section_row, weight=1)
         self.rte_edit_widgets = []
         self.ppms_lockin_choice_widgets = []
-        safety = ttk.Checkbutton(settings,
+        safety = ttk.Checkbutton(params,
             text='Safety confirmed: polarity, cooling, wiring, limits, sample; exclusive rack control',
             variable=self.ppms_control_safety_var, command=self._update_ppms_control_ui)
-        safety.grid(row=0, column=0, columnspan=10, sticky='w')
+        safety.grid(row=0, column=0, columnspan=7, sticky='w')
         self.rte_edit_widgets.append((safety, 'normal'))
         self.rte_drive_target = tk.StringVar(value='0')
         self.rte_voltage_limit = tk.StringVar(value='5')
         self.ppms_current_live_var = tk.StringVar(value='6221: not connected')
         def entry_at(row, col, label, variable):
-            ttk.Label(settings, text=label).grid(row=row, column=col, sticky='w')
-            entry = ttk.Entry(settings, textvariable=variable, width=5)
-            entry.grid(row=row, column=col + 1, padx=3)
+            ttk.Label(params, text=label).grid(row=row, column=col, sticky='e')
+            entry = ttk.Entry(params, textvariable=variable, width=5)
+            entry.grid(row=row, column=col + 1, padx=3, sticky='ew')
             self.rte_edit_widgets.append((entry, 'normal'))
         entry_at(1, 0, 'KEPCO current A', self.rte_drive_target)
         entry_at(1, 2, 'Voltage limit V', self.rte_voltage_limit)
@@ -35256,33 +35870,38 @@ class RTEPanel(PPMSPanel):
         for row, col, label, callback in (
                 (1, 4, 'Apply KEPCO', self._rte_apply_drive),
                 (2, 6, 'Set 6221', self._ppms_set_current_direct)):
-            button = ttk.Button(settings, text=label, command=callback, width=11)
+            button = ttk.Button(params, text=label, command=callback, width=11)
             button.grid(row=row, column=col, padx=4)
             self.rte_edit_widgets.append((button, 'normal'))
-        ttk.Button(settings, text='KEPCO Zero / OFF', command=self._rte_zero, width=15).grid(row=1, column=6)
-        ttk.Button(settings, text='6221 / 2400 OFF', command=self.ppms_sources_off, width=15).grid(row=3, column=4, columnspan=3, sticky='e')
-        ttk.Label(settings, textvariable=self.ppms_current_live_var, wraplength=0).grid(row=3, column=0, columnspan=4, sticky='w')
+        ttk.Button(params, text='KEPCO Zero / OFF', command=self._rte_zero, width=15).grid(row=1, column=6)
+        ttk.Button(params, text='6221 / 2400 OFF', command=self.ppms_sources_off, width=15).grid(row=3, column=4, columnspan=3, sticky='e')
+        # A compliance warning is long: it wraps within its four columns
+        # instead of widening the settings.
+        current_live = ttk.Label(params, textvariable=self.ppms_current_live_var, width=1, wraplength=0)
+        current_live.grid(row=3, column=0, columnspan=4, sticky='ew')
+        current_live.bind('<Configure>', lambda event: event.widget.configure(wraplength=max(100, event.width - 8)), add='+')
         for grid_row, key in enumerate(PPMS_SR830_KEYS):
             # Share the safety row on the right to save one row of height.
             # The inherited Zurich controls follow SR830-3 at row 3.
-            ttk.Label(settings, text=PPMS_SR830_LABELS[key] + ' harmonic').grid(row=grid_row, column=13)
-            combo = ttk.Combobox(settings, textvariable=self._ppms_harmonic_var(key), values=(1, 2, 3, '1+2', '1+2+3'), width=7, state='readonly')
-            combo.grid(row=grid_row, column=14)
+            ttk.Label(lockins, text=PPMS_SR830_LABELS[key] + ' harmonic').grid(row=grid_row, column=13, sticky='e', padx=(12, 3))
+            combo = ttk.Combobox(lockins, textvariable=self._ppms_harmonic_var(key), values=(1, 2, 3, '1+2', '1+2+3'), width=7, state='readonly')
+            combo.grid(row=grid_row, column=14, sticky='ew')
             combo.bind('<<ComboboxSelected>>', lambda event, k=key: self._ppms_apply_selected_harmonic(k))
             # Keep the indicator registered for status updates, without a
             # second visible status beside the harmonic controls.
-            self._create_connection_indicator(settings, 'ppms_ref_' + key)
-            select = ttk.Checkbutton(settings, text='Measure', variable=self.ppms_lockin_selection[key], command=self._refresh_ppms2_plot_layout)
-            select.grid(row=grid_row, column=17)
+            self._create_connection_indicator(lockins, 'ppms_ref_' + key)
+            select = ttk.Checkbutton(lockins, text='Measure', variable=self.ppms_lockin_selection[key], command=self._refresh_ppms2_plot_layout)
+            select.grid(row=grid_row, column=17, padx=3)
             self.ppms_sr830_range_vars[key] = tk.StringVar(value='Autorange ON')
-            ttk.Label(settings, textvariable=self.ppms_sr830_range_vars[key], width=16).grid(
+            ttk.Label(lockins, textvariable=self.ppms_sr830_range_vars[key], width=16).grid(
                 row=grid_row, column=18, sticky='w', padx=(6, 0))
             self.ppms_lockin_choice_widgets.extend(((combo, 'readonly'), (select, 'normal')))
 
-        scan = ttk.LabelFrame(outer, text='RT-E scan', padding=4)
-        scan.grid(row=2, column=1, sticky='nsew', padx=(6, 0))
-        for column in (2, 4, 6):
-            scan.columnconfigure(column, weight=1)
+        scan = ttk.LabelFrame(controls, text='RT-E scan', padding=4)
+        scan.grid(row=0, column=1, sticky='nsew', padx=(6, 0))
+        # Spare width goes to the empty column after the table, so the fields
+        # stay together and the status lines below take the extra room.
+        scan.columnconfigure(7, weight=1)
         self.ppms_simple_mode = tk.StringVar(value='Current')
         self.ppms_simple_range = [tk.StringVar(value=v) for v in ('0.01', '1', '0.01')]
         self.rte_scan_units = tk.StringVar(value='6221 mA RMS')
@@ -35295,9 +35914,9 @@ class RTEPanel(PPMSPanel):
                      self.ppms_field_scan_stable_var, self.ppms_acquisition_time_var]
         for i, (label, variable) in enumerate(zip(('Start', 'End', 'Step', 'Loops', 'Settle s', 'Acquire s'), variables)):
             scan_row, scan_col = divmod(i, 3)
-            ttk.Label(scan, text=label).grid(row=scan_row, column=1 + 2*scan_col)
+            ttk.Label(scan, text=label).grid(row=scan_row, column=1 + 2*scan_col, sticky='e', padx=(4, 0))
             entry = ttk.Entry(scan, textvariable=variable, width=6)
-            entry.grid(row=scan_row, column=2 + 2*scan_col, padx=2)
+            entry.grid(row=scan_row, column=2 + 2*scan_col, padx=2, sticky='ew')
             self.rte_edit_widgets.append((entry, 'normal'))
         ttk.Label(scan, textvariable=self.rte_scan_units).grid(row=1, column=0)
         check = ttk.Checkbutton(scan, text='Round trip', variable=self.rte_round_trip)
@@ -35315,7 +35934,7 @@ class RTEPanel(PPMSPanel):
         # not use, and width=1 keeps a long message from widening the panel
         # instead of using the space it has.
         scan_status = ttk.Frame(scan)
-        scan_status.grid(row=3, column=0, columnspan=7, sticky='ew')
+        scan_status.grid(row=3, column=0, columnspan=8, sticky='ew')
         scan_status.columnconfigure(1, weight=1)
         self.ppms_field_scan_progress = ttk.Progressbar(scan_status, mode='determinate', length=110)
         self.ppms_field_scan_progress.grid(row=0, column=0, padx=(4, 8))
@@ -35325,13 +35944,37 @@ class RTEPanel(PPMSPanel):
         self.rte_status_label = ttk.Label(scan_status, width=1, wraplength=0)
         self.rte_status_label.grid(row=0, column=1, sticky='ew')
         show_trimmed(self.rte_status_label, self.ppms_field_scan_status_var)
+        # The acquisition state and the field note each have a line: side by
+        # side they did not fit beside fully shown settings, and the state
+        # ("... 6221 output OFF") was cut.
         scan_notes = ttk.Frame(scan)
-        scan_notes.grid(row=4, column=0, columnspan=7, sticky='ew')
+        scan_notes.grid(row=4, column=0, columnspan=8, sticky='ew')
         scan_notes.columnconfigure(0, weight=1)
         ttk.Label(scan_notes, textvariable=self.ppms_transport_status_var, width=1, wraplength=0).grid(row=0, column=0, sticky='ew')
-        ttk.Label(scan_notes, text=' | Field: KEPCO A; readback: signed LS475 G').grid(row=0, column=1, sticky='e')
+        ttk.Label(scan_notes, text='Field: KEPCO A; readback: signed LS475 G').grid(row=1, column=0, sticky='w')
+        if laid_out:
+            controls_gap = 6
+            self._arrange_pair_by_width(body, params, lockins, gap=0, stack_gap=4)
+            self._arrange_pair_by_width(controls, settings, scan, gap=controls_gap, stack_gap=4)
+
+            def keep_settings_room(_event=None):
+                # Side by side, the settings column is at least as wide as the
+                # settings need with their own pair side by side, even while
+                # that pair is still stacked from a narrower window (it would
+                # otherwise never see the room to go back).  The column's
+                # minsize also holds the gap the pair puts right of the
+                # settings (padx), which grid takes off the settings' width,
+                # so it is added here.  Up to 4 px of slack keep a rounding
+                # pixel from holding it stacked, but only where the scan box
+                # still gets its own width.  The scan box takes the rest.
+                room = 0
+                if getattr(controls, '_pair_side_by_side', False) is True:
+                    room = self._pair_natural_width(settings) + controls_gap
+                    room = max(room, min(room + 4, controls.winfo_width() - self._pair_natural_width(scan)))
+                controls.columnconfigure(0, minsize=room)
+            controls.bind('<Configure>', keep_settings_room, add='+')
         self.ppms_plot_frame = ttk.LabelFrame(outer, text='RT-E measurement', padding=2)
-        self.ppms_plot_frame.grid(row=4, column=0, columnspan=2, sticky='nsew')
+        self.ppms_plot_frame.grid(row=4, column=0, sticky='nsew')
         self.ppms_transport_plot_frames = {}
         self.ppms_transport_canvas = None
         self.ppms_plot_axis = 'current'
