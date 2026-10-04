@@ -1413,6 +1413,13 @@ PPMS_FIELD_RATE_DEFAULT_OE_S = 100.0
 PPMS_FIELD_TOLERANCE_OE = 2.0
 PPMS_FIELD_RELATIVE_TOLERANCE = 0.0
 PPMS_SCAN_POLL_S = 0.5
+# After a single Persistent setpoint (Set H, Zero H), a reading taken after
+# the command that shows Persistent at the setpoint confirms it, once a reading
+# has shown the PPMS out of Persistent, or after this many seconds if none did
+# (the field was already there).  Confirmation is given up after the ramp time
+# plus the margin.
+PPMS_PERSISTENT_CONFIRM_S = 10.0
+PPMS_PERSISTENT_MARGIN_S = 1800.0
 PPMS_TRANSPORT_CURRENT_RMS_MA = 0.001
 PPMS_TRANSPORT_FREQUENCY_HZ = 317.3
 PPMS_TRANSPORT_COMPLIANCE_V = 50.0
@@ -13031,7 +13038,9 @@ class CombinedControlApp:
             value=f"{PPMS_FIELD_RATE_DEFAULT_OE_S:g}"
         )
         self.ppms_field_approach_var = tk.StringVar(value="No overshoot")
-        self.ppms_field_mode_var = tk.StringVar(value="Driven")
+        # End mode of Set H, Zero H and the field steps: single setpoints end
+        # Persistent.  Field scans and their clean-up always send Driven.
+        self.ppms_field_mode_var = tk.StringVar(value="Persistent")
         self.ppms_field_step_var = tk.StringVar(value="1000")
         self.ppms_field_scan_start_var = tk.StringVar(value="0")
         self.ppms_field_scan_end_var = tk.StringVar(value="0")
@@ -30848,12 +30857,89 @@ class CombinedControlApp:
         except (ValueError, TypeError, tk.TclError) as error:
             messagebox.showerror("PPMS field parameters", str(error), parent=self.root)
             return
-        self._run_ppms_command(
-            f"Setting field {target:+g} Oe…",
-            lambda: self.ppms_environment_controller.set_field(
+        self._send_ppms_field_setpoint(
+            f"Setting field {target:+g} Oe…", target, rate, approach, mode
+        )
+
+    def _send_ppms_field_setpoint(self, label, target, rate, approach, mode):
+        """Send one field setpoint from Set H, Zero H or a step, never a scan.
+
+        With the Persistent end mode the PPMS ramps to the field, closes the
+        persistent switch and reports Persistent by itself; the status line
+        then follows the readback until it shows Persistent at the setpoint
+        (``_follow_ppms_persistent_setpoint``).
+        """
+        def operation():
+            self.ppms_persistent_watch = None  # The previous setpoint is replaced.
+            result = self.ppms_environment_controller.set_field(
                 target, rate, approach, mode
+            )
+            # The readback inside set_field follows the command.  Readings the
+            # live poll took before it can still arrive afterwards (the pool
+            # has several workers), so each reading carries the time it was
+            # taken and the follow-up counts only later ones.
+            sent = time.monotonic()
+            if mode != 0:
+                return dict(result, read_at=sent)
+            try:
+                distance = abs(target - float(result["field_oe"]))
+            except (KeyError, TypeError, ValueError):
+                distance = abs(target)
+            return dict(result, read_at=sent, persistent_watch={
+                "target": target, "sent": sent, "left_persistent": False,
+                "deadline": sent + distance / rate + PPMS_PERSISTENT_MARGIN_S,
+            })
+
+        self._run_ppms_command(
+            label,
+            operation,
+            success_text=(
+                f"Going to {target:+g} Oe, then Persistent…"
+                if mode == 0 else "Command completed; live readback in progress"
             ),
         )
+
+    def _follow_ppms_persistent_setpoint(self, result) -> None:
+        """Say on the status line when the readback shows Persistent at the
+        setpoint, or that it did not.  Display only: nothing is sent."""
+        watch = self.__dict__.get("ppms_persistent_watch")
+        if not watch:
+            return
+        if getattr(self, "ppms_macro_running", False) or (
+            self.ppms_field_scan_running
+            and getattr(self, "ppms_active_scan_mode", "") in ("Field", "Field+Temperature")
+        ):
+            self.ppms_persistent_watch = None  # A field scan or Macro now sets the field.
+            return
+        read_at = result.get("read_at")
+        if not isinstance(read_at, (int, float)) or read_at < watch["sent"]:
+            return  # Taken before the command, or not timed: says nothing about it.
+        try:
+            measured = float(result["field_oe"])
+        except (KeyError, TypeError, ValueError):
+            return
+        target = watch["target"]
+        status = str(result.get("field_status", ""))
+        tolerance = max(PPMS_FIELD_TOLERANCE_OE, abs(target) * PPMS_FIELD_RELATIVE_TOLERANCE)
+        at_target = abs(measured - target) <= tolerance
+        now = time.monotonic()
+        if status.strip().lower().replace(" ", "") not in ("persistent", "stablepersistent"):
+            watch["left_persistent"] = True  # Ramping, or the switch warming/cooling.
+        elif at_target and (watch["left_persistent"] or now - watch["sent"] >= PPMS_PERSISTENT_CONFIRM_S):
+            self.ppms_persistent_watch = None
+            self.ppms_connection_var.set(f"Field {target:+g} Oe reached; Persistent confirmed")
+            return
+        elif watch["left_persistent"] and not at_target:
+            self.ppms_persistent_watch = None
+            self.ppms_connection_var.set(
+                f"Persistent at {measured:+.7g} Oe, not {target:+g} Oe; check MultiVu, not resent"
+            )
+            return
+        if now >= watch["deadline"]:
+            self.ppms_persistent_watch = None
+            self.ppms_connection_var.set(
+                f"Not Persistent at {target:+g} Oe in time ({status}); check MultiVu, not resent"
+            )
 
     def switch_ppms_persistent(self) -> None:
         if self.ppms_field_scan_running:
@@ -30892,12 +30978,7 @@ class CombinedControlApp:
             messagebox.showerror("PPMS field parameters", str(error), parent=self.root)
             return
         self.ppms_field_target_var.set("0")
-        self._run_ppms_command(
-            "Zeroing field…",
-            lambda: self.ppms_environment_controller.set_field(
-                0.0, rate, approach, mode
-            ),
-        )
+        self._send_ppms_field_setpoint("Zeroing field…", 0.0, rate, approach, mode)
 
     def step_ppms_field(self, direction: int) -> None:
         try:
@@ -30913,14 +30994,15 @@ class CombinedControlApp:
             messagebox.showerror("PPMS field step", str(error), parent=self.root)
             return
         self.ppms_field_target_var.set(f"{target:.9g}")
-        self._run_ppms_command(
-            f"Stepping to {target:+g} Oe…",
-            lambda: self.ppms_environment_controller.set_field(
-                target, rate, approach, mode
-            ),
+        self._send_ppms_field_setpoint(
+            f"Stepping to {target:+g} Oe…", target, rate, approach, mode
         )
 
     def _apply_ppms_environment_readback(self, result: dict[str, object]) -> None:
+        result = dict(result)
+        watch = result.pop("persistent_watch", None)
+        if watch is not None:
+            self.ppms_persistent_watch = dict(watch)  # Started on the Tk thread.
         self.ppms_last_readback = dict(result)
         if result.get("command_verification"):
             self.ppms_connection_var.set(result["command_verification"])
@@ -30932,6 +31014,7 @@ class CombinedControlApp:
         )
         self.ppms_field_var.set(f"{float(result['field_oe']):+.7g} Oe")
         self.ppms_field_status_var.set(f"Status: {result['field_status']}")
+        self._follow_ppms_persistent_setpoint(result)
         if hasattr(self, "ppms_angle_live_var"):
             self.ppms_angle_live_var.set(result.get("motor_display", "-- °"))
         if hasattr(self, "ppms_current_live_var"):
@@ -30989,6 +31072,7 @@ class CombinedControlApp:
 
     def _read_ppms_live(self):
         data = self.ppms_environment_controller.read_environment()
+        data["read_at"] = time.monotonic()  # See _send_ppms_field_setpoint.
         data["current_display"] = self._read_ppms_current_display()
         data.update(self._read_ppms_cryogen_display())
         try:
@@ -31266,6 +31350,7 @@ class CombinedControlApp:
             self.ppms_field_var.set("-- Oe")
             self.ppms_field_status_var.set("Status: --")
             self.ppms_last_readback = None
+            self.ppms_persistent_watch = None
             self.ppms_control_safety_var.set(False)
             self._set_ppms_environment_ui(False)
 

@@ -58,6 +58,14 @@ class PanelDefaultTests(unittest.TestCase):
             allow_no_lockins=False))
         self.assertEqual([entry["harmonic_a"] for entry in passes], [1, 2, 3])
 
+    def test_ppms_set_h_and_zero_h_end_persistent(self):
+        panel = self.app.ppms_panel
+        self.assertEqual(panel.ppms_field_mode_var.get(), "Persistent")
+        self.addCleanup(panel.ppms_field_target_var.set, panel.ppms_field_target_var.get())
+        panel.ppms_field_target_var.set("1000")
+        self.assertEqual(panel._parse_ppms_field_parameters()[3], 0, "Set H")
+        self.assertEqual(panel._parse_ppms_field_parameters(0.0)[3], 0, "Zero H")
+
     def test_ppms_keeps_one_harmonic_per_meter(self):
         self.assertEqual(self.settings(self.app.ppms_panel), {
             "830_a": ("1", True),
