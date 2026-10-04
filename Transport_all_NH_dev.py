@@ -30619,7 +30619,6 @@ class CombinedControlApp:
                 self.ppms_macro_status.set(str(error))
                 return
             self.ppms_macro_running = True
-            self._end_ppms_persistent_follow_up("The Macro")
             self.ppms_macro_stop = threading.Event()
             self.ppms_macro_commands = iter(commands)
             self.ppms_macro_text = editor.get("1.0", "end-1c")
@@ -30697,6 +30696,7 @@ class CombinedControlApp:
             self.ppms_temperature_target_var.set(str(args[0]))
         elif op == "FIELD":
             self.ppms_field_target_var.set(str(args[0]))
+            self._end_ppms_persistent_follow_up("The Macro")
         self.ppms_environment_busy = True
         self._set_ppms_environment_ui(True)
         try:
@@ -30897,14 +30897,17 @@ class CombinedControlApp:
         if follow:
             success_text = f"Going to {target:+g} Oe, then Persistent…"
         elif mode == 0:
-            success_text = f"Going to {target:+g} Oe, then Persistent; see the field status"
+            success_text = f"Sent {target:+g} Oe, ending Persistent; see the field status"
         else:
             success_text = "Command completed; live readback in progress"
         self._run_ppms_command(label, operation, success_text=success_text)
 
     def _end_ppms_persistent_follow_up(self, owner: str) -> None:
-        """Something else now sets the field: end the follow-up and say so,
-        rather than leave its text on the status line."""
+        """Something else is about to command the field: end the follow-up
+        and say so, rather than leave its text on the status line.  Called
+        on the Tk thread (from workers through post_ui, which keeps order)
+        just before a field scan, the Macro's FIELD line, zero + persist or
+        the scan clean-up sends a field command."""
         if self.__dict__.get("ppms_persistent_watch"):
             self.ppms_persistent_watch = None
             self.ppms_connection_var.set(f"{owner} now sets the field; Persistent no longer followed")
@@ -30914,14 +30917,6 @@ class CombinedControlApp:
         setpoint, or that it did not.  Display only: nothing is sent."""
         watch = self.__dict__.get("ppms_persistent_watch")
         if not watch:
-            return
-        # Normally ended when these start; this covers any other way in.
-        if getattr(self, "ppms_macro_running", False):
-            self._end_ppms_persistent_follow_up("The Macro")
-            return
-        if (self.ppms_field_scan_running
-                and getattr(self, "ppms_active_scan_mode", "") in ("Field", "Field+Temperature")):
-            self._end_ppms_persistent_follow_up("The field scan")
             return
         read_at = result.get("read_at")
         if not isinstance(read_at, (int, float)) or read_at <= watch["sent"]:
@@ -32307,8 +32302,6 @@ class CombinedControlApp:
         self.ppms_field_scan_running = True
         self.ppms_scan_preserve_on_stop = False
         self.ppms_active_scan_mode = mode
-        if mode in ("Field", "Field+Temperature"):
-            self._end_ppms_persistent_follow_up("The field scan")
         self.ppms_plot_addresses = dict(zip(active_lockins, addresses))
         self.ppms_plot_axis = {"Field": "field", "Field+Temperature": "field", "Temperature": "temperature", "Angle+Temperature": "angle", "Angle": "angle", "Current": "current", "Current+Temperature": "current"}[mode]
         self.ppms_field_scan_rows = []
@@ -32549,6 +32542,7 @@ class CombinedControlApp:
                     # Only field scans may change the magnet setpoint/mode.
                     # Other scans preserve the existing Persistent/Driven state.
                     field_target = sequence[0][3]
+                    self.post_ui(lambda: self._end_ppms_persistent_follow_up("The field scan"))
                     try:
                         remote.set_field(field_target, rate, approach, 1)
                     except Exception as error:
@@ -32947,6 +32941,7 @@ class CombinedControlApp:
         # User-requested stop uses a fixed ramp, independent of the scan rate.
         # Never change temperature or motor targets in this cleanup path.
         zero_rate = 100.0 if self.ppms_field_scan_stop_event.is_set() else rate_oe_s
+        self.post_ui(lambda: self._end_ppms_persistent_follow_up("The scan clean-up"))
         try:
             self.ppms_environment_controller.set_field(
                 0.0, zero_rate, approach_code, 1

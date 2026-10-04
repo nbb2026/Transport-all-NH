@@ -14,11 +14,14 @@
   2 Oe of the setpoint. Readings begun before the command never count. If
   the PPMS goes Persistent at another field, or is not Persistent within the
   ramp time plus 30 min, the line says so and asks you to check MultiVu.
-  A field scan, the Macro or "Zero field + persist after scan" taking over
-  the field ends the follow-up, and the line says which. These are messages
-  only: nothing is resent. The follow-up uses the QDInstrument status names
-  (the PPMS1 interface); with MultiPyVu the line says to watch the field
-  status instead.
+  When something else commands the field before that (a field scan's
+  first field command, a Macro FIELD line, "Zero field + persist after
+  scan", or the scan clean-up zeroing after "I off" or an error), the
+  follow-up ends and the line says which. A scan or Macro that never
+  commands the field leaves it running. These are messages only: nothing
+  is resent. The follow-up uses the QDInstrument status names (the PPMS1
+  interface); with MultiPyVu the line says "Sent X Oe, ending Persistent;
+  see the field status" instead.
 - Field scans that start at a field the magnet holds Persistent now wait
   for the Driven status after their first command, up to the block's
   existing 3600 s limit. Before, a Persistent status read just after the

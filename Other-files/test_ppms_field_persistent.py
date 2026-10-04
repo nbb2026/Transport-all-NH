@@ -195,30 +195,37 @@ class PersistentSetpointTests(unittest.TestCase):
         self.assertEqual(self.feed(panel, 0.1, "StablePersistent", limit),
                          "Still Persistent at +0.1 Oe, +5000 Oe not reached; check MultiVu, not resent")
 
-    def test_a_field_scan_or_macro_takes_the_field_over(self):
-        for mode, expected in (("Field", SCAN_TOOK_OVER), ("Field+Temperature", SCAN_TOOK_OVER),
-                               ("Temperature", CONFIRMED), ("Angle", CONFIRMED)):
+    def test_readings_during_a_scan_or_macro_keep_following(self):
+        # A Temperature scan, or a temperature wait before a field block,
+        # leaves the field alone: the Set H result is still reported.
+        for mode in ("Temperature", "Angle", "Field+Temperature"):
             with self.subTest(mode=mode):
                 panel = self.make_panel()
                 self.press(panel, panel.set_ppms_field, (0, "StablePersistent"))
                 panel.ppms_field_scan_running = True
                 panel.ppms_active_scan_mode = mode
                 self.feed(panel, 2000, "Charging", 20)
-                self.assertEqual(self.feed(panel, 5000, "StablePersistent", 90), expected)
+                self.assertEqual(self.feed(panel, 5000, "StablePersistent", 90), CONFIRMED)
         panel = self.make_panel()
         self.press(panel, panel.set_ppms_field, (0, "StablePersistent"))
         panel.ppms_macro_running = True
-        self.assertEqual(self.feed(panel, 2000, "Charging", 20), MACRO_TOOK_OVER)
-        self.assertIsNone(panel.ppms_persistent_watch)
+        self.feed(panel, 2000, "Charging", 20)
+        self.assertEqual(self.feed(panel, 5000, "StablePersistent", 90), CONFIRMED)
 
-    def test_the_takeover_ends_the_follow_up_when_it_starts(self):
-        # No reading need arrive during the scan or Macro: a Macro of FIELD
-        # lines posts none.
-        for name, call in (("start_ppms_field_scan", '_end_ppms_persistent_follow_up("The field scan")'),
-                           ("open_ppms_macro", '_end_ppms_persistent_follow_up("The Macro")'),
-                           ("_ppms_scan_with_final_field", "_end_ppms_persistent_follow_up('Zero + persist')")):
+    def test_the_hand_off_comes_with_the_field_command(self):
+        # Not when a scan or Macro starts: one stopped at its motor check, or
+        # a Macro without FIELD lines, never commands the field.
+        source = inspect.getsource(app.CombinedControlApp._ppms_nested_scan_worker)
+        hand_off = source.index('_end_ppms_persistent_follow_up("The field scan")')
+        self.assertLess(source.index("PPMSMotorScanError(f\"{error}; field kept"), hand_off)
+        self.assertLess(hand_off, source.index("remote.set_field(field_target, rate, approach, 1)"))
+        for name, call in (("_ppms_scan_with_final_field", "_end_ppms_persistent_follow_up('Zero + persist')"),
+                           ("_ppms_zero_field_after_interrupted_scan", '_end_ppms_persistent_follow_up("The scan clean-up")')):
             with self.subTest(name=name):
                 self.assertIn(call, inspect.getsource(getattr(app.CombinedControlApp, name)))
+        for name in ("start_ppms_field_scan", "open_ppms_macro"):
+            with self.subTest(name=name):
+                self.assertNotIn("_end_ppms_persistent_follow_up", inspect.getsource(getattr(app.CombinedControlApp, name)))
         panel = self.make_panel()
         self.press(panel, panel.set_ppms_field, (0, "StablePersistent"))
         panel._end_ppms_persistent_follow_up("The Macro")
@@ -227,6 +234,34 @@ class PersistentSetpointTests(unittest.TestCase):
         panel.ppms_connection_var.set("Temperature command")
         panel._end_ppms_persistent_follow_up("The field scan")
         self.assertEqual(panel.ppms_connection_var.get(), "Temperature command", "nothing to end")
+
+    def test_only_a_macro_field_line_ends_the_follow_up(self):
+        for op, args, ended in (("TEMP", (10., 1., 0), False), ("FIELD", (0., 100., 0, 1), True)):
+            with self.subTest(op=op):
+                panel = self.make_panel()
+                self.press(panel, panel.set_ppms_field, (0, "StablePersistent"))
+                panel.ppms_macro_stop = threading.Event()
+                panel.ppms_macro_commands = iter([(1, op, args)])
+                panel.ppms_macro_status = Var("")
+                panel.ppms_macro_editor = Mock()
+                panel.ppms_temperature_target_var = Var("300")
+                panel.thread_log = lambda text: None
+                panel._ppms_macro_operation = Mock()
+                panel._ppms_macro_finish = Mock()
+                panel._ppms_macro_next()
+                self.assertEqual(panel.ppms_persistent_watch is None, ended)
+                self.assertEqual(panel.ppms_connection_var.get(), MACRO_TOOK_OVER if ended else GOING)
+
+    def test_the_scan_clean_up_zeroing_ends_the_follow_up(self):
+        # Also reached by "I off" during a Temperature, Angle or Current scan.
+        panel = self.make_panel()
+        self.press(panel, panel.set_ppms_field, (0, "StablePersistent"))
+        panel.thread_log = lambda text: None
+        panel._ppms_zero_field_after_interrupted_scan(100., 1)
+        panel.ppms_environment_controller.set_field.assert_called_with(0., 100., 1, 1)
+        self.assertEqual(panel.ppms_connection_var.get(),
+                         "The scan clean-up now sets the field; Persistent no longer followed")
+        self.assertIsNone(panel.ppms_persistent_watch)
 
     def test_zero_and_persist_after_a_scan_ends_the_follow_up(self):
         panel = self.make_panel()
@@ -247,7 +282,7 @@ class PersistentSetpointTests(unittest.TestCase):
         self.press(panel, panel.set_ppms_field, (0, "Stable"))
         panel.ppms_environment_controller.set_field.assert_called_once_with(5000., 100., 1, 0)
         self.assertEqual(panel.ppms_connection_var.get(),
-                         "Going to +5000 Oe, then Persistent; see the field status")
+                         "Sent +5000 Oe, ending Persistent; see the field status")
         self.assertIsNone(panel.ppms_persistent_watch)
 
     def test_a_failed_command_starts_no_follow_up(self):
@@ -357,7 +392,10 @@ class FieldScanFromPersistentTests(unittest.TestCase):
         panel.ppms_field_scan_started_at = 0.
         panel.ppms_instrument_controllers = {}
         panel.ppms_scan_preserve_on_stop = False
-        panel.post_ui = lambda callback: None
+        # The Tk queue and the field commands, in the order they happen.
+        self.events = events = []
+        remote.set_field = lambda *args, send=remote.set_field: (events.append(("field", args)), send(*args))[1]
+        panel.post_ui = lambda callback: events.append(("ui", callback))
         panel.thread_log = lambda *args: None
         panel._configure_ppms_transport_scan = lambda settings: None
         panel._stop_ppms_transport_source = Mock()
@@ -383,6 +421,15 @@ class FieldScanFromPersistentTests(unittest.TestCase):
                 self.assertEqual(len(panel.ppms_field_scan_rows), 1)
                 self.assertEqual(remote.calls, [(-15000., 1), (-15000., 1)], "no zeroing")
                 self.assertEqual(panel.ppms_field_scan_rows[0]["field_status"], "StableDriven")
+                # What the Tk thread runs before the first field command ends
+                # a Set H follow-up still running.
+                first = next(i for i, (kind, _) in enumerate(self.events) if kind == "field")
+                panel.ppms_connection_var = Var(GOING)
+                panel.ppms_persistent_watch = {"target": 5000., "sent": 0., "left_persistent": True, "deadline": 1e9}
+                for kind, callback in self.events[:first]:
+                    callback()
+                self.assertIsNone(panel.ppms_persistent_watch)
+                self.assertEqual(panel.ppms_connection_var.get(), SCAN_TOOK_OVER)
 
     def test_driven_readiness_rejects_only_persistent_statuses(self):
         ready = app.CombinedControlApp._ppms_field_is_ready
