@@ -7,7 +7,7 @@
   StablePersistent, and the field status under Live readings shows each
   step. They used to end Driven, because the page's hidden end-mode list
   defaulted to Driven. Set H can be used in every scan mode that does not
-  scan the field; Zero H in every mode.
+  scan the field; Zero H in every mode (the user's choice).
 - The status line beside Connect PPMS follows the command. It shows
   "Going to X Oe, then Persistent…", then "Field X Oe reached; Persistent
   confirmed" once a reading begun after the command shows Persistent within
