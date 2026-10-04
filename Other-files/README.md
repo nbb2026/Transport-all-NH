@@ -1,5 +1,38 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## PPMS: Set H and Zero H end Persistent (2026-10-04)
+
+- On the PPMS page, Set H and Zero H now send the Persistent end mode. The
+  PPMS ramps to the field, closes the persistent switch and reports
+  StablePersistent, and the field status under Live readings shows each
+  step. They used to end Driven, because the page's hidden end-mode list
+  defaulted to Driven. Set H can be used in every scan mode that does not
+  scan the field; Zero H in every mode.
+- The status line beside Connect PPMS follows the command. It shows
+  "Going to X Oe, then Persistent…", then "Field X Oe reached; Persistent
+  confirmed" once a reading begun after the command shows Persistent within
+  2 Oe of the setpoint. Readings begun before the command never count. If
+  the PPMS goes Persistent at another field, or is not Persistent within the
+  ramp time plus 30 min, the line says so and asks you to check MultiVu.
+  A field scan, the Macro or "Zero field + persist after scan" taking over
+  the field ends the follow-up, and the line says which. These are messages
+  only: nothing is resent. The follow-up uses the QDInstrument status names
+  (the PPMS1 interface); with MultiPyVu the line says to watch the field
+  status instead.
+- Field scans that start at a field the magnet holds Persistent now wait
+  for the Driven status after their first command, up to the block's
+  existing 3600 s limit. Before, a Persistent status read just after the
+  command could pass as settled, and the switch warming afterwards stopped
+  the scan and zeroed the field. Nothing new is sent.
+- Unchanged: field scans hold every point Driven; the stop and close-time
+  zeroing, "Zero field + persist after scan", the Persist button and the
+  Macro send what they did before.
+- Tests: `Other-files/test_ppms_field_persistent.py` (stubs and a fake PPMS
+  with a fake clock, no Tk) and a check of the page default in
+  `Other-files/test_panel_defaults.py`.
+- Not yet tried on the PPMS. For the first use, set a small field near the
+  present one and watch MultiVu warm and cool the switch.
+
 ## Test_Microwave_NH_dev.py: SR830 setup as in the main program; old copies removed (2026-10-01)
 
 - The SR830 setup now sends `ILIN 0` (both line notch filters off) and then

@@ -1413,11 +1413,11 @@ PPMS_FIELD_RATE_DEFAULT_OE_S = 100.0
 PPMS_FIELD_TOLERANCE_OE = 2.0
 PPMS_FIELD_RELATIVE_TOLERANCE = 0.0
 PPMS_SCAN_POLL_S = 0.5
-# After a single Persistent setpoint (Set H, Zero H), a reading taken after
+# After a single Persistent setpoint (Set H, Zero H), a reading started after
 # the command that shows Persistent at the setpoint confirms it, once a reading
-# has shown the PPMS out of Persistent, or after this many seconds if none did
-# (the field was already there).  Confirmation is given up after the ramp time
-# plus the margin.
+# has shown the PPMS out of Persistent, or if it was started this many seconds
+# after the command (the field was already there).  Readings started later than
+# the ramp time plus the margin end the follow-up with a note instead.
 PPMS_PERSISTENT_CONFIRM_S = 10.0
 PPMS_PERSISTENT_MARGIN_S = 1800.0
 PPMS_TRANSPORT_CURRENT_RMS_MA = 0.001
@@ -30619,6 +30619,7 @@ class CombinedControlApp:
                 self.ppms_macro_status.set(str(error))
                 return
             self.ppms_macro_running = True
+            self._end_ppms_persistent_follow_up("The Macro")
             self.ppms_macro_stop = threading.Event()
             self.ppms_macro_commands = iter(commands)
             self.ppms_macro_text = editor.get("1.0", "end-1c")
@@ -30869,35 +30870,44 @@ class CombinedControlApp:
         then follows the readback until it shows Persistent at the setpoint
         (``_follow_ppms_persistent_setpoint``).
         """
+        remote = self.ppms_environment_controller
+        # The follow-up knows the QDInstrument status names (the PPMS1
+        # interface); with MultiPyVu the field status alone shows the result.
+        follow = mode == 0 and getattr(remote, "backend", "") == PPMS_QDINSTRUMENT_BACKEND
+
         def operation():
             self.ppms_persistent_watch = None  # The previous setpoint is replaced.
-            result = self.ppms_environment_controller.set_field(
-                target, rate, approach, mode
-            )
-            # The readback inside set_field follows the command.  Readings the
-            # live poll took before it can still arrive afterwards (the pool
-            # has several workers), so each reading carries the time it was
-            # taken and the follow-up counts only later ones.
+            result = remote.set_field(target, rate, approach, mode)
+            if not follow:
+                return result
+            # Live polls run in a pool of several workers, so a reading begun
+            # before this command can arrive after it.  Each reading carries
+            # the time it was begun, and only readings begun after this point
+            # count (see _follow_ppms_persistent_setpoint).
             sent = time.monotonic()
-            if mode != 0:
-                return dict(result, read_at=sent)
             try:
                 distance = abs(target - float(result["field_oe"]))
             except (KeyError, TypeError, ValueError):
                 distance = abs(target)
-            return dict(result, read_at=sent, persistent_watch={
+            return dict(result, persistent_watch={
                 "target": target, "sent": sent, "left_persistent": False,
                 "deadline": sent + distance / rate + PPMS_PERSISTENT_MARGIN_S,
             })
 
-        self._run_ppms_command(
-            label,
-            operation,
-            success_text=(
-                f"Going to {target:+g} Oe, then Persistent…"
-                if mode == 0 else "Command completed; live readback in progress"
-            ),
-        )
+        if follow:
+            success_text = f"Going to {target:+g} Oe, then Persistent…"
+        elif mode == 0:
+            success_text = f"Going to {target:+g} Oe, then Persistent; see the field status"
+        else:
+            success_text = "Command completed; live readback in progress"
+        self._run_ppms_command(label, operation, success_text=success_text)
+
+    def _end_ppms_persistent_follow_up(self, owner: str) -> None:
+        """Something else now sets the field: end the follow-up and say so,
+        rather than leave its text on the status line."""
+        if self.__dict__.get("ppms_persistent_watch"):
+            self.ppms_persistent_watch = None
+            self.ppms_connection_var.set(f"{owner} now sets the field; Persistent no longer followed")
 
     def _follow_ppms_persistent_setpoint(self, result) -> None:
         """Say on the status line when the readback shows Persistent at the
@@ -30905,15 +30915,17 @@ class CombinedControlApp:
         watch = self.__dict__.get("ppms_persistent_watch")
         if not watch:
             return
-        if getattr(self, "ppms_macro_running", False) or (
-            self.ppms_field_scan_running
-            and getattr(self, "ppms_active_scan_mode", "") in ("Field", "Field+Temperature")
-        ):
-            self.ppms_persistent_watch = None  # A field scan or Macro now sets the field.
+        # Normally ended when these start; this covers any other way in.
+        if getattr(self, "ppms_macro_running", False):
+            self._end_ppms_persistent_follow_up("The Macro")
+            return
+        if (self.ppms_field_scan_running
+                and getattr(self, "ppms_active_scan_mode", "") in ("Field", "Field+Temperature")):
+            self._end_ppms_persistent_follow_up("The field scan")
             return
         read_at = result.get("read_at")
-        if not isinstance(read_at, (int, float)) or read_at < watch["sent"]:
-            return  # Taken before the command, or not timed: says nothing about it.
+        if not isinstance(read_at, (int, float)) or read_at <= watch["sent"]:
+            return  # Begun before the command ended, or not timed: says nothing.
         try:
             measured = float(result["field_oe"])
         except (KeyError, TypeError, ValueError):
@@ -30922,10 +30934,10 @@ class CombinedControlApp:
         status = str(result.get("field_status", ""))
         tolerance = max(PPMS_FIELD_TOLERANCE_OE, abs(target) * PPMS_FIELD_RELATIVE_TOLERANCE)
         at_target = abs(measured - target) <= tolerance
-        now = time.monotonic()
         if status.strip().lower().replace(" ", "") not in ("persistent", "stablepersistent"):
             watch["left_persistent"] = True  # Ramping, or the switch warming/cooling.
-        elif at_target and (watch["left_persistent"] or now - watch["sent"] >= PPMS_PERSISTENT_CONFIRM_S):
+        elif at_target and (watch["left_persistent"]
+                            or read_at - watch["sent"] >= PPMS_PERSISTENT_CONFIRM_S):
             self.ppms_persistent_watch = None
             self.ppms_connection_var.set(f"Field {target:+g} Oe reached; Persistent confirmed")
             return
@@ -30935,10 +30947,14 @@ class CombinedControlApp:
                 f"Persistent at {measured:+.7g} Oe, not {target:+g} Oe; check MultiVu, not resent"
             )
             return
-        if now >= watch["deadline"]:
+        if read_at >= watch["deadline"]:
             self.ppms_persistent_watch = None
             self.ppms_connection_var.set(
-                f"Not Persistent at {target:+g} Oe in time ({status}); check MultiVu, not resent"
+                f"{status} at {measured:+.7g} Oe, not Persistent at {target:+g} Oe in time; "
+                "check MultiVu, not resent"
+                if watch["left_persistent"] else
+                f"Still Persistent at {measured:+.7g} Oe, {target:+g} Oe not reached; "
+                "check MultiVu, not resent"
             )
 
     def switch_ppms_persistent(self) -> None:
@@ -31071,8 +31087,9 @@ class CombinedControlApp:
             return f"Unknown / {short_status_error(error, 45)}"
 
     def _read_ppms_live(self):
+        started = time.monotonic()  # Before the read: see _send_ppms_field_setpoint.
         data = self.ppms_environment_controller.read_environment()
-        data["read_at"] = time.monotonic()  # See _send_ppms_field_setpoint.
+        data["read_at"] = started
         data["current_display"] = self._read_ppms_current_display()
         data.update(self._read_ppms_cryogen_display())
         try:
@@ -32095,10 +32112,15 @@ class CombinedControlApp:
         )
 
     @staticmethod
-    def _ppms_field_is_ready(result: dict[str, object], target_oe: float) -> bool:
+    def _ppms_field_is_ready(result: dict[str, object], target_oe: float, driven: bool = False) -> bool:
+        """At the target with a settled status.  ``driven``: after a Driven
+        command, where a Persistent status is the state from before it (the
+        switch has not warmed yet), so it is not settled."""
         measured = float(result["field_oe"])
         tolerance = max(PPMS_FIELD_TOLERANCE_OE, abs(target_oe) * PPMS_FIELD_RELATIVE_TOLERANCE)
         status = str(result.get("field_status", "")).casefold().replace(" ", "")
+        if driven and "persistent" in status:
+            return False
         stable_status = any(
             token in status
             for token in ("holding", "persistent", "stable", "standby")
@@ -32285,6 +32307,8 @@ class CombinedControlApp:
         self.ppms_field_scan_running = True
         self.ppms_scan_preserve_on_stop = False
         self.ppms_active_scan_mode = mode
+        if mode in ("Field", "Field+Temperature"):
+            self._end_ppms_persistent_follow_up("The field scan")
         self.ppms_plot_addresses = dict(zip(active_lockins, addresses))
         self.ppms_plot_axis = {"Field": "field", "Field+Temperature": "field", "Temperature": "temperature", "Angle+Temperature": "angle", "Angle": "angle", "Current": "current", "Current+Temperature": "current"}[mode]
         self.ppms_field_scan_rows = []
@@ -32346,6 +32370,7 @@ class CombinedControlApp:
                     or not getattr(self, 'ppms_zero_persist_pending', False)):
                 return
             self.post_ui(lambda: self.ppms_field_scan_status_var.set('CSV saved; zeroing field and switching to Persistent…'))
+            self.post_ui(lambda: self._end_ppms_persistent_follow_up('Zero + persist'))
             remote = self.ppms_environment_controller
             for mode in (1, 0):
                 if self.ppms_field_scan_stop_event.is_set() or self.closing:
@@ -32529,7 +32554,7 @@ class CombinedControlApp:
                     except Exception as error:
                         raise PPMSFieldScanError(f"Field set failed: {error}") from error
                     if settings.get("scan_mode") in ("Field", "Field+Temperature"):
-                        wait_until(lambda d: self._ppms_field_is_ready(d, field_target), 3600, "measured field")
+                        wait_until(lambda d: self._ppms_field_is_ready(d, field_target, driven=True), 3600, "measured field")
                 for ti, temperature in temperatures:
                     if stop.is_set() or self.closing:
                         break
@@ -32723,7 +32748,7 @@ class CombinedControlApp:
                 )
                 timeout_s = distance / rate_oe_s + 180.0
                 deadline = time.monotonic() + timeout_s
-                while check_field and not self._ppms_field_is_ready(result, target):
+                while check_field and not self._ppms_field_is_ready(result, target, driven=True):
                     if self.ppms_field_scan_stop_event.wait(PPMS_SCAN_POLL_S):
                         break
                     if time.monotonic() >= deadline:
@@ -32741,7 +32766,7 @@ class CombinedControlApp:
                 if stable_s > 0 and self.ppms_field_scan_stop_event.wait(stable_s):
                     break
                 result = self._read_ppms_live()
-                if check_field and not self._ppms_field_is_ready(result, target):
+                if check_field and not self._ppms_field_is_ready(result, target, driven=True):
                     raise PPMSFieldScanError("Field drifted from the stable target before measurement; acquisition stopped")
                 expected_t = getattr(self, "ppms_scan_context", {}).get("target_temperature_k", "")
                 if expected_t != "" and abs(float(result["temperature_k"])-expected_t) > .1:
@@ -32784,7 +32809,7 @@ class CombinedControlApp:
                         acquisition_s,
                     )
                 result = self._read_ppms_live()
-                if check_field and not self._ppms_field_is_ready(result, target):
+                if check_field and not self._ppms_field_is_ready(result, target, driven=True):
                     raise PPMSFieldScanError("Field drifted from the target at the end of acquisition; current point not saved")
                 if expected_t != "" and abs(float(result["temperature_k"])-expected_t) > .1:
                     raise RuntimeError("Temperature drifted from the target at the end of acquisition; current point not saved")
