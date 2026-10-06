@@ -1,9 +1,9 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
-## MS-fourState.py: PPMS four-state write and zero-field read (2026-10-06)
+## MS-fourState, MS-cycleState, MS-twoState: PPMS state writing and zero-field read (2026-10-06)
 
-A new program in the repository root, `MS-fourState.py`. For each state of a
-sequence (default D A B E) it:
+New programs in the repository root. For each state of a sequence,
+`MS-fourState.py`:
 
 1. turns the PPMS rotator to the state's angle at zero field;
 2. sets the write field (Driven);
@@ -14,21 +14,37 @@ sequence (default D A B E) it:
 It plots X, the field and the pulse current per step, and writes a CSV. The
 states follow the measurement table (D 0°/+0.15 T, A and B 270°/∓0.15 T,
 E 0°/−0.15 T, with A' and B' the reversed field and current), all editable.
+The default sequence is D A B E.
 
-- It reuses the main program's instrument code. That covers the PPMS
-  connection, field setpoints and their settled check, and the rotator's
-  verified Move. It also covers the 6221 pulse of the MOKE-6221 page, the
-  PPMS page's sine with its phase marker as the SR830 reference, and the
-  SR830 query and checked-write helpers. The main program itself is
-  unchanged.
-- Stop, an error or the end turns the 6221 off and returns the field to
-  0 Oe; the rotator has no software stop.
-- `Other-files/MS-fourState_README.md` has the procedure, the defaults to
-  check (compliance 15 V among them) and the data files.
-- Tests: `Other-files/test_ms_four_state.py`, against simulated instruments,
-  checked by breaking each safety rule in a copy (all 19 caught). The window
-  is checked on GitHub with `Other-files/ci/ms_four_state_checks.py`.
-- Not yet run on the instruments.
+- `MS-cycleState.py` opens the same window cycling D-A-B-E-B-A-D-…
+- `MS-twoState.py` opens it switching between any two chosen states.
+
+All three run until Stop or for a set number of passes.
+
+- **Instrument code:** it is the main program's. That covers the PPMS
+  connection, field setpoints and their settled check, the rotator's
+  verified Move, the 6221 controller, and the PPMS page's sine with its
+  phase marker as the SR830 reference. It also covers the SR830 query and
+  checked-write helpers and its connection baseline. The main program
+  itself is unchanged.
+- **Stops:** Stop, an error or the end turns the 6221 off and returns the
+  field to 0 Oe, both confirmed by readback. Shutdown follows the field the
+  run commanded, not a possibly stale reading. The rotator has no software
+  stop.
+- **Pulse:** `OUTP ON` and INIT go in one message. The 6221's latched
+  compliance bit is recorded for every pulse.
+- **Review:** an independent review before the first hardware run found
+  14 problems. All are fixed, each with a test. Among them: a stale reading
+  could skip the return to zero; a disconnect left an SR830 error latched,
+  which failed the next Start; and one display error could freeze the
+  window.
+- **Docs:** `Other-files/MS-fourState_README.md` has the procedure, the
+  checks before the first run (an oscilloscope look at the pulse; compliance
+  15 V) and the data files.
+- **Tests:** `Other-files/test_ms_four_state.py` runs against simulated
+  instruments; breaking each safety rule in a copy is caught. The windows
+  are checked on GitHub with `Other-files/ci/ms_four_state_checks.py`.
+- **Status:** not yet run on the instruments.
 
 ## PPMS: Set H and Zero H end Persistent (2026-10-04)
 

@@ -4,7 +4,8 @@
 
 Builds the program (no instruments are connected) at 96 DPI, as on the lab
 PC, at its own 1360x900 window, at its 1100x760 minimum and widened to
-2000 px, with a few example points in the plot.  Reports widgets that stick
+2000 px, with a few example points in the plot; and its cycle and
+two-state windows (MS-cycleState.py, MS-twoState.py) at 1360 px.  Reports widgets that stick
 out past the window and text that does not fit, and saves a screenshot of
 each.  Exit status 1 if anything is clipped or cut at 1360 or 2000 px on
 Windows, the lab PC's system; on Linux the results are reported only.
@@ -19,7 +20,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gui_checks import inspect, screenshot  # noqa: E402
 
 PROGRAM = Path(__file__).resolve().parents[2] / "MS-fourState.py"
-WIDTHS = ((1360, 900, True), (1100, 760, False), (2000, 1100, True))  # (width, height, must fit)
+# (mode, width, height, must fit)
+WINDOWS = (("sequence", 1360, 900, True), ("sequence", 1100, 760, False), ("sequence", 2000, 1100, True),
+           ("cycle", 1360, 900, True), ("two", 1360, 900, True))
 EXAMPLE = (("D", 1500, 22, 30e-6), ("A", -1500, 22, 11e-6), ("B", 1500, 22, -12.5e-6), ("E", -1500, 22, -27e-6))
 
 
@@ -32,11 +35,11 @@ def main():
     sys.modules["ms_four_state_ci"] = module
     spec.loader.exec_module(module)
     failed = False
-    for width, height, must_fit in WIDTHS:
+    for mode, width, height, must_fit in WINDOWS:
         root = tk.Tk()
         root.tk.call("tk", "scaling", 1.333)  # 96 DPI
         root.maxsize(4000, 3000)
-        app = module.FourStateApp(root)
+        app = module.FourStateApp(root, mode)
         root.geometry(f"{width}x{height}+0+0")
         for _ in range(6):
             root.update()
@@ -49,11 +52,11 @@ def main():
         fatal = must_fit and problem and sys.platform == "win32"
         failed = failed or fatal
         marker = "FAIL" if fatal else ("note" if problem else "ok  ")
-        print(f"  {marker} window {root.winfo_width()}x{root.winfo_height()} | clipped {clipped or 'none'} | "
+        print(f"  {marker} {mode} window {root.winfo_width()}x{root.winfo_height()} | clipped {clipped or 'none'} | "
               f"text cut {cut or 'none'}")
         if args.shots:
             args.shots.mkdir(parents=True, exist_ok=True)
-            print(f"       screenshot: {screenshot(root, page, args.shots / f'ms_four_state_{width}px.png')}")
+            print(f"       screenshot: {screenshot(root, page, args.shots / f'ms_{mode}_{width}px.png')}")
         root.destroy()
     print("MS-FOURSTATE CHECKS FAILED" if failed else "MS-FOURSTATE CHECKS OK")
     return 1 if failed else 0
