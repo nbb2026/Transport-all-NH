@@ -57,7 +57,7 @@ def main():
         if args.shots:
             args.shots.mkdir(parents=True, exist_ok=True)
             print(f"       screenshot: {screenshot(root, page, args.shots / f'ms_{mode}_{width}px.png')}")
-        root.destroy()
+        app.close()
     print("MS-FOURSTATE CHECKS FAILED" if failed else "MS-FOURSTATE CHECKS OK")
     return 1 if failed else 0
 

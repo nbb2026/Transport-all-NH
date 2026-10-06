@@ -54,12 +54,11 @@ time.
 4. The write pulse: 0 → I for the pulse width (default 30 µs, at least 5 µs),
    one pulse by default. The commands are those of the MOKE-6221 page: a
    50 % square of period 2 × width with offset I/2 and a finite cycle count,
-   every setting read back. Two changes:
-   - `OUTP ON` and `SOUR:WAVE:INIT` go in one message, so the output does
-     not wait at the I/2 offset between them.
-   - The 6221's latched compliance bit (`STAT:MEAS:EVEN?`) is read around
-     the train. The CSV says `True`, `False`, or `unknown` if the 6221 does
-     not answer it; then it is not asked again.
+   then ARM, `OUTP ON` and INIT in that order, each checked. Every setting
+   is read back before ARM. The 6221's latched compliance bit
+   (`STAT:MEAS:EVEN?`) is read around the train. The CSV says `True` or
+   `False`, or `unknown` if the 6221 does not answer it; then it is not
+   asked again.
 
    The output must be off once the train is over, or the run stops.
 5. The field returns to 0 Oe (Driven) and settles.
@@ -119,7 +118,8 @@ for example `MS-cycleState data/20261006_153000/`:
   temperature; read current and frequency; X, Y, R, θ and the standard
   deviations of X and Y; the SR830 range; and R'xy.
 - `settings.json`: every setting of the run, the mode, the SR830 settings
-  found at Start, and the instruments' identities.
+  found at Start, the SR830 output offsets and
+  expands, and the instruments' identities.
 - `log.txt`: the status and instrument log of that run.
 - `<program>_plot.eps`: the plot, saved at the end and by **Save plot**.
 
@@ -130,10 +130,11 @@ for up to 60 points.
 ## Before the first run
 
 - **Pulse shape:** check the pulse once with an oscilloscope across a
-  dummy resistor in place of the sample. The 6221 has not been checked for
-  what it outputs while armed, before INIT. Putting `OUTP ON` and INIT in one
-  message keeps any such interval as short as the 6221 allows. The
-  MOKE-6221 page sends them separately.
+  dummy resistor in place of the sample. Nobody has measured what the 6221
+  outputs between ARM, `OUTP ON` and INIT. If it sits at the I/2 offset for
+  those few milliseconds, the sample sees 11 mA DC before each 30 µs pulse.
+  The MOKE-6221 page uses the same order. If the scope shows that, the pulse
+  start needs changing before measuring.
 - **Compliance:** the 6221 compliance is 15 V, for both the pulse and the
   read. At 22 mA this allows up to about 680 Ω in the current path. Raise
   it if the sample needs more.

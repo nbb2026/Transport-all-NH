@@ -31,13 +31,17 @@ All three run until Stop or for a set number of passes.
   field to 0 Oe, both confirmed by readback. Shutdown follows the field the
   run commanded, not a possibly stale reading. The rotator has no software
   stop.
-- **Pulse:** `OUTP ON` and INIT go in one message. The 6221's latched
-  compliance bit is recorded for every pulse.
+- **Pulse:** the MOKE-6221 page's commands and order (ARM, `OUTP ON`,
+  INIT), with every setting read back before ARM. The 6221's latched
+  compliance bit is recorded for every pulse. What the 6221 outputs between
+  ARM and INIT is not measured, so check it with an oscilloscope before
+  the first run.
 - **Review:** an independent review before the first hardware run found
-  14 problems. All are fixed, each with a test. Among them: a stale reading
-  could skip the return to zero; a disconnect left an SR830 error latched,
-  which failed the next Start; and one display error could freeze the
-  window.
+  14 problems, and a second review of the fixes five more. All are fixed,
+  each with a test, except the pulse shape between ARM and INIT, which
+  needs the oscilloscope. Among them: a stale reading could skip the return
+  to zero; a disconnect left an SR830 error latched, which failed the next
+  Start; and one display error could freeze the window.
 - **Docs:** `Other-files/MS-fourState_README.md` has the procedure, the
   checks before the first run (an oscilloscope look at the pulse; compliance
   15 V) and the data files.

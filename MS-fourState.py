@@ -303,6 +303,20 @@ def initialize_lockin(lockin):
                 raise RuntimeError(f"SR830 setup readback mismatch: {command}={actual:g}, expected {expected}")
 
 
+def connect_lockin(lockin, resource):
+    """Connect, then apply the baseline; disconnect again if it fails."""
+    identity = lockin.connect(resource)
+    try:
+        initialize_lockin(lockin)
+    except BaseException:
+        try:
+            lockin.disconnect()
+        except Exception:
+            pass
+        raise
+    return identity
+
+
 def source_query(source, command):
     with source.lock:
         if source.instrument is None:
@@ -429,9 +443,10 @@ class FourStateRun:
     def pulse(self, pulse_ma):
         """The MOKE-6221 page's unipolar pulse (Keithley6221Controller.set_dc_pulse:
         a 50 % square of period 2 x width with offset I/2 and a finite cycle
-        count, every setting read back), with two changes: OUTP ON and INIT go
-        in one message, so the output does not wait at the I/2 offset between
-        them, and the latched compliance bit is read around the train."""
+        count; ARM, OUTP ON and INIT in that order, each checked), with every
+        setting read back before ARM and the latched compliance bit read
+        around the train.  What the 6221 outputs between ARM and INIT has
+        not been measured: check the pulse with an oscilloscope first."""
         s = self.settings
         if pulse_ma == 0:
             self.source_off()
@@ -470,9 +485,9 @@ class FourStateRun:
                 if not math.isclose(actual, expected, rel_tol=rel, abs_tol=absolute):
                     raise RuntimeError(f"6221 pulse {label} readback mismatch: requested {expected:g}, read {actual:g}")
             self.compliance_events()  # Clears the latch.
-            source._write_checked("SOUR:WAVE:ARM")
             self.check()
-            source._write_checked("OUTP ON;:SOUR:WAVE:INIT")
+            for command in ("SOUR:WAVE:ARM", "OUTP ON", "SOUR:WAVE:INIT"):
+                source._write_checked(command)
         self.wait(2.0 * width_s * count + PULSE_DONE_MARGIN_S)  # On Stop, shutdown aborts the train.
         still_on = int(round(source_query(source, "OUTP?"))) == 1
         in_compliance = self.compliance_events()
@@ -552,6 +567,10 @@ class FourStateRun:
         self.lockin_settings = {command: int(value) if float(value).is_integer() else value
                                 for command, value in found.items()}
         self.lockin_settings["tau_s"] = tau
+        for channel, name in ((1, "X"), (2, "Y")):
+            offset, expand = sr830_query(lockin, f"OEXP? {channel}", 2)
+            self.lockin_settings[f"offset_{name}_percent"] = offset
+            self.lockin_settings[f"expand_{name}"] = int(expand)
         self.emit("lockin", dict(self.lockin_settings))
 
     def wait_reference_lock(self):
@@ -721,11 +740,19 @@ class FourStateRun:
                 result = self.ppms.set_field(0.0, s.field_rate_oe_s, s.approach_code, 1)
                 start = max(abs(float(result.get("field_oe", 0.0))), abs(float(data.get("field_oe", 0.0))), 1500.0)
                 deadline = self.clock() + start / s.field_rate_oe_s + SHUTDOWN_FIELD_MARGIN_S
+                # Held for the settle time (at least 3 s): a reading from before
+                # the command could otherwise pass for zero.
+                hold = max(s.field_settle_s, 3.0)
+                settled_since = None
                 while True:
                     self.sleep(0.5)
                     data = self.ppms.read_environment()
                     if core.CombinedControlApp._ppms_field_is_ready(data, 0.0, driven=True):
-                        break
+                        settled_since = self.clock() if settled_since is None else settled_since
+                        if self.clock() - settled_since >= hold:
+                            break
+                    else:
+                        settled_since = None
                     if self.clock() >= deadline:
                         problems.append(f"field not confirmed at 0 Oe: {data.get('field_oe')} Oe / "
                                         f"{data.get('field_status')}")
@@ -863,7 +890,7 @@ class FourStateApp:
         self.record = None
         self._build()
         root.protocol("WM_DELETE_WINDOW", self.close)
-        root.after(100, self._drain)
+        self.drain_after = root.after(100, self._drain)
 
     # -- layout ---------------------------------------------------------
     def _build(self):
@@ -975,12 +1002,12 @@ class FourStateApp:
         names = tuple(name for name, *_ in DEFAULT_STATES)
         self.pair_vars = (tk.StringVar(value=DEFAULT_PAIR[0]), tk.StringVar(value=DEFAULT_PAIR[1]))
         if self.mode == "two":
-            ttk.Label(run, text="Switch").grid(row=0, column=0, sticky="w")
+            ttk.Label(run, text="Switch between").grid(row=0, column=0, sticky="w")
             entry_frame = ttk.Frame(run)
             entry_frame.grid(row=0, column=1, sticky="w", padx=(4, 10))
             for column, variable in enumerate(self.pair_vars):
                 if column:
-                    ttk.Label(entry_frame, text="⇄").grid(row=0, column=1, padx=4)
+                    ttk.Label(entry_frame, text="and").grid(row=0, column=1, padx=4)
                 choice = ttk.Combobox(entry_frame, textvariable=variable, values=names, state="readonly", width=5)
                 choice.grid(row=0, column=2 * column)
                 self.inputs.append((choice, "readonly"))
@@ -1069,7 +1096,7 @@ class FourStateApp:
                         pass
         finally:
             try:
-                self.root.after(100, self._drain)
+                self.drain_after = self.root.after(100, self._drain)
             except tk.TclError:
                 pass
 
@@ -1147,17 +1174,12 @@ class FourStateApp:
         source_resource = self.source_resource_var.get().strip()
         lockin_resource = self.lockin_resource_var.get().strip()
 
-        def connect_lockin():
-            identity = self.lockin.connect(lockin_resource)
-            initialize_lockin(self.lockin)
-            return identity
-
         def work():
             report = {}
             for key, connect in (
                     ("ppms", lambda: self.ppms.connect(core.PPMS_QDINSTRUMENT_BACKEND, host, port, dll)),
                     ("6221", lambda: self.source.connect(source_resource, compliance)),
-                    ("sr830", connect_lockin)):
+                    ("sr830", lambda: connect_lockin(self.lockin, lockin_resource))):
                 try:
                     result = connect()
                     if key == "ppms":
@@ -1249,15 +1271,21 @@ class FourStateApp:
                                      "sr830": self.lockin.identity}
             (folder / "settings.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
             csv_file = open(folder / f"{self.title}.csv", "w", newline="", encoding="utf-8")
+            try:
+                writer = csv.DictWriter(csv_file, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+                writer.writeheader()
+                csv_file.flush()
+            except OSError:
+                csv_file.close()
+                raise
         except OSError as error:
-            messagebox.showerror(self.title, f"Could not create the data folder: {error}", parent=self.root)
+            messagebox.showerror(self.title, f"Could not create the data files: {error}", parent=self.root)
             return
         self.run_folder = self.last_folder = folder
         self.record = record
         self.csv_file = csv_file
-        self.csv_writer = csv.DictWriter(csv_file, fieldnames=CSV_COLUMNS, extrasaction="ignore")
-        self.csv_writer.writeheader()
-        csv_file.flush()
+        self.csv_writer = writer
+        self.csv_failed = False
         self.rows = []
         self.plot.set_rows([])
         self.steps_per_cycle = len(settings.sequence)
@@ -1319,6 +1347,13 @@ class FourStateApp:
             if self.csv_writer is not None:
                 self.csv_writer.writerow(row)
                 self.csv_file.flush()
+        except OSError as error:
+            self._append_log(f"CSV write failed at step {row['step']}: {error}")
+            if not self.__dict__.get("csv_failed"):
+                self.csv_failed = True
+                messagebox.showwarning(self.title, f"Writing the CSV failed: {error}\n\nThe run continues and the "
+                                       "plot keeps every point; settings.json and the log are in the run folder.",
+                                       parent=self.root)
         finally:
             self.plot.set_rows(self.rows)
             done = len(self.rows)
@@ -1346,7 +1381,9 @@ class FourStateApp:
             self._set_busy(False)
             self.worker = None
         count = len(self.rows)
-        off = "6221 off and 0 Oe, read back" if not problems else "SHUTDOWN PROBLEM: " + "; ".join(problems)
+        if self.__dict__.get("csv_failed"):
+            problems = problems + ["some CSV rows could not be written"]
+        off = "6221 off and 0 Oe, read back" if not problems else "PROBLEM: " + "; ".join(problems)
         if outcome is None:
             text = f"Finished: {count} points; {off}"
         elif outcome[0] == "stopped":
@@ -1391,6 +1428,10 @@ class FourStateApp:
                 controller.disconnect()
             except Exception:
                 pass
+        try:
+            self.root.after_cancel(self.drain_after)
+        except (AttributeError, tk.TclError):
+            pass
         self.root.destroy()
 
 

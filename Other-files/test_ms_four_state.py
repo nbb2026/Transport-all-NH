@@ -280,6 +280,7 @@ class FakeSR830:
         self.overload_below = None   # Overload at sensitivities below this code (pickup).
         self.snaps_until_unlock = None
         self.esr = 0
+        self.reject = set()          # Commands answered with a command error in *ESR?.
         self.sens_writes = []
 
     def locked(self):
@@ -300,6 +301,9 @@ class FakeSR830:
         head, _, value = command.partition(" ")
         if head == "*CLS":
             self.esr = 0
+            return
+        if command in self.reject:
+            self.esr |= 32
             return
         if head == "SENS":
             self.sens_writes.append(int(value))
@@ -333,6 +337,8 @@ class FakeSR830:
             return f"{x:.9e},{y:.9e},{math.hypot(x, y):.9e},{math.degrees(math.atan2(y, x)):.6f},{frequency:.6f}"
         if command == "OUTP? 3":
             return f"{math.hypot(x, y):.9e}"
+        if command.startswith("OEXP? "):
+            return "0.00,0"
         return str(self.p[command[:-1]])
 
     def clear(self):
@@ -453,14 +459,13 @@ class RunTests(unittest.TestCase):
             "field +1500", "pulse", "field +0", "sine",
             "rotate", "field -1500", "pulse", "field +0", "sine"])
 
-    def test_output_on_and_init_go_in_one_message(self):
+    def test_pulse_starts_as_on_the_moke_6221_page(self):
         world = World()
         world.run(world.settings("D"))
         messages = world.source_device.messages
-        self.assertIn("OUTP ON;:SOUR:WAVE:INIT", messages)
-        start = messages.index("OUTP ON;:SOUR:WAVE:INIT")
-        self.assertEqual(messages[start - 1], "SOUR:WAVE:ARM")
-        self.assertNotIn("OUTP ON", messages, "never a separate OUTP ON before INIT")
+        start = messages.index("OUTP ON")
+        self.assertEqual(messages[start - 1:start + 2], ["SOUR:WAVE:ARM", "OUTP ON", "SOUR:WAVE:INIT"])
+        self.assertEqual(messages[:start - 1][-1], "SOUR:WAVE:DUR:CYCL 1", "all settings sent and read before ARM")
 
     def test_lockin_is_set_to_the_ppms_page_reference_and_recorded(self):
         world = World()
@@ -469,8 +474,10 @@ class RunTests(unittest.TestCase):
         self.assertEqual(commands[:6], ["*CLS", "HARM 1", "FMOD 0", f"RSLP {core.PPMS_SR830_REFERENCE_SLOPE}",
                                         "ILIN 0", "SYNC 0"])
         recorded = [payload for kind, payload in world.emitted if kind == "lockin"][0]
-        self.assertEqual(set(ms.SR830_RECORDED) | {"tau_s"}, set(recorded))
+        self.assertEqual(set(ms.SR830_RECORDED) | {"tau_s", "offset_X_percent", "expand_X",
+                                                   "offset_Y_percent", "expand_Y"}, set(recorded))
         self.assertEqual(recorded["tau_s"], 0.1)
+        self.assertEqual((recorded["offset_X_percent"], recorded["expand_X"]), (0.0, 0))
 
     def test_a_latched_error_left_by_a_disconnect_does_not_stop_the_start(self):
         world = World()
@@ -485,6 +492,18 @@ class RunTests(unittest.TestCase):
         for command, value in ms.SR830_BASELINE:
             self.assertEqual(world.lockin_device.p[command], value, command)
         self.assertEqual(world.lockin_device.p["DDEF"], "2,1,0")
+
+    def test_a_failed_baseline_leaves_the_lockin_disconnected(self):
+        world = World()
+        world.lockin_device.reject.add("ISRC 1")
+        lockin = mock.Mock()
+        lockin.lock = world.lockin.lock
+        lockin.instrument = world.lockin_device
+        lockin.connect.return_value = "Stanford_Research_Systems,SR830"
+        with self.assertRaises(RuntimeError) as caught:
+            ms.connect_lockin(lockin, "GPIB0::8::INSTR")
+        self.assertIn("ISRC 1", str(caught.exception))
+        lockin.disconnect.assert_called_once()
 
     def test_a_long_time_constant_is_refused(self):
         world = World()
@@ -568,6 +587,8 @@ class RunTests(unittest.TestCase):
         reading = world.ppms.read_environment()
         self.assertEqual((reading["field_oe"], reading["field_status"]), (0.0, "StableDriven"))
         self.assertEqual(world.last_run.shutdown_problems, [])
+        # Confirmed from readings taken after the stale ones, held 3 s.
+        self.assertGreaterEqual(world.clock.now - world.ppms.changed_at, world.ppms.lag_s + 3.0)
 
     def test_compliance_during_the_read_stops_the_run(self):
         world = World()
@@ -698,6 +719,32 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(handled, ["call"], "the next event is still handled")
         self.assertEqual(len(app.root.scheduled), 1, "the pump is rescheduled")
         self.assertIn("disk full", app.logged[0])
+
+    def gui_app(self):
+        app = self.app()
+        app.title = "MS-fourState"
+        app.rows = []
+        app.run = None
+        app.plot = mock.Mock()
+        app.progress = mock.Mock()
+        app.last_var = mock.Mock()
+        app.csv_file = mock.Mock()
+        app.csv_writer = mock.Mock()
+        app.csv_writer.writerow.side_effect = OSError("disk full (test)")
+        app.csv_failed = False
+        return app
+
+    def test_a_failed_csv_row_is_shown_once_and_the_run_goes_on(self):
+        app = self.gui_app()
+        row = dict(step=1, state="D", x_v=1e-6, y_v=0.0, theta_deg=0.0, rxy_ohm=0.002,
+                   read_field_oe=0.0, temperature_k=300.0)
+        with mock.patch.object(ms.messagebox, "showwarning") as warning:
+            app._add_point(row)
+            app._add_point(dict(row, step=2))
+        warning.assert_called_once()
+        self.assertEqual(len(app.rows), 2)
+        self.assertEqual(app.plot.set_rows.call_count, 2, "the plot keeps every point")
+        self.assertTrue(any("CSV write failed at step 2" in text for text in app.logged))
 
     def test_close_waits_for_a_connection_in_progress(self):
         app = self.app()
