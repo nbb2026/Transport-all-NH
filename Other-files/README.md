@@ -1,5 +1,35 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MS-fourState.py: PPMS four-state write and zero-field read (2026-10-06)
+
+A new program in the repository root, `MS-fourState.py`. For each state of a
+sequence (default D A B E) it:
+
+1. turns the PPMS rotator to the state's angle at zero field;
+2. sets the write field (Driven);
+3. sends the 6221 pulse (default ±22 mA, 30 µs, one pulse);
+4. returns the field to 0 Oe;
+5. reads the SR830 first harmonic X, Y and θ with a 0.5 mA RMS sine.
+
+It plots X, the field and the pulse current per step, and writes a CSV. The
+states follow the measurement table (D 0°/+0.15 T, A and B 270°/∓0.15 T,
+E 0°/−0.15 T, with A' and B' the reversed field and current), all editable.
+
+- It reuses the main program's instrument code. That covers the PPMS
+  connection, field setpoints and their settled check, and the rotator's
+  verified Move. It also covers the 6221 pulse of the MOKE-6221 page, the
+  PPMS page's sine with its phase marker as the SR830 reference, and the
+  SR830 query and checked-write helpers. The main program itself is
+  unchanged.
+- Stop, an error or the end turns the 6221 off and returns the field to
+  0 Oe; the rotator has no software stop.
+- `Other-files/MS-fourState_README.md` has the procedure, the defaults to
+  check (compliance 15 V among them) and the data files.
+- Tests: `Other-files/test_ms_four_state.py`, against simulated instruments,
+  checked by breaking each safety rule in a copy (all 19 caught). The window
+  is checked on GitHub with `Other-files/ci/ms_four_state_checks.py`.
+- Not yet run on the instruments.
+
 ## PPMS: Set H and Zero H end Persistent (2026-10-04)
 
 - On the PPMS page, Set H and Zero H now send the Persistent end mode. The
