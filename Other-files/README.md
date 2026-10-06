@@ -1,5 +1,52 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## PPMS connection timeout: the network, not the DLL (2026-10-06, message fix open)
+
+What happened: on the PPMS1 ThinkPad, Connect PPMS (QDInstrument remote,
+`192.168.137.5:11000`) failed after about a minute with a dialog that begins
+"Loading QDInstrument.dll or creating the remote PPMS session failed. Please
+confirm the DLL is not blocked by Windows, that .NET Framework 3.5 is
+enabled…", followed by a long .NET stack trace.
+
+Cause: the network. The DLL had loaded. Inside the trace is
+`EndpointNotFoundException` and TCP error 10060: nothing at
+`192.168.137.5:11000` answered, three times over 21 s.
+
+- The ThinkPad shares its Wi-Fi (NUS) with the PPMS computer through
+  Windows Internet Connection Sharing. Its `Ethernet 2` adapter, cabled to the
+  PPMS computer, is `192.168.137.1`.
+- The PPMS computer's `ipconfig` showed a self-assigned address,
+  `169.254.121.239`, instead of `192.168.137.x`. `ipconfig /renew` timed out
+  ("unable to contact your DHCP server"): the ThinkPad's sharing had stopped
+  handing out addresses, although the cable link was up on both sides.
+
+Fix (connected again the same day):
+
+1. On the PPMS computer, give the Local Area Connection a fixed IPv4 address:
+   `192.168.137.5`, mask `255.255.255.0`, gateway and DNS `192.168.137.1`.
+   This is the program's default PPMS IP, so it keeps working after reboots.
+   The alternative is to restart the sharing on the ThinkPad
+   (`Restart-Service SharedAccess` as administrator, or untick and re-tick
+   Sharing on the Wi-Fi adapter), then `ipconfig /renew` on the PPMS computer.
+2. Check from the ThinkPad before pressing Connect PPMS:
+   `Test-NetConnection 192.168.137.5 -Port 11000` must report
+   `TcpTestSucceeded : True`. If ping works but the TCP test fails, the
+   QDInstrument server is not running on the PPMS computer
+   (`netstat -an | findstr 11000` there shows no `LISTENING` line).
+
+Still open in the program: `PPMSQDInstrumentReadbackController.connect` in
+`Transport_all_NH_dev.py` wraps every failure in the DLL/.NET message, so a
+network fault reads like a DLL fault, and the dialog shows the whole stack
+trace. Proposed fix: a 3 s TCP check of host and port before the DLL is
+loaded, with a short message that names the address and says whether it
+timed out (wrong IP, link or firewall) or was refused (server not running),
+and the full trace in the log only. Not started.
+
+Also seen: the lab PC was running a copy older than 2026-09-30 (its Zurich
+MFLI field was plain text "MF-DEV4414" instead of the "DEV4414 (Super)" list),
+so it lacked the later changes, including Set H/Zero H ending Persistent.
+Copy the current folder before measuring.
+
 ## PPMS: Set H and Zero H end Persistent (2026-10-04)
 
 - On the PPMS page, Set H and Zero H now send the Persistent end mode. The

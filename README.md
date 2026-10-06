@@ -109,6 +109,12 @@ the application and opening every page.
 
 ## Notes
 
+If Connect PPMS fails with a message about loading `QDInstrument.dll`, look in
+it for `EndpointNotFoundException` or TCP error 10060/10061: that is a network
+fault, not the DLL. Check the PPMS computer's address with `ipconfig` and the
+port from the measuring PC with `Test-NetConnection <PPMS IP> -Port 11000`.
+`Other-files/README.md` (2026-10-06) has the PPMS1 case and its fix.
+
 Older LabOne releases expose the MFLI only through a Python 3.7 API. When the
 installed `zhinst` cannot be imported directly, the program looks for a Python
 3.7 interpreter with `zhinst` 18.12 and talks to the instrument through it as a
