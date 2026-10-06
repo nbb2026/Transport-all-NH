@@ -47,6 +47,9 @@ jobs:
       - name: Microwave test program, layout and screenshots
         if: success() || failure()
         run: xvfb-run -a -s "-screen 0 2560x1440x24 -dpi 96" python Other-files/ci/microwave_checks.py --shots shots/microwave
+      - name: MS-fourState, layout and screenshots
+        if: success() || failure()
+        run: xvfb-run -a -s "-screen 0 2560x1440x24 -dpi 96" python Other-files/ci/ms_four_state_checks.py --shots shots/ms_four_state
       - uses: actions/upload-artifact@v4
         if: success() || failure()
         with:
@@ -87,6 +90,9 @@ jobs:
       - name: Microwave test program, layout and screenshots
         if: success() || failure()
         run: python Other-files/ci/microwave_checks.py --shots shots/microwave
+      - name: MS-fourState, layout and screenshots
+        if: success() || failure()
+        run: python Other-files/ci/ms_four_state_checks.py --shots shots/ms_four_state
       - uses: actions/upload-artifact@v4
         if: success() || failure()
         with:

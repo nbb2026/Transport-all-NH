@@ -1,5 +1,55 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MS-fourState, MS-cycleState, MS-twoState: PPMS state writing and zero-field read (2026-10-06)
+
+New programs in the repository root. For each state of a sequence,
+`MS-fourState.py`:
+
+1. turns the PPMS rotator to the state's angle at zero field;
+2. sets the write field (Driven);
+3. sends the 6221 pulse (default ±22 mA, 30 µs, one pulse);
+4. returns the field to 0 Oe;
+5. reads the SR830 first harmonic X, Y and θ with a 0.5 mA RMS sine.
+
+It plots X, the field and the pulse current per step, and writes a CSV. The
+states follow the measurement table (D 0°/+0.15 T, A and B 270°/∓0.15 T,
+E 0°/−0.15 T, with A' and B' the reversed field and current), all editable.
+The default sequence is D A B E.
+
+- `MS-cycleState.py` opens the same window cycling D-A-B-E-B-A-D-…
+- `MS-twoState.py` opens it switching between any two chosen states.
+
+All three run until Stop or for a set number of passes.
+
+- **Instrument code:** it is the main program's. That covers the PPMS
+  connection, field setpoints and their settled check, the rotator's
+  verified Move, the 6221 controller, and the PPMS page's sine with its
+  phase marker as the SR830 reference. It also covers the SR830 query and
+  checked-write helpers and its connection baseline. The main program
+  itself is unchanged.
+- **Stops:** Stop, an error or the end turns the 6221 off and returns the
+  field to 0 Oe, both confirmed by readback. Shutdown follows the field the
+  run commanded, not a possibly stale reading. The rotator has no software
+  stop.
+- **Pulse:** the MOKE-6221 page's commands and order (ARM, `OUTP ON`,
+  INIT), with every setting read back before ARM. The 6221's latched
+  compliance bit is recorded for every pulse. What the 6221 outputs between
+  ARM and INIT is not measured, so check it with an oscilloscope before
+  the first run.
+- **Review:** an independent review before the first hardware run found
+  14 problems, and a second review of the fixes five more. All are fixed,
+  each with a test, except the pulse shape between ARM and INIT, which
+  needs the oscilloscope. Among them: a stale reading could skip the return
+  to zero; a disconnect left an SR830 error latched, which failed the next
+  Start; and one display error could freeze the window.
+- **Docs:** `Other-files/MS-fourState_README.md` has the procedure, the
+  checks before the first run (an oscilloscope look at the pulse; compliance
+  15 V) and the data files.
+- **Tests:** `Other-files/test_ms_four_state.py` runs against simulated
+  instruments; breaking each safety rule in a copy is caught. The windows
+  are checked on GitHub with `Other-files/ci/ms_four_state_checks.py`.
+- **Status:** not yet run on the instruments.
+
 ## PPMS connection timeout: the network, not the DLL (2026-10-06, message fix open)
 
 What happened: on the PPMS1 ThinkPad, Connect PPMS (QDInstrument remote,
