@@ -75,6 +75,17 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertEqual(panel._parse_ppms_field_parameters()[3], 0, "Set H")
         self.assertEqual(panel._parse_ppms_field_parameters(0.0)[3], 0, "Zero H")
 
+    def test_moke_24_page_chooses_a_2410_or_a_2400(self):
+        moke = self.app
+        self.addCleanup(lambda: (moke.keithley_model_var.set("2410"), moke._update_keithley_controls()))
+        self.assertEqual(moke.keithley_model_var.get(), "2410", "the 2410 stays the default")
+        self.assertEqual(tuple(moke.keithley_model_combo.cget("values")), ("2410", "2400"))
+        self.assertEqual(str(moke.keithley_model_combo.cget("state")), "readonly")
+        self.assertEqual(moke.keithley_off_button.cget("text"), "2410 zero / output off")
+        moke.keithley_model_var.set("2400")
+        moke._update_keithley_controls()
+        self.assertEqual(moke.keithley_off_button.cget("text"), "2400 zero / output off")
+
     def test_ppms_keeps_one_harmonic_per_meter(self):
         self.assertEqual(self.settings(self.app.ppms_panel), {
             "830_a": ("1", True),
@@ -99,7 +110,7 @@ class NotebookTabTests(unittest.TestCase):
             titles = [notebook.tab(index, "text")
                       for index in range(notebook.index("end"))]
             self.assertEqual(titles, [
-                "MOKE light", "MOKE motor", "MOKE magnet", "MOKE-2410",
+                "MOKE light", "MOKE motor", "MOKE magnet", "MOKE-24",
                 "MOKE-6221", "Gate-VI", "PPMS", "RT-E", "FMR", "STFMR"])
         finally:
             built.closing = True

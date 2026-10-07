@@ -28,14 +28,14 @@ from pathlib import Path
 
 PROGRAM = Path(__file__).resolve().parents[2] / "Transport_all_NH_dev.py"
 COMPACT = ("MOKE-6221", "STFMR", "FMR")
-REPORTED = ("MOKE light", "MOKE motor", "MOKE magnet", "MOKE-2410", "Gate-VI", "PPMS", "RT-E")
+REPORTED = ("MOKE light", "MOKE motor", "MOKE magnet", "MOKE-24", "Gate-VI", "PPMS", "RT-E")
 SCREENS = (  # (screen width, height, window width or 0 for the program's own)
     (2560, 1440, 2000),  # the lab PC, window widened by hand
     (2560, 1440, 0),     # the lab PC, the program's default window
     (1920, 1080, 0),
     (1600, 1586, 0),
 )
-SHOT_PAGES = ("MOKE light", "MOKE motor", "MOKE magnet", "MOKE-2410", "MOKE-6221",
+SHOT_PAGES = ("MOKE light", "MOKE motor", "MOKE magnet", "MOKE-24", "MOKE-6221",
               "Gate-VI", "PPMS", "RT-E", "FMR", "STFMR")
 
 
