@@ -1,5 +1,20 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## RT-E start-up settings: Zurich 1+2+3 at 17.3 Hz (2026-10-07)
+
+The RT-E page now opens with the settings of the user's figure:
+
+- 6221 0.1 mA RMS at 17.3 Hz (was 1 mA at 317.3 Hz), compliance 50 V;
+- the Zurich measuring harmonics 1+2+3 together, ticked;
+- SR830-1, -2 and -3 not ticked (SR830-1 was ticked before); their
+  harmonics stay 1+2+3, 2 and 3;
+- KEPCO 0 A with a 5 V limit; Current scan 0.01-1 mA in 0.01 mA steps,
+  1 loop, settle 0.5 s, acquire 1 s, no round trip (unchanged).
+
+The PPMS page is unchanged (1 mA RMS, 317.3 Hz, all meters ticked). The
+check is `test_rte_defaults_are_the_users_figure` in
+`Other-files/test_panel_defaults.py`.
+
 ## PPMS and RT-E: Zurich controls no longer stay greyed (2026-10-07)
 
 On the RT-E page (and the PPMS page) the Zurich row could stay greyed while
