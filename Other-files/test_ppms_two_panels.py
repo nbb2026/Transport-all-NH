@@ -486,6 +486,32 @@ class TwoPanelTests(unittest.TestCase):
         panel.disconnect_ppms2_zurich()
         self.assertFalse(controller.mfli_connected)
 
+    def test_a_background_read_never_locks_the_zurich_controls(self):
+        """The 1 s read runs on its own flag: a control refresh during a read
+        used to grey Connect, Disconnect, the harmonic list and Measure, and
+        nothing re-enabled them when the read ended."""
+        parent, panel, controller = self.make_panel()
+        panel.connect_ppms2_zurich()
+        self.assertTrue(controller.mfli_connected)
+        pending = Future()
+        panel.zurich_executor = Mock(submit=Mock(return_value=pending))
+        panel._poll_ppms2_zurich()
+        self.assertTrue(panel.zurich_reading)
+        self.assertFalse(panel.zurich_busy)
+        for name in ('zurich_select', 'zurich_connect_button', 'zurich_disconnect_button',
+                     'zurich_reference_combo', 'zurich_harmonic_combo'):
+            setattr(panel, name, Mock())
+        panel._set_zurich_busy(panel.zurich_busy)  # What a control refresh does.
+        panel.zurich_disconnect_button.configure.assert_called_with(state='normal')
+        panel.zurich_select.configure.assert_called_with(state='normal')
+        panel.zurich_harmonic_combo.configure.assert_called_with(state='readonly')
+        # A change clicked during the read queues behind it instead of being dropped.
+        panel.connect_ppms2_zurich(apply_only=True)
+        self.assertEqual(panel.zurich_executor.submit.call_count, 2)
+        pending.set_result(dict(X=1e-6, Y=0.0, R=1e-6, phase_deg=0.0, reference_frequency_hz=317.3,
+                                reference_valid=False, status_text='6221 off'))
+        self.assertFalse(panel.zurich_reading)
+
     def test_zurich_snapshot_retaken_only_after_a_range_change(self):
         """1+2+3 reads three demodulators; do not read them twice per point."""
         for actions, expected_reads in (('', 1), ('RANGE .01->.1 V', 2)):
