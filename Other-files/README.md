@@ -1,5 +1,113 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MOKE-24 and Gate-VI: laid out like STFMR and PPMS; Gate-VI drives a 2410 or 2400 (2026-10-07)
+
+**MOKE-24 page**, top to bottom:
+
+- **Instrument connection:** the rack row used on STFMR and PPMS. It has
+  the name, an 18-character address, Connect, Disconnect, the lamp and
+  the state. Model and Current limit sit on the line below, under the
+  address. The old single row was cut off at the lab's 1101 px window.
+- **Keithley output:** beside the connection when the window is wide
+  enough, else under it. It holds the safety check, Manual V
+  (Write/Flip/Zero), Step V (↓/↑), the red off button and the output
+  readback, as in STFMR's KEPCO output. The safety check moved here from
+  the scan box, and it still covers both manual and scan voltages.
+- **Hazard text:** full page width, naming the model's limit and OVP.
+- **Resistance:** the controls and the four readings only.
+- **Voltage scan and ROI editing:** side by side when they fit. The scan
+  buttons sit on a row of their own, so the parameter columns stay
+  compact.
+- **Plots:** all three in one row of equal width: ROI mean vs time,
+  Voltage vs ROI mean, and |R| vs time. They take the spare height. The
+  |R| plot no longer takes the top of the page. Each canvas asks for
+  little width, so a third of the 1101 px window is enough. The "waiting"
+  messages wrap inside the plot instead of running past it.
+
+**Gate-VI page:**
+
+- **Model:** the Keithley row has a Model list, 2410 (default) or 2400.
+  It is fixed while connected or busy. The 2400 is driven exactly as the
+  2410 here: 20 V range, 20 V OVP (a real level on both models) and
+  1 mA. The model must match `*IDN?`, using the same anchored check as
+  MOKE-24.
+  - A failed connect keeps the previous model.
+  - The row name, the red button ("Stop 2400 / 6221 now"), the interlock
+    text, the plot titles, the status messages and the plot snapshot names
+    follow the model.
+  - `VI_parameters.log` records `gate_keithley_model` and its identity.
+  - The CSV column `2410_output_state` keeps its name, so existing
+    analysis still reads it.
+- **Rack rows:** every name is right-aligned in one width with an ASCII
+  colon; the full-width "：" is gone from this page. Addresses are 18
+  characters, and Connect and Disconnect have the STFMR widths. The
+  connection box is titled "Gate-VI instrument connections".
+- **Unchanged:** the MOKE-24 / Gate-VI interlock. Either page still blocks
+  the other while it holds its Keithley, whatever the address.
+- **Tests:** in `Other-files/test/test_instrument_safety_logic.py`, the
+  Gate-VI controller connects to a fake 2410 and 2400. The tests check:
+  - a wrong model is refused;
+  - a failed connect keeps the model;
+  - re-connecting as the other model is refused;
+  - 20 V range and OVP on both.
+
+  `Other-files/test_panel_defaults.py` checks the Gate-VI Model list, the
+  labels that follow it, the lock while busy, and that no full-width colon
+  is left on the page. The layouts are checked by the CI screenshots.
+
+## MOKE-24: a 2400 keeps a real OVP, at 160 V (2026-10-07)
+
+A review of the 2400 support found that a 2400 has no 200 V OVP level. Its
+levels are 20, 40, 60, 80, 100, 120 and 160 V, and any value from 161 to
+210 V selects none (2400 user's manual, `:SOUR:VOLT:PROT`). The page asked
+for 200 V, so on a 2400 the hardware OVP was silently off. The readback
+check let that through, because it allowed 5 % above 200 V (210.2 V) and
+"none" reads back as 210 V.
+
+- **2400:** OVP 160 V and a ±160 V software limit, on scans, manual
+  voltages and steps. The hazard text and the parameter log give the
+  model's limit and OVP. The log also records the OVP read back.
+- **2410:** unchanged, ±200 V with a 200 V OVP.
+- **Readback check:** the OVP read back must equal the level asked for,
+  within 1 % instead of 5 %. A model lacking that level is refused before
+  the output turns on. A 2400 driven as a 2410 is now caught at this step.
+- **Connecting:** the Model list and Connect stay locked until the attempt
+  ends. A failed connect keeps the previous model, so file names cannot
+  take the new model. A connected instrument cannot be re-connected as the
+  other model. The list shows the model actually connected.
+- **Identity:** both models must be named in the model field, "MODEL 2410"
+  or "MODEL 2400", optionally with -C. A serial number containing 2410 no
+  longer passes as a 2410, and a 2400-LV is refused.
+- **Names:** the scan parameter log is named by the model that ran the
+  scan. The page's image buttons, the image-folder dialog and the MOKE
+  magnet warnings name the model or "MOKE-24" rather than "2410".
+- **Second review:**
+  - *Older gap:* a resistance start sends `*RST`, which sets the OVP to
+    none. If that start then failed, the next manual voltage in the same
+    range turned the output on without setting the OVP again. Now `*RST`,
+    and the start of every voltage setup, clear what the controller
+    trusts. The next voltage output therefore sets and checks the OVP
+    first.
+  - The OVP readback must also not be lower than asked for (within 1 %),
+    since a lower level would silently clamp a scan.
+  - The parameter log takes the OVP readback from when the scan turned
+    the output on.
+  - While a connect runs, the page offers nothing that sources (Start,
+    manual, resistance, Disconnect).
+  - Camera Live recordings from this page are named by the model.
+- **To check on the real 2400 before use above 20 V:** after connecting,
+  `:SOUR:VOLT:PROT?` should read 160.
+- **Tests:** in `Other-files/test/test_instrument_safety_logic.py`, the fake
+  2410 and 2400 select OVP levels as in the manual. New tests cover:
+  - the 2400 at 160 V and 2410 at 200 V limits;
+  - a missing OVP level refused;
+  - the scan limit per model;
+  - a failed connect and a re-connect as the other model;
+  - the stricter identity check.
+
+  `Other-files/test_panel_defaults.py` checks the hazard text and the lock
+  during a connect. Each new check fails when its fix is undone.
+
 ## MOKE-24: the |R| plot draws, and Start returns after Stop (2026-10-07)
 
 On the lab PC the continuous-resistance plot showed only its time axis and
@@ -34,7 +142,8 @@ while the instrument is connected.
   model. The 2410 uses its 1000 V range with at most 21 mA, as before. The
   2400 uses its 200 V range with at most 105 mA (`KEITHLEY_MODELS`). Both
   keep the page's ±200 V software limit and 200 V hardware OVP, and the
-  20 V range at or below 20 V.
+  20 V range at or below 20 V. *(Superseded for the 2400 by the next entry
+  up: a 2400 has no 200 V OVP level, so it is limited to ±160 V.)*
 - **Labels and files:** the red off button names the model. Dialogs are
   titled MOKE-24. Saved scan files, images and parameter logs are named
   `Keithley<model>_…`, so a 2410's files keep their names. The parameter

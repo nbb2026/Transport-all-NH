@@ -82,9 +82,74 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertEqual(tuple(moke.keithley_model_combo.cget("values")), ("2410", "2400"))
         self.assertEqual(str(moke.keithley_model_combo.cget("state")), "readonly")
         self.assertEqual(moke.keithley_off_button.cget("text"), "2410 zero / output off")
+        self.assertIn("±200 V (hardware OVP 200 V)", moke.keithley_hazard_var.get())
         moke.keithley_model_var.set("2400")
         moke._update_keithley_controls()
         self.assertEqual(moke.keithley_off_button.cget("text"), "2400 zero / output off")
+        self.assertIn("2400 scans are software-limited to ±160 V (hardware OVP 160 V)",
+                      moke.keithley_hazard_var.get())
+        # While a connect is under way the model and Connect stay locked.
+        self.addCleanup(setattr, moke, "keithley_connecting", False)
+        moke.keithley_connecting = True
+        moke._update_keithley_controls()
+        self.assertEqual(str(moke.keithley_model_combo.cget("state")), "disabled")
+        self.assertEqual(str(moke.keithley_connect_button.cget("state")), "disabled")
+        # Even once the controller holds the instrument (OVP still being
+        # set), nothing that sources is offered until the connect finishes.
+        self.addCleanup(setattr, moke.keithley_controller, "instrument", None)
+        self.addCleanup(moke.keithley_safety_var.set, False)
+        self.addCleanup(moke.keithley_resistance_safety_var.set, False)
+        moke.keithley_controller.instrument = object()
+        moke.keithley_safety_var.set(True)
+        moke.keithley_resistance_safety_var.set(True)
+        moke._update_keithley_controls()
+        for button in (moke.keithley_start_button, moke.keithley_resistance_button,
+                       moke.keithley_disconnect_button, *moke.keithley_manual_buttons):
+            self.assertEqual(str(button.cget("state")), "disabled", button.cget("text"))
+        moke.keithley_controller.instrument = None
+        moke.keithley_connecting = False
+        moke._update_keithley_controls()
+        self.assertEqual(str(moke.keithley_model_combo.cget("state")), "readonly")
+
+    def test_gate_vi_chooses_a_2410_or_a_2400(self):
+        vi = self.app
+        controller = vi.nonlocal_vi_2410_controller
+
+        def choose(model):
+            vi.nonlocal_vi_2410_model_var.set(model)
+            vi._on_nonlocal_vi_model_selected()
+
+        self.addCleanup(choose, "2410")
+        self.assertEqual(vi.nonlocal_vi_2410_model_var.get(), "2410", "the 2410 stays the default")
+        self.assertEqual(tuple(vi.nonlocal_vi_model_combo.cget("values")), ("2410", "2400"))
+        self.assertEqual(str(vi.nonlocal_vi_model_combo.cget("state")), "readonly")
+        self.assertEqual(vi.nonlocal_vi_off_button.cget("text"), "Stop 2410 / 6221 now")
+        choose("2400")
+        self.assertEqual(controller.model, "2400")
+        self.assertEqual(vi.nonlocal_vi_keithley_label_var.get(), "Keithley 2400:")
+        self.assertEqual(vi.nonlocal_vi_off_button.cget("text"), "Stop 2400 / 6221 now")
+        self.assertIn("during 2400 pulses", vi.nonlocal_vi_interlock_var.get())
+        self.assertEqual(vi.nonlocal_vi_plot_frames["pulse"].cget("text"), "Keithley 2400 command voltage")
+        # Locked while a connect or a scan is under way.
+        self.addCleanup(setattr, vi, "nonlocal_vi_busy", False)
+        vi.nonlocal_vi_busy = True
+        vi._update_nonlocal_vi_controls()
+        self.assertEqual(str(vi.nonlocal_vi_model_combo.cget("state")), "disabled")
+        vi.nonlocal_vi_busy = False
+        vi._update_nonlocal_vi_controls()
+
+    def test_gate_vi_labels_use_ascii_colons(self):
+        texts = []
+        pending = [self.app.nonlocal_vi_tab]
+        while pending:
+            widget = pending.pop()
+            pending.extend(widget.winfo_children())
+            try:
+                texts.append(str(widget.cget("text")))
+            except Exception:
+                pass
+        self.assertFalse([text for text in texts if "：" in text])
+        self.assertIn("Keithley 6221:", texts)
 
     def test_ppms_keeps_one_harmonic_per_meter(self):
         self.assertEqual(self.settings(self.app.ppms_panel), {
