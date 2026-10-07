@@ -1,5 +1,34 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MOKE-24: the MOKE-2410 page now drives a 2410 or a 2400 (2026-10-07)
+
+The MOKE-2410 tab is renamed **MOKE-24**. Its connection row has a
+**Model** list, 2410 (the default, as before) or 2400. The list is fixed
+while the instrument is connected.
+
+- **Identity check:** the model must match the instrument's `*IDN?`. The
+  2410 check is unchanged. A 2400 must be named in the model field ("MODEL
+  2400", also 2400-C), so a 2410, or a serial number containing 2400, is
+  never taken for one.
+- **Above 20 V:** the source range and the current allowed on it follow the
+  model. The 2410 uses its 1000 V range with at most 21 mA, as before. The
+  2400 uses its 200 V range with at most 105 mA (`KEITHLEY_MODELS`). Both
+  keep the page's ±200 V software limit and 200 V hardware OVP, and the
+  20 V range at or below 20 V.
+- **Labels and files:** the red off button names the model. Dialogs are
+  titled MOKE-24. Saved scan files, images and parameter logs are named
+  `Keithley<model>_…`, so a 2410's files keep their names. The parameter
+  log records `instrument.model`. The Gate-VI page's own 2410 is unchanged.
+- **Tests:** in `Other-files/test/test_instrument_safety_logic.py`, a fake
+  2400 refuses the 1000 V range as the instrument does. The tests check:
+  - a 2400 scan to 200 V on the 200 V range;
+  - the 105 mA limit;
+  - a 2400 driven as a 2410 failing before the output turns on;
+  - the identity check, including connecting with each model;
+  - the model fixed while connected.
+
+  The page itself is checked in `Other-files/test_panel_defaults.py`.
+
 ## RT-E: a completed Current scan ends at zero current (2026-10-07)
 
 When an RT-E **Current** scan completes, the 6221 is turned off: `SOUR:WAVE:ABOR`,

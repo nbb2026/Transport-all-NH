@@ -36,8 +36,9 @@ The notebook has ten pages, grouped by rack.
 **MOKE.** `MOKE light` drives the four-channel LED illumination and holds the
 camera connection and live view. `MOKE motor` moves the Cell-VSDM sample
 stage. `MOKE magnet` runs the KEPCO bipolar supply against a gaussmeter and
-shows the difference image and its region of interest. `MOKE-2410` and
-`MOKE-6221` are the Keithley source-measure and current-source pages; the 6221
+shows the difference image and its region of interest. `MOKE-24` and
+`MOKE-6221` are the Keithley source-measure and current-source pages; the
+MOKE-24 page drives a 2410 or a 2400, chosen on the page, and the 6221
 page does both one-pulse-per-current round trips and fixed-current multi-pulse
 acquisition, averaging the region of interest over the post-pulse interval.
 

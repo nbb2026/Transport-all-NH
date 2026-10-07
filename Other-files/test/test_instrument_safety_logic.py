@@ -142,6 +142,33 @@ class Fake2410:
         raise AssertionError(f"unexpected query: {command}")
 
 
+class Fake2400(Fake2410):
+    """A 2400: its highest source range is 200 V, so the 2410's 1000 V range
+    is refused with a SCPI error, as the instrument does."""
+
+    def __init__(self):
+        super().__init__()
+        self.errors = []
+
+    def write(self, command):
+        upper = command.upper()
+        if upper.startswith(":SOUR:VOLT:RANG ") and float(command.rsplit(" ", 1)[1]) > 210.0:
+            self.commands.append(command)
+            self.errors.append('-222,"Parameter data out of range"')
+            return
+        super().write(command)
+
+    def query(self, command):
+        if command.upper() == "SYST:ERR?" and self.errors:
+            return self.errors.pop(0)
+        if command == "*IDN?":
+            return "KEITHLEY INSTRUMENTS INC.,MODEL 2400,4105497,C30   Mar 17 2006 09:29:29/A02  /K/J"
+        return super().query(command)
+
+    def close(self):
+        pass
+
+
 class Fake6221:
     def __init__(self):
         self.commands = []
@@ -1121,6 +1148,72 @@ class InstrumentSafetyTests(unittest.TestCase):
         app.CombinedControlApp._set_stfmr_progress(progress, 12, 10)
         self.assertEqual(progress.options, {"maximum": 10, "value": 10})
         app.CombinedControlApp._set_stfmr_progress(None, 1, 0)
+
+    def test_2400_uses_its_200_v_range_and_allows_105_ma(self):
+        controller = app.Keithley2410Controller(lambda _message: None, model="2400")
+        fake = Fake2400()
+        controller.instrument = fake
+        controller.compliance_a = 0.1  # Above the 2410's 21 mA, within the 2400's 105 mA.
+        controller.enable_output(200.0)
+        self.assertEqual(fake.voltage_range, 200.0)
+        self.assertEqual(fake.ovp, 200.0, "same hardware OVP as the 2410")
+        self.assertTrue(math.isclose(controller.set_voltage(200.0), 200.0))
+        with self.assertRaises(ValueError):
+            controller.set_voltage(200.0001)
+        controller.compliance_a = 0.106
+        with self.assertRaisesRegex(ValueError, "105 mA"):
+            controller.apply_manual_voltage(30.0)
+        controller.compliance_a = 1e-3
+        controller.apply_manual_voltage(1.0)
+        self.assertEqual(fake.voltage_range, 20.0, "20 V range at or below 20 V, as on the 2410")
+
+    def test_a_2400_driven_as_a_2410_fails_safe(self):
+        controller = app.Keithley2410Controller(lambda _message: None)  # 2410 selected
+        fake = Fake2400()
+        controller.instrument = fake
+        with self.assertRaisesRegex(RuntimeError, "SCPI error"):
+            controller.enable_output(200.0)
+        self.assertEqual(fake.output, 0, "output never turned on")
+
+    def test_identity_must_name_the_selected_model(self):
+        cases = (
+            ("KEITHLEY INSTRUMENTS INC.,MODEL 2410,1234567,C34", "2410", True),
+            ("KEITHLEY INSTRUMENTS INC.,MODEL 2400,4105497,C30", "2400", True),
+            ("KEITHLEY INSTRUMENTS INC.,MODEL 2400-C,4105497,C30", "2400", True),
+            ("KEITHLEY INSTRUMENTS INC.,MODEL 2410,1234567,C34", "2400", False),
+            ("KEITHLEY INSTRUMENTS INC.,MODEL 2400,4105497,C30", "2410", False),
+            ("KEITHLEY INSTRUMENTS INC.,MODEL 2410,2400123,C34", "2400", False),
+        )
+        for identity, model, expected in cases:
+            with self.subTest(identity=identity, model=model):
+                self.assertIs(app.Keithley2410Controller.identity_matches(identity, model), expected)
+
+    def test_model_is_fixed_while_connected(self):
+        controller = app.Keithley2410Controller(lambda _message: None)
+        with self.assertRaises(ValueError):
+            controller.set_model("2700")
+        controller.instrument = Fake2410()
+        with self.assertRaises(RuntimeError):
+            controller.set_model("2400")
+        self.assertEqual(controller.model, "2410")
+
+    def test_connect_checks_the_selected_model(self):
+        manager = types.SimpleNamespace(open_resource=lambda resource: Fake2400())
+        originals = (app.pyvisa, app.acquire_shared_visa_manager, app.release_shared_visa_manager)
+        app.pyvisa = types.SimpleNamespace()
+        app.acquire_shared_visa_manager = lambda: manager
+        app.release_shared_visa_manager = lambda _manager: None
+        try:
+            controller = app.Keithley2410Controller(lambda _message: None)
+            with self.assertRaisesRegex(RuntimeError, "not a Keithley 2410"):
+                controller.connect("GPIB0::24::INSTR", 1e-3)
+            self.assertFalse(controller.connected)
+            identity = controller.connect("GPIB0::24::INSTR", 1e-3, "2400")
+            self.assertIn("MODEL 2400", identity)
+            self.assertEqual(controller.model, "2400")
+            controller.disconnect()
+        finally:
+            app.pyvisa, app.acquire_shared_visa_manager, app.release_shared_visa_manager = originals
 
     def test_2410_high_voltage_rejects_impossible_current_compliance(self):
         controller = app.Keithley2410Controller(lambda _message: None)
