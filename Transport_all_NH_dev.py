@@ -1422,6 +1422,8 @@ PPMS_PERSISTENT_CONFIRM_S = 10.0
 PPMS_PERSISTENT_MARGIN_S = 1800.0
 PPMS_TRANSPORT_CURRENT_RMS_MA = 0.001
 PPMS_TRANSPORT_FREQUENCY_HZ = 317.3
+RTE_TRANSPORT_FREQUENCY_HZ = 17.3      # RT-E start-up excitation (user's figure, 2026-10-07)
+RTE_TRANSPORT_CURRENT_RMS_MA = 0.1
 PPMS_TRANSPORT_COMPLIANCE_V = 50.0
 PPMS_TRANSPORT_HARMONIC = 1
 PPMS_TRANSPORT_REFERENCE_TIMEOUT_S = 8.0
@@ -35816,16 +35818,19 @@ class RTEPanel(PPMSPanel):
             controller.owner_scope = 'RT-E'
         self.rte_controllers['gauss'].owner_scope = 'RT-E'
         self.ppms_plot_frame.configure(text='RT-E: X, Y, phase vs measured field / excitation current')
-        # RT-E figure-of-record defaults, which differ from the PPMS page:
-        # SR830-1 alone is measured and sweeps all three harmonics in
-        # successive passes.  SR830-2, SR830-3 and the Zurich keep their
-        # harmonic settings so ticking Measure needs no further setup.
+        # RT-E start-up defaults, which differ from the PPMS page (the user's
+        # figure, 2026-10-07): 6221 0.1 mA RMS at 17.3 Hz, and the Zurich
+        # alone measures, reading 1+2+3 harmonics together.  The SR830s keep
+        # their harmonic settings so ticking Measure needs no further setup.
+        self.ppms_transport_current_var.set(f'{RTE_TRANSPORT_CURRENT_RMS_MA:g}')
+        self.ppms_transport_frequency_var.set(f'{RTE_TRANSPORT_FREQUENCY_HZ:g}')
+        self.zurich_expected_frequency = RTE_TRANSPORT_FREQUENCY_HZ
         self.ppms_transport_harmonic_a_var.set('1+2+3')
         self.ppms_transport_harmonic_b_var.set('2')
         self.ppms_transport_harmonic_c_var.set('3')
         self.zurich_harmonic.set('1+2+3')
-        for key, measured in (('830_a', True), ('830_b', False),
-                              ('830_c', False), ('zurich', False)):
+        for key, measured in (('830_a', False), ('830_b', False),
+                              ('830_c', False), ('zurich', True)):
             self.ppms_lockin_selection[key].set(measured)
         # Setting the variables does not fire the checkbutton commands, so the
         # harmonic plot rows have to be rebuilt for the new selection.

@@ -10,6 +10,10 @@ Entry point: `../Transport_all_NH_dev.py`, tab **RT-E**, class `RTEPanel`.
   reconnect. SR830 line-notch and sync filters remain off.
 - Uses the STFMR KEPCO 4886 and LS475 controllers. Initial addresses match STFMR:
   KEPCO `GPIB0::6::INSTR`, LS475 `GPIB0::15::INSTR`; both are editable.
+- Start-up settings (2026-10-07): 6221 0.1 mA RMS at 17.3 Hz, compliance 50 V;
+  the Zurich alone measures, reading harmonics 1+2+3 together; SR830-1/2/3
+  are not ticked (their harmonics stay 1+2+3, 2 and 3); KEPCO 0 A, 5 V limit.
+  The PPMS page keeps 317.3 Hz.
 - RT-E Zurich defaults to `MF-DEV4414`, Data Server `192.168.68.250:8004`.
   This endpoint override belongs to RT-E alone; PPMS, STFMR and other modules
   retain their existing server selection. The measurement PC has confirmed TCP

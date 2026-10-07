@@ -36,20 +36,29 @@ class PanelDefaultTests(unittest.TestCase):
                            bool(panel.ppms_lockin_selection["zurich"].get()))
         return state
 
-    def test_rte_measures_sr830_1_across_all_three_harmonics(self):
-        self.assertEqual(self.settings(self.app.rte_panel), {
-            "830_a": ("1+2+3", True),
+    def test_rte_defaults_are_the_users_figure(self):
+        """2026-10-07: the Zurich alone measures, 1+2+3, at 0.1 mA RMS, 17.3 Hz."""
+        panel = self.app.rte_panel
+        self.assertEqual(self.settings(panel), {
+            "830_a": ("1+2+3", False),
             "830_b": ("2", False),
             "830_c": ("3", False),
-            "zurich": ("1+2+3", False),
+            "zurich": ("1+2+3", True),
         })
+        self.assertEqual(panel.ppms_transport_current_var.get(), "0.1")
+        self.assertEqual(panel.ppms_transport_frequency_var.get(), "17.3")
+        self.assertEqual(panel.ppms_transport_compliance_var.get(), "50")
+        self.assertEqual((panel.rte_drive_target.get(), panel.rte_voltage_limit.get()), ("0", "5"))
+        self.assertEqual(panel.zurich_expected_frequency, 17.3)
+        # The PPMS page keeps its own excitation.
+        self.assertEqual(self.app.ppms_panel.ppms_transport_frequency_var.get(), "317.3")
 
     def test_rte_selection_gives_one_plot_row_per_harmonic(self):
         panel = self.app.rte_panel
         orders = panel._ppms2_measured_orders()
         self.assertEqual(sorted(orders), [1, 2, 3])
-        self.assertTrue(all(meters == ["830_a"] for meters in orders.values()),
-                        f"only SR830-1 is measured by default: {orders}")
+        self.assertTrue(all(meters == ["zurich"] for meters in orders.values()),
+                        f"only the Zurich is measured by default: {orders}")
 
     def test_rte_scan_runs_one_pass_per_harmonic(self):
         passes = self.app.rte_panel._rte_harmonic_passes(dict(
