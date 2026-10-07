@@ -36387,7 +36387,8 @@ class RTEPanel(PPMSPanel):
         def finished(future):
             try:
                 future.result()
-                status = 'Completed; outputs held'
+                status = ('Completed; 6221 current set to 0 (output OFF, read back)' if mode == 'Current'
+                          else 'Completed; outputs held')
             except PPMSScanCancelled:
                 status = 'Stopped; outputs held unless OFF was requested'
             except Exception as error:
@@ -36422,6 +36423,16 @@ class RTEPanel(PPMSPanel):
                     raise
             self._rte_scan_worker(mode, plan, dict(settings, continue_source=bool(index),
                                   progress_offset=index * len(plan)), limit, stable, duration)
+        if mode == 'Current':
+            self._rte_zero_6221_after_scan()
+
+    def _rte_zero_6221_after_scan(self):
+        """A completed Current scan ends at zero current (user's request,
+        2026-10-07): the 6221 output is turned off and read back.  Stop and
+        Field scans keep their outputs as before."""
+        self._stop_ppms_transport_source()
+        if self._ppms_query_numbers('6221', 'OUTP?', 1)[0] != 0:
+            raise RuntimeError('Current scan completed, but the 6221 output did not read back OFF')
 
     def _rte_update_current(self, settings):
         """Change only the running sine amplitude, without abort/reset/re-arm."""

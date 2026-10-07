@@ -1,5 +1,17 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## RT-E: a completed Current scan ends at zero current (2026-10-07)
+
+When an RT-E **Current** scan completes, the 6221 is turned off: `SOUR:WAVE:ABOR`,
+`CURR 0` and `OUTP OFF`, confirmed by reading `OUTP?` back. The status
+reads "Completed; 6221 current set to 0 (output OFF, read back)". If the
+readback is not OFF, the scan reports a failure.
+
+It turns off only after the last point of the last harmonic pass, never
+between passes. **Stop** keeps holding the outputs, and a completed **Field**
+scan still holds both the 6221 and the KEPCO, as before. Tests in
+`Other-files/test_rte_panel.py`.
+
 ## RT-E start-up settings: Zurich 1+2+3 at 17.3 Hz (2026-10-07)
 
 The RT-E page now opens with the settings of the user's figure:
