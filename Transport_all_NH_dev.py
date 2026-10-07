@@ -35131,7 +35131,8 @@ class PPMSPanel(CombinedControlApp):
         self.build_ppms_ui()
         self.zurich_controller = NonLocalACController(self.thread_log)
         self.zurich_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ppms-zurich")
-        self.zurich_busy = False
+        self.zurich_busy = False     # Connect / apply / disconnect running: controls locked.
+        self.zurich_reading = False  # A background read in flight: controls stay usable.
         self.zurich_closed = False
         self.zurich_after_id = None
         self.zurich_resource = tk.StringVar(value=zurich_mfli_label("MF-DEV4414"))
@@ -35272,7 +35273,7 @@ class PPMSPanel(CombinedControlApp):
         if self.ppms_field_scan_running:
             return
         if self.ppms_lockin_selection['zurich'].get() and self.zurich_busy:
-            self.ppms_field_scan_status_var.set("Zurich is connecting or reading; start the scan later")
+            self.ppms_field_scan_status_var.set("Zurich is connecting; start the scan later")
             return
         self.zurich_scan_enabled = bool(self.ppms_lockin_selection['zurich'].get())
         self.zurich_scan_configured = False
@@ -35589,7 +35590,7 @@ class PPMSPanel(CombinedControlApp):
             return
         self._refresh_ppms2_plot_layout()
         if self.zurich_busy:
-            # A background read may still be finishing when the selection event arrives.
+            # A connection or an earlier change is still being applied.
             self.root.after(100, self._apply_ppms2_zurich_harmonic)
             return
         if self.zurich_controller.mfli_connected:
@@ -35689,14 +35690,19 @@ class PPMSPanel(CombinedControlApp):
     def _poll_ppms2_zurich(self):
         if self.zurich_closed or self.closing:
             return
-        if not self.zurich_busy and not self.ppms_field_scan_running and self.zurich_controller.mfli_connected:
+        if (not self.zurich_busy and not self.__dict__.get("zurich_reading", False)
+                and not self.ppms_field_scan_running and self.zurich_controller.mfli_connected):
             try:
                 expected = float(self.ppms_transport_frequency_var.get())
                 if math.isfinite(expected) and expected > 0:
                     self.zurich_expected_frequency = expected
             except (ValueError, tk.TclError):
                 pass
-            self.zurich_busy = True
+            # Not zurich_busy: that locks the Zurich controls, and nothing
+            # refreshes them when a read ends, so a refresh during a read
+            # left them greyed.  Actions clicked meanwhile queue behind the
+            # read on the single Zurich worker.
+            self.zurich_reading = True
             def read():
                 with self.zurich_controller.lock:
                     return self._read_ppms2_zurich_ranged(self.zurich_expected_frequency)
@@ -35711,7 +35717,7 @@ class PPMSPanel(CombinedControlApp):
                     self.zurich_status.set(f"Read failed: {short_status_error(error, 80)}")
                     self._set_connection_indicator("zurich_reference", False)
                     self.zurich_values.set("Reading unavailable (stale values hidden)")
-                self.zurich_busy = False
+                self.zurich_reading = False
             future.add_done_callback(lambda _: self.post_ui(finished))
         self.zurich_after_id = self.root.after(1000, self._poll_ppms2_zurich)
 
@@ -36211,7 +36217,7 @@ class RTEPanel(PPMSPanel):
 
     def _rte_capture_zurich(self):
         if self.zurich_busy:
-            raise ValueError('Wait for the Zurich connection/read to finish')
+            raise ValueError('Wait for the Zurich connection to finish')
         self.zurich_scan_enabled = bool(self.ppms_lockin_selection['zurich'].get())
         self.zurich_scan_configured = False
         self.zurich_scan_harmonic = str(self.zurich_harmonic.get())

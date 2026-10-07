@@ -1,5 +1,23 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## PPMS and RT-E: Zurich controls no longer stay greyed (2026-10-07)
+
+On the RT-E page (and the PPMS page) the Zurich row could stay greyed while
+the Zurich was connected. That covered Connect, Disconnect, the harmonic
+list, Measure, Ref. and TC. The 1 s background read marked the Zurich
+"busy", which is the flag that locks those controls. A control refresh
+during a read, for example after KEPCO Zero / OFF, greyed them, and nothing
+re-enabled them when the read ended.
+
+- **Fix:** the background read now has its own flag and never locks the
+  controls. "Busy" covers only Connect, applying a change, and Disconnect.
+  A change clicked during a read queues behind it on the single Zurich
+  worker. Before, a Connect or Apply clicked during a read did nothing.
+- **Workaround on an older copy:** untick and re-tick the page's safety
+  box. This refreshes the controls, usually between reads.
+- **Test:** `test_a_background_read_never_locks_the_zurich_controls` in
+  `Other-files/test_ppms_two_panels.py`. It fails on the old code.
+
 ## MS-fourState.py: PPMS state writing and zero-field read (2026-10-06)
 
 A new program in the repository root. For each state of a sequence,
