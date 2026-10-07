@@ -13,9 +13,9 @@ One step, with the state's angle, write field and pulse:
      harmonic X, Y and theta are averaged over the read time.
   7. 6221 off; the point is plotted and written to the CSV.
 
-The same window runs three ways: a typed sequence (this file), a cycle such
-as D-A-B-E-B-A repeated (MS-cycleState.py) and switching between two states
-(MS-twoState.py), each for a set number of times or until Stop.
+The Mode list runs it three ways, each a set number of times or until Stop:
+a typed sequence (default D A B E), a cycle (default D-A-B-E-B-A, repeated
+from its first state) or switching between any two states.
 
 Stop, an error or the end of the run turns the 6221 off and returns the field
 to 0 Oe (Driven), confirmed by readback.  The rotator stays where it is: it
@@ -74,12 +74,16 @@ DEFAULT_STATES = (
 DEFAULT_SEQUENCE = "D A B E"
 DEFAULT_CYCLE = "D A B E B A"
 DEFAULT_PAIR = ("A", "B")
-# The three ways the window runs: title, how the sequence is entered, and
-# whether "until Stop" starts ticked.
+APP_TITLE = "MS-fourState"
+# The Mode list: its label, the sequence row's label, the default sequence,
+# the count's label, and whether "Until Stop" is ticked on choosing it.
 MODES = {
-    "sequence": {"title": "MS-fourState", "until_stop": False},
-    "cycle": {"title": "MS-cycleState", "until_stop": True},
-    "two": {"title": "MS-twoState", "until_stop": True},
+    "sequence": {"label": "Sequence", "row": "Sequence", "default": DEFAULT_SEQUENCE,
+                 "count": "Repeats", "until_stop": False},
+    "cycle": {"label": "Cycle", "row": "Cycle", "default": DEFAULT_CYCLE,
+              "count": "Cycles", "until_stop": True},
+    "two": {"label": "Two states", "row": "Switch between", "default": None,
+            "count": "Pairs", "until_stop": True},
 }
 STATE_COLORS = {"D": "#000000", "A": "#c62828", "B": "#1565c0", "E": "#2e7d32"}
 DEFAULTS = {
@@ -868,9 +872,9 @@ class FourStateApp:
         if mode not in MODES:
             raise ValueError(f"Unknown mode {mode!r}")
         self.root = root
-        self.mode = mode
-        self.title = MODES[mode]["title"]
-        self.data_directory = HERE / f"{self.title} data"
+        self.initial_mode = mode
+        self.title = APP_TITLE
+        self.data_directory = HERE / f"{APP_TITLE} data"
         root.title(self.title)
         root.geometry("1360x900")
         root.minsize(1100, 760)
@@ -997,50 +1001,55 @@ class FourStateApp:
 
         run = ttk.LabelFrame(page, text="Run", padding=6)
         run.grid(row=2, column=0, sticky="ew", pady=(6, 0))
-        run.columnconfigure(10, weight=1)
-        self.sequence_var = tk.StringVar(value=DEFAULT_CYCLE if self.mode == "cycle" else DEFAULT_SEQUENCE)
+        run.columnconfigure(12, weight=1)
+        self.mode_var = tk.StringVar(value=MODES[self.initial_mode]["label"])
+        ttk.Label(run, text="Mode").grid(row=0, column=0, sticky="w")
+        mode = ttk.Combobox(run, textvariable=self.mode_var, values=tuple(m["label"] for m in MODES.values()),
+                            state="readonly", width=10)
+        mode.grid(row=0, column=1, sticky="w", padx=(4, 10))
+        mode.bind("<<ComboboxSelected>>", lambda event: self._apply_mode())
+        self.inputs.append((mode, "readonly"))
+        self.sequence_label = ttk.Label(run)
+        self.sequence_label.grid(row=0, column=2, sticky="w")
+        self.sequence_var = tk.StringVar(value=MODES[self.initial_mode]["default"] or DEFAULT_SEQUENCE)
+        self.sequence_entry = ttk.Entry(run, textvariable=self.sequence_var, width=20)
+        self.sequence_entry.grid(row=0, column=3, sticky="w", padx=(4, 10))
+        self.inputs.append((self.sequence_entry, "normal"))
         names = tuple(name for name, *_ in DEFAULT_STATES)
         self.pair_vars = (tk.StringVar(value=DEFAULT_PAIR[0]), tk.StringVar(value=DEFAULT_PAIR[1]))
-        if self.mode == "two":
-            ttk.Label(run, text="Switch between").grid(row=0, column=0, sticky="w")
-            entry_frame = ttk.Frame(run)
-            entry_frame.grid(row=0, column=1, sticky="w", padx=(4, 10))
-            for column, variable in enumerate(self.pair_vars):
-                if column:
-                    ttk.Label(entry_frame, text="and").grid(row=0, column=1, padx=4)
-                choice = ttk.Combobox(entry_frame, textvariable=variable, values=names, state="readonly", width=5)
-                choice.grid(row=0, column=2 * column)
-                self.inputs.append((choice, "readonly"))
-            count_label = "Pairs"
-        else:
-            ttk.Label(run, text="Cycle" if self.mode == "cycle" else "Sequence").grid(row=0, column=0, sticky="w")
-            sequence = ttk.Entry(run, textvariable=self.sequence_var, width=28)
-            sequence.grid(row=0, column=1, sticky="w", padx=(4, 10))
-            self.inputs.append((sequence, "normal"))
-            count_label = "Cycles" if self.mode == "cycle" else "Repeats"
-        ttk.Label(run, text=count_label).grid(row=0, column=2, sticky="w")
+        self.pair_frame = ttk.Frame(run)
+        self.pair_frame.grid(row=0, column=3, sticky="w", padx=(4, 10))
+        for column, variable in enumerate(self.pair_vars):
+            if column:
+                ttk.Label(self.pair_frame, text="and").grid(row=0, column=1, padx=4)
+            choice = ttk.Combobox(self.pair_frame, textvariable=variable, values=names, state="readonly", width=5)
+            choice.grid(row=0, column=2 * column)
+            self.inputs.append((choice, "readonly"))
+        self.count_label = ttk.Label(run)
+        self.count_label.grid(row=0, column=4, sticky="w")
         repeats = ttk.Entry(run, textvariable=self.values["repeats"], width=6)
-        repeats.grid(row=0, column=3, sticky="w", padx=(4, 6))
-        self.until_stop_var = tk.BooleanVar(value=MODES[self.mode]["until_stop"])
+        repeats.grid(row=0, column=5, sticky="w", padx=(4, 6))
+        self.until_stop_var = tk.BooleanVar(value=MODES[self.initial_mode]["until_stop"])
         until_stop = ttk.Checkbutton(run, text="Until Stop", variable=self.until_stop_var)
-        until_stop.grid(row=0, column=4, sticky="w", padx=(0, 10))
+        until_stop.grid(row=0, column=6, sticky="w", padx=(0, 10))
         self.inputs += [(repeats, "normal"), (until_stop, "normal")]
         self.start_button = ttk.Button(run, text="Start", command=self.start, width=10)
-        self.start_button.grid(row=0, column=5, padx=2)
+        self.start_button.grid(row=0, column=7, padx=2)
         self.stop_button = ttk.Button(run, text="Stop", command=self.stop, width=8, state="disabled")
-        self.stop_button.grid(row=0, column=6, padx=2)
+        self.stop_button.grid(row=0, column=8, padx=2)
         self.save_plot_button = ttk.Button(run, text="Save plot", command=self.save_plot, width=10)
-        self.save_plot_button.grid(row=0, column=7, padx=2)
-        self.progress = ttk.Progressbar(run, length=140)
-        self.progress.grid(row=0, column=8, padx=(10, 6))
-        self.status_var = tk.StringVar(value="Connect the instruments, check the settings, then Start")
-        ttk.Label(run, textvariable=self.status_var).grid(row=0, column=9, columnspan=2, sticky="ew")
+        self.save_plot_button.grid(row=0, column=9, padx=2)
+        self.progress = ttk.Progressbar(run, length=100)
+        self.progress.grid(row=0, column=10, padx=(10, 6))
+        self.status_var = tk.StringVar(value="Connect, check the settings, then Start")
+        ttk.Label(run, textvariable=self.status_var).grid(row=0, column=11, columnspan=2, sticky="ew")
+        self._apply_mode(initial=True)
         self.safety_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             run, variable=self.safety_var,
             text=("Sample, wiring, pulse current, compliance, field and rotator clearance confirmed safe; "
                   "no other program is driving the PPMS, 6221 or SR830"),
-        ).grid(row=1, column=0, columnspan=11, sticky="w", pady=(4, 0))
+        ).grid(row=1, column=0, columnspan=13, sticky="w", pady=(4, 0))
 
         lower = ttk.Frame(page)
         lower.grid(row=3, column=0, sticky="nsew", pady=(6, 0))
@@ -1069,6 +1078,27 @@ class FourStateApp:
                 enabled = "normal"
             widget.grid(row=row, column=1, sticky="w", padx=(6, 0), pady=1)
             self.inputs.append((widget, enabled))
+
+    @property
+    def mode(self):
+        label = self.mode_var.get()
+        return next(key for key, info in MODES.items() if info["label"] == label)
+
+    def _apply_mode(self, initial=False):
+        """Show the row for the chosen mode; untouched defaults follow it."""
+        info = MODES[self.mode]
+        self.sequence_label.configure(text=info["row"])
+        self.count_label.configure(text=info["count"])
+        if info["default"] is None:
+            self.sequence_entry.grid_remove()
+            self.pair_frame.grid()
+        else:
+            self.pair_frame.grid_remove()
+            self.sequence_entry.grid()
+            if self.sequence_var.get().strip() in (DEFAULT_SEQUENCE, DEFAULT_CYCLE):
+                self.sequence_var.set(info["default"])
+        if not initial:
+            self.until_stop_var.set(info["until_stop"])
 
     # -- events from threads --------------------------------------------
     def post(self, kind, payload=None):
@@ -1260,7 +1290,7 @@ class FourStateApp:
         if not messagebox.askyesno(self.title, self.summary(settings), parent=self.root, default="no"):
             return
         try:
-            folder = self.data_directory / datetime.now().strftime("%Y%m%d_%H%M%S")
+            folder = self.data_directory / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self.mode}"
             folder.mkdir(parents=True, exist_ok=False)
             record = asdict(settings)
             record["mode"] = self.mode

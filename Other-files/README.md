@@ -1,8 +1,8 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
-## MS-fourState, MS-cycleState, MS-twoState: PPMS state writing and zero-field read (2026-10-06)
+## MS-fourState.py: PPMS state writing and zero-field read (2026-10-06)
 
-New programs in the repository root. For each state of a sequence,
+A new program in the repository root. For each state of a sequence,
 `MS-fourState.py`:
 
 1. turns the PPMS rotator to the state's angle at zero field;
@@ -16,10 +16,11 @@ states follow the measurement table (D 0°/+0.15 T, A and B 270°/∓0.15 T,
 E 0°/−0.15 T, with A' and B' the reversed field and current), all editable.
 The default sequence is D A B E.
 
-- `MS-cycleState.py` opens the same window cycling D-A-B-E-B-A-D-…
-- `MS-twoState.py` opens it switching between any two chosen states.
-
-All three run until Stop or for a set number of passes.
+Its Mode list chooses a typed sequence, a cycle (default D-A-B-E-B-A-D-…)
+or switching between any two chosen states. Each runs until Stop or for a
+set number of passes. (For one day the cycle and two-state modes were also
+opened by two launcher files, `MS-cycleState.py` and `MS-twoState.py`; they
+were folded into the Mode list on 2026-10-07 so there is one file.)
 
 - **Instrument code:** it is the main program's. That covers the PPMS
   connection, field setpoints and their settled check, the rotator's

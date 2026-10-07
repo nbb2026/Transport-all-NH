@@ -4,8 +4,8 @@
 
 Builds the program (no instruments are connected) at 96 DPI, as on the lab
 PC, at its own 1360x900 window, at its 1100x760 minimum and widened to
-2000 px, with a few example points in the plot; and its cycle and
-two-state windows (MS-cycleState.py, MS-twoState.py) at 1360 px.  Reports widgets that stick
+2000 px, with a few example points in the plot; and in its Cycle and
+Two states modes at 1360 px.  Reports widgets that stick
 out past the window and text that does not fit, and saves a screenshot of
 each.  Exit status 1 if anything is clipped or cut at 1360 or 2000 px on
 Windows, the lab PC's system; on Linux the results are reported only.
