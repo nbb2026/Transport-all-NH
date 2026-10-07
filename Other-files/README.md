@@ -1,5 +1,58 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MOKE-24 and Gate-VI: laid out like STFMR and PPMS; Gate-VI drives a 2410 or 2400 (2026-10-07)
+
+**MOKE-24 page**, top to bottom:
+
+- **Instrument connection:** the rack row used on STFMR and PPMS. It has
+  the name, an 18-character address, Connect, Disconnect, the lamp and
+  the state, then Model and Current limit. The old row was cut off at the
+  lab's 1101 px window.
+- **Keithley output:** beside the connection when the window is wide
+  enough, else under it. It holds the safety check, Manual V
+  (Write/Flip/Zero), Step V (↓/↑), the red off button and the output
+  readback, as in STFMR's KEPCO output. The safety check moved here from
+  the scan box, and it still covers both manual and scan voltages.
+- **Hazard text:** full page width, naming the model's limit and OVP.
+- **Resistance:** the controls and the four readings only.
+- **Voltage scan and ROI editing:** side by side when they fit. The scan
+  buttons sit on a row of their own, so the parameter columns stay
+  compact.
+- **Plots:** all three in one row of equal width: ROI mean vs time,
+  Voltage vs ROI mean, and |R| vs time. They take the spare height. The
+  |R| plot no longer takes the top of the page.
+
+**Gate-VI page:**
+
+- **Model:** the Keithley row has a Model list, 2410 (default) or 2400.
+  It is fixed while connected or busy. The 2400 is driven exactly as the
+  2410 here: 20 V range, 20 V OVP (a real level on both models) and
+  1 mA. The model must match `*IDN?`, using the same anchored check as
+  MOKE-24.
+  - A failed connect keeps the previous model.
+  - The row name, the red button ("Stop 2400 / 6221 now"), the interlock
+    text, the plot titles, the status messages and the plot snapshot names
+    follow the model.
+  - `VI_parameters.log` records `gate_keithley_model` and its identity.
+  - The CSV column `2410_output_state` keeps its name, so existing
+    analysis still reads it.
+- **Rack rows:** every name is right-aligned in one width with an ASCII
+  colon; the full-width "：" is gone from this page. Addresses are 18
+  characters, and Connect and Disconnect have the STFMR widths. The
+  connection box is titled "Gate-VI instrument connections".
+- **Unchanged:** the MOKE-24 / Gate-VI interlock. Either page still blocks
+  the other while it holds its Keithley, whatever the address.
+- **Tests:** in `Other-files/test/test_instrument_safety_logic.py`, the
+  Gate-VI controller connects to a fake 2410 and 2400. The tests check:
+  - a wrong model is refused;
+  - a failed connect keeps the model;
+  - re-connecting as the other model is refused;
+  - 20 V range and OVP on both.
+
+  `Other-files/test_panel_defaults.py` checks the Gate-VI Model list, the
+  labels that follow it, the lock while busy, and that no full-width colon
+  is left on the page. The layouts are checked by the CI screenshots.
+
 ## MOKE-24: a 2400 keeps a real OVP, at 160 V (2026-10-07)
 
 A review of the 2400 support found that a 2400 has no 200 V OVP level. Its

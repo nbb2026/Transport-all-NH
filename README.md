@@ -42,8 +42,8 @@ MOKE-24 page drives a 2410 or a 2400, chosen on the page, and the 6221
 page does both one-pulse-per-current round trips and fixed-current multi-pulse
 acquisition, averaging the region of interest over the post-pulse interval.
 
-**Gate-VI** measures non-local voltage against a gate, using the 2410 as the
-gate source with lock-in or nanovoltmeter detection.
+**Gate-VI** measures non-local voltage against a gate, using a Keithley 2410
+or 2400 as the gate source with lock-in or nanovoltmeter detection.
 
 **PPMS** controls temperature, field and rotation, and runs harmonic Hall
 transport with up to three SR830 lock-ins and the MFLI. Meters measuring the

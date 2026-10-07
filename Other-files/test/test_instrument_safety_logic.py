@@ -1285,6 +1285,45 @@ class InstrumentSafetyTests(unittest.TestCase):
         finally:
             app.pyvisa, app.acquire_shared_visa_manager, app.release_shared_visa_manager = originals
 
+    def test_gate_vi_keithley_connects_a_2410_or_a_2400(self):
+        fakes = {"2410": Fake2410, "2400": Fake2400}
+        opened = []
+        manager = types.SimpleNamespace(open_resource=lambda resource: opened[-1])
+        originals = (app.pyvisa, app.acquire_shared_visa_manager, app.release_shared_visa_manager)
+        app.pyvisa = types.SimpleNamespace()
+        app.acquire_shared_visa_manager = lambda: manager
+        app.release_shared_visa_manager = lambda _manager: None
+        try:
+            controller = app.NonLocalVI2410Controller(lambda _message: None)
+            self.assertEqual(controller.model, "2410", "the 2410 stays the default")
+            opened.append(Fake2400())
+            with self.assertRaisesRegex(RuntimeError, "not a Keithley 2410"):
+                controller.connect("GPIB0::24::INSTR")
+            with self.assertRaisesRegex(RuntimeError, "not a Keithley 2400"):
+                opened.append(Fake2410())
+                controller.connect("GPIB0::24::INSTR", "2400")
+            self.assertEqual(controller.model, "2410", "a failed connect keeps the previous model")
+            for model in ("2400", "2410"):
+                with self.subTest(model=model):
+                    fake = fakes[model]()
+                    opened.append(fake)
+                    identity = controller.connect("GPIB0::24::INSTR", model)
+                    self.assertIn(f"MODEL {model}", identity)
+                    self.assertEqual(controller.model, model)
+                    # Driven the same way on both: 20 V range and OVP, output off.
+                    self.assertEqual((fake.voltage_range, fake.ovp, fake.output), (20.0, 20.0, 0))
+                    with self.assertRaisesRegex(RuntimeError, "Disconnect before changing"):
+                        controller.connect("GPIB0::24::INSTR", "2410" if model == "2400" else "2400")
+                    with self.assertRaisesRegex(RuntimeError, "Disconnect before changing"):
+                        controller.set_model("2410" if model == "2400" else "2400")
+                    self.assertTrue(controller.connected)
+                    controller.disconnect()
+            controller.set_model("2400")
+            with self.assertRaisesRegex(RuntimeError, "Keithley 2400 is not connected"):
+                controller.apply_voltage_pulse(1.0, 0.01, app.threading.Event())
+        finally:
+            app.pyvisa, app.acquire_shared_visa_manager, app.release_shared_visa_manager = originals
+
     def test_2410_high_voltage_rejects_impossible_current_compliance(self):
         controller = app.Keithley2410Controller(lambda _message: None)
         controller.instrument = Fake2410()
