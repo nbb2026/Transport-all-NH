@@ -12,9 +12,10 @@ The **Mode** list in the Run row chooses how it runs:
 
 | Mode | Runs |
 | --- | --- |
-| Sequence | A typed sequence, default `D A B E`, a set number of times or until Stop |
-| Cycle | A cycle, default `D A B E B A`, so D-A-B-E-B-A-D-A-B-…, until Stop (ticked on choosing it) or for a set number of cycles |
-| Two states | Switching between any two states chosen from two lists, default A and B, until Stop (ticked on choosing it) or for a set number of pairs |
+| Cycle (default) | A cycle of states, default `D A B E B A`, repeated from its first state (D-A-B-E-B-A-D-A-B-…) for the number of **Cycles** set, or until Stop if that box is ticked |
+| Sequence | The states once, in the order typed, for example `D A B E B A D`, or `A B A B A B` to switch between two states |
+
+Each mode keeps its own states, so switching between them loses nothing.
 
 It uses the instrument code of `Transport_all_NH_dev.py`, which must sit in
 the same folder. Close the PPMS, 6221 and SR830 connections in `Transport_all_NH_dev.py`
@@ -33,11 +34,10 @@ Defaults from the measurement table, editable in the window (1500 Oe = 0.15 T):
 | B' | 270° | −1500 Oe (Hx) | −22 mA | B, written the other way |
 | E | 0° | −1500 Oe (Hz) | +22 mA | −H ⊥ +I |
 
-Sequences and cycles are typed as state names separated by spaces, commas or
-dashes, for example `D A B E`, `D-A-B-E-B-A` or `D A' B' E`. A cycle repeats
-from its first state. Switching between A and B, or between D and E, needs no
-rotation; switching between, for example, A and D turns the rotator 270° each
-time.
+Cycles and sequences are typed as state names separated by spaces, commas or
+dashes, for example `D A B E`, `D-A-B-E-B-A` or `D A' B' E`. Switching between
+A and B, or between D and E, needs no rotation. Switching between, for
+example, A and D turns the rotator 270° each time.
 
 ## One step
 
