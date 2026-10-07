@@ -20015,7 +20015,7 @@ class CombinedControlApp:
         for column in range(3):
             data_frame.columnconfigure(column, weight=1, uniform="moke24_plots")
 
-        def plot_box(column: int, title: str) -> tk.Canvas:
+        def plot_box(column: int, title: str, redraw) -> tk.Canvas:
             frame = ttk.LabelFrame(data_frame, text=title, padding=6)
             frame.grid(
                 row=0, column=column, sticky="nsew",
@@ -20034,20 +20034,21 @@ class CombinedControlApp:
                 height=self._ui_px(200, 120, canvas=True),
             )
             canvas.grid(row=0, column=0, sticky="nsew")
+            # Also on <Map>: a <Configure> that arrives while the tab is
+            # still unmapped is skipped by the plots' visibility check, which
+            # left an empty plot blank until new data came.
+            for sequence in ("<Configure>", "<Map>"):
+                canvas.bind(sequence, lambda _event: redraw(), add="+")
             return canvas
 
-        self.keithley_intensity_canvas = plot_box(0, "ROI mean intensity vs time (live)")
-        self.keithley_intensity_canvas.bind(
-            "<Configure>", lambda _event: self._redraw_live_intensity_plots()
+        self.keithley_intensity_canvas = plot_box(
+            0, "ROI mean intensity vs time (live)", self._redraw_live_intensity_plots
         )
-        self.keithley_plot_canvas = plot_box(1, "Voltage vs ROI mean (voltage scan)")
-        self.keithley_plot_canvas.bind(
-            "<Configure>", lambda _event: self._redraw_keithley_plot()
+        self.keithley_plot_canvas = plot_box(
+            1, "Voltage vs ROI mean (voltage scan)", self._redraw_keithley_plot
         )
-        self.keithley_resistance_canvas = plot_box(2, "|R| vs time (last 20 s)")
-        self.keithley_resistance_canvas.bind(
-            "<Configure>",
-            lambda _event: self._redraw_keithley_resistance_plot(),
+        self.keithley_resistance_canvas = plot_box(
+            2, "|R| vs time (last 20 s)", self._redraw_keithley_resistance_plot
         )
 
         ttk.Label(
@@ -25609,7 +25610,9 @@ class CombinedControlApp:
         if not self._canvas_is_visible(canvas):
             return
         canvas.delete("all")
-        width = max(canvas.winfo_width(), 420)
+        # At most a third of the page wide now; a larger floor drew past the
+        # canvas edge in the lab's 1101 px window.
+        width = max(canvas.winfo_width(), 280)
         height = max(canvas.winfo_height(), 125)
         left, right, top, bottom = 88, 22, 25, 46
         plot_width = max(1, width - left - right)
