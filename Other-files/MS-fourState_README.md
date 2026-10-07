@@ -1,25 +1,23 @@
-# MS-fourState, MS-cycleState, MS-twoState
+# MS-fourState
 
 Write the magnetic states D, A, B and E in the PPMS with a field and a 6221
 current pulse at a rotator angle, then read each state at zero field with the
-SR830 first harmonic. Three entry points in the repository root open the same
-window in three ways:
-
-| Program | Runs |
-| --- | --- |
-| `MS-fourState.py` | A typed sequence, default `D A B E`, a set number of times or until Stop |
-| `MS-cycleState.py` | A cycle, default `D A B E B A`, so D-A-B-E-B-A-D-A-B-…, until Stop (default) or for a set number of cycles |
-| `MS-twoState.py` | Switching between any two states chosen from two lists, default A ⇄ B, until Stop (default) or for a set number of pairs |
+SR830 first harmonic. One program in the repository root:
 
 ```console
 python MS-fourState.py
-python MS-cycleState.py
-python MS-twoState.py
 ```
 
-All three use the instrument code of `Transport_all_NH_dev.py`, and the two
-launchers use `MS-fourState.py`, so the four files must sit in the same
-folder. Close the PPMS, 6221 and SR830 connections in `Transport_all_NH_dev.py`
+The **Mode** list in the Run row chooses how it runs:
+
+| Mode | Runs |
+| --- | --- |
+| Sequence | A typed sequence, default `D A B E`, a set number of times or until Stop |
+| Cycle | A cycle, default `D A B E B A`, so D-A-B-E-B-A-D-A-B-…, until Stop (ticked on choosing it) or for a set number of cycles |
+| Two states | Switching between any two states chosen from two lists, default A and B, until Stop (ticked on choosing it) or for a set number of pairs |
+
+It uses the instrument code of `Transport_all_NH_dev.py`, which must sit in
+the same folder. Close the PPMS, 6221 and SR830 connections in `Transport_all_NH_dev.py`
 first. Two programs must never drive the same instruments.
 
 ## States
@@ -109,10 +107,10 @@ The run also stops on:
 
 ## Data
 
-Each run gets a folder `<program> data/<date_time>/` next to the program,
-for example `MS-cycleState data/20261006_153000/`:
+Each run gets a folder `MS-fourState data/<date_time>_<mode>/` next to the
+program, for example `MS-fourState data/20261007_153000_cycle/`:
 
-- `<program>.csv`: one row per step, written as it is measured. The columns
+- `MS-fourState.csv`: one row per step, written as it is measured. The columns
   are: state and cycle; angle set and read; write field set and read; pulse
   current, width, count, compliance and compliance seen; read field;
   temperature; read current and frequency; X, Y, R, θ and the standard
@@ -121,7 +119,7 @@ for example `MS-cycleState data/20261006_153000/`:
   found at Start, the SR830 output offsets and
   expands, and the instruments' identities.
 - `log.txt`: the status and instrument log of that run.
-- `<program>_plot.eps`: the plot, saved at the end and by **Save plot**.
+- `MS-fourState_plot.eps`: the plot, saved at the end and by **Save plot**.
 
 The plot shows, per step, the write field in T, the pulse current in mA, and
 SR830 X in µV, with each point coloured by its state. State letters are drawn
@@ -146,7 +144,7 @@ for up to 60 points.
 
 ## Tests
 
-`Other-files/test_ms_four_state.py` runs the measurement code of all three
+`Other-files/test_ms_four_state.py` runs the measurement code in all three
 modes against simulated instruments:
 
 - a PPMS that ramps the field in simulated time and can report a stale
@@ -159,5 +157,5 @@ modes against simulated instruments:
 They check the order of every action, the values read, each stop and the
 shutdown confirmation. Each safety rule was broken in a copy, and the tests
 catch all of them. A cloud check, `Other-files/ci/ms_four_state_checks.py`,
-builds the three windows on GitHub's Linux and Windows machines and saves
+builds the window in each mode on GitHub's Linux and Windows machines and saves
 screenshots. Nothing has been run on the instruments yet.

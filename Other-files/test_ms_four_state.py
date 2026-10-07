@@ -1,4 +1,4 @@
-"""MS-fourState.py and its cycle and two-state modes: settings, the order of
+"""MS-fourState.py in its sequence, cycle and two-state modes: settings, the order of
 every instrument action, the values read, and each stop, against simulated
 instruments.
 
@@ -802,14 +802,43 @@ class WindowTests(unittest.TestCase):
         for label in ("H write (T)", "I pulse (mA)", "SR830 X (µV)", "A", "B", "Step"):
             self.assertIn(label, texts)
 
+    def test_the_mode_list_switches_the_run_row(self):
+        app = self.app
+        self.addCleanup(lambda: (app.mode_var.set("Sequence"), app._apply_mode()))
+        self.assertEqual(app.mode, "sequence")
+        app.mode_var.set("Cycle")
+        app._apply_mode()
+        self.root.update()
+        self.assertEqual(app.sequence_var.get(), "D A B E B A")
+        self.assertTrue(app.until_stop_var.get())
+        self.assertEqual(app.count_label.cget("text"), "Cycles")
+        self.assertEqual(app.current_settings().sequence, ("D", "A", "B", "E", "B", "A"))
+        app.mode_var.set("Two states")
+        app._apply_mode()
+        self.root.update()
+        self.assertEqual(app.sequence_entry.winfo_manager(), "")
+        self.assertEqual(app.pair_frame.winfo_manager(), "grid")
+        self.assertEqual(app.sequence_label.cget("text"), "Switch between")
+        self.assertEqual(app.current_settings().sequence, ("A", "B"))
+        app.mode_var.set("Sequence")
+        app._apply_mode()
+        self.assertEqual(app.sequence_var.get(), "D A B E")
+        self.assertFalse(app.until_stop_var.get())
+        app.sequence_var.set("D E D E")
+        app.mode_var.set("Cycle")
+        app._apply_mode()
+        self.assertEqual(app.sequence_var.get(), "D E D E", "an edited sequence is kept")
+        app.sequence_var.set("D A B E")
+
     def test_cycle_and_two_state_windows(self):
-        for mode, title in (("cycle", "MS-cycleState"), ("two", "MS-twoState")):
+        for mode in ("cycle", "two"):
             with self.subTest(mode=mode):
                 window = tk.Toplevel(self.root)
                 window.withdraw()
                 app = ms.FourStateApp(window, mode)
                 self.addCleanup(window.destroy)
-                self.assertEqual(window.title(), title)
+                self.assertEqual(window.title(), "MS-fourState")
+                self.assertEqual(app.mode, mode)
                 self.assertTrue(app.until_stop_var.get(), "runs until Stop by default")
                 text = app.summary(app.current_settings())
                 self.assertIn("until Stop", text)
