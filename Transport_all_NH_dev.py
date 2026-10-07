@@ -19615,7 +19615,7 @@ class CombinedControlApp:
         # Disconnect, lamp and state, then this instrument's settings.  The
         # address gives way first if the row is too narrow.
         device.columnconfigure(1, weight=1)
-        device.columnconfigure(10, weight=1000)
+        device.columnconfigure(6, weight=1000)
         ttk.Label(device, text="Keithley:", width=11, anchor="e").grid(
             row=0, column=0, sticky="e"
         )
@@ -19636,20 +19636,24 @@ class CombinedControlApp:
         ttk.Label(
             device, textvariable=self.keithley_connection_var, width=13, anchor="w"
         ).grid(row=0, column=5, sticky="w", padx=(1, 0))
-        # Which SourceMeter: its range above 20 V, the current allowed there
-        # and the voltage limit and OVP follow the choice (KEITHLEY_MODELS);
-        # fixed while connected.
-        ttk.Label(device, text="Model:").grid(row=0, column=6, sticky="e", padx=(10, 3))
+        # Its settings on the line below, under the address, as the Gate-VI
+        # rows do in a narrow window; one line was too wide to sit beside
+        # the output panel.  Which SourceMeter: its range above 20 V, the
+        # current allowed there and the voltage limit and OVP follow the
+        # choice (KEITHLEY_MODELS); fixed while connected.
+        settings = ttk.Frame(device)
+        settings.grid(row=1, column=1, columnspan=5, sticky="w", pady=(4, 0))
+        ttk.Label(settings, text="Model:").pack(side="left", padx=(0, 3))
         self.keithley_model_combo = ttk.Combobox(
-            device, textvariable=self.keithley_model_var,
+            settings, textvariable=self.keithley_model_var,
             values=tuple(KEITHLEY_MODELS), state="readonly", width=6,
         )
-        self.keithley_model_combo.grid(row=0, column=7, padx=(0, 8))
+        self.keithley_model_combo.pack(side="left", padx=(0, 10))
         self.keithley_model_combo.bind("<<ComboboxSelected>>", lambda event: self._update_keithley_controls())
-        ttk.Label(device, text="Current limit (A):").grid(row=0, column=8, sticky="e", padx=(0, 3))
+        ttk.Label(settings, text="Current limit (A):").pack(side="left", padx=(0, 3))
         ttk.Entry(
-            device, textvariable=self.keithley_compliance_var, width=9
-        ).grid(row=0, column=9, sticky="w")
+            settings, textvariable=self.keithley_compliance_var, width=9
+        ).pack(side="left")
 
         # The source output, as the STFMR page's KEPCO output: the safety
         # check, the manual controls with the red off button, the readback.
@@ -20005,11 +20009,14 @@ class CombinedControlApp:
             )
             frame.rowconfigure(0, weight=1)
             frame.columnconfigure(0, weight=1)
+            # A small requested width: Tk's default (about 380 px) is wider
+            # than a third of the lab's 1101 px window, and the canvas was cut.
             canvas = tk.Canvas(
                 frame,
                 bg="#fbfcfd",
                 highlightthickness=1,
                 highlightbackground="#cfd6dd",
+                width=self._ui_px(160, 100, canvas=True),
                 height=self._ui_px(200, 120, canvas=True),
             )
             canvas.grid(row=0, column=0, sticky="nsew")
@@ -20019,11 +20026,11 @@ class CombinedControlApp:
         self.keithley_intensity_canvas.bind(
             "<Configure>", lambda _event: self._redraw_live_intensity_plots()
         )
-        self.keithley_plot_canvas = plot_box(1, "Voltage vs ROI mean intensity (voltage scan only)")
+        self.keithley_plot_canvas = plot_box(1, "Voltage vs ROI mean (voltage scan)")
         self.keithley_plot_canvas.bind(
             "<Configure>", lambda _event: self._redraw_keithley_plot()
         )
-        self.keithley_resistance_canvas = plot_box(2, "|R| vs time (continuous, rolling last 20 s)")
+        self.keithley_resistance_canvas = plot_box(2, "|R| vs time (last 20 s)")
         self.keithley_resistance_canvas.bind(
             "<Configure>",
             lambda _event: self._redraw_keithley_resistance_plot(),
@@ -23988,6 +23995,8 @@ class CombinedControlApp:
                 top + plot_height / 2,
                 text=waiting_text,
                 fill="#666666",
+                width=max(60, plot_width - 16),
+                justify="center",
             )
             return
 
@@ -25659,6 +25668,8 @@ class CombinedControlApp:
                 top + plot_height / 2,
                 text="The last 20 s of |R|–time data are shown once continuous measurement starts",
                 fill="#666666",
+                width=max(60, plot_width - 16),
+                justify="center",
             )
             return
 
@@ -26236,6 +26247,8 @@ class CombinedControlApp:
                 top + plot_height / 2,
                 text="Voltage–ROI data is recorded once a voltage scan starts",
                 fill="#666666",
+                width=max(60, plot_width - 16),
+                justify="center",
             )
             return
         voltages = np.asarray([row[0] for row in rows], dtype=np.float64)

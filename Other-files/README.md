@@ -6,8 +6,8 @@
 
 - **Instrument connection:** the rack row used on STFMR and PPMS. It has
   the name, an 18-character address, Connect, Disconnect, the lamp and
-  the state, then Model and Current limit. The old row was cut off at the
-  lab's 1101 px window.
+  the state. Model and Current limit sit on the line below, under the
+  address. The old single row was cut off at the lab's 1101 px window.
 - **Keithley output:** beside the connection when the window is wide
   enough, else under it. It holds the safety check, Manual V
   (Write/Flip/Zero), Step V (↓/↑), the red off button and the output
@@ -20,7 +20,9 @@
   compact.
 - **Plots:** all three in one row of equal width: ROI mean vs time,
   Voltage vs ROI mean, and |R| vs time. They take the spare height. The
-  |R| plot no longer takes the top of the page.
+  |R| plot no longer takes the top of the page. Each canvas asks for
+  little width, so a third of the 1101 px window is enough. The "waiting"
+  messages wrap inside the plot instead of running past it.
 
 **Gate-VI page:**
 
