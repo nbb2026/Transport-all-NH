@@ -94,6 +94,19 @@ class PanelDefaultTests(unittest.TestCase):
         moke._update_keithley_controls()
         self.assertEqual(str(moke.keithley_model_combo.cget("state")), "disabled")
         self.assertEqual(str(moke.keithley_connect_button.cget("state")), "disabled")
+        # Even once the controller holds the instrument (OVP still being
+        # set), nothing that sources is offered until the connect finishes.
+        self.addCleanup(setattr, moke.keithley_controller, "instrument", None)
+        self.addCleanup(moke.keithley_safety_var.set, False)
+        self.addCleanup(moke.keithley_resistance_safety_var.set, False)
+        moke.keithley_controller.instrument = object()
+        moke.keithley_safety_var.set(True)
+        moke.keithley_resistance_safety_var.set(True)
+        moke._update_keithley_controls()
+        for button in (moke.keithley_start_button, moke.keithley_resistance_button,
+                       moke.keithley_disconnect_button, *moke.keithley_manual_buttons):
+            self.assertEqual(str(button.cget("state")), "disabled", button.cget("text"))
+        moke.keithley_controller.instrument = None
         moke.keithley_connecting = False
         moke._update_keithley_controls()
         self.assertEqual(str(moke.keithley_model_combo.cget("state")), "readonly")
