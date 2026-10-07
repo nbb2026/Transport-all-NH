@@ -1,4 +1,4 @@
-"""MS-fourState.py in its sequence, cycle and two-state modes: settings, the order of
+"""MS-fourState.py in its Cycle and Sequence modes: settings, the order of
 every instrument action, the values read, and each stop, against simulated
 instruments.
 
@@ -775,12 +775,16 @@ class WindowTests(unittest.TestCase):
 
     def test_defaults_on_screen(self):
         app = self.app
+        self.assertEqual(app.mode, "cycle", "Cycle is the default mode")
+        self.assertEqual(app.cycle_var.get(), "D A B E B A")
         self.assertEqual(app.sequence_var.get(), "D A B E")
+        self.assertEqual(app.values["repeats"].get(), "1")
         self.assertEqual(app.values["pulse_width_us"].get(), "30")
         self.assertEqual(app.values["read_current_ma"].get(), "0.5")
         self.assertEqual([variable.get() for variable in app.state_vars["A"]], ["270", "-1500", "22"])
         self.assertFalse(app.safety_var.get(), "the safety tick starts cleared")
         self.assertFalse(app.until_stop_var.get())
+        self.assertEqual(app.mode_var.get(), "Cycle")
 
     def test_start_needs_the_instruments(self):
         with mock.patch.object(ms.messagebox, "showerror") as error:
@@ -804,52 +808,40 @@ class WindowTests(unittest.TestCase):
 
     def test_the_mode_list_switches_the_run_row(self):
         app = self.app
-        self.addCleanup(lambda: (app.mode_var.set("Sequence"), app._apply_mode()))
-        self.assertEqual(app.mode, "sequence")
-        app.mode_var.set("Cycle")
-        app._apply_mode()
+        self.addCleanup(lambda: (app.mode_var.set("Cycle"), app._apply_mode(),
+                                 app.values["repeats"].set("1"), app.until_stop_var.set(False)))
         self.root.update()
-        self.assertEqual(app.sequence_var.get(), "D A B E B A")
-        self.assertTrue(app.until_stop_var.get())
-        self.assertEqual(app.count_label.cget("text"), "Cycles")
-        self.assertEqual(app.current_settings().sequence, ("D", "A", "B", "E", "B", "A"))
-        app.mode_var.set("Two states")
-        app._apply_mode()
-        self.root.update()
-        self.assertEqual(app.sequence_entry.winfo_manager(), "")
-        self.assertEqual(app.pair_frame.winfo_manager(), "grid")
-        self.assertEqual(app.sequence_label.cget("text"), "Switch between")
-        self.assertEqual(app.current_settings().sequence, ("A", "B"))
+        shown = lambda widget: widget.winfo_manager() == "grid"
+        self.assertEqual([shown(w) for w in (app.cycle_entry, app.count_entry, app.until_stop_box,
+                                             app.sequence_entry)], [True, True, True, False])
+        app.values["repeats"].set("3")
+        settings = app.current_settings()
+        self.assertEqual((settings.sequence, settings.repeats), (("D", "A", "B", "E", "B", "A"), 3))
+        app.until_stop_var.set(True)
+        self.assertIsNone(app.current_settings().repeats, "a cycle can still run until Stop")
+        self.assertIn("Run this cycle until Stop?", app.summary(app.current_settings()))
         app.mode_var.set("Sequence")
         app._apply_mode()
-        self.assertEqual(app.sequence_var.get(), "D A B E")
-        self.assertFalse(app.until_stop_var.get())
-        app.sequence_var.set("D E D E")
-        app.mode_var.set("Cycle")
-        app._apply_mode()
-        self.assertEqual(app.sequence_var.get(), "D E D E", "an edited sequence is kept")
+        self.root.update()
+        self.assertEqual([shown(w) for w in (app.cycle_entry, app.count_entry, app.until_stop_box,
+                                             app.sequence_entry)], [False, False, False, True])
+        self.assertEqual(app.sequence_label.cget("text"), "Sequence")
+        app.sequence_var.set("A B A B A B")
+        settings = app.current_settings()
+        self.assertEqual((settings.sequence, settings.repeats), (("A", "B", "A", "B", "A", "B"), 1),
+                         "a sequence runs once, whatever the cycle settings")
+        self.assertIn("Run this once?", app.summary(settings))
         app.sequence_var.set("D A B E")
+        self.assertEqual(app.cycle_var.get(), "D A B E B A", "each mode keeps its own states")
 
-    def test_cycle_and_two_state_windows(self):
-        for mode in ("cycle", "two"):
-            with self.subTest(mode=mode):
-                window = tk.Toplevel(self.root)
-                window.withdraw()
-                app = ms.FourStateApp(window, mode)
-                self.addCleanup(window.destroy)
-                self.assertEqual(window.title(), "MS-fourState")
-                self.assertEqual(app.mode, mode)
-                self.assertTrue(app.until_stop_var.get(), "runs until Stop by default")
-                text = app.summary(app.current_settings())
-                self.assertIn("until Stop", text)
-                if mode == "cycle":
-                    self.assertEqual(app.current_settings().sequence, ("D", "A", "B", "E", "B", "A"))
-                    self.assertIn("4 large rotation(s) per pass", text)
-                else:
-                    self.assertEqual(app.current_settings().sequence, ("A", "B"))
-                    app.pair_vars[1].set("A")
-                    with self.assertRaises(ValueError):
-                        app.current_settings()
+    def test_a_window_opened_in_sequence_mode(self):
+        window = tk.Toplevel(self.root)
+        window.withdraw()
+        app = ms.FourStateApp(window, "sequence")
+        self.addCleanup(window.destroy)
+        self.assertEqual(window.title(), "MS-fourState")
+        self.assertEqual(app.mode, "sequence")
+        self.assertEqual(app.current_settings().sequence, ("D", "A", "B", "E"))
 
 
 if __name__ == "__main__":

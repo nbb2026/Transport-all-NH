@@ -16,11 +16,15 @@ states follow the measurement table (D 0°/+0.15 T, A and B 270°/∓0.15 T,
 E 0°/−0.15 T, with A' and B' the reversed field and current), all editable.
 The default sequence is D A B E.
 
-Its Mode list chooses a typed sequence, a cycle (default D-A-B-E-B-A-D-…)
-or switching between any two chosen states. Each runs until Stop or for a
-set number of passes. (For one day the cycle and two-state modes were also
-opened by two launcher files, `MS-cycleState.py` and `MS-twoState.py`; they
-were folded into the Mode list on 2026-10-07 so there is one file.)
+Its Mode list has two modes, at the user's choice (2026-10-07):
+
+- **Cycle** (default) repeats a cycle of states (default D-A-B-E-B-A-D-…)
+  for a set number of cycles, or until Stop.
+- **Sequence** runs the states once, in the order typed; for example
+  `A B A B A B` switches between two states.
+
+On 2026-10-06 there were also two launcher files, `MS-cycleState.py` and
+`MS-twoState.py`, and a "Two states" mode. All are now in the one file.
 
 - **Instrument code:** it is the main program's. That covers the PPMS
   connection, field setpoints and their settled check, the rotator's

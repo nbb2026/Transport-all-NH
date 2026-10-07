@@ -75,7 +75,7 @@ Default VISA addresses are set in the code and editable in the interface.
 | `Other-files/docs/` | Generated user manual |
 | `Other-files/MEO_Transport_V3_Windows_Build_Package/` | Frozen Windows release |
 | `Test_Microwave_NH_dev.py` | Standalone fixed-current microwave x modulation grid test (`Other-files/Test_Microwave_NH_dev_README.md`) |
-| `MS-fourState.py` | PPMS state writing and zero-field SR830 read: a sequence, a cycle such as D-A-B-E-B-A, or two-state switching; uses the main program's instrument code (`Other-files/MS-fourState_README.md`) |
+| `MS-fourState.py` | PPMS state writing and zero-field SR830 read: a cycle such as D-A-B-E-B-A repeated, or a typed sequence; uses the main program's instrument code (`Other-files/MS-fourState_README.md`) |
 
 ## Tests
 

@@ -4,8 +4,8 @@
 
 Builds the program (no instruments are connected) at 96 DPI, as on the lab
 PC, at its own 1360x900 window, at its 1100x760 minimum and widened to
-2000 px, with a few example points in the plot; and in its Cycle and
-Two states modes at 1360 px.  Reports widgets that stick
+2000 px, with a few example points in the plot, in its default Cycle mode;
+and in Sequence mode at 1360 px.  Reports widgets that stick
 out past the window and text that does not fit, and saves a screenshot of
 each.  Exit status 1 if anything is clipped or cut at 1360 or 2000 px on
 Windows, the lab PC's system; on Linux the results are reported only.
@@ -21,8 +21,8 @@ from gui_checks import inspect, screenshot  # noqa: E402
 
 PROGRAM = Path(__file__).resolve().parents[2] / "MS-fourState.py"
 # (mode, width, height, must fit)
-WINDOWS = (("sequence", 1360, 900, True), ("sequence", 1100, 760, False), ("sequence", 2000, 1100, True),
-           ("cycle", 1360, 900, True), ("two", 1360, 900, True))
+WINDOWS = (("cycle", 1360, 900, True), ("cycle", 1100, 760, False), ("cycle", 2000, 1100, True),
+           ("sequence", 1360, 900, True))
 EXAMPLE = (("D", 1500, 22, 30e-6), ("A", -1500, 22, 11e-6), ("B", 1500, 22, -12.5e-6), ("E", -1500, 22, -27e-6))
 
 
