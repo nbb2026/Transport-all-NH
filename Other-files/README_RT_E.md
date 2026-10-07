@@ -39,9 +39,10 @@ Entry point: `../Transport_all_NH_dev.py`, tab **RT-E**, class `RTEPanel`.
   or cancelled points are not published. CSV preserves all Zurich demodulator
   columns and disabled-channel markers, as in PPMS. Plot rows follow the
   selected harmonic orders and contain X/Y/phase (R remains in CSV).
-- Normal completion and **Stop (hold outputs)** retain excitation and magnet
-  output. Explicit OFF buttons and application shutdown turn owned outputs
-  off. A measurement error stops 6221 excitation but leaves the magnet setting;
+- A completed **Current** scan turns the 6221 off (0 mA), confirmed by
+  `OUTP?` (2026-10-07). A completed Field scan and **Stop (hold outputs)**
+  retain excitation and magnet output. Explicit OFF buttons and application
+  shutdown turn owned outputs off. A measurement error stops 6221 excitation but leaves the magnet setting;
   KEPCO/field-settling failures also attempt KEPCO Zero/OFF.
 - Rack commands use one worker so shutdown follows in-flight scan commands.
   Shared instrument leases prevent simultaneous ownership by RT-E and another

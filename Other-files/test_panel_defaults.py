@@ -123,6 +123,7 @@ class RTEStatusRowTests(unittest.TestCase):
             RuntimeError("LS475 field drifted during acquisition; point discarded"), 100),
         "RT-E Current: 3 harmonic pass(es), 300 points",
         "Stopping; completed CSV points and outputs kept",
+        "Completed; 6221 current set to 0 (output OFF, read back)",
     )
 
     @classmethod
