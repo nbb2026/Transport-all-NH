@@ -1,5 +1,25 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MOKE-24: the |R| plot draws, and Start returns after Stop (2026-10-07)
+
+On the lab PC the continuous-resistance plot showed only its time axis and
+"|R| (MΩ)": no |R| numbers, no trace and no "Current |R|" value. After
+**Stop measurement**, the Start button stayed greyed out as "Measuring
+continuously…".
+
+- **Cause:** the program imports numpy together with the camera libraries
+  (pco, Pillow). Where one of those is missing, `np` is None. The |R| plot
+  used numpy to scale its values, so it stopped with an error just after the
+  time axis. The same error, raised when the measurement finished, also
+  skipped the step that re-enables the buttons.
+- **Fix:** the plot scales its values in plain Python. The finish step now
+  re-enables the buttons even if the plot fails to draw. The measurement
+  itself was unaffected: the source was zeroed and turned off as before.
+- **Tests:** `Other-files/test_keithley_resistance_plot.py` draws a steady
+  369.711 MΩ, a changing value and a single point with `np` set to None.
+  It also checks that the buttons are refreshed after Stop when the plot
+  fails. Before the fix, these tests fail.
+
 ## MOKE-24: the MOKE-2410 page now drives a 2410 or a 2400 (2026-10-07)
 
 The MOKE-2410 tab is renamed **MOKE-24**. Its connection row has a

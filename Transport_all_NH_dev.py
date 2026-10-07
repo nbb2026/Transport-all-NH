@@ -25569,11 +25569,11 @@ class CombinedControlApp:
             )
             return
 
-        scaled = np.asarray(resistance_values, dtype=np.float64) / scale
-        y_min, y_max, y_ticks, y_tick_step = nice_linear_ticks(
-            float(np.min(scaled)),
-            float(np.max(scaled)),
-        )
+        # Plain Python, not numpy: np is None wherever the camera libraries
+        # (pco, Pillow) do not import, and this plot is purely electrical.
+        # With np, the plot stopped after the time axis on such a PC.
+        scaled = [value / scale for value in resistance_values]
+        y_min, y_max, y_ticks, y_tick_step = nice_linear_ticks(min(scaled), max(scaled))
         for value in reversed(y_ticks):
             y = top + (y_max - value) / (y_max - y_min) * plot_height
             canvas.create_line(left - 4, y, left, y)
@@ -25779,8 +25779,12 @@ class CombinedControlApp:
             self.keithley_status_var.set(
                 "Continuous resistance measurement finished; source current zeroed and output off"
             )
-        self._redraw_keithley_resistance_plot()
-        self._update_keithley_controls()
+        try:
+            self._redraw_keithley_resistance_plot()
+        finally:
+            # The buttons follow the finished measurement whatever the plot
+            # does: a failing redraw here used to leave Start greyed out.
+            self._update_keithley_controls()
 
     def ingest_2410_roi_sample(self, mean_value: float) -> None:
         with self.keithley_data_lock:
