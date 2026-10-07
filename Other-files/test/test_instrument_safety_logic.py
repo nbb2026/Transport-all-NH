@@ -119,6 +119,7 @@ class Fake2410:
         self.voltage_range = 20.0
         self.ovp = 200.0
         self.output = 0
+        self.errors = []
 
     def _ovp_level(self, value):
         value = abs(value)
@@ -139,10 +140,15 @@ class Fake2410:
             self.output = 1
         elif upper == ":OUTP OFF":
             self.output = 0
+        elif upper == "*RST":
+            # As the instrument: output off, source at 0, OVP none.
+            self.output, self.voltage, self.ovp = 0, 0.0, self.OVP_NONE
 
     def query(self, command):
         upper = command.upper()
         if upper == "SYST:ERR?":
+            if self.errors:
+                return self.errors.pop(0)
             return '0,"No error"'
         if upper == ":SOUR:VOLT:RANG?":
             return str(self.voltage_range)
@@ -169,10 +175,6 @@ class Fake2400(Fake2410):
     OVP_NONE = 210.0
     IDENTITY = "KEITHLEY INSTRUMENTS INC.,MODEL 2400,4105497,C30   Mar 17 2006 09:29:29/A02  /K/J"
 
-    def __init__(self):
-        super().__init__()
-        self.errors = []
-
     def write(self, command):
         upper = command.upper()
         if upper.startswith(":SOUR:VOLT:RANG ") and float(command.rsplit(" ", 1)[1]) > 210.0:
@@ -181,10 +183,6 @@ class Fake2400(Fake2410):
             return
         super().write(command)
 
-    def query(self, command):
-        if command.upper() == "SYST:ERR?" and self.errors:
-            return self.errors.pop(0)
-        return super().query(command)
 
 
 class Fake6221:
@@ -1210,6 +1208,39 @@ class InstrumentSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "over-voltage protection readback is too high: 210 V"):
                 controller.enable_output(20.0)
         self.assertEqual(fake.output, 0, "output never turned on")
+
+    def test_a_failed_resistance_start_cannot_skip_the_ovp(self):
+        # *RST sets the OVP to none.  If the resistance start then fails, the
+        # next manual voltage must set and check the OVP before OUTP ON.
+        for model, fake_class, voltage, ovp in (("2400", Fake2400, 150.0, 160.0),
+                                                ("2410", Fake2410, 190.0, 200.0)):
+            with self.subTest(model=model):
+                controller = app.Keithley2410Controller(lambda _message: None, model=model)
+                fake = fake_class()
+                controller.instrument = fake
+                controller.apply_manual_voltage(voltage)
+                controller.output_off()
+                fake.errors.append('-113,"Undefined header"')
+                with self.assertRaisesRegex(RuntimeError, "SCPI error"):
+                    controller.initialize_resistance(1e-9)
+                self.assertEqual((fake.output, fake.ovp), (0, fake.OVP_NONE))
+                del fake.commands[:]
+                controller.apply_manual_voltage(voltage)
+                commands = [command.upper() for command in fake.commands]
+                self.assertIn(f":SOUR:VOLT:PROT {ovp:g}", commands)
+                self.assertLess(commands.index(f":SOUR:VOLT:PROT {ovp:g}"), commands.index(":OUTP ON"))
+                self.assertEqual((fake.output, fake.ovp), (1, ovp))
+
+    def test_an_ovp_below_the_level_asked_for_is_refused(self):
+        controller = app.Keithley2410Controller(lambda _message: None, model="2400")
+        fake = Fake2400()
+        controller.instrument = fake
+        with mock.patch.dict(app.KEITHLEY_MODELS, {"2400": dict(app.KEITHLEY_MODELS["2400"], source_ovp_v=110.0)}):
+            with self.assertRaisesRegex(RuntimeError, "readback is 100 V, not the 110 V asked for"):
+                controller.enable_output(20.0)
+        self.assertEqual(fake.output, 0)
+        with self.assertRaisesRegex(RuntimeError, "not in voltage-source mode"):
+            controller.set_voltage(1.0)  # a part-done setup is not trusted
 
     def test_scan_sequence_follows_the_model_limit(self):
         self.assertEqual(app.build_voltage_sequence(0.0, 160.0, 80.0, 160.0)[:3], [0.0, 80.0, 160.0])

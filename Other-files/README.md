@@ -26,6 +26,20 @@ check let that through, because it allowed 5 % above 200 V (210.2 V) and
 - **Names:** the scan parameter log is named by the model that ran the
   scan. The page's image buttons, the image-folder dialog and the MOKE
   magnet warnings name the model or "MOKE-24" rather than "2410".
+- **Second review:**
+  - *Older gap:* a resistance start sends `*RST`, which sets the OVP to
+    none. If that start then failed, the next manual voltage in the same
+    range turned the output on without setting the OVP again. Now `*RST`,
+    and the start of every voltage setup, clear what the controller
+    trusts. The next voltage output therefore sets and checks the OVP
+    first.
+  - The OVP readback must also not be lower than asked for (within 1 %),
+    since a lower level would silently clamp a scan.
+  - The parameter log takes the OVP readback from when the scan turned
+    the output on.
+  - While a connect runs, the page offers nothing that sources (Start,
+    manual, resistance, Disconnect).
+  - Camera Live recordings from this page are named by the model.
 - **To check on the real 2400 before use above 20 V:** after connecting,
   `:SOUR:VOLT:PROT?` should read 160.
 - **Tests:** in `Other-files/test/test_instrument_safety_logic.py`, the fake

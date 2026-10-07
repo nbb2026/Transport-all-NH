@@ -4969,20 +4969,27 @@ class Keithley2410Controller:
         return actual
 
     def _configure_voltage_source_locked(self, max_abs_voltage: float = 0.0) -> None:
+        # Until this completes nothing is trusted: a failure part-way makes
+        # the next output configure from the start.
+        self.source_mode = None
+        self.source_voltage_range_v = None
+        self.source_ovp_readback_v = None
         self._write_checked(":SOUR:FUNC VOLT")
         self._write_checked(":SOUR:VOLT:MODE FIXED")
         self._write_checked(f":SOUR:VOLT:PROT {self.source_ovp_v:.12g}")
         actual_ovp = float(self.instrument.query(":SOUR:VOLT:PROT?").strip())
         # The readback is the level selected, not a measurement, so it must
-        # equal the level asked for.  A model without that level selects its
-        # "none" level instead (210 V on a 2400 asked for 200 V), which the
-        # old 5 % allowance (to 210.2 V) let through.
-        if (
-            not math.isfinite(actual_ovp)
-            or actual_ovp > self.source_ovp_v * 1.01
-        ):
+        # equal the level asked for, within 1 %.  A model without that level
+        # selects its "none" level instead (210 V on a 2400 asked for 200 V),
+        # which the old 5 % allowance (to 210.2 V) let through.
+        if not math.isfinite(actual_ovp) or actual_ovp > self.source_ovp_v * 1.01:
             raise RuntimeError(
                 f"{self.model} hardware over-voltage protection readback is too high: {actual_ovp:g} V"
+            )
+        if actual_ovp < self.source_ovp_v * 0.99:
+            raise RuntimeError(
+                f"{self.model} hardware over-voltage protection readback is {actual_ovp:g} V, "
+                f"not the {self.source_ovp_v:g} V asked for"
             )
         self.source_ovp_readback_v = actual_ovp
         self._select_voltage_range_locked(max_abs_voltage)
@@ -5174,6 +5181,13 @@ class Keithley2410Controller:
             if self.instrument is None:
                 raise RuntimeError(f"Keithley {self.model} is not connected")
             self.instrument.write("*RST")
+            # *RST turns the output off and the OVP to none.  Forget the
+            # voltage setup, so a later voltage output configures (and checks)
+            # the OVP again even if this start fails part-way.
+            self.output_enabled = False
+            self.source_mode = None
+            self.source_voltage_range_v = None
+            self.source_ovp_readback_v = None
             self.instrument.write("*CLS")
             self._write_checked(":SOUR:FUNC CURR")
             self._write_checked(":SOUR:CURR:MODE FIXED")
@@ -22531,7 +22545,7 @@ class CombinedControlApp:
             marker_mode = "2410"
 
         timestamp = datetime_module.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename_prefix = "Keithley2410" if marker_mode == "2410" else "MOKE"
+        filename_prefix = f"Keithley{self._keithley_page_model()}" if marker_mode == "2410" else "MOKE"
         selected = filedialog.asksaveasfilename(
             parent=self.root,
             title="Save Camera Live 8-bit recording",
@@ -25009,14 +25023,16 @@ class CombinedControlApp:
         self.root.after(interval_ms, self._magnet_poll_timer)
 
     def _update_keithley_controls(self) -> None:
-        connected = self.keithley_controller.connected
+        connecting = self.__dict__.get("keithley_connecting", False)
+        # Until the connect finishes (OVP set and checked, safety ticks
+        # cleared) nothing that sources may be offered.
+        connected = self.keithley_controller.connected and not connecting
         self._set_connection_indicator("keithley2410", connected)
         running = self.keithley_scan_running
         resistance_busy = self.keithley_resistance_busy
         manual_busy = self.keithley_manual_busy
         magnet_running = self.magnet_scan_running
         k6221_running = self.k6221_scan_running
-        connecting = self.__dict__.get("keithley_connecting", False)
         nonlocal_vi_owns_2410 = (
             self.nonlocal_vi_2410_controller.connected
             or self.nonlocal_vi_running
@@ -25195,13 +25211,19 @@ class CombinedControlApp:
             messagebox.showwarning("MOKE-24", "Current limit must be a number", parent=self.root)
             return
         self.keithley_status_var.set(f"Connecting to {resource}…")
-        # Connect and the Model list stay locked until this attempt ends.
+        # Connect, the Model list and every sourcing control stay locked
+        # until this attempt ends.
         self.keithley_connecting = True
         self._update_keithley_controls()
         model = self.keithley_model_var.get()
-        future = self.keithley_executor.submit(
-            self.keithley_controller.connect, resource, compliance, model
-        )
+        try:
+            future = self.keithley_executor.submit(
+                self.keithley_controller.connect, resource, compliance, model
+            )
+        except BaseException:
+            self.keithley_connecting = False
+            self._update_keithley_controls()
+            raise
 
         def done(completed):
             error = completed.exception()
@@ -25279,6 +25301,8 @@ class CombinedControlApp:
     def _submit_keithley_manual_voltage(
         self, target: float, action: str, *, require_safety: bool = True
     ) -> None:
+        if self.keithley_connecting:
+            return  # its buttons are disabled; a stray event does nothing
         if not self.keithley_controller.connected:
             messagebox.showwarning("MOKE-24", "Connect the instrument first", parent=self.root)
             return
@@ -25337,6 +25361,8 @@ class CombinedControlApp:
         self._update_keithley_controls()
 
     def disconnect_keithley(self) -> None:
+        if self.keithley_connecting:
+            return  # its buttons are disabled; a stray event does nothing
         self.keithley_stop_event.set()
         self.keithley_status_var.set("Zeroing and disconnecting…")
         future = self.keithley_executor.submit(self.keithley_controller.disconnect)
@@ -25673,6 +25699,8 @@ class CombinedControlApp:
         )
 
     def measure_keithley_resistance(self) -> None:
+        if self.keithley_connecting:
+            return  # its buttons are disabled; a stray event does nothing
         if not self.keithley_controller.connected:
             messagebox.showwarning("MOKE-24", "Connect the instrument first", parent=self.root)
             return
@@ -25895,6 +25923,8 @@ class CombinedControlApp:
         )
 
     def start_keithley_scan(self) -> None:
+        if self.keithley_connecting:
+            return  # its buttons are disabled; a stray event does nothing
         if self.keithley_manual_busy:
             messagebox.showwarning(
                 "MOKE-24", "The manual voltage operation has not finished", parent=self.root
@@ -26063,6 +26093,10 @@ class CombinedControlApp:
         try:
             self.keithley_controller.enable_output(
                 max(abs(float(voltage)) for voltage in sequence)
+            )
+            # As read back when this scan turned the output on, not before.
+            self.keithley_scan_settings["instrument.hardware_source_ovp_readback_V"] = (
+                self.keithley_controller.source_ovp_readback_v
             )
             for index, voltage in enumerate(sequence, start=1):
                 if self.keithley_stop_event.is_set():
