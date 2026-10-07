@@ -1052,13 +1052,19 @@ KEITHLEY_SOURCE_OVP_V = 200.0
 KEITHLEY_LOW_SOURCE_RANGE_V = 20.0
 KEITHLEY_HIGH_SOURCE_RANGE_V = 1000.0
 KEITHLEY_HIGH_RANGE_MAX_COMPLIANCE_A = 0.021
-# The MOKE-24 page drives a Keithley 2410 or 2400.  Both keep the same
-# +/-200 V software limit and 200 V hardware OVP; they differ in the source
-# range used above 20 V and the current protection allowed on it.
+# The MOKE-24 page drives a Keithley 2410 or 2400.  They differ in the
+# source range used above 20 V, the current protection allowed on it, and the
+# hardware OVP.  A 2400 has no 200 V OVP level: its levels are 20, 40, 60,
+# 80, 100, 120 and 160 V, and anything from 161 to 210 V means none (2400
+# manual, :SOUR:VOLT:PROT).  So a 2400 keeps a real OVP at 160 V, with the
+# software limit set to match; the 2410 keeps +/-200 V and its 200 V OVP.
 KEITHLEY_MODELS = {
     "2410": {"high_range_v": KEITHLEY_HIGH_SOURCE_RANGE_V,
-             "high_range_max_compliance_a": KEITHLEY_HIGH_RANGE_MAX_COMPLIANCE_A},
-    "2400": {"high_range_v": 200.0, "high_range_max_compliance_a": 0.105},
+             "high_range_max_compliance_a": KEITHLEY_HIGH_RANGE_MAX_COMPLIANCE_A,
+             "max_abs_voltage_v": KEITHLEY_MAX_ABS_VOLTAGE_V,
+             "source_ovp_v": KEITHLEY_SOURCE_OVP_V},
+    "2400": {"high_range_v": 200.0, "high_range_max_compliance_a": 0.105,
+             "max_abs_voltage_v": 160.0, "source_ovp_v": 160.0},
 }
 KEITHLEY_DEFAULT_MODEL = "2410"
 KEITHLEY_DEFAULT_START_V = 1.0
@@ -4550,7 +4556,8 @@ def build_round_trip_values(
     return [float(value) for value in cycle]
 
 
-def build_voltage_sequence(start_v: float, end_v: float, step_v: float):
+def build_voltage_sequence(start_v: float, end_v: float, step_v: float,
+                           max_abs_v: float = KEITHLEY_MAX_ABS_VOLTAGE_V):
     """Build an endpoint-inclusive outward-and-return voltage sequence."""
     start_v = float(start_v)
     end_v = float(end_v)
@@ -4559,11 +4566,8 @@ def build_voltage_sequence(start_v: float, end_v: float, step_v: float):
         raise ValueError("Start voltage, end voltage and step must be finite values")
     if step_v <= 0:
         raise ValueError("Voltage step must be greater than 0")
-    if (
-        abs(start_v) > KEITHLEY_MAX_ABS_VOLTAGE_V
-        or abs(end_v) > KEITHLEY_MAX_ABS_VOLTAGE_V
-    ):
-        raise ValueError(f"Start/end voltage must be within ±{KEITHLEY_MAX_ABS_VOLTAGE_V:g} V")
+    if abs(start_v) > max_abs_v or abs(end_v) > max_abs_v:
+        raise ValueError(f"Start/end voltage must be within ±{max_abs_v:g} V")
     return build_round_trip_values(
         start_v,
         end_v,
@@ -4892,6 +4896,7 @@ class Keithley2410Controller:
         self.compliance_a = KEITHLEY_DEFAULT_COMPLIANCE_A
         self.source_mode = None
         self.source_voltage_range_v = None
+        self.source_ovp_readback_v = None
         self.lock = threading.RLock()
         self.set_model(model)
 
@@ -4915,16 +4920,21 @@ class Keithley2410Controller:
     def high_range_max_compliance_a(self) -> float:
         return KEITHLEY_MODELS[self.model]["high_range_max_compliance_a"]
 
+    @property
+    def max_abs_voltage_v(self) -> float:
+        return KEITHLEY_MODELS[self.model]["max_abs_voltage_v"]
+
+    @property
+    def source_ovp_v(self) -> float:
+        return KEITHLEY_MODELS[self.model]["source_ovp_v"]
+
     @staticmethod
     def identity_matches(identity: str, model: str) -> bool:
-        """True when *IDN? names the model.  The 2410 check is the original
-        substring test; a 2400 must be named in the model field, so a 2410
-        (or a serial number containing 2400) is never taken for one."""
-        text = str(identity).upper()
-        if model == "2410":
-            return "2410" in text
-        fields = [field.strip() for field in text.split(",")]
-        return len(fields) > 1 and re.fullmatch(rf"(MODEL\s*)?{model}(-[A-Z]+)?", fields[1]) is not None
+        """True when *IDN? names the model in its model field ("MODEL 2410",
+        also -C), so neither model, nor a serial number containing the other's
+        number, nor a variant such as the 21 V 2400-LV, is taken for it."""
+        fields = [field.strip() for field in str(identity).upper().split(",")]
+        return len(fields) > 1 and re.fullmatch(rf"(MODEL\s*)?{re.escape(model)}(-C)?", fields[1]) is not None
 
     def _query_error(self, command: str) -> None:
         response = self.instrument.query("SYST:ERR?").strip()
@@ -4961,15 +4971,20 @@ class Keithley2410Controller:
     def _configure_voltage_source_locked(self, max_abs_voltage: float = 0.0) -> None:
         self._write_checked(":SOUR:FUNC VOLT")
         self._write_checked(":SOUR:VOLT:MODE FIXED")
-        self._write_checked(f":SOUR:VOLT:PROT {KEITHLEY_SOURCE_OVP_V:.12g}")
+        self._write_checked(f":SOUR:VOLT:PROT {self.source_ovp_v:.12g}")
         actual_ovp = float(self.instrument.query(":SOUR:VOLT:PROT?").strip())
+        # The readback is the level selected, not a measurement, so it must
+        # equal the level asked for.  A model without that level selects its
+        # "none" level instead (210 V on a 2400 asked for 200 V), which the
+        # old 5 % allowance (to 210.2 V) let through.
         if (
             not math.isfinite(actual_ovp)
-            or actual_ovp > KEITHLEY_SOURCE_OVP_V * 1.051
+            or actual_ovp > self.source_ovp_v * 1.01
         ):
             raise RuntimeError(
                 f"{self.model} hardware over-voltage protection readback is too high: {actual_ovp:g} V"
             )
+        self.source_ovp_readback_v = actual_ovp
         self._select_voltage_range_locked(max_abs_voltage)
         self._write_checked(":SENS:FUNC 'CURR'")
         self._write_checked(f":SENS:CURR:PROT {self.compliance_a:.9g}")
@@ -4978,16 +4993,26 @@ class Keithley2410Controller:
         self.last_set_voltage = 0.0
 
     def connect(self, resource_name: str, compliance_a: float, model: str | None = None) -> str:
-        if model is not None:
-            self.set_model(model)
+        model = self.model if model is None else str(model).strip()
+        if model not in KEITHLEY_MODELS:
+            raise ValueError(f"Keithley model must be one of {', '.join(KEITHLEY_MODELS)}")
         if pyvisa is None:
             raise RuntimeError("pyvisa is missing; please run: py -m pip install pyvisa pyvisa-py")
         if not 0 < compliance_a <= 1.0:
             raise ValueError("Current protection value must be between 0 and 1 A")
         with self.lock:
             if self.instrument is not None:
+                if model != self.model:
+                    raise RuntimeError("Disconnect before changing the Keithley model")
                 return self.identity
-            acquire_instrument_lease(resource_name, self, f"Keithley {self.model}")
+            # The model is kept only if this connect succeeds; a failed
+            # attempt leaves the previous one (and its file names) in place.
+            previous_model, self.model = self.model, model
+            try:
+                acquire_instrument_lease(resource_name, self, f"Keithley {self.model}")
+            except BaseException:
+                self.model = previous_model
+                raise
             manager = None
             instrument = None
             try:
@@ -5031,15 +5056,16 @@ class Keithley2410Controller:
                 self.resource_manager = None
                 self.instrument = None
                 self.source_mode = None
+                self.model = previous_model
                 release_instrument_lease(resource_name, self)
                 raise
 
     def enable_output(self, max_abs_voltage: float = 0.0) -> None:
         if not math.isfinite(float(max_abs_voltage)):
             raise ValueError("Maximum scan voltage must be a finite value")
-        if abs(float(max_abs_voltage)) > KEITHLEY_MAX_ABS_VOLTAGE_V:
+        if abs(float(max_abs_voltage)) > self.max_abs_voltage_v:
             raise ValueError(
-                f"Maximum scan voltage exceeds the software limit ±{KEITHLEY_MAX_ABS_VOLTAGE_V:g} V"
+                f"Maximum scan voltage exceeds the {self.model} software limit ±{self.max_abs_voltage_v:g} V"
             )
         if (
             abs(float(max_abs_voltage)) > KEITHLEY_LOW_SOURCE_RANGE_V
@@ -5060,9 +5086,9 @@ class Keithley2410Controller:
         voltage = float(voltage)
         if not math.isfinite(voltage):
             raise ValueError("Requested voltage must be a finite value")
-        if abs(voltage) > KEITHLEY_MAX_ABS_VOLTAGE_V:
+        if abs(voltage) > self.max_abs_voltage_v:
             raise ValueError(
-                f"Requested voltage {voltage:g} V exceeds the software limit ±{KEITHLEY_MAX_ABS_VOLTAGE_V:g} V"
+                f"Requested voltage {voltage:g} V exceeds the {self.model} software limit ±{self.max_abs_voltage_v:g} V"
             )
         if (
             abs(voltage) > KEITHLEY_LOW_SOURCE_RANGE_V
@@ -5096,9 +5122,9 @@ class Keithley2410Controller:
         voltage = float(voltage)
         if not math.isfinite(voltage):
             raise ValueError("Requested voltage must be a finite value")
-        if abs(voltage) > KEITHLEY_MAX_ABS_VOLTAGE_V:
+        if abs(voltage) > self.max_abs_voltage_v:
             raise ValueError(
-                f"Requested voltage {voltage:g} V exceeds the software limit ±{KEITHLEY_MAX_ABS_VOLTAGE_V:g} V"
+                f"Requested voltage {voltage:g} V exceeds the {self.model} software limit ±{self.max_abs_voltage_v:g} V"
             )
         if (
             abs(voltage) > KEITHLEY_LOW_SOURCE_RANGE_V
@@ -11947,6 +11973,7 @@ class CombinedControlApp:
         self.keithley_scan_running = False
         self.keithley_resistance_busy = False
         self.keithley_manual_busy = False
+        self.keithley_connecting = False
         self.keithley_closed = False
         self.keithley_collecting = False
         self.keithley_scan_start_time = None
@@ -11969,6 +11996,7 @@ class CombinedControlApp:
         self.keithley_scan_settings: dict[str, object] = {}
         self.keithley_resource_var = tk.StringVar(value=KEITHLEY_DEFAULT_RESOURCE)
         self.keithley_model_var = tk.StringVar(value=KEITHLEY_DEFAULT_MODEL)
+        self.keithley_hazard_var = tk.StringVar()
         self.keithley_compliance_var = tk.StringVar(
             value=f"{KEITHLEY_DEFAULT_COMPLIANCE_A:g}"
         )
@@ -19581,13 +19609,10 @@ class CombinedControlApp:
         safety.grid(row=1, column=0, sticky="nsew")
         safety.columnconfigure(0, weight=1)
         safety.rowconfigure(1, weight=1)
+        # The limit follows the model (KEITHLEY_MODELS); set in
+        # _update_keithley_controls.
         hazard = ttk.Label(
-            safety,
-            text=(
-                f"High-voltage hazard: scans are software-limited to ±{KEITHLEY_MAX_ABS_VOLTAGE_V:g} V; "
-                "resistance measurement auto-sources 1 nA–1 mA with 5 V protection; the output is switched off on stop."
-            ),
-            foreground="#a34b00",
+            safety, textvariable=self.keithley_hazard_var, foreground="#a34b00",
         )
         # Wraps to the width left beside the red button: one line in a wide
         # window, a second line in the default one instead of running under
@@ -19888,12 +19913,12 @@ class CombinedControlApp:
         ttk.Button(
             image_buttons,
             text="Save processed image",
-            command=lambda: self.save_current_processed_image("2410"),
+            command=lambda: self.save_current_processed_image(self._keithley_page_model()),
         ).pack(side="left", padx=(0, 3))
         ttk.Button(
             image_buttons,
             text="Save raw 16-bit image",
-            command=lambda: self.save_current_raw_image("2410"),
+            command=lambda: self.save_current_raw_image(self._keithley_page_model()),
         ).pack(side="left")
 
         video_bar = ttk.Frame(roi_edit)
@@ -22025,7 +22050,7 @@ class CombinedControlApp:
         self.magnet_image_directory_var.set(f"Scan image folder: {selected}")
 
     def configure_keithley_image_saving(self) -> None:
-        with self.camera_render_paused("Selecting the 2410 scan image folder"):
+        with self.camera_render_paused("Selecting the MOKE-24 scan image folder"):
             self._configure_keithley_image_saving()
 
     def _configure_keithley_image_saving(self) -> None:
@@ -22035,7 +22060,7 @@ class CombinedControlApp:
             return
         selected = filedialog.askdirectory(
             parent=self.root,
-            title="Select the folder for Keithley 2410 voltage-scan float32 processed images",
+            title=f"Select the folder for Keithley {self._keithley_page_model()} voltage-scan float32 processed images",
         )
         if not selected:
             self.keithley_save_images_var.set(False)
@@ -24084,12 +24109,12 @@ class CombinedControlApp:
             return
         if self.keithley_scan_running or self.k6221_scan_running:
             messagebox.showwarning(
-                "MOKE current scan", "A Keithley 2410/6221 scan is running", parent=self.root
+                "MOKE current scan", "A MOKE-24 or MOKE-6221 scan is running", parent=self.root
             )
             return
         if self.keithley_resistance_busy:
             messagebox.showwarning(
-                "MOKE current scan", "The Keithley 2410 is measuring resistance", parent=self.root
+                "MOKE current scan", "MOKE-24 is measuring resistance", parent=self.root
             )
             return
         if not self.magnet_safety_var.get():
@@ -24991,6 +25016,7 @@ class CombinedControlApp:
         manual_busy = self.keithley_manual_busy
         magnet_running = self.magnet_scan_running
         k6221_running = self.k6221_scan_running
+        connecting = self.__dict__.get("keithley_connecting", False)
         nonlocal_vi_owns_2410 = (
             self.nonlocal_vi_2410_controller.connected
             or self.nonlocal_vi_running
@@ -25000,6 +25026,7 @@ class CombinedControlApp:
             state=(
                 "disabled"
                 if connected
+                or connecting
                 or running
                 or resistance_busy
                 or manual_busy
@@ -25009,8 +25036,16 @@ class CombinedControlApp:
         )
         if "keithley_model_combo" in self.__dict__ and "keithley_off_button" in self.__dict__:
             self.keithley_model_combo.configure(
-                state="disabled" if connected or running or resistance_busy or manual_busy else "readonly")
-            self.keithley_off_button.configure(text=f"{self.keithley_model_var.get()} zero / output off")
+                state="disabled" if connected or connecting or running or resistance_busy or manual_busy
+                else "readonly")
+            model = self._keithley_page_model()
+            self.keithley_off_button.configure(text=f"{model} zero / output off")
+            self.keithley_hazard_var.set(
+                f"High-voltage hazard: {model} scans are software-limited to "
+                f"±{KEITHLEY_MODELS[model]['max_abs_voltage_v']:g} V (hardware OVP "
+                f"{KEITHLEY_MODELS[model]['source_ovp_v']:g} V); resistance measurement "
+                "auto-sources 1 nA–1 mA with 5 V protection; the output is switched off on stop."
+            )
         self.keithley_disconnect_button.configure(
             state=(
                 "normal"
@@ -25129,7 +25164,16 @@ class CombinedControlApp:
         self._update_magnet_scan_controls()
         self._update_moke_roi_controls()
 
+    def _keithley_page_model(self) -> str:
+        """The connected instrument's model, else the one chosen on the page."""
+        if self.keithley_controller.connected:
+            return self.keithley_controller.model
+        model = self.keithley_model_var.get()
+        return model if model in KEITHLEY_MODELS else KEITHLEY_DEFAULT_MODEL
+
     def connect_keithley(self) -> None:
+        if self.keithley_connecting:
+            return
         if (
             self.nonlocal_vi_2410_controller.connected
             or self.nonlocal_vi_running
@@ -25151,7 +25195,9 @@ class CombinedControlApp:
             messagebox.showwarning("MOKE-24", "Current limit must be a number", parent=self.root)
             return
         self.keithley_status_var.set(f"Connecting to {resource}…")
-        self.keithley_connect_button.configure(state="disabled")
+        # Connect and the Model list stay locked until this attempt ends.
+        self.keithley_connecting = True
+        self._update_keithley_controls()
         model = self.keithley_model_var.get()
         future = self.keithley_executor.submit(
             self.keithley_controller.connect, resource, compliance, model
@@ -25165,8 +25211,15 @@ class CombinedControlApp:
         future.add_done_callback(done)
 
     def _finish_keithley_connect(self, identity, error) -> None:
+        self.keithley_connecting = False
+        if self.keithley_controller.connected:
+            # The list shows the model actually connected.  After a failed
+            # attempt it keeps the user's choice for the next try.
+            self.keithley_model_var.set(self.keithley_controller.model)
         if error is not None:
-            self.keithley_connection_var.set("Not connected")
+            self.keithley_connection_var.set(
+                "Connected" if self.keithley_controller.connected else "Not connected"
+            )
             self.keithley_status_var.set(f"Connection failed: {error}")
             if not self.closing:
                 messagebox.showerror("MOKE-24", str(error), parent=self.root)
@@ -25247,10 +25300,11 @@ class CombinedControlApp:
                 parent=self.root,
             )
             return
-        if not math.isfinite(target) or abs(target) > KEITHLEY_MAX_ABS_VOLTAGE_V:
+        limit = self.keithley_controller.max_abs_voltage_v
+        if not math.isfinite(target) or abs(target) > limit:
             messagebox.showwarning(
                 "MOKE-24",
-                f"Target voltage must be within ±{KEITHLEY_MAX_ABS_VOLTAGE_V:g} V",
+                f"Target voltage must be within ±{limit:g} V for the {self.keithley_controller.model}",
                 parent=self.root,
             )
             return
@@ -25818,7 +25872,13 @@ class CombinedControlApp:
             raise ValueError("Settle time must be within 0–3600 s")
         if not 0 < collect_s <= 3600:
             raise ValueError("Acquisition time must be within 0–3600 s")
-        return build_voltage_sequence(start_v, end_v, step_v), settle_s, collect_s
+        return (
+            build_voltage_sequence(
+                start_v, end_v, step_v, self.keithley_controller.max_abs_voltage_v
+            ),
+            settle_s,
+            collect_s,
+        )
 
     def _refresh_keithley_scan_eta(self) -> None:
         self.keithley_scan_eta_after_id = None
@@ -25931,10 +25991,13 @@ class CombinedControlApp:
                 self.keithley_controller.compliance_a
             ),
             "instrument.scan_voltage_limit_V": float(
-                KEITHLEY_MAX_ABS_VOLTAGE_V
+                self.keithley_controller.max_abs_voltage_v
             ),
             "instrument.hardware_source_ovp_V": float(
-                KEITHLEY_SOURCE_OVP_V
+                self.keithley_controller.source_ovp_v
+            ),
+            "instrument.hardware_source_ovp_readback_V": (
+                self.keithley_controller.source_ovp_readback_v
             ),
             "instrument.planned_source_range_V": float(
                 self.keithley_controller._required_voltage_range(
@@ -26291,7 +26354,11 @@ class CombinedControlApp:
             save_directory
             / f"Voltage_vs_ROI_intensity_snapshot_{timestamp}.png"
         )
-        log_path = save_directory / f"Keithley{self.keithley_controller.model}_scan_parameters_{timestamp}.log"
+        # Named by the model that ran the scan, not the one connected now.
+        scan_model = self.keithley_scan_settings.get(
+            "instrument.model", self.keithley_controller.model
+        )
+        log_path = save_directory / f"Keithley{scan_model}_scan_parameters_{timestamp}.log"
         exports = (
             (
                 vi_path,
@@ -26322,7 +26389,7 @@ class CombinedControlApp:
             }
         )
         log_text = self.format_parameter_log(
-            f"Keithley {self.keithley_controller.model} voltage scan parameter log",
+            f"Keithley {scan_model} voltage scan parameter log",
             log_parameters,
         )
         self.keithley_status_var.set(

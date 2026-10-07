@@ -82,9 +82,21 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertEqual(tuple(moke.keithley_model_combo.cget("values")), ("2410", "2400"))
         self.assertEqual(str(moke.keithley_model_combo.cget("state")), "readonly")
         self.assertEqual(moke.keithley_off_button.cget("text"), "2410 zero / output off")
+        self.assertIn("±200 V (hardware OVP 200 V)", moke.keithley_hazard_var.get())
         moke.keithley_model_var.set("2400")
         moke._update_keithley_controls()
         self.assertEqual(moke.keithley_off_button.cget("text"), "2400 zero / output off")
+        self.assertIn("2400 scans are software-limited to ±160 V (hardware OVP 160 V)",
+                      moke.keithley_hazard_var.get())
+        # While a connect is under way the model and Connect stay locked.
+        self.addCleanup(setattr, moke, "keithley_connecting", False)
+        moke.keithley_connecting = True
+        moke._update_keithley_controls()
+        self.assertEqual(str(moke.keithley_model_combo.cget("state")), "disabled")
+        self.assertEqual(str(moke.keithley_connect_button.cget("state")), "disabled")
+        moke.keithley_connecting = False
+        moke._update_keithley_controls()
+        self.assertEqual(str(moke.keithley_model_combo.cget("state")), "readonly")
 
     def test_ppms_keeps_one_harmonic_per_meter(self):
         self.assertEqual(self.settings(self.app.ppms_panel), {

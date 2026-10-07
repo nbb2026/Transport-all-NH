@@ -1,5 +1,44 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MOKE-24: a 2400 keeps a real OVP, at 160 V (2026-10-07)
+
+A review of the 2400 support found that a 2400 has no 200 V OVP level. Its
+levels are 20, 40, 60, 80, 100, 120 and 160 V, and any value from 161 to
+210 V selects none (2400 user's manual, `:SOUR:VOLT:PROT`). The page asked
+for 200 V, so on a 2400 the hardware OVP was silently off. The readback
+check let that through, because it allowed 5 % above 200 V (210.2 V) and
+"none" reads back as 210 V.
+
+- **2400:** OVP 160 V and a ±160 V software limit, on scans, manual
+  voltages and steps. The hazard text and the parameter log give the
+  model's limit and OVP. The log also records the OVP read back.
+- **2410:** unchanged, ±200 V with a 200 V OVP.
+- **Readback check:** the OVP read back must equal the level asked for,
+  within 1 % instead of 5 %. A model lacking that level is refused before
+  the output turns on. A 2400 driven as a 2410 is now caught at this step.
+- **Connecting:** the Model list and Connect stay locked until the attempt
+  ends. A failed connect keeps the previous model, so file names cannot
+  take the new model. A connected instrument cannot be re-connected as the
+  other model. The list shows the model actually connected.
+- **Identity:** both models must be named in the model field, "MODEL 2410"
+  or "MODEL 2400", optionally with -C. A serial number containing 2410 no
+  longer passes as a 2410, and a 2400-LV is refused.
+- **Names:** the scan parameter log is named by the model that ran the
+  scan. The page's image buttons, the image-folder dialog and the MOKE
+  magnet warnings name the model or "MOKE-24" rather than "2410".
+- **To check on the real 2400 before use above 20 V:** after connecting,
+  `:SOUR:VOLT:PROT?` should read 160.
+- **Tests:** in `Other-files/test/test_instrument_safety_logic.py`, the fake
+  2410 and 2400 select OVP levels as in the manual. New tests cover:
+  - the 2400 at 160 V and 2410 at 200 V limits;
+  - a missing OVP level refused;
+  - the scan limit per model;
+  - a failed connect and a re-connect as the other model;
+  - the stricter identity check.
+
+  `Other-files/test_panel_defaults.py` checks the hazard text and the lock
+  during a connect. Each new check fails when its fix is undone.
+
 ## MOKE-24: the |R| plot draws, and Start returns after Stop (2026-10-07)
 
 On the lab PC the continuous-resistance plot showed only its time axis and
@@ -34,7 +73,8 @@ while the instrument is connected.
   model. The 2410 uses its 1000 V range with at most 21 mA, as before. The
   2400 uses its 200 V range with at most 105 mA (`KEITHLEY_MODELS`). Both
   keep the page's ±200 V software limit and 200 V hardware OVP, and the
-  20 V range at or below 20 V.
+  20 V range at or below 20 V. *(Superseded for the 2400 by the next entry
+  up: a 2400 has no 200 V OVP level, so it is limited to ±160 V.)*
 - **Labels and files:** the red off button names the model. Dialogs are
   titled MOKE-24. Saved scan files, images and parameter logs are named
   `Keithley<model>_…`, so a 2410's files keep their names. The parameter

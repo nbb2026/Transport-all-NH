@@ -5,6 +5,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import numpy as np
@@ -106,6 +107,12 @@ class FakePyVisaModule:
 
 
 class Fake2410:
+    # :SOUR:VOLT:PROT levels from the 2400-series manual: a value between two
+    # levels selects the lower one, and above the highest it means none.
+    OVP_LEVELS = (20.0, 40.0, 100.0, 200.0, 300.0, 400.0, 500.0)
+    OVP_NONE = 1100.0
+    IDENTITY = "KEITHLEY INSTRUMENTS INC.,MODEL 2410,1234567,C34"
+
     def __init__(self):
         self.commands = []
         self.voltage = 0.0
@@ -113,13 +120,19 @@ class Fake2410:
         self.ovp = 200.0
         self.output = 0
 
+    def _ovp_level(self, value):
+        value = abs(value)
+        if value > self.OVP_LEVELS[-1]:
+            return self.OVP_NONE
+        return max([level for level in self.OVP_LEVELS if level <= value] or [self.OVP_LEVELS[0]])
+
     def write(self, command):
         self.commands.append(command)
         upper = command.upper()
         if upper.startswith(":SOUR:VOLT:RANG "):
             self.voltage_range = float(command.rsplit(" ", 1)[1])
         elif upper.startswith(":SOUR:VOLT:PROT "):
-            self.ovp = float(command.rsplit(" ", 1)[1])
+            self.ovp = self._ovp_level(float(command.rsplit(" ", 1)[1]))
         elif upper.startswith(":SOUR:VOLT "):
             self.voltage = float(command.rsplit(" ", 1)[1])
         elif upper == ":OUTP ON":
@@ -139,12 +152,22 @@ class Fake2410:
             return str(self.voltage)
         if upper == ":OUTP?":
             return str(self.output)
+        if upper == "*IDN?":
+            return self.IDENTITY
         raise AssertionError(f"unexpected query: {command}")
+
+    def close(self):
+        pass
 
 
 class Fake2400(Fake2410):
     """A 2400: its highest source range is 200 V, so the 2410's 1000 V range
-    is refused with a SCPI error, as the instrument does."""
+    is refused with a SCPI error, as the instrument does.  It has no 200 V
+    OVP level: asked for 200 V it selects none, read back as 210 V."""
+
+    OVP_LEVELS = (20.0, 40.0, 60.0, 80.0, 100.0, 120.0, 160.0)
+    OVP_NONE = 210.0
+    IDENTITY = "KEITHLEY INSTRUMENTS INC.,MODEL 2400,4105497,C30   Mar 17 2006 09:29:29/A02  /K/J"
 
     def __init__(self):
         super().__init__()
@@ -161,12 +184,7 @@ class Fake2400(Fake2410):
     def query(self, command):
         if command.upper() == "SYST:ERR?" and self.errors:
             return self.errors.pop(0)
-        if command == "*IDN?":
-            return "KEITHLEY INSTRUMENTS INC.,MODEL 2400,4105497,C30   Mar 17 2006 09:29:29/A02  /K/J"
         return super().query(command)
-
-    def close(self):
-        pass
 
 
 class Fake6221:
@@ -1154,12 +1172,18 @@ class InstrumentSafetyTests(unittest.TestCase):
         fake = Fake2400()
         controller.instrument = fake
         controller.compliance_a = 0.1  # Above the 2410's 21 mA, within the 2400's 105 mA.
-        controller.enable_output(200.0)
+        controller.enable_output(160.0)
         self.assertEqual(fake.voltage_range, 200.0)
-        self.assertEqual(fake.ovp, 200.0, "same hardware OVP as the 2410")
-        self.assertTrue(math.isclose(controller.set_voltage(200.0), 200.0))
-        with self.assertRaises(ValueError):
-            controller.set_voltage(200.0001)
+        self.assertEqual(fake.ovp, 160.0, "a real OVP level on a 2400")
+        self.assertEqual(controller.source_ovp_readback_v, 160.0)
+        self.assertTrue(math.isclose(controller.set_voltage(160.0), 160.0))
+        with self.assertRaisesRegex(ValueError, "2400 software limit ±160 V"):
+            controller.set_voltage(160.0001)
+        controller.output_enabled = False
+        with self.assertRaisesRegex(ValueError, "±160 V"):
+            controller.enable_output(200.0)
+        with self.assertRaisesRegex(ValueError, "±160 V"):
+            controller.apply_manual_voltage(-170.0)
         controller.compliance_a = 0.106
         with self.assertRaisesRegex(ValueError, "105 mA"):
             controller.apply_manual_voltage(30.0)
@@ -1167,12 +1191,44 @@ class InstrumentSafetyTests(unittest.TestCase):
         controller.apply_manual_voltage(1.0)
         self.assertEqual(fake.voltage_range, 20.0, "20 V range at or below 20 V, as on the 2410")
 
+    def test_2410_keeps_200_v_and_its_200_v_ovp(self):
+        controller = app.Keithley2410Controller(lambda _message: None)
+        fake = Fake2410()
+        controller.instrument = fake
+        controller.enable_output(200.0)
+        self.assertEqual((fake.voltage_range, fake.ovp), (1000.0, 200.0))
+        self.assertEqual(controller.source_ovp_readback_v, 200.0)
+        self.assertTrue(math.isclose(controller.set_voltage(-200.0), -200.0))
+
+    def test_an_ovp_the_model_lacks_is_refused_before_output(self):
+        # Asking a 2400 for 200 V OVP selects none (210 V): the readback
+        # check must catch that rather than run without a hardware limit.
+        controller = app.Keithley2410Controller(lambda _message: None, model="2400")
+        fake = Fake2400()
+        controller.instrument = fake
+        with mock.patch.dict(app.KEITHLEY_MODELS, {"2400": dict(app.KEITHLEY_MODELS["2400"], source_ovp_v=200.0)}):
+            with self.assertRaisesRegex(RuntimeError, "over-voltage protection readback is too high: 210 V"):
+                controller.enable_output(20.0)
+        self.assertEqual(fake.output, 0, "output never turned on")
+
+    def test_scan_sequence_follows_the_model_limit(self):
+        self.assertEqual(app.build_voltage_sequence(0.0, 160.0, 80.0, 160.0)[:3], [0.0, 80.0, 160.0])
+        with self.assertRaisesRegex(ValueError, "±160 V"):
+            app.build_voltage_sequence(0.0, 200.0, 100.0, 160.0)
+        app.build_voltage_sequence(0.0, 200.0, 100.0)  # the 2410's ±200 V by default
+
     def test_a_2400_driven_as_a_2410_fails_safe(self):
         controller = app.Keithley2410Controller(lambda _message: None)  # 2410 selected
         fake = Fake2400()
         controller.instrument = fake
-        with self.assertRaisesRegex(RuntimeError, "SCPI error"):
+        # Its OVP reads back as none (210 V), refused before the range is set.
+        with self.assertRaisesRegex(RuntimeError, "over-voltage protection readback is too high: 210 V"):
             controller.enable_output(200.0)
+        self.assertEqual(fake.output, 0, "output never turned on")
+        with mock.patch.object(Fake2400, "_ovp_level", lambda self, value: abs(value)):
+            # Even with an OVP readback of 200 V, the 1000 V range is refused.
+            with self.assertRaisesRegex(RuntimeError, "SCPI error"):
+                controller.enable_output(200.0)
         self.assertEqual(fake.output, 0, "output never turned on")
 
     def test_identity_must_name_the_selected_model(self):
@@ -1183,6 +1239,10 @@ class InstrumentSafetyTests(unittest.TestCase):
             ("KEITHLEY INSTRUMENTS INC.,MODEL 2410,1234567,C34", "2400", False),
             ("KEITHLEY INSTRUMENTS INC.,MODEL 2400,4105497,C30", "2410", False),
             ("KEITHLEY INSTRUMENTS INC.,MODEL 2410,2400123,C34", "2400", False),
+            ("KEITHLEY INSTRUMENTS INC.,MODEL 2410-C,1234567,C34", "2410", True),
+            ("KEITHLEY INSTRUMENTS INC.,MODEL 2400,1241056,C30", "2410", False),
+            ("KEITHLEY INSTRUMENTS INC.,MODEL 2400-LV,4105497,C30", "2400", False),
+            ("KEITHLEY INSTRUMENTS INC.,MODEL 2401,4105497,C30", "2400", False),
         )
         for identity, model, expected in cases:
             with self.subTest(identity=identity, model=model):
@@ -1208,8 +1268,18 @@ class InstrumentSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "not a Keithley 2410"):
                 controller.connect("GPIB0::24::INSTR", 1e-3)
             self.assertFalse(controller.connected)
+            self.assertEqual(controller.model, "2410")
+            with self.assertRaisesRegex(RuntimeError, "not a Keithley 2400"):
+                manager.open_resource = lambda resource: Fake2410()
+                controller.connect("GPIB0::24::INSTR", 1e-3, "2400")
+            self.assertEqual(controller.model, "2410", "a failed connect keeps the previous model")
+            manager.open_resource = lambda resource: Fake2400()
             identity = controller.connect("GPIB0::24::INSTR", 1e-3, "2400")
             self.assertIn("MODEL 2400", identity)
+            self.assertEqual(controller.model, "2400")
+            with self.assertRaisesRegex(RuntimeError, "Disconnect before changing"):
+                controller.connect("GPIB0::24::INSTR", 1e-3, "2410")
+            self.assertTrue(controller.connected)
             self.assertEqual(controller.model, "2400")
             controller.disconnect()
         finally:
