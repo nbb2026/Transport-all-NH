@@ -118,53 +118,78 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertNotIn("resistance", a.keithley_hazard_var.get())
         tabs = a.nonlocal_measurements
         self.assertEqual([tabs.tab(i, "text") for i in range(tabs.index("end"))],
-                         ["|R| vs time", "2400-IV", "6221-IV", "Gate-VI pulse scan"])
-        # 6221-IV starts at RT-E's current range and excitation.
+                         ["|R| vs time", "2400-IV", "6221-IV", "Gate-VI scan"])
+        # 6221-IV starts at RT-E's current range, excitation and timing.
         self.assertEqual(
             (a.nonlocal_iv6221_start_var.get(), a.nonlocal_iv6221_end_var.get(),
              a.nonlocal_iv6221_step_var.get(), a.nonlocal_iv6221_loops_var.get(),
+             a.nonlocal_iv6221_current_var.get(),
              a.nonlocal_iv6221_frequency_var.get(), a.nonlocal_iv6221_compliance_var.get(),
              a.nonlocal_iv6221_settle_var.get(), a.nonlocal_iv6221_acquire_var.get()),
-            ("0.01", "1", "0.01", "1", "17.3", "50", "5", "2"))
+            ("0.01", "1", "0.01", "1", "0.1", "17.3", "50", "0.5", "1"))
         self.assertFalse(a.nonlocal_iv6221_round_trip_var.get())
         self.assertEqual(
             (a.nonlocal_iv_start_var.get(), a.nonlocal_iv_end_var.get(), a.nonlocal_iv_step_var.get(),
              a.nonlocal_iv_settle_var.get(), a.nonlocal_iv_limit_var.get()),
             ("-6", "6", "0.25", "0.5", "0.001"))
 
-    def test_6221_iv_lock_in_settings_as_on_stfmr_and_waits_for_the_6221(self):
+    def widgets(self, cls, variable=None, text=None):
+        found, pending = [], [self.app.nonlocal_vi_tab]
+        while pending:
+            widget = pending.pop()
+            pending.extend(widget.winfo_children())
+            if widget.winfo_class() != cls:
+                continue
+            if variable is not None and str(widget.cget("textvariable")) != str(variable):
+                continue
+            if text is not None and str(widget.cget("text")) != text:
+                continue
+            found.append(widget)
+        return found
+
+    def test_6221_iv_settings_as_on_rte_and_waits_for_the_6221(self):
+        """2026-10-08: RT-E's settings and start-up values on 6221-IV."""
         a = self.app
         self.addCleanup(a.nonlocal_iv6221_safety_var.set, False)
         a.nonlocal_iv6221_safety_var.set(True)
         a._update_nonlocal_vi_controls()
-        self.assertEqual(str(a.nonlocal_iv6221_start_button.cget("state")), "disabled",
-                         "the 6221 is not connected")
-        # One Meter list, as on STFMR, with its own harmonics and MFLI options.
-        self.assertEqual(a.nonlocal_iv6221_meter_var.get(), "SR830 #8 + #9")
+        for button in (a.nonlocal_iv6221_start_button, a.nonlocal_iv6221_set_button):
+            self.assertEqual(str(button.cget("state")), "disabled", "the 6221 is not connected")
+        # RT-E's harmonics and Measure ticks: the Zurich alone, 1+2+3.
         self.assertEqual({k: v.get() for k, v in a.nonlocal_iv6221_harmonic_vars.items()},
-                         {"8": "1", "9": "2", "mfli": "2"})
-        self.assertEqual((a.nonlocal_iv6221_coupling_var.get(), a.nonlocal_iv6221_mfli_tc_var.get(),
-                          a.nonlocal_iv6221_mfli_autorange_var.get()), ("AC", "1", True))
-        combos = []
-        pending = [a.nonlocal_vi_tab]
-        while pending:
-            widget = pending.pop()
-            pending.extend(widget.winfo_children())
-            if widget.winfo_class() == "TCombobox" and str(widget.cget("textvariable")) == str(
-                    a.nonlocal_iv6221_meter_var):
-                combos.append(widget)
-        self.assertEqual(len(combos), 1)
-        self.assertEqual(tuple(combos[0].cget("values")), tuple(app.NONLOCAL_IV6221_METERS))
-        # The Gate-VI read settings are Gate-VI's alone again.
-        spinboxes = []
-        pending = [a.nonlocal_vi_tab]
-        while pending:
-            widget = pending.pop()
-            pending.extend(widget.winfo_children())
-            if widget.winfo_class() == "TSpinbox" and str(widget.cget("textvariable")) == str(
-                    a.nonlocal_vi_lockin_harmonic_vars["8"]):
-                spinboxes.append(widget)
-        self.assertEqual(len(spinboxes), 1)
+                         {"8": "1+2+3", "9": "2", "mfli": "1+2+3"})
+        self.assertEqual({k: v.get() for k, v in a.nonlocal_iv6221_measure_vars.items()},
+                         {"8": False, "9": False, "mfli": True})
+        for key in ("8", "9", "mfli"):
+            combos = self.widgets("TCombobox", a.nonlocal_iv6221_harmonic_vars[key])
+            self.assertEqual(len(combos), 1, key)
+            self.assertEqual(tuple(combos[0].cget("values")), tuple(app.PPMS_ZURICH_MODE_ORDERS))
+        # One X / Y / θ row per measured order: 1st, 2nd and 3rd.
+        shown = [order for order in app.PPMS_HARMONIC_ORDERS
+                 if a.nonlocal_iv6221_plot_frames[(order, "X")].winfo_manager()]
+        self.assertEqual(shown, [1, 2, 3])
+        a.nonlocal_iv6221_harmonic_vars["mfli"].set("2")
+        self.addCleanup(a._refresh_nonlocal_iv6221_plot_layout)
+        self.addCleanup(a.nonlocal_iv6221_harmonic_vars["mfli"].set, "1+2+3")
+        a._refresh_nonlocal_iv6221_plot_layout()
+        shown = [order for order in app.PPMS_HARMONIC_ORDERS
+                 if a.nonlocal_iv6221_plot_frames[(order, "X")].winfo_manager()]
+        self.assertEqual(shown, [2])
+
+    def test_settings_and_scan_boxes_and_the_zurich_row(self):
+        """2026-10-08: each Non-local scan has a settings box and a scan box,
+        as RT-E; the rack's Zurich row has Ref. and TC (s)."""
+        a = self.app
+        for name in ("2400-IV", "6221-IV", "Gate-VI"):
+            for part in ("settings", "scan"):
+                self.assertEqual(len(self.widgets("TLabelframe", text=f"{name} {part}")), 1,
+                                 f"{name} {part}")
+        # The Zurich's reference input and TC are on the rack only.
+        self.assertEqual(len(self.widgets("TCombobox", a.nonlocal_vi_mfli_reference_source_var)), 1)
+        self.assertEqual(len(self.widgets("TEntry", a.nonlocal_mfli_tc_var)), 1)
+        self.assertEqual(a.nonlocal_mfli_tc_var.get(), "0.1")
+        # The Gate-VI read settings keep their own harmonic fields.
+        self.assertEqual(len(self.widgets("TSpinbox", a.nonlocal_vi_lockin_harmonic_vars["8"])), 1)
 
     def test_non_local_measurements_take_turns_on_the_keithley(self):
         a = self.app

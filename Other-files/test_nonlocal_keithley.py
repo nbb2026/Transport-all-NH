@@ -445,12 +445,12 @@ class StartQuestionTests(unittest.TestCase):
         self.assertIn("-6 V → 6 V in 0.25 V steps, 49 points, 0.5 s settle", text)
         self.assertIn("Current limit: 1e-06 A", text)
         self.assertIn("Sample: 1µm Pt-Pt", text)
-        self.assertIn("live CSV in the folder you choose next", text)
+        self.assertIn("run folder, with a live CSV and the parameter log", text)
         self.ask(True, folder="")
         self.app._begin_nonlocal_keithley_task.assert_not_called()
         self.assertEqual(len(self.app.nonlocal_iv_rows), 49, "the last sweep stays on the plot")
 
-    def test_yes_and_a_folder_writes_the_log_and_starts_with_a_live_csv(self):
+    def test_yes_and_a_folder_makes_a_run_folder_with_the_log_and_a_live_csv(self):
         import tempfile
         a = self.app
         a.nonlocal_iv_rows = [(1,)] * 49
@@ -465,8 +465,10 @@ class StartQuestionTests(unittest.TestCase):
         self.assertEqual(a.nonlocal_iv_rows, [])
         self.assertEqual(a.nonlocal_iv_settings["current_limit_a"], 1e-6)
         csv_path = a.nonlocal_iv_csv_path
-        self.assertEqual(csv_path.parent, Path(folder))
-        self.assertTrue(csv_path.name.startswith("2400-IV_1µm_Pt-Pt_"), csv_path.name)
+        # One folder per run, as on the STFMR and Gate-VI pages.
+        self.assertEqual(csv_path.parent.parent, Path(folder))
+        self.assertTrue(csv_path.parent.name.startswith("2400-IV_1µm_Pt-Pt_"), csv_path.parent.name)
+        self.assertEqual(csv_path.name, csv_path.parent.name + ".csv")
         log = csv_path.with_name(csv_path.stem + "_parameters.log").read_text(encoding="utf-8")
         self.assertIn("sweep.current_limit_A=1e-06", log)
         self.assertIn(f"output.csv={csv_path.name}", log)

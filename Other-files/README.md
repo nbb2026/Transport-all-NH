@@ -1,5 +1,62 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local: RT-E-style settings and scan boxes, the rack's Zurich Ref./TC, run folders (2026-10-08)
+
+- **Settings and scan boxes:** 2400-IV, 6221-IV and Gate-VI each have a
+  "… settings" box (the instruments) and a "… scan" box (the sweep, the
+  buttons and the readouts), as on RT-E. The two sit side by side when both
+  fit and are stacked otherwise (`_arrange_pair_by_width`).
+- **Rename:** the "Gate-VI pulse scan" sub-tab is now "Gate-VI scan".
+- **Zurich row:** as on RT-E, the rack's Zurich row has **Ref.** and
+  **TC (s)** after its status.
+  - **Ref.:** the reference input, moved from the Gate-VI read settings
+    (default still Aux Input 1).
+  - **TC (s):** `nonlocal_mfli_tc_var`, default 0.1 s, used by 6221-IV and
+    Gate-VI.
+  - **Change for Gate-VI:** its Zurich TC was a fixed 1 s and now follows
+    the rack (0.1 s by default). Its SR830s keep 1 s.
+- **6221-IV as RT-E:** the STFMR-style Meter list is replaced by RT-E's
+  layout and start-up values (`NONLOCAL_IV6221_*`).
+  - **Settings:** 0.1 mA RMS, 17.3 Hz, 50 V; Set 6221; Trigger line;
+    "6221 / 2400 OFF".
+  - **Lock-ins:** each has a harmonic mode (1, 2, 3, 1+2 or 1+2+3), a
+    Measure tick and "Autorange ON". By default only the Zurich measures,
+    at 1+2+3.
+  - **Scan:** 0.01 to 1 mA RMS in 0.01 mA steps, Loops 1, Settle 0.5 s,
+    Acquire 1 s.
+  - **Harmonic passes:** an SR830 at 1+2 or 1+2+3 runs the sweep once per
+    order. `NonLocalACController.set_lockin_harmonic` sets the next order
+    and reads it back. The reference lock is checked at the start of each
+    pass, and an SR830 drops out once its orders end.
+  - **Zurich orders:** the Zurich reads all its orders in every pass, as on
+    PPMS/RT-E. Demod 4 takes the external reference, and the orders are on
+    Demods 1–3 (`configure_second_harmonic`, `configure_third_harmonic`,
+    `disable_unused_ppms_demods`, `read_mfli_four_demods`). Its curve is
+    drawn from the first pass.
+  - **SR830 time constant:** the front-panel one is kept, as on RT-E and
+    PPMS (`configure(..., sr830_front_panel_time_constant=True)` leaves out
+    OFLT/OFSL). It is read back with OFLT? (`SR830_TIME_CONSTANTS_S`).
+    Gate-VI still writes 1 s.
+  - **Far jumps:** the first point of each pass, and the jump back to Start
+    at a new loop, wait at least 10 time constants of the slowest lock-in.
+  - **Plots:** one X / Y / θ row per measured order, with the meters
+    overlaid in the PPMS colours. Rows are hidden for orders nobody
+    measures.
+  - **CSV:** `harmonic_pass`, then the SR830 columns (with the harmonic of
+    that pass) and `Zurich_<n>w_X/Y/R/theta` per order.
+- **Run folders:** each 2400-IV and 6221-IV run now writes its own folder
+  (`_nonlocal_make_run_directory`), as PPMS, STFMR and Gate-VI do.
+  - **2400-IV:** `2400-IV_<sample>_<time>/` holds `<folder>.csv`,
+    `<folder>_parameters.log` and the PNG from "Save plot PNG".
+  - **6221-IV:** `6221-IV_<time>/` holds the CSV and the log.
+- **Tests:**
+  - `test_nonlocal_6221_iv.py`, rewritten: passes, Zurich orders, settle,
+    parse, run folders, `set_lockin_harmonic`, Set 6221, plots.
+  - `test_nonlocal_keithley.py`: the 2400-IV run folder.
+  - `test_panel_defaults.py`: tab names, RT-E defaults, the settings/scan
+    boxes, the Zurich row.
+  - `ci/gui_checks.py`: example data with the Zurich at 1+2+3.
+
 ## Non-local 2400-IV: choose the folder at Start and save a live CSV, as 6221-IV does (2026-10-08)
 
 - **Start:** "Choose folder and start 2400-IV sweep". The Yes/No summary
