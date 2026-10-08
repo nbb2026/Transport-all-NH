@@ -1311,8 +1311,8 @@ class WindowTests(unittest.TestCase):
         self.root.update()
         texts = [self.app.canvas.itemcget(item, "text") for item in self.app.canvas.find_all()
                  if self.app.canvas.type(item) == "text"]
-        for label in ("H (T)", "I (mA)", "SR830 X (µV)", "A", "Time since start (s)", "60"):
-            self.assertIn(label, texts)
+        for label in ("H (T)", "I (mA)", "SR830 X (µV)", "A", "Time since start (s)", "-20"):
+            self.assertIn(label, texts)  # -20: the I axis reaches down to the -22 mA pulse.
 
     def test_each_instrument_connects_on_its_own(self):
         app = self.app
