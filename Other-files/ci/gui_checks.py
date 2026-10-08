@@ -108,14 +108,23 @@ def example_data(app):
     app.nonlocal_resistance_rows = [
         (0.2 * index, 369.7e6 * (1 + 0.002 * ((index * 7) % 5 - 2))) for index in range(100)
     ]
-    # 6221-IV: SR830 #8 at the 1st harmonic and the MFLI at the 2nd.
+    # 6221-IV: SR830 #8 at the 1st harmonic and the MFLI at the 2nd, added
+    # point by point as a scan does, so the live values and lamps show too.
     app.nonlocal_iv6221_settings = {"measurement_keys": ("8", "mfli")}
-    app.nonlocal_iv6221_rows = [
-        {"current_rms_ma": current,
-         "8": {"harmonic": 1, "X": 2.0e-4 * current, "Y": 1.0e-6 * current, "theta": 0.3},
-         "mfli": {"harmonic": 2, "X": 3.0e-7 * current ** 2, "Y": -2.0e-8 * current, "theta": -88.0}}
-        for current in (0.05 * index for index in range(1, 21))
-    ]
+    app.nonlocal_iv6221_meter_var.set("MFLI + SR830 #8")
+    app.nonlocal_iv6221_rows = []
+    app.nonlocal_iv6221_total_points = 20
+    for index in range(1, 21):
+        current = 0.05 * index
+        app._append_nonlocal_iv6221_point({
+            "index": index, "loop": 1, "point": index, "elapsed_s": 7.5 * index,
+            "set_current_rms_ma": current, "current_rms_ma": current, "frequency_hz": 17.3,
+            "8": {"harmonic": 1, "X": 2.0e-4 * current, "Y": 1.0e-6 * current, "R": 2.0e-4 * current,
+                  "theta": 0.3, "samples": 4, "discarded": 0, "in_compliance": 0},
+            "mfli": {"harmonic": 2, "X": 3.0e-7 * current ** 2, "Y": -2.0e-8 * current,
+                     "R": 3.0e-7 * current ** 2, "theta": -88.0, "samples": 4,
+                     "discarded": 1 if index == 20 else 0, "in_compliance": 0},
+        })
 
 
 def pages(root, app, notebook, names):

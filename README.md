@@ -60,7 +60,8 @@ acquisition, averaging the region of interest over the post-pulse interval.
   - **Output:** X, Y and θ are plotted against the current, and each point
     is written to a live CSV. The 6221 is switched off and read back at the
     end.
-  - **Meter settings:** the same as Gate-VI's (one copy on each sub-tab).
+  - **Meters:** chosen in a Meter list (SR830 #8, #9 and/or the MFLI), each
+    with its own harmonic, laid out as on the STFMR page.
 - **Gate-VI pulse scan** measures non-local voltage against a gate, with the
   Keithley as the gate source and lock-in or nanovoltmeter detection. Its
   read settings (6221 output, lock-in harmonics, which meters are in the

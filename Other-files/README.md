@@ -1,5 +1,37 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local 6221-IV: lock-in settings and layout as on the STFMR page (2026-10-08)
+
+- **Layout:** like the STFMR field-sweep box. One aligned table with label:
+  field pairs sits on the left. Its rows are:
+  - Start / End / Step mA RMS, Loops, Round trip;
+  - Frequency, Comp. V, Settle s, Acquire s, Trigger line;
+  - **Meter**, Coupling, MFLI reference, MFLI TC s, MFLI autorange;
+  - the SR830 #8, SR830 #9 and MFLI harmonics;
+  - the safety tick.
+
+  On the right are Start / "Stop / 6221 off", the last point and each
+  meter's X, Y and θ, and two lamps: **Ref** (locked) and **Left out**
+  (readings dropped as unlocked, overloaded or autoranging). The progress
+  bar sits under the box, then the X, Y and θ plots.
+- **Meter list:** one Meter list (`NONLOCAL_IV6221_METERS`) replaces the
+  per-meter "In scan" ticks. Its choices are SR830 #8, SR830 #9, both, the
+  MFLI, or the MFLI with either or both SR830s. The default is SR830 #8 + #9,
+  with harmonics 1, 2 and 2 (MFLI).
+- **Own settings:** 6221-IV now has its own lock-in settings. It no longer
+  shares Gate-VI's read settings; that second copy is removed.
+- **MFLI options:** the MFLI reference input, time constant (default 1 s)
+  and input autorange now reach the instrument.
+  `NonLocalACController.configure` passes `mfli_config["timeconstant_s"]` to
+  `configure_mfli`, and `mfli_config["auto_range"]` sets
+  `mfli_auto_range_enabled`. Gate-VI keeps autorange on and the 1 s TC. The
+  MFLI input is Signal Input 1, 10 MΩ, scaling 1, recorded in the log.
+- **SR830 options left out on purpose:**
+  - **REF IN:** not offered, because the reference is the 6221 Trigger Link
+    TTL, read on the falling edge.
+  - **Autorange tick:** not offered, because this controller starts the
+    SR830 at 2 µV full scale, so its sensitivity autorange stays on.
+
 ## Non-local page: 6221-IV (the RT-E Current scan); I–V sweep renamed 2400-IV (2026-10-08)
 
 - **Sub-tabs:** |R| vs time, **2400-IV** (the Keithley I–V sweep, renamed),

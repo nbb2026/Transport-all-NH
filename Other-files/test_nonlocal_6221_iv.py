@@ -236,33 +236,51 @@ class ParseTests(unittest.TestCase):
         a.nonlocal_iv6221_frequency_var, a.nonlocal_iv6221_compliance_var = Var("17.3"), Var("50")
         a.nonlocal_iv6221_settle_var, a.nonlocal_iv6221_acquire_var = Var("5"), Var("2")
         a.nonlocal_vi_marker_line_var = Var("4")
-        a.nonlocal_vi_measurement_enabled_vars = {"8": Var(True), "9": Var(False)}
-        a.nonlocal_vi_lockin_coupling_vars = {"8": Var("AC"), "9": Var("AC")}
-        a.nonlocal_vi_lockin_harmonic_vars = {"8": Var(2), "9": Var(2)}
-        a.nonlocal_vi_lockin_channel_vars = {"8": Var("X"), "9": Var("R")}
+        # The STFMR-style settings: one Meter list and per-meter harmonics.
+        a.nonlocal_iv6221_meter_var = Var("SR830 #8")
+        a.nonlocal_iv6221_harmonic_vars = {"8": Var("1"), "9": Var("2"), "mfli": Var("2")}
+        a.nonlocal_iv6221_coupling_var = Var("AC")
+        a.nonlocal_iv6221_mfli_reference_var = Var("Aux Input 1")
+        a.nonlocal_iv6221_mfli_tc_var = Var("1")
+        a.nonlocal_iv6221_mfli_autorange_var = Var(True)
         a.nonlocal_vi_lockin_resource_vars = {"8": Var("GPIB0::8::INSTR"), "9": Var("GPIB0::9::INSTR")}
-        a.nonlocal_vi_use_mfli_var = Var(False)
+        a.nonlocal_vi_mfli_device_var = Var("DEV4435 (Normal)")
 
     def test_the_rte_defaults_give_100_points(self):
         parsed = self.app._parse_nonlocal_iv6221_settings()
         self.assertEqual(parsed["measurement_keys"], ("8",))
-        self.assertEqual(parsed["lockin_configs"]["8"]["harmonic"], 2)
+        self.assertEqual(parsed["lockin_configs"]["8"]["harmonic"], 1)
+        self.assertEqual(parsed["lockin_configs"]["8"]["coupling"], "AC")
+        self.assertIsNone(parsed["mfli_config"])
         self.assertEqual(len(parsed["plan"]), 100)
         self.assertAlmostEqual(parsed["plan"][0][2], 0.01)
         self.assertAlmostEqual(parsed["plan"][-1][2], 1.0)
+
+    def test_the_mfli_takes_its_reference_tc_and_autorange_from_the_page(self):
+        a = self.app
+        a.nonlocal_vi_ac_controller.mfli_connected = True
+        a.nonlocal_iv6221_meter_var.set("MFLI + SR830 #8")
+        a.nonlocal_iv6221_mfli_tc_var.set("0.3")
+        a.nonlocal_iv6221_mfli_autorange_var.set(False)
+        parsed = a._parse_nonlocal_iv6221_settings()
+        self.assertEqual(parsed["measurement_keys"], ("8", "mfli"))
+        mfli = parsed["mfli_config"]
+        self.assertEqual((mfli["harmonic"], mfli["reference_source"], mfli["timeconstant_s"], mfli["auto_range"]),
+                         (2, "Aux Input 1", 0.3, False))
 
     def test_settings_that_are_refused(self):
         a = self.app
         for setup, message in (
             (lambda: a.nonlocal_iv6221_start_var.set("0"), "above 0 mA RMS"),
             (lambda: a.nonlocal_iv6221_end_var.set("80"), "105 mA sine peak"),
-            (lambda: a.nonlocal_vi_measurement_enabled_vars["8"].set(False), "at least one"),
-            (lambda: a.nonlocal_vi_measurement_enabled_vars["9"].set(True), "SR830 #9 is ticked"),
+            (lambda: a.nonlocal_iv6221_meter_var.set("SR830 #8 + #9"), "SR830 #9, but it is not connected"),
+            (lambda: a.nonlocal_iv6221_meter_var.set("MFLI"), "MFLI, but it is not connected"),
             (lambda: a.nonlocal_iv6221_acquire_var.set("0"), "Acquire time"),
             (lambda: a.nonlocal_iv6221_loops_var.set("1.5"), "Loops"),
             (lambda: a.nonlocal_iv6221_frequency_var.set("x"), "valid numbers"),
-            (lambda: a.nonlocal_vi_lockin_harmonic_vars["8"].set(0), "harmonic must be 1–19999"),
-            (lambda: a.nonlocal_iv6221_frequency_var.set("60000"), "exceeds 102 kHz"),
+            (lambda: a.nonlocal_iv6221_harmonic_vars["8"].set("0"), "harmonic must be 1–19999"),
+            (lambda: (a.nonlocal_iv6221_frequency_var.set("60000"),
+                      a.nonlocal_iv6221_harmonic_vars["8"].set("2")), "exceeds 102 kHz"),
         ):
             with self.subTest(message=message):
                 self.setUp()
@@ -270,6 +288,16 @@ class ParseTests(unittest.TestCase):
                 setup()
                 with self.assertRaisesRegex(ValueError, message):
                     a._parse_nonlocal_iv6221_settings()
+
+
+class ControllerOptionTests(unittest.TestCase):
+    """The MFLI options 6221-IV passes reach the controller; Gate-VI's do not change."""
+
+    def test_mfli_autorange_switch(self):
+        controller = app.NonLocalACController(lambda _m: None)
+        self.assertTrue(controller.mfli_auto_range_enabled)
+        controller.mfli_auto_range_enabled = False
+        self.assertEqual(controller._auto_range_mfli({"input_utilization": 0.99}), "")
 
 
 class FinishAndPlotTests(unittest.TestCase):

@@ -1441,6 +1441,18 @@ NONLOCAL_IV6221_RESULTS_DIRECTORY = (
     Path(__file__).resolve().parent / f"{Path(__file__).stem}_NonLocal_6221_IV_Results"
 )
 NONLOCAL_METER_NAMES = {"8": "SR830 #8", "9": "SR830 #9", "mfli": "MFLI", "2182": "2182A"}
+# 6221-IV chooses its lock-ins with one Meter list, as the STFMR page does.
+NONLOCAL_IV6221_METERS = {
+    "SR830 #8": ("8",),
+    "SR830 #9": ("9",),
+    "SR830 #8 + #9": ("8", "9"),
+    "MFLI": ("mfli",),
+    "MFLI + SR830 #8": ("8", "mfli"),
+    "MFLI + SR830 #9": ("9", "mfli"),
+    "MFLI + SR830 #8 + #9": ("8", "9", "mfli"),
+}
+NONLOCAL_IV6221_DEFAULT_METER = "SR830 #8 + #9"
+NONLOCAL_IV6221_DEFAULT_HARMONICS = {"8": 1, "9": 2, "mfli": 2}
 
 # PPMS sample-environment control can use either of Quantum Design's remote
 # bridges.  The laboratory topology already has QDInstrument_Server.exe next
@@ -4646,6 +4658,14 @@ def current_unit(max_abs_current_a: float) -> tuple[float, str]:
     return 1e-3, "mA"
 
 
+def format_voltage(voltage_v: float) -> str:
+    value = abs(float(voltage_v))
+    for scale, unit in ((1.0, "V"), (1e-3, "mV"), (1e-6, "µV")):
+        if value >= scale:
+            return f"{float(voltage_v) / scale:.4g} {unit}"
+    return f"{float(voltage_v) / 1e-9:.4g} nV"
+
+
 def format_current(current_a: float) -> str:
     scale, unit = current_unit(current_a)
     return f"{float(current_a) / scale:.4g} {unit}"
@@ -6956,6 +6976,9 @@ class NonLocalACController:
         self.mfli_low_range_count = 0
         self.mfli_range_cooldown = 0
         self.mfli_initial_autorange_pending = False
+        # 6221-IV may switch the MFLI input autorange off; every configure()
+        # sets it again (Gate-VI keeps it on).
+        self.mfli_auto_range_enabled = True
 
     @property
     def connected(self) -> bool:
@@ -8582,7 +8605,13 @@ class NonLocalACController:
                     sample_rate_hz=sample_hz,
                     input_impedance=str(mfli_config["input_impedance"]),
                     input_scaling=float(mfli_config["input_scaling"]),
+                    timeconstant_s=float(
+                        mfli_config.get("timeconstant_s", NONLOCAL_LOCKIN_TIME_CONSTANT_S)
+                    ),
                 )
+                self.mfli_auto_range_enabled = bool(mfli_config.get("auto_range", True))
+                if not self.mfli_auto_range_enabled:
+                    self.mfli_initial_autorange_pending = False
             if use_nanovoltmeter:
                 readbacks["2182"] = {
                     "meter_type": "2182A",
@@ -8774,6 +8803,8 @@ class NonLocalACController:
 
     def _auto_range_mfli(self, sample: dict[str, object]) -> str:
         """Continuously adapt Signal Input 1 using raw ADC utilization."""
+        if not self.__dict__.get("mfli_auto_range_enabled", True):
+            return ""
         utilization = float(sample.get("input_utilization", 0.0))
         if not math.isfinite(utilization):
             return ""
@@ -12595,6 +12626,22 @@ class CombinedControlApp:
         self.nonlocal_iv6221_acquire_var = tk.StringVar(value=f"{NONLOCAL_IV6221_ACQUIRE_S:g}")
         self.nonlocal_iv6221_eta_var = tk.StringVar(value="Remaining: --")
         self.nonlocal_iv6221_point_var = tk.StringVar(value="Last point: --")
+        # Its own lock-in settings, laid out as on the STFMR page.
+        self.nonlocal_iv6221_meter_var = tk.StringVar(value=NONLOCAL_IV6221_DEFAULT_METER)
+        self.nonlocal_iv6221_harmonic_vars = {
+            key: tk.StringVar(value=str(value))
+            for key, value in NONLOCAL_IV6221_DEFAULT_HARMONICS.items()
+        }
+        self.nonlocal_iv6221_coupling_var = tk.StringVar(value="AC")
+        self.nonlocal_iv6221_mfli_reference_var = tk.StringVar(
+            value=NONLOCAL_MFLI_DEFAULT_REFERENCE_INPUT
+        )
+        self.nonlocal_iv6221_mfli_tc_var = tk.StringVar(value=f"{NONLOCAL_LOCKIN_TIME_CONSTANT_S:g}")
+        self.nonlocal_iv6221_mfli_autorange_var = tk.BooleanVar(value=True)
+        self.nonlocal_iv6221_values_var = tk.StringVar(value="--")
+        self.nonlocal_iv6221_reference_var = tk.StringVar(value="Ref: --")
+        self.nonlocal_iv6221_overload_var = tk.StringVar(value="Left out: --")
+        self.nonlocal_iv6221_lamps: dict[str, tuple] = {}
         self.nonlocal_iv6221_rows: list[dict] = []
         self.nonlocal_iv6221_settings: dict[str, object] = {}
         self.nonlocal_iv6221_total_points = 0
@@ -21117,14 +21164,10 @@ class CombinedControlApp:
         self._redraw_nonlocal_vi_plots()
         self._update_nonlocal_vi_controls()
 
-    def _build_nonlocal_vi_read_settings(self, parent, *, gate: bool = True) -> ttk.Frame:
-        """The settings for the 6221 and each voltmeter, and a safety check:
-        the 6221 and SR830s on the left, the MFLI and 2182A on the right,
-        side by side when both fit, else stacked.
-
-        Built for Gate-VI and again for 6221-IV (``gate=False``: no 6221
-        output mode and no 2182A, as 6221-IV is the AC lock-in scan).  Both
-        copies use the same variables, so a change shows in both."""
+    def _build_nonlocal_vi_read_settings(self, parent) -> ttk.Frame:
+        """The pulse scan's settings for the 6221 and each voltmeter, and its
+        safety check: the 6221 and SR830s on the left, the MFLI and 2182A on
+        the right, side by side when both fit, else stacked."""
         box = ttk.Frame(parent)
         left = ttk.Frame(box)
         right = ttk.Frame(box)
@@ -21147,7 +21190,6 @@ class CombinedControlApp:
 
         def meter_fields(frame, row, coupling, harmonic, channel, top, check, enabled):
             # The same fields, column for column, for each SR830 and the MFLI.
-            # 6221-IV records X, Y and θ, so it has no Read choice.
             label(frame, row, 1, "Input coupling AC/DC:")
             ttk.Combobox(
                 frame, textvariable=coupling, values=("AC", "DC"),
@@ -21157,34 +21199,32 @@ class CombinedControlApp:
             ttk.Spinbox(
                 frame, from_=1, to=top, textvariable=harmonic, width=7,
             ).grid(row=row, column=4, sticky="ew", padx=(0, 10), pady=pad(row))
-            if gate:
-                label(frame, row, 5, "Read:")
-                ttk.Combobox(
-                    frame, textvariable=channel, values=("X", "Y", "R"),
-                    state="readonly", width=5,
-                ).grid(row=row, column=6, sticky="ew", padx=(0, 10), pady=pad(row))
+            label(frame, row, 5, "Read:")
+            ttk.Combobox(
+                frame, textvariable=channel, values=("X", "Y", "R"),
+                state="readonly", width=5,
+            ).grid(row=row, column=6, sticky="ew", padx=(0, 10), pady=pad(row))
             ttk.Checkbutton(
                 frame, text=check, variable=enabled,
-                command=self._redraw_nonlocal_meter_plots,
+                command=self._redraw_nonlocal_vi_plots,
             ).grid(row=row, column=7, sticky="w", pady=pad(row))
 
-        if gate:
-            name(left, 0, "Keithley 6221:")
-            label(left, 0, 1, "Output:")
-            self.nonlocal_vi_output_mode_combo = ttk.Combobox(
-                left,
-                textvariable=self.nonlocal_vi_output_mode_var,
-                values=("AC", "DC"),
-                state="readonly",
-                width=5,
-            )
-            self.nonlocal_vi_output_mode_combo.grid(
-                row=0, column=2, sticky="ew", padx=(0, 10)
-            )
-            self.nonlocal_vi_output_mode_var.trace_add(
-                "write", lambda *_args: self._on_nonlocal_vi_output_mode_changed()
-            )
-        for row, key in ((1, "8"), (2, "9")) if gate else ((0, "8"), (1, "9")):
+        name(left, 0, "Keithley 6221:")
+        label(left, 0, 1, "Output:")
+        self.nonlocal_vi_output_mode_combo = ttk.Combobox(
+            left,
+            textvariable=self.nonlocal_vi_output_mode_var,
+            values=("AC", "DC"),
+            state="readonly",
+            width=5,
+        )
+        self.nonlocal_vi_output_mode_combo.grid(
+            row=0, column=2, sticky="ew", padx=(0, 10)
+        )
+        self.nonlocal_vi_output_mode_var.trace_add(
+            "write", lambda *_args: self._on_nonlocal_vi_output_mode_changed()
+        )
+        for row, key in ((1, "8"), (2, "9")):
             name(left, row, f"SR830 #{key}:")
             meter_fields(
                 left, row,
@@ -21234,13 +21274,12 @@ class CombinedControlApp:
             textvariable=self.nonlocal_vi_mfli_input_scaling_var,
             width=8,
         ).pack(side="left")
-        if gate:
-            name(right, 2, "Keithley 2182A:")
-            ttk.Checkbutton(
-                right, text="In scan (channel 1, NPLC 1, autorange)",
-                variable=self.nonlocal_vi_use_2182_var,
-                command=self._redraw_nonlocal_vi_plots,
-            ).grid(row=2, column=1, columnspan=8, sticky="w", padx=(6, 0), pady=pad(2))
+        name(right, 2, "Keithley 2182A:")
+        ttk.Checkbutton(
+            right, text="In scan (channel 1, NPLC 1, autorange)",
+            variable=self.nonlocal_vi_use_2182_var,
+            command=self._redraw_nonlocal_vi_plots,
+        ).grid(row=2, column=1, columnspan=8, sticky="w", padx=(6, 0), pady=pad(2))
 
         # Stacked, the two grids line up only if each column is as wide in
         # both: the widest one-column cell of either.
@@ -21266,79 +21305,150 @@ class CombinedControlApp:
 
         ttk.Checkbutton(
             box,
-            text=(
-                "Voltage pulses, selected AC/DC read current and sample confirmed safe"
-                if gate
-                else "6221 current range, compliance, wiring and sample confirmed safe"
-            ),
-            variable=self.nonlocal_vi_safety_var if gate else self.nonlocal_iv6221_safety_var,
+            text="Voltage pulses, selected AC/DC read current and sample confirmed safe",
+            variable=self.nonlocal_vi_safety_var,
             command=self._update_nonlocal_vi_controls,
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self._arrange_pair_by_width(box, left, right, gap=24, stack_gap=4)
         return box
 
     def _build_nonlocal_iv6221_tab(self, tab) -> None:
-        """6221-IV: the RT-E Current scan on this page's 6221 and lock-ins.
-        Parameters and the meters' settings on top, the run box, then X, Y
-        and θ against the 6221 current."""
+        """6221-IV: the RT-E Current scan on this page's 6221 and lock-ins,
+        laid out as the STFMR page: one aligned parameter table (scan, then
+        the lock-in settings) with the buttons, live values and lamps on its
+        right, the progress below, then X, Y and θ against the current."""
         tab.columnconfigure(0, weight=1)
         tab.rowconfigure(2, weight=1)
-        settings = ttk.LabelFrame(
-            tab, text="6221-IV parameters and read settings (the RT-E Current scan)", padding=7
+        controls = ttk.LabelFrame(
+            tab, text="6221-IV parameters (the RT-E Current scan)", padding=7
         )
-        settings.grid(row=0, column=0, sticky="ew", pady=(0, 5))
-        # Spare width goes to the empty tail column 10.
-        settings.columnconfigure(10, weight=1)
-        for row, fields in enumerate((
-            (("Start mA RMS:", self.nonlocal_iv6221_start_var),
-             ("End mA RMS:", self.nonlocal_iv6221_end_var),
-             ("Step mA RMS:", self.nonlocal_iv6221_step_var),
-             ("Loops:", self.nonlocal_iv6221_loops_var)),
-            (("Frequency Hz:", self.nonlocal_iv6221_frequency_var),
-             ("Compliance V:", self.nonlocal_iv6221_compliance_var),
-             ("Settle s:", self.nonlocal_iv6221_settle_var),
-             ("Acquire s:", self.nonlocal_iv6221_acquire_var),
-             ("Trigger Link line:", self.nonlocal_vi_marker_line_var)),
-        )):
-            for slot, (text, variable) in enumerate(fields):
-                ttk.Label(settings, text=text).grid(
-                    row=row, column=2 * slot, sticky="e", pady=2
-                )
-                ttk.Entry(settings, textvariable=variable, width=8).grid(
-                    row=row, column=2 * slot + 1, sticky="w", padx=(3, 10), pady=2
-                )
-        ttk.Checkbutton(
-            settings, text="Round trip", variable=self.nonlocal_iv6221_round_trip_var
-        ).grid(row=0, column=8, columnspan=2, sticky="w", pady=2)
-        self._build_nonlocal_vi_read_settings(settings, gate=False).grid(
-            row=2, column=0, columnspan=11, sticky="ew", pady=(6, 0)
-        )
+        controls.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        params = ttk.Frame(controls)
+        params.grid(row=0, column=0, sticky="nw")
+        scan_actions = ttk.Frame(controls)
+        scan_actions.grid(row=0, column=1, sticky="nw")
+        controls.columnconfigure(0, weight=1)
+        controls.columnconfigure(2, weight=1000)
 
-        actions = ttk.LabelFrame(tab, text="Run and data", padding=7)
-        actions.grid(row=1, column=0, sticky="ew", pady=(0, 5))
-        actions.columnconfigure(2, weight=1)
+        # One aligned table, as on the STFMR page: each label right-aligned
+        # against its field, every field in a column the same width.
+        def parameter(row, pair, label, variable, *, kind="entry", values=(), width=8, top=19999):
+            ttk.Label(params, text=label).grid(
+                row=row, column=2 * pair, sticky="e",
+                padx=(0 if pair == 0 else 12, 3), pady=1,
+            )
+            if kind == "spinbox":
+                widget = ttk.Spinbox(params, from_=1, to=top, textvariable=variable, width=6)
+            elif kind == "combo":
+                widget = ttk.Combobox(
+                    params, textvariable=variable, values=values,
+                    state="readonly", width=width,
+                )
+            else:
+                widget = ttk.Entry(params, textvariable=variable, width=width)
+            widget.grid(row=row, column=2 * pair + 1, sticky="ew", pady=1)
+            return widget
+
+        def option(row, pair, text, variable, command=None):
+            box = ttk.Checkbutton(params, text=text, variable=variable, command=command)
+            box.grid(row=row, column=2 * pair, columnspan=2, sticky="w",
+                     padx=(12 if pair else 0, 0), pady=1)
+            return box
+
+        # Rows 0-1: the 6221 current sweep.
+        for pair, (label, variable) in enumerate((
+            ("Start mA RMS:", self.nonlocal_iv6221_start_var),
+            ("End mA RMS:", self.nonlocal_iv6221_end_var),
+            ("Step mA RMS:", self.nonlocal_iv6221_step_var),
+            ("Loops:", self.nonlocal_iv6221_loops_var),
+        )):
+            parameter(0, pair, label, variable)
+        option(0, 4, "Round trip", self.nonlocal_iv6221_round_trip_var)
+        for pair, (label, variable) in enumerate((
+            ("Frequency Hz:", self.nonlocal_iv6221_frequency_var),
+            ("Comp. V:", self.nonlocal_iv6221_compliance_var),
+            ("Settle s:", self.nonlocal_iv6221_settle_var),
+            ("Acquire s:", self.nonlocal_iv6221_acquire_var),
+            ("Trigger line:", self.nonlocal_vi_marker_line_var),
+        )):
+            parameter(1, pair, label, variable)
+        # Rows 2-3: the lock-ins.  The SR830s use the 6221 Trigger Link as
+        # their TTL reference (falling edge) and autorange their
+        # sensitivity; the MFLI's reference input, time constant and input
+        # autorange are chosen here.
+        meter = parameter(
+            2, 0, "Meter:", self.nonlocal_iv6221_meter_var,
+            kind="combo", values=tuple(NONLOCAL_IV6221_METERS), width=19,
+        )
+        meter.bind("<<ComboboxSelected>>", lambda _event: self._redraw_nonlocal_iv6221_plots(), add="+")
+        parameter(2, 1, "Coupling:", self.nonlocal_iv6221_coupling_var,
+                  kind="combo", values=("AC", "DC"), width=5)
+        parameter(2, 2, "MFLI reference:", self.nonlocal_iv6221_mfli_reference_var,
+                  kind="combo", values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS), width=12)
+        parameter(2, 3, "MFLI TC s:", self.nonlocal_iv6221_mfli_tc_var, width=7)
+        option(2, 4, "MFLI autorange", self.nonlocal_iv6221_mfli_autorange_var)
+        for pair, key in enumerate(("8", "9", "mfli")):
+            parameter(
+                3, pair, f"{NONLOCAL_METER_NAMES[key]} harm.:",
+                self.nonlocal_iv6221_harmonic_vars[key], kind="spinbox",
+                top=1024 if key == "mfli" else 19999,
+            )
+        ttk.Checkbutton(
+            params,
+            text="6221 current range, compliance, wiring and sample confirmed safe",
+            variable=self.nonlocal_iv6221_safety_var,
+            command=self._update_nonlocal_vi_controls,
+        ).grid(row=4, column=0, columnspan=10, sticky="w", pady=(4, 0))
+
+        # Right-hand column: the buttons, the latest values and two lamps.
+        buttons = ttk.Frame(scan_actions)
+        buttons.grid(row=0, column=0, sticky="w")
         self.nonlocal_iv6221_start_button = ttk.Button(
-            actions, text="Choose folder and start scan", command=self.start_nonlocal_iv6221
+            buttons, text="Choose folder and start 6221-IV scan", command=self.start_nonlocal_iv6221
         )
-        self.nonlocal_iv6221_start_button.grid(row=0, column=0, padx=(0, 4))
+        self.nonlocal_iv6221_start_button.pack(side="left", padx=(0, 4))
         self.nonlocal_iv6221_stop_button = ttk.Button(
-            actions, text="Stop scan", command=self.stop_nonlocal_keithley_task, state="disabled"
+            buttons, text="Stop / 6221 off", command=self.stop_nonlocal_keithley_task, state="disabled"
         )
-        self.nonlocal_iv6221_stop_button.grid(row=0, column=1, padx=(0, 10))
-        self.nonlocal_iv6221_progress = ttk.Progressbar(
-            actions, mode="determinate", maximum=1, value=0, length=180
-        )
-        self.nonlocal_iv6221_progress.grid(row=0, column=2, sticky="ew", padx=(0, 8))
+        self.nonlocal_iv6221_stop_button.pack(side="left", padx=4)
+        status = ttk.Frame(scan_actions)
+        status.grid(row=1, column=0, sticky="w", pady=(4, 0))
         ttk.Label(
-            actions, textvariable=self.nonlocal_iv6221_eta_var,
-            style="Success.TLabel", width=20, anchor="w",
-        ).grid(row=0, column=3, sticky="e")
-        point = ttk.Label(
-            actions, textvariable=self.nonlocal_iv6221_point_var,
-            style="Metric.TLabel", anchor="w",
+            status, textvariable=self.nonlocal_iv6221_point_var, width=48, anchor="nw",
+        ).grid(row=0, column=1, sticky="new")
+        ttk.Label(
+            status, textvariable=self.nonlocal_iv6221_values_var,
+            width=48, anchor="nw", justify="left",
+        ).grid(row=1, column=1, sticky="new", pady=(2, 0))
+
+        def status_lamp(row: int, key: str, variable: tk.StringVar) -> None:
+            text = ttk.Label(status, textvariable=variable, width=48, anchor="nw", justify="left")
+            text.grid(row=row, column=1, sticky="new", pady=(4, 0))
+            height = max(16, text.winfo_reqheight())
+            canvas = tk.Canvas(
+                status, width=16, height=height, highlightthickness=0,
+                background=self.root.cget("background"),
+            )
+            middle = height // 2
+            item = canvas.create_oval(3, middle - 5, 13, middle + 5, fill="#9aa0a6", outline="#6f757b")
+            canvas.grid(row=row, column=0, sticky="nw", padx=(0, 4), pady=(4, 0))
+            self.nonlocal_iv6221_lamps[key] = (canvas, item)
+
+        status_lamp(2, "reference", self.nonlocal_iv6221_reference_var)
+        status_lamp(3, "overload", self.nonlocal_iv6221_overload_var)
+        self._arrange_pair_by_width(controls, params, scan_actions, gap=24, stack_gap=6)
+
+        progress_row = ttk.Frame(tab)
+        progress_row.grid(row=1, column=0, sticky="ew", pady=(0, 4))
+        progress_row.columnconfigure(0, weight=1)
+        self.nonlocal_iv6221_progress = ttk.Progressbar(
+            progress_row, mode="determinate", maximum=1, value=0
         )
-        point.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(5, 0))
-        show_trimmed(point, self.nonlocal_iv6221_point_var)
+        self.nonlocal_iv6221_progress.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ttk.Label(
+            progress_row, textvariable=self.nonlocal_iv6221_eta_var,
+            style="Success.TLabel", width=20, anchor="w",
+        ).grid(row=0, column=1, sticky="w")
 
         plots = ttk.Frame(tab)
         plots.grid(row=2, column=0, sticky="nsew")
@@ -21358,10 +21468,20 @@ class CombinedControlApp:
                 frame, self._redraw_nonlocal_iv6221_plots
             )
 
-    def _redraw_nonlocal_meter_plots(self) -> None:
-        """An "In scan" tick changes the plots of Gate-VI and 6221-IV."""
-        self._redraw_nonlocal_vi_plots()
-        self._redraw_nonlocal_iv6221_plots()
+    def _set_nonlocal_iv6221_lamp(self, key: str, state: str | None) -> None:
+        """Grey (None), green ("ok") or amber ("warn")."""
+        target = self.__dict__.get("nonlocal_iv6221_lamps", {}).get(key)
+        if target is None:
+            return
+        fill, outline = {
+            "ok": ("#20b15a", "#10783a"),
+            "warn": ("#f0a020", "#a86a00"),
+        }.get(state, ("#9aa0a6", "#6f757b"))
+        canvas, item = target
+        try:
+            canvas.itemconfigure(item, fill=fill, outline=outline)
+        except tk.TclError:
+            pass
 
     def _nonlocal_plot_canvas(self, frame, redraw) -> tk.Canvas:
         frame.rowconfigure(0, weight=1)
@@ -30996,43 +31116,58 @@ class CombinedControlApp:
             settle_s = float(self.nonlocal_iv6221_settle_var.get())
             acquire_s = float(self.nonlocal_iv6221_acquire_var.get())
             marker_line = int(self.nonlocal_vi_marker_line_var.get())
+            meter = self.nonlocal_iv6221_meter_var.get().strip()
+            if meter not in NONLOCAL_IV6221_METERS:
+                raise ValueError(f"Choose a Meter: {', '.join(NONLOCAL_IV6221_METERS)}")
+            keys = NONLOCAL_IV6221_METERS[meter]
+            coupling = self.nonlocal_iv6221_coupling_var.get().strip().upper()
+            harmonics = {
+                key: int(float(self.nonlocal_iv6221_harmonic_vars[key].get())) for key in keys
+            }
+            mfli_tc_s = float(self.nonlocal_iv6221_mfli_tc_var.get())
             connected = set(source.connected_lockin_keys)
-            for key in ("8", "9"):
-                if self.nonlocal_vi_measurement_enabled_vars[key].get() and key not in connected:
-                    raise ValueError(f"SR830 #{key} is ticked In scan but is not connected")
+            for key in keys:
+                if key == "mfli" and not source.mfli_connected:
+                    raise ValueError(f"The Meter list includes the MFLI, but it is not connected ({meter})")
+                if key != "mfli" and key not in connected:
+                    raise ValueError(f"The Meter list includes SR830 #{key}, but it is not connected ({meter})")
+            # The 6221-IV records X, Y, R and θ; "channel" only names the
+            # value the controller treats as the voltage.
             lockin_configs = {
                 key: {
-                    "coupling": self.nonlocal_vi_lockin_coupling_vars[key].get().strip().upper(),
-                    "harmonic": int(self.nonlocal_vi_lockin_harmonic_vars[key].get()),
-                    "channel": self.nonlocal_vi_lockin_channel_vars[key].get().strip().upper(),
+                    "coupling": coupling,
+                    "harmonic": harmonics[key],
+                    "channel": "R",
                     "resource": self.nonlocal_vi_lockin_resource_vars[key].get().strip(),
                 }
-                for key in source.connected_lockin_keys
-                if self.nonlocal_vi_measurement_enabled_vars[key].get()
+                for key in keys if key != "mfli"
             }
             mfli_config = None
-            if self.nonlocal_vi_use_mfli_var.get():
-                if not source.mfli_connected:
-                    raise ValueError("The Zurich MFLI is ticked In scan but is not connected")
+            if "mfli" in keys:
                 mfli_config = {
-                    "coupling": self.nonlocal_vi_mfli_coupling_var.get().strip().upper(),
-                    "reference_source": self.nonlocal_vi_mfli_reference_source_var.get().strip(),
-                    "harmonic": int(self.nonlocal_vi_mfli_harmonic_var.get()),
-                    "channel": self.nonlocal_vi_mfli_channel_var.get().strip().upper(),
+                    "coupling": coupling,
+                    "reference_source": self.nonlocal_iv6221_mfli_reference_var.get().strip(),
+                    "harmonic": harmonics["mfli"],
+                    "channel": "R",
                     "resource": (
                         getattr(source, "mfli_device", "")
                         or zurich_mfli_choice(self.nonlocal_vi_mfli_device_var.get())[0]
                     ),
-                    "input_impedance": self.nonlocal_vi_mfli_input_impedance_var.get().strip(),
-                    "input_scaling": float(self.nonlocal_vi_mfli_input_scaling_var.get()),
-                    "auto_range": True,
+                    "input_impedance": "10 MΩ",
+                    "input_scaling": 1.0,
+                    "timeconstant_s": mfli_tc_s,
+                    "auto_range": bool(self.nonlocal_iv6221_mfli_autorange_var.get()),
                 }
         except ValueError as error:
-            if "In scan" in str(error):
+            if "Meter" in str(error):
                 raise
             raise ValueError("6221-IV parameters must be valid numbers") from error
         except (TypeError, tk.TclError) as error:
             raise ValueError("6221-IV parameters must be valid numbers") from error
+        if coupling not in {"AC", "DC"}:
+            raise ValueError("Coupling must be AC or DC")
+        if mfli_config and not (math.isfinite(mfli_tc_s) and 0 < mfli_tc_s <= 100):
+            raise ValueError("MFLI TC must be above 0 and at most 100 s")
         if not all(math.isfinite(value) for value in (
                 start_ma, end_ma, step_ma, frequency_hz, compliance_v, settle_s, acquire_s)):
             raise ValueError("6221-IV parameters must be finite values")
@@ -31055,8 +31190,6 @@ class CombinedControlApp:
             raise ValueError("Acquire time must be above 0 and at most 3600 s")
         if not 1 <= marker_line <= 6:
             raise ValueError("6221 Trigger Link output line must be within 1–6")
-        if not lockin_configs and not mfli_config:
-            raise ValueError("Tick In scan for at least one connected SR830 or the MFLI")
         # The limits configure() would refuse, checked before anything is
         # written, as the Gate-VI parser does.
         for key, config in lockin_configs.items():
@@ -31071,6 +31204,7 @@ class CombinedControlApp:
                 raise ValueError("MFLI demodulation frequency exceeds 500 kHz")
         keys = tuple(sorted(lockin_configs, key=int)) + (("mfli",) if mfli_config else ())
         return {
+            "meter": meter,
             "start_ma": start_ma, "end_ma": end_ma, "step_ma": step_ma,
             "loops": int(float(loops)),
             "round_trip": bool(self.nonlocal_iv6221_round_trip_var.get()),
@@ -31156,6 +31290,7 @@ class CombinedControlApp:
         }
         parameters["points"] = total
         parameters["meters"] = meters
+        parameters["mfli_input"] = "Signal Input 1, 10 MΩ, scaling 1"
         for key, config in settings["lockin_configs"].items():
             parameters[f"sr830_{key}"] = config
         parameters["mfli"] = settings["mfli_config"]
@@ -31179,6 +31314,9 @@ class CombinedControlApp:
         self.nonlocal_iv6221_progress.configure(maximum=max(1, total), value=0)
         self.nonlocal_iv6221_eta_var.set(f"Remaining: about {estimate}")
         self.nonlocal_iv6221_point_var.set("Last point: --")
+        self.nonlocal_iv6221_values_var.set("--")
+        self.nonlocal_iv6221_reference_var.set("Ref: waiting for the first point")
+        self.nonlocal_iv6221_overload_var.set("Left out: --")
         self._redraw_nonlocal_iv6221_plots()
         self.nonlocal_vi_status_var.set(f"6221-IV: {total} points; live CSV {csv_path}")
         self.nonlocal_vi_output_var.set("6221 ON: 6221-IV scan")
@@ -31376,14 +31514,30 @@ class CombinedControlApp:
             pass
         remaining = max(0.0, float(row["elapsed_s"]) / index * (total - index))
         self.nonlocal_iv6221_eta_var.set(f"Remaining: {self._format_scan_duration(remaining)}")
-        discarded = sum(
-            result["discarded"] for key, result in row.items()
+        results = {
+            key: result for key, result in row.items()
             if key in NONLOCAL_METER_NAMES and isinstance(result, dict)
-        )
+        }
+        discarded = sum(result["discarded"] for result in results.values())
         self.nonlocal_iv6221_point_var.set(
             f"Point {index}/{total}: I = {row['current_rms_ma']:.4g} mA RMS"
-            + (f"; {discarded} reading(s) left out (unlocked, overload or autorange)" if discarded else "")
         )
+        self.nonlocal_iv6221_values_var.set("\n".join(
+            f"{NONLOCAL_METER_NAMES[key]} {result['harmonic']}ω: "
+            f"X {format_voltage(result['X'])}, Y {format_voltage(result['Y'])}, "
+            f"θ {result['theta']:.1f}°"
+            for key, result in results.items()
+        ))
+        # A saved point had a locked reference on every meter.
+        self.nonlocal_iv6221_reference_var.set(
+            "Ref: locked (" + ", ".join(NONLOCAL_METER_NAMES[key] for key in results) + ")"
+        )
+        self._set_nonlocal_iv6221_lamp("reference", "ok")
+        self.nonlocal_iv6221_overload_var.set(
+            f"Left out at this point: {discarded} reading(s) (unlocked, overload or autorange)"
+            if discarded else "Left out at this point: none"
+        )
+        self._set_nonlocal_iv6221_lamp("overload", "warn" if discarded else "ok")
         self._redraw_nonlocal_iv6221_plots()
 
     def _finish_nonlocal_iv6221(self, future) -> None:
@@ -31400,6 +31554,8 @@ class CombinedControlApp:
         self.nonlocal_iv6221_eta_var.set("Remaining: --")
         # The 6221 is off: the lock lamps no longer show a live lock.
         self._set_mfli_lock_state(None, vi=True)
+        self._set_nonlocal_iv6221_lamp("reference", None)
+        self._set_nonlocal_iv6221_lamp("overload", None)
         try:
             future.result()
         except InterruptedError:
