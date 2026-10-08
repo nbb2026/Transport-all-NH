@@ -21355,24 +21355,21 @@ class CombinedControlApp:
                      padx=(12 if pair else 0, 0), pady=1)
             return box
 
-        # Rows 0-1: the 6221 current sweep.
-        for pair, (label, variable) in enumerate((
-            ("Start mA RMS:", self.nonlocal_iv6221_start_var),
-            ("End mA RMS:", self.nonlocal_iv6221_end_var),
-            ("Step mA RMS:", self.nonlocal_iv6221_step_var),
-            ("Loops:", self.nonlocal_iv6221_loops_var),
+        # Four pairs to a row, so the table fits the lab's 1101 px window
+        # (five did not).  Rows 0-1: the 6221 current sweep.
+        for row, fields in enumerate((
+            (("Start mA RMS:", self.nonlocal_iv6221_start_var),
+             ("End mA RMS:", self.nonlocal_iv6221_end_var),
+             ("Step mA RMS:", self.nonlocal_iv6221_step_var),
+             ("Loops:", self.nonlocal_iv6221_loops_var)),
+            (("Frequency Hz:", self.nonlocal_iv6221_frequency_var),
+             ("Comp. V:", self.nonlocal_iv6221_compliance_var),
+             ("Settle s:", self.nonlocal_iv6221_settle_var),
+             ("Acquire s:", self.nonlocal_iv6221_acquire_var)),
         )):
-            parameter(0, pair, label, variable)
-        option(0, 4, "Round trip", self.nonlocal_iv6221_round_trip_var)
-        for pair, (label, variable) in enumerate((
-            ("Frequency Hz:", self.nonlocal_iv6221_frequency_var),
-            ("Comp. V:", self.nonlocal_iv6221_compliance_var),
-            ("Settle s:", self.nonlocal_iv6221_settle_var),
-            ("Acquire s:", self.nonlocal_iv6221_acquire_var),
-            ("Trigger line:", self.nonlocal_vi_marker_line_var),
-        )):
-            parameter(1, pair, label, variable)
-        # Rows 2-3: the lock-ins.  The SR830s use the 6221 Trigger Link as
+            for pair, (label, variable) in enumerate(fields):
+                parameter(row, pair, label, variable)
+        # Rows 2-4: the lock-ins.  The SR830s use the 6221 Trigger Link as
         # their TTL reference (falling edge) and autorange their
         # sensitivity; the MFLI's reference input, time constant and input
         # autorange are chosen here.
@@ -21383,22 +21380,24 @@ class CombinedControlApp:
         meter.bind("<<ComboboxSelected>>", lambda _event: self._redraw_nonlocal_iv6221_plots(), add="+")
         parameter(2, 1, "Coupling:", self.nonlocal_iv6221_coupling_var,
                   kind="combo", values=("AC", "DC"), width=5)
-        parameter(2, 2, "MFLI reference:", self.nonlocal_iv6221_mfli_reference_var,
-                  kind="combo", values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS), width=12)
-        parameter(2, 3, "MFLI TC s:", self.nonlocal_iv6221_mfli_tc_var, width=7)
-        option(2, 4, "MFLI autorange", self.nonlocal_iv6221_mfli_autorange_var)
+        parameter(2, 2, "Trigger line:", self.nonlocal_vi_marker_line_var)
+        option(2, 3, "Round trip", self.nonlocal_iv6221_round_trip_var)
         for pair, key in enumerate(("8", "9", "mfli")):
             parameter(
                 3, pair, f"{NONLOCAL_METER_NAMES[key]} harm.:",
                 self.nonlocal_iv6221_harmonic_vars[key], kind="spinbox",
                 top=1024 if key == "mfli" else 19999,
             )
+        parameter(3, 3, "MFLI TC s:", self.nonlocal_iv6221_mfli_tc_var)
+        parameter(4, 0, "MFLI reference:", self.nonlocal_iv6221_mfli_reference_var,
+                  kind="combo", values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS), width=12)
+        option(4, 1, "MFLI autorange", self.nonlocal_iv6221_mfli_autorange_var)
         ttk.Checkbutton(
             params,
             text="6221 current range, compliance, wiring and sample confirmed safe",
             variable=self.nonlocal_iv6221_safety_var,
             command=self._update_nonlocal_vi_controls,
-        ).grid(row=4, column=0, columnspan=10, sticky="w", pady=(4, 0))
+        ).grid(row=5, column=0, columnspan=8, sticky="w", pady=(4, 0))
 
         # Right-hand column: the buttons, the latest values and two lamps.
         buttons = ttk.Frame(scan_actions)
@@ -31534,8 +31533,8 @@ class CombinedControlApp:
         )
         self._set_nonlocal_iv6221_lamp("reference", "ok")
         self.nonlocal_iv6221_overload_var.set(
-            f"Left out at this point: {discarded} reading(s) (unlocked, overload or autorange)"
-            if discarded else "Left out at this point: none"
+            f"Left out: {discarded} reading(s) (unlocked/overload/range)"
+            if discarded else "Left out: none"
         )
         self._set_nonlocal_iv6221_lamp("overload", "warn" if discarded else "ok")
         self._redraw_nonlocal_iv6221_plots()

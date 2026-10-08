@@ -3,11 +3,13 @@
 ## Non-local 6221-IV: lock-in settings and layout as on the STFMR page (2026-10-08)
 
 - **Layout:** like the STFMR field-sweep box. One aligned table with label:
-  field pairs sits on the left. Its rows are:
-  - Start / End / Step mA RMS, Loops, Round trip;
-  - Frequency, Comp. V, Settle s, Acquire s, Trigger line;
-  - **Meter**, Coupling, MFLI reference, MFLI TC s, MFLI autorange;
-  - the SR830 #8, SR830 #9 and MFLI harmonics;
+  field pairs sits on the left, four pairs to a row so it fits the 1101 px
+  window. Its rows are:
+  - Start / End / Step mA RMS, Loops;
+  - Frequency, Comp. V, Settle s, Acquire s;
+  - **Meter**, Coupling, Trigger line, Round trip;
+  - the SR830 #8, SR830 #9 and MFLI harmonics, MFLI TC s;
+  - MFLI reference, MFLI autorange;
   - the safety tick.
 
   On the right are Start / "Stop / 6221 off", the last point and each
