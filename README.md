@@ -46,7 +46,9 @@ acquisition, averaging the region of interest over the post-pulse interval.
 **Non-local** has one connection box in two columns (Keithley 2410 or 2400,
 6221 and 2182A; two SR830s and the MFLI). As on RT-E, the Zurich row also
 holds its reference input (**Ref.**) and time constant (**TC (s)**, default
-0.1 s), used by 6221-IV and Gate-VI. Four sub-tabs use the rack. Each scan
+0.1 s), used by 6221-IV and Gate-VI. The Ref. follows the chosen Zurich:
+DEV4414 on Trigger In 1 (the default, as RT-E), DEV4435 on Aux Input 1. Once
+connected, the row shows "Locked" or "Warning", read once a second. Four sub-tabs use the rack. Each scan
 has a settings box and a scan box, side by side when they fit, as on RT-E,
 and each run writes its own folder, as on PPMS and STFMR:
 - **|R| vs time** measures the sample resistance continuously with the
@@ -70,6 +72,8 @@ and each run writes its own folder, as on PPMS and STFMR:
     steps), Loops, Settle 0.5 s, Acquire 1 s and Round trip.
   - **Harmonics:** an SR830 set to 1+2 or 1+2+3 runs the sweep once per
     order. The Zurich reads all its orders at once on separate demodulators.
+  - **The 6221:** as on RT-E, the sine starts once on one fixed range, and
+    after that only its amplitude changes, so the lock-ins stay locked.
   - **Plots:** one X / Y / θ row per measured order, with the meters
     overlaid.
   - **Files:** the run folder is `6221-IV_<time>/`, with the live CSV and

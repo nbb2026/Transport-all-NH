@@ -73,6 +73,13 @@ class FakeSource:
         self.output_on, self.current = True, rms_ma
         return rms_ma
 
+    def update_amplitude(self, rms_ma):
+        # RT-E's live amplitude change: only while the sine runs.
+        assert self.output_on
+        self.calls.append(("update_amplitude", rms_ma))
+        self.current = rms_ma
+        return rms_ma
+
     def wait_references(self, frequency_hz, stop_event, keys):
         self.calls.append(("wait_references", tuple(keys)))
         result = {key: {"valid": self.locked, "frequency_hz": frequency_hz} for key in keys}
@@ -164,15 +171,18 @@ class WorkerTests(unittest.TestCase):
         self.posted = []
         a.post_ui = self.posted.append
         a._publish_reference_sync = mock.Mock()
-        a.nonlocal_iv6221_source_var = Var()
+        a._show_nonlocal_mfli_lock = mock.Mock()
+        a.nonlocal_iv6221_source_var, a.nonlocal_iv6221_point_var = Var(), Var()
         return a
 
     def setUp(self):
         self.folder = Path(tempfile.mkdtemp())
         # No 10-time-constant wait at far jumps, except where tested.
-        patcher = mock.patch.object(app, "NONLOCAL_IV6221_FIRST_SETTLE_TAUS", 0.0)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for name, value in (("NONLOCAL_IV6221_FIRST_SETTLE_TAUS", 0.0),
+                            ("NONLOCAL_IV6221_REFERENCE_WAIT_S", 0.0)):
+            patcher = mock.patch.object(app, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.make()
 
     def run_scan(self, name="6221-IV_test.csv", **overrides):
@@ -206,7 +216,12 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(options["sr830_front_panel_time_constant"],
                         "the SR830 keeps its front-panel time constant, as on RT-E")
         self.assertEqual(calls[0][4]["8"]["harmonic"], 2)
-        self.assertEqual([c[1] for c in calls if c[0] == "set_current"], [0.1, 0.2, 0.3])
+        # As the RT-E Current scan: one fixed range for the largest current,
+        # the sine started once, then only its amplitude changed, so the
+        # Trigger Link reference never stops.
+        self.assertAlmostEqual(options["sweep_peak_a"], 2 ** 0.5 * 0.3e-3)
+        self.assertEqual([c[:2] for c in calls if c[0] in ("set_current", "update_amplitude")],
+                         [("set_current", 0.1), ("update_amplitude", 0.2), ("update_amplitude", 0.3)])
         self.assertEqual(sum(c[0] == "wait_references" for c in calls), 1, "the first point only")
         self.assertEqual(calls[-2:], [("output_off",), ("confirm_output_off",)])
         self.assertTrue(self.app.nonlocal_keithley_output_off)
@@ -225,8 +240,9 @@ class WorkerTests(unittest.TestCase):
     def test_loops_and_round_trip_follow_the_rte_plan(self):
         self.make(start="0.1", end="0.2", step="0.1", loops="2", round_trip=True)
         self.run_scan()
-        self.assertEqual([c[1] for c in self.source.calls if c[0] == "set_current"],
+        self.assertEqual([c[1] for c in self.source.calls if c[0] in ("set_current", "update_amplitude")],
                          [0.1, 0.2, 0.1, 0.1, 0.2, 0.1])
+        self.assertEqual(sum(c[0] == "set_current" for c in self.source.calls), 1)
 
     def test_an_sr830_with_several_orders_runs_one_pass_per_order(self):
         """As on RT-E: SR830 #8 at 1+2+3 and #9 at 2 take three passes; #9
@@ -239,7 +255,9 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual({k: v["harmonic"] for k, v in calls[0][4].items()}, {"8": 1, "9": 2})
         self.assertEqual([c[1:] for c in calls if c[0] == "set_lockin_harmonic"],
                          [("8", 2), ("8", 3)])
-        self.assertEqual([c[1] for c in calls if c[0] == "set_current"], [0.1, 0.2] * 3)
+        self.assertEqual([c[1] for c in calls if c[0] in ("set_current", "update_amplitude")],
+                         [0.1, 0.2] * 3)
+        self.assertEqual(sum(c[0] == "set_current" for c in calls), 1, "the sine runs through every pass")
         self.assertEqual([c[1] for c in calls if c[0] == "wait_references"],
                          [("8", "9"), ("8",), ("8",)], "the reference is checked at each pass")
         rows = self.rows(path)
@@ -280,6 +298,8 @@ class WorkerTests(unittest.TestCase):
         self.assertNotIn("SR830_8_X_V", header)
         appended = self.appended()
         self.assertEqual(set(appended[0]["series"]), {("mfli", 1), ("mfli", 2), ("mfli", 3)})
+        # Locked at the start: the rack row says so, as on RT-E.
+        self.app._show_nonlocal_mfli_lock.assert_called_with(True)
 
     def test_a_single_zurich_order_is_read_on_demod_1(self):
         source = FakeSource(keys=(), mfli=True)
@@ -351,6 +371,28 @@ class ReadingTests(WorkerTests):
         result = rows[0]["series"][("8", 2)]
         self.assertGreater(abs(result["theta"]), 179.0)
         self.assertAlmostEqual(result["R"], 1e-6, delta=1e-9)
+
+    def test_a_late_lock_is_waited_for(self):
+        source = FakeSource()
+        replies = iter([False, False, True])
+        original = source.wait_references
+
+        def late(frequency_hz, stop_event, keys):
+            source.locked = next(replies)
+            return original(frequency_hz, stop_event, keys)
+
+        source.wait_references = late
+        with mock.patch.object(app, "NONLOCAL_IV6221_REFERENCE_WAIT_S", 60.0):
+            rows = self.scan_one(source)
+        self.assertEqual(sum(c[0] == "wait_references" for c in source.calls), 3)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("waiting for the reference lock (SR830 #8)", self.app.nonlocal_iv6221_point_var.get())
+
+    def test_an_unlocked_zurich_names_its_ref_input(self):
+        source = FakeSource(keys=(), mfli=True, locked=False)
+        self.make(source, start="0.1", end="0.1", step="0.1", measure={"8": False, "mfli": True})
+        with self.assertRaisesRegex(RuntimeError, "Zurich; check .*the Zurich Ref. is Aux Input 1"):
+            self.run_scan()
 
     def test_an_unlocked_reference_stops_the_scan_with_the_6221_off(self):
         with self.assertRaisesRegex(RuntimeError, "not locked at 17.3 Hz: SR830 #8; check Trigger Link line 4"):
@@ -506,6 +548,7 @@ class SetCurrentTests(unittest.TestCase):
         self.assertEqual(source.calls[0][1], 0.1)
         self.assertTrue(source.calls[0][6]["sr830_front_panel_time_constant"])
         self.assertEqual(source.calls[-1], ("set_current", 0.1))
+        self.assertIsNone(source.calls[0][6]["sweep_peak_a"], "Set 6221 keeps one current")
         a.nonlocal_vi_2410_controller.confirm_output_off.assert_called_once()
         self.assertTrue(source.output_on, "left on until 6221 / 2400 OFF or a scan")
 
@@ -570,6 +613,110 @@ class SetCurrentTests(unittest.TestCase):
             a._nonlocal_iv6221_set_worker(a._parse_nonlocal_iv6221_lockins())
         self.assertEqual(source.calls[-2:], [("output_off",), ("confirm_output_off",)])
         self.assertTrue(a.nonlocal_keithley_output_off)
+
+
+class ZurichRowTests(unittest.TestCase):
+    """The rack's Zurich as on RT-E (user, 2026-10-08): Ref. follows the
+    Zurich's wiring, and the row reads the lock once a second when idle."""
+
+    class Root:
+        def __init__(self):
+            self.scheduled = []
+
+        def after(self, delay, callback):
+            self.scheduled.append((delay, callback))
+            return f"after#{len(self.scheduled)}"
+
+    class Executor:
+        def submit(self, function, *args):
+            future = Future()
+            try:
+                future.set_result(function(*args))
+            except BaseException as error:
+                future.set_exception(error)
+            return future
+
+    def page(self, sample=None, error=None):
+        a = bare_app()
+        a.root, a.closing, a.nonlocal_vi_closed = self.Root(), False, False
+        a.nonlocal_vi_running = a.nonlocal_vi_busy = False
+        a.nonlocal_keithley_task = None
+        a.nonlocal_mfli_poll_inflight = a.nonlocal_mfli_applying = False
+        a.nonlocal_vi_executor = self.Executor()
+        a.post_ui = lambda callback: callback()
+        controller = mock.Mock(mfli_connected=True, mfli_config={"harmonic": 1},
+                               configured_frequency_hz=17.3)
+        controller.lock = threading.RLock()
+        if error is not None:
+            controller.read_mfli.side_effect = error
+        else:
+            controller.read_mfli.return_value = sample
+        a.nonlocal_vi_ac_controller = controller
+        a.nonlocal_vi_device_connection_vars = {"mfli": Var("Connected")}
+        a.nonlocal_iv6221_zurich_range_var = Var("Autorange ON")
+        a._set_mfli_lock_state = mock.Mock()
+        return a
+
+    def test_the_ref_follows_the_chosen_zurich(self):
+        a = bare_app()
+        a.nonlocal_vi_mfli_reference_source_var = Var("Aux Input 1")
+        a.nonlocal_vi_mfli_device_var = Var("DEV4414 (Super)")
+        a._on_nonlocal_mfli_device_changed()
+        self.assertEqual(a.nonlocal_vi_mfli_reference_source_var.get(), "Trigger In 1",
+                         "as on PPMS and RT-E")
+        a.nonlocal_vi_mfli_device_var.set("DEV4435 (Normal)")
+        a._on_nonlocal_mfli_device_changed()
+        self.assertEqual(a.nonlocal_vi_mfli_reference_source_var.get(), "Aux Input 1",
+                         "as on STFMR and Gate-VI")
+
+    def test_an_idle_page_shows_locked_or_warning(self):
+        a = self.page({"reference_valid": True, "input_range_v": 0.01})
+        a._poll_nonlocal_mfli()
+        a.nonlocal_vi_ac_controller.read_mfli.assert_called_once_with(17.3)
+        self.assertEqual(a.nonlocal_vi_device_connection_vars["mfli"].get(), "Locked")
+        self.assertEqual(a.nonlocal_iv6221_zurich_range_var.get(), "Autorange 10 mV")
+        a._set_mfli_lock_state.assert_called_with(True, vi=True)
+        self.assertEqual(a.root.scheduled[-1][0], app.NONLOCAL_MFLI_POLL_MS, "polls again")
+        a = self.page({"reference_valid": False, "input_range_v": 0.01})
+        a._poll_nonlocal_mfli()
+        self.assertEqual(a.nonlocal_vi_device_connection_vars["mfli"].get(), "Warning")
+        a = self.page(error=RuntimeError("timeout"))
+        a._poll_nonlocal_mfli()
+        self.assertEqual(a.nonlocal_vi_device_connection_vars["mfli"].get(), "Read failed")
+
+    def test_no_read_while_a_scan_runs_or_before_the_zurich_is_set_up(self):
+        for setup in (lambda a: setattr(a, "nonlocal_keithley_task", "iv6221"),
+                      lambda a: setattr(a, "nonlocal_vi_running", True),
+                      lambda a: setattr(a.nonlocal_vi_ac_controller, "mfli_config", {})):
+            a = self.page({"reference_valid": True})
+            setup(a)
+            a._poll_nonlocal_mfli()
+            a.nonlocal_vi_ac_controller.read_mfli.assert_not_called()
+            self.assertEqual(len(a.root.scheduled), 1, "still scheduled")
+        a = self.page({"reference_valid": True})
+        a.closing = True
+        a._poll_nonlocal_mfli()
+        self.assertEqual(a.root.scheduled, [], "stops with the program")
+
+    def test_the_zurich_is_set_up_as_the_rte_row_does(self):
+        a = self.page()
+        controller = a.nonlocal_vi_ac_controller
+        controller.configure_mfli.return_value = {"sample_rate_hz": 25.0}
+        a._apply_nonlocal_mfli_config({"reference": "Trigger In 1", "tc_s": 0.1, "mode": "1+2+3"})
+        args, kwargs = controller.configure_mfli.call_args
+        self.assertEqual(args, ("AC", 1, "R"))
+        self.assertEqual((kwargs["reference_source"], kwargs["timeconstant_s"],
+                          kwargs["external_reference_demodulator"]), ("Trigger In 1", 0.1, 3))
+        controller.configure_second_harmonic.assert_called_once_with(0.1, rate=25.0)
+        controller.configure_third_harmonic.assert_called_once_with(0.1, rate=25.0)
+        controller.disable_unused_ppms_demods.assert_called_once_with("1+2+3")
+        a = self.page()
+        controller = a.nonlocal_vi_ac_controller
+        controller.configure_mfli.return_value = {}
+        a._apply_nonlocal_mfli_config({"reference": "Aux Input 1", "tc_s": 1.0, "mode": "2"})
+        self.assertEqual(controller.configure_mfli.call_args[0], ("AC", 2, "R"))
+        self.assertIsNone(controller.configure_mfli.call_args[1]["external_reference_demodulator"])
+        controller.configure_second_harmonic.assert_not_called()
 
 
 class FinishAndPlotTests(unittest.TestCase):

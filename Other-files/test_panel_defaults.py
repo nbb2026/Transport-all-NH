@@ -191,6 +191,16 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertEqual(len(self.widgets("TCombobox", a.nonlocal_vi_mfli_reference_source_var)), 1)
         self.assertEqual(len(self.widgets("TEntry", a.nonlocal_mfli_tc_var)), 1)
         self.assertEqual(a.nonlocal_mfli_tc_var.get(), "0.1")
+        # RT-E's rack Zurich (user, 2026-10-08): DEV4414 on Trigger In 1; the
+        # Ref. follows the chosen Zurich's wiring.
+        self.assertEqual((a.nonlocal_vi_mfli_device_var.get(), a.nonlocal_vi_mfli_reference_source_var.get()),
+                         ("DEV4414 (Super)", "Trigger In 1"))
+        self.addCleanup(a.nonlocal_vi_mfli_device_var.set, "DEV4414 (Super)")
+        a.nonlocal_vi_mfli_device_var.set("DEV4435 (Normal)")
+        self.assertEqual(a.nonlocal_vi_mfli_reference_source_var.get(), "Aux Input 1")
+        a.nonlocal_vi_mfli_device_var.set("DEV4414 (Super)")
+        self.assertEqual(a.nonlocal_vi_mfli_reference_source_var.get(), "Trigger In 1")
+        self.assertEqual(a.nonlocal_iv6221_zurich_range_var.get(), "Autorange ON")
         # The Gate-VI read settings keep their own harmonic fields.
         self.assertEqual(len(self.widgets("TSpinbox", a.nonlocal_vi_lockin_harmonic_vars["8"])), 1)
 

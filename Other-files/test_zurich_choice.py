@@ -77,7 +77,8 @@ class ZurichChoiceTests(unittest.TestCase):
         return (
             ("STFMR", self.a.stfmr_lockin_resource_widgets["mfli"],
              self.a.stfmr_lockin_resource_vars["mfli"], "DEV4435 (Normal)"),
-            ("Non-local", vi, self.a.nonlocal_vi_mfli_device_var, "DEV4435 (Normal)"),
+            # RT-E's rack Zurich since 2026-10-08 (user: the same cables as RT-E).
+            ("Non-local", vi, self.a.nonlocal_vi_mfli_device_var, "DEV4414 (Super)"),
             ("PPMS", self.a.ppms_panel.zurich_entries[0], self.a.ppms_panel.zurich_resource,
              "DEV4414 (Super)"),
             ("RT-E", self.a.rte_panel.zurich_entries[0], self.a.rte_panel.zurich_resource,
@@ -130,7 +131,7 @@ class ZurichChoiceTests(unittest.TestCase):
              lambda: self.a.connect_nonlocal_vi_device("mfli"), self.a.nonlocal_vi_ac_controller),
         )
         for page, variable, connect, controller in pages:
-            self.addCleanup(variable.set, "DEV4435 (Normal)")
+            self.addCleanup(variable.set, variable.get())
             self.addCleanup(setattr, controller, "mfli_server_candidates", None)
             for label, servers in (("DEV4414 (Super)", SUPER), ("DEV4435 (Normal)", USB)):
                 with self.subTest(page=page, choice=label):
@@ -145,7 +146,7 @@ class ZurichChoiceTests(unittest.TestCase):
     def test_gate_vi_connect_all_hands_the_chosen_device_and_servers_on(self):
         variable = self.a.nonlocal_vi_mfli_device_var
         controller = self.a.nonlocal_vi_ac_controller
-        self.addCleanup(variable.set, "DEV4435 (Normal)")
+        self.addCleanup(variable.set, variable.get())
         self.addCleanup(setattr, controller, "mfli_server_candidates", None)
         self.addCleanup(setattr, self.a, "nonlocal_vi_busy", False)
         self.addCleanup(self.a.nonlocal_vi_use_mfli_var.set, self.a.nonlocal_vi_use_mfli_var.get())

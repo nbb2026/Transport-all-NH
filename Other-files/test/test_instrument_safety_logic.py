@@ -210,6 +210,8 @@ class Fake6221:
             self.compliance = float(command.rsplit(" ", 1)[1])
         elif upper.startswith("SOUR:CURR:RANG:AUTO "):
             self.auto_range = int(upper.endswith("ON"))
+        elif upper.startswith("SOUR:CURR:RANG "):
+            self.current_range = float(command.rsplit(" ", 1)[1])
         elif upper.startswith("SOUR:CURR "):
             self.current = float(command.rsplit(" ", 1)[1])
         elif upper.startswith("SOUR:WAVE:FREQ "):
@@ -244,6 +246,8 @@ class Fake6221:
             return str(self.compliance)
         if upper == "SOUR:CURR:RANG:AUTO?":
             return str(self.auto_range)
+        if upper == "SOUR:CURR:RANG?":
+            return str(getattr(self, "current_range", 0.1))
         if upper == "SOUR:CURR?":
             return str(self.current)
         if upper == "SOUR:WAVE:FREQ?":
@@ -2080,6 +2084,41 @@ class InstrumentSafetyTests(unittest.TestCase):
         self.assertTrue(math.isclose(frequency, 13.7))
         self.assertTrue(math.isclose(controller.source.wave_amplitude,
                                      expected_peak_a))
+
+    def test_6221_current_sweep_changes_only_the_running_amplitude(self):
+        """Non-local 6221-IV as the RT-E Current scan (2026-10-08): one
+        fixed range, the sine started once, then only SOUR:WAVE:AMPL, so the
+        Trigger Link marker the lock-ins lock to never stops."""
+        controller = app.NonLocalACController(lambda _message: None)
+        controller.source = Fake6221()
+        controller.nanovoltmeter = Fake2182()
+        sweep_peak = math.sqrt(2.0) * 1e-3
+        frequency, _readbacks = controller.configure(
+            0.01, 17.3, 50.0, {}, use_nanovoltmeter=True, output_mode="AC",
+            sweep_peak_a=sweep_peak,
+        )
+        commands = controller.source.commands
+        self.assertIn(f"SOUR:CURR:RANG {sweep_peak:.12e}", commands)
+        self.assertIn("SOUR:WAVE:RANG FIX", commands)
+        self.assertIn("SOUR:WAVE:DUR:CYCL INF", commands)
+        self.assertNotIn("SOUR:WAVE:RANG BEST", commands)
+        self.assertEqual(controller.configured_frequency_hz, frequency)
+        with self.assertRaisesRegex(RuntimeError, "output is off"):
+            controller.update_amplitude(0.5)
+        controller.set_current(0.01, frequency)
+        before = len(commands)
+        self.assertAlmostEqual(controller.update_amplitude(0.5), 0.5)
+        self.assertEqual(commands[before:], [f"SOUR:WAVE:AMPL {math.sqrt(2.0) * 0.5e-3:.12e}"],
+                         "no abort, arm or init")
+        self.assertEqual(controller.source.output, 1)
+        with self.assertRaisesRegex(ValueError, "range reserved"):
+            controller.update_amplitude(2.0)
+        # Gate-VI and Set 6221 keep the automatic range.
+        controller.source = Fake6221()
+        controller.configure(0.1, 17.3, 50.0, {}, use_nanovoltmeter=True, output_mode="AC")
+        self.assertIn("SOUR:WAVE:RANG BEST", controller.source.commands)
+        with self.assertRaisesRegex(RuntimeError, "not set up for a continuous current sweep"):
+            controller.update_amplitude(0.05)
 
     def test_6221_standalone_continuous_ac_readback_and_compliance(self):
         controller = app.Keithley6221Controller(lambda _message: None)

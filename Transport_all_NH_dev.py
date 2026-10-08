@@ -1334,6 +1334,11 @@ NONLOCAL_MFLI_REFERENCE_INPUTS = {
     "Trigger In 2": 3,
 }
 NONLOCAL_MFLI_DEFAULT_REFERENCE_INPUT = "Aux Input 1"
+# The reference input each of the lab's Zurichs is wired to, as the pages
+# that use it set it: DEV4414 (Super) on Trigger In 1 (PPMS, RT-E), DEV4435
+# (Normal) on Aux Input 1 (STFMR, Gate-VI).  The Non-local rack's Ref. follows
+# the chosen Zurich and can still be changed by hand.
+NONLOCAL_MFLI_DEVICE_REFERENCE_INPUTS = {"dev4414": "Trigger In 1", "dev4435": "Aux Input 1"}
 NONLOCAL_IV_MFLI_DEFAULT_REFERENCE_INPUT = "Trigger In 1"
 NONLOCAL_MFLI_LEGACY_PYTHON_ENV = "MOKE_MFLI_PYTHON"
 NONLOCAL_2182_RESOURCE = "GPIB0::7::INSTR"
@@ -1451,6 +1456,12 @@ NONLOCAL_METER_NAMES = {"8": "SR830 #8", "9": "SR830 #9", "mfli": "Zurich", "218
 # The Zurich MFLI time constant on the Non-local rack, as on RT-E, PPMS and
 # STFMR (the Gate-VI and 6221-IV scans both use it).
 NONLOCAL_MFLI_TIME_CONSTANT_S = 0.1
+# The Non-local rack's Zurich row reads the reference lock once a second
+# while the page is idle, as the RT-E row does ("Locked" / "Warning").
+NONLOCAL_MFLI_POLL_MS = 1000
+# At the start of each pass, how long 6221-IV waits for every lock-in to
+# lock to the 6221 reference before it gives up.
+NONLOCAL_IV6221_REFERENCE_WAIT_S = 20.0
 # SR830 OFLT codes 0-19 in seconds, to read the front-panel time constant.
 SR830_TIME_CONSTANTS_S = (
     10e-6, 30e-6, 100e-6, 300e-6, 1e-3, 3e-3, 10e-3, 30e-3, 100e-3, 300e-3,
@@ -8383,6 +8394,7 @@ class NonLocalACController:
         sample_hz: float = NONLOCAL_SAMPLE_HZ,
         output_mode: str = "AC",
         sr830_front_panel_time_constant: bool = False,
+        sweep_peak_a: float | None = None,
     ) -> tuple[float, dict[str, dict]]:
         with self.lock:
             output_mode = str(output_mode).strip().upper()
@@ -8426,6 +8438,20 @@ class NonLocalACController:
                 raise ValueError(
                     "6221 sine-wave peak exceeds 105 mA; the GUI current unit is RMS"
                 )
+            if sweep_peak_a is not None:
+                # A current sweep, as RT-E runs it: one fixed source range for
+                # the largest current, so update_amplitude() can change the
+                # running sine without stopping it (and its Trigger Link
+                # marker, which the lock-ins lock to).
+                sweep_peak_a = float(sweep_peak_a)
+                if output_mode != "AC" or not (
+                    math.isfinite(sweep_peak_a)
+                    and peak_a <= sweep_peak_a * (1 + 1e-9)
+                    and sweep_peak_a <= NONLOCAL_MAX_PEAK_A
+                ):
+                    raise ValueError(
+                        "6221 sweep range must cover the first current and stay within the 105 mA sine peak"
+                    )
             for key, requested in lockin_configs.items():
                 harmonic = int(requested["harmonic"])
                 if not 1 <= harmonic <= 19999:
@@ -8444,12 +8470,26 @@ class NonLocalACController:
                     )
             self.source.write("*RST")
             self.source.write("*CLS")
+            self.sweep_peak_a = None
+            if output_mode == "AC" and sweep_peak_a is not None:
+                # As the RT-E Current scan: the range chosen with the output
+                # off, never by sourcing the largest current.
+                self._write_6221(f"SOUR:CURR:RANG {sweep_peak_a:.12e}")
+                actual_range = self._query_float(self.source, "SOUR:CURR:RANG?")
+                if actual_range * 1.05 + 1e-12 < sweep_peak_a:
+                    raise RuntimeError(
+                        f"6221 current range is too small for the sweep: {actual_range:g} A"
+                    )
             if output_mode == "AC":
                 commands = (
                     f"CURR:COMP {compliance_v:.12g}", "SOUR:WAVE:FUNC SIN",
                     f"SOUR:WAVE:FREQ {frequency_hz:.12g}",
                     f"SOUR:WAVE:AMPL {peak_a:.12e}", "SOUR:WAVE:OFFS 0",
-                    "SOUR:WAVE:RANG BEST",
+                    *(
+                        ("SOUR:WAVE:RANG FIX", "SOUR:WAVE:DUR:CYCL INF")
+                        if sweep_peak_a is not None
+                        else ("SOUR:WAVE:RANG BEST",)
+                    ),
                     f"SOUR:WAVE:PMAR {NONLOCAL_MARKER_PHASE_DEG:g}",
                     f"SOUR:WAVE:PMAR:OLIN {marker_line}",
                     "SOUR:WAVE:PMAR:STAT ON", "OUTP OFF",
@@ -8537,6 +8577,9 @@ class NonLocalACController:
                     )
 
             self.source_output_mode = output_mode
+            if output_mode == "AC":
+                self.sweep_peak_a = sweep_peak_a
+                self.configured_frequency_hz = actual_frequency
 
             readbacks = {}
             for key in sorted(lockin_configs, key=int):
@@ -9002,6 +9045,31 @@ class NonLocalACController:
             ),
             "sensitivity_index": sensitivity_used, "auto_range": auto_action,
         }
+
+    def update_amplitude(self, rms_ma: float) -> float:
+        """Change only the running sine amplitude, without abort, reset or
+        re-arm, as the RT-E Current scan does: the Trigger Link marker keeps
+        running, so the lock-ins stay locked.  Needs configure(sweep_peak_a=…)
+        and a running sine (set_current)."""
+        with self.lock:
+            sweep_peak_a = getattr(self, "sweep_peak_a", None)
+            if self.source_output_mode != "AC" or sweep_peak_a is None:
+                raise RuntimeError("The 6221 is not set up for a continuous current sweep")
+            rms_ma = float(rms_ma)
+            if not math.isfinite(rms_ma) or rms_ma <= 0:
+                raise ValueError("6221 AC RMS current must be a finite positive number")
+            peak_a = math.sqrt(2.0) * rms_ma * 1e-3
+            if peak_a > sweep_peak_a * (1 + 1e-9):
+                raise ValueError("6221 current exceeds the range reserved for the sweep")
+            if int(self._query_float(self.source, "OUTP?")) != 1:
+                raise RuntimeError("6221 output is off; the current sweep cannot continue")
+            self._write_6221(f"SOUR:WAVE:AMPL {peak_a:.12e}")
+            actual = self._query_float(self.source, "SOUR:WAVE:AMPL?")
+            if not math.isclose(actual, peak_a, rel_tol=5e-4, abs_tol=1e-12):
+                raise RuntimeError(f"6221 live amplitude readback mismatch: {actual:g} Apeak")
+            if int(self._query_float(self.source, "OUTP?")) != 1:
+                raise RuntimeError("6221 output stopped during the amplitude update")
+            return actual / math.sqrt(2.0) * 1e3
 
     def set_lockin_harmonic(self, key: str, harmonic: int) -> None:
         """The next order of an RT-E-style multi-harmonic pass, read back;
@@ -12534,13 +12602,24 @@ class CombinedControlApp:
         self.nonlocal_vi_nanovoltmeter_resource_var = tk.StringVar(
             value=NONLOCAL_2182_RESOURCE
         )
+        # RT-E's rack Zurich (user, 2026-10-08): DEV4414 (Super) on Trigger In 1.
         self.nonlocal_vi_mfli_device_var = tk.StringVar(
-            value=zurich_mfli_label(NONLOCAL_MFLI_DEVICE)
+            value=zurich_mfli_label(SUPER_ZURICH_MFLI_DEVICE)
         )
         self.nonlocal_vi_mfli_coupling_var = tk.StringVar(value="AC")
         self.nonlocal_vi_mfli_reference_source_var = tk.StringVar(
-            value=NONLOCAL_MFLI_DEFAULT_REFERENCE_INPUT
+            value=NONLOCAL_MFLI_DEVICE_REFERENCE_INPUTS[SUPER_ZURICH_MFLI_DEVICE]
         )
+        # The Ref. follows the chosen Zurich (its wiring on the other pages).
+        self.nonlocal_vi_mfli_device_var.trace_add(
+            "write", lambda *_args: self._on_nonlocal_mfli_device_changed()
+        )
+        # The rack Zurich row's lock state ("Locked" / "Warning"), as on RT-E.
+        self.nonlocal_mfli_lock_word = None
+        self.nonlocal_mfli_poll_inflight = False
+        self.nonlocal_mfli_applying = False
+        self.nonlocal_mfli_after_id = None
+        self.nonlocal_mfli_tc_seen = None
         self.nonlocal_vi_mfli_harmonic_var = tk.IntVar(value=NONLOCAL_HARMONIC)
         self.nonlocal_vi_mfli_channel_var = tk.StringVar(value="R")
         self.nonlocal_vi_mfli_input_impedance_var = tk.StringVar(
@@ -12677,6 +12756,8 @@ class CombinedControlApp:
         self.nonlocal_iv6221_point_var = tk.StringVar(value="Transport acquisition: waiting for scan; 6221 output OFF")
         # The Zurich MFLI's time constant, on the rack's Zurich row.
         self.nonlocal_mfli_tc_var = tk.StringVar(value=f"{NONLOCAL_MFLI_TIME_CONSTANT_S:g}")
+        # The Zurich's Signal Input 1 range on its 6221-IV row, as RT-E shows it.
+        self.nonlocal_iv6221_zurich_range_var = tk.StringVar(value="Autorange ON")
         self.nonlocal_iv6221_rows: list[dict] = []
         self.nonlocal_iv6221_settings: dict[str, object] = {}
         self.nonlocal_iv6221_total_points = 0
@@ -20834,17 +20915,24 @@ class CombinedControlApp:
         # As the RT-E rack's Zurich row: its reference input and time
         # constant, used by the Gate-VI and 6221-IV scans.
         ttk.Label(meters, text="Ref.").grid(row=2, column=6, padx=(8, 3), pady=(4, 0))
-        ttk.Combobox(
+        reference_combo = ttk.Combobox(
             meters,
             textvariable=self.nonlocal_vi_mfli_reference_source_var,
             values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS),
             state="readonly",
             width=12,
-        ).grid(row=2, column=7, pady=(4, 0))
-        ttk.Label(meters, text="TC (s)").grid(row=2, column=8, padx=(8, 3), pady=(4, 0))
-        ttk.Entry(meters, textvariable=self.nonlocal_mfli_tc_var, width=6).grid(
-            row=2, column=9, pady=(4, 0)
         )
+        reference_combo.grid(row=2, column=7, pady=(4, 0))
+        # A change is applied to a connected Zurich at once, as on RT-E.
+        reference_combo.bind(
+            "<<ComboboxSelected>>", lambda _event: self._apply_nonlocal_mfli_settings(), add="+"
+        )
+        ttk.Label(meters, text="TC (s)").grid(row=2, column=8, padx=(8, 3), pady=(4, 0))
+        tc_entry = ttk.Entry(meters, textvariable=self.nonlocal_mfli_tc_var, width=6)
+        tc_entry.grid(row=2, column=9, pady=(4, 0))
+        for sequence in ("<Return>", "<FocusOut>"):
+            tc_entry.bind(sequence, lambda _event: self._apply_nonlocal_mfli_settings(tc_edit=True), add="+")
+        self.nonlocal_mfli_after_id = self.root.after(NONLOCAL_MFLI_POLL_MS, self._poll_nonlocal_mfli)
         # Stacked in a narrow window, the lock-ins follow the Keithleys at the
         # same row spacing, one list as on the STFMR page.
         self._arrange_pair_by_width(connection, sources, meters, gap=24, stack_gap=4)
@@ -21383,13 +21471,21 @@ class CombinedControlApp:
                 "<<ComboboxSelected>>",
                 lambda _event: self._refresh_nonlocal_iv6221_plot_layout(), add="+",
             )
+            if key == "mfli":
+                # Applied to a connected Zurich at once, as on RT-E.
+                combo.bind(
+                    "<<ComboboxSelected>>",
+                    lambda _event: self._apply_nonlocal_mfli_settings(), add="+",
+                )
             ttk.Checkbutton(
                 lockins, text="Measure", variable=self.nonlocal_iv6221_measure_vars[key],
                 command=self._refresh_nonlocal_iv6221_plot_layout,
             ).grid(row=row, column=2, padx=3)
-            ttk.Label(lockins, text="Autorange ON", width=14).grid(
-                row=row, column=3, sticky="w", padx=(6, 0)
-            )
+            ttk.Label(
+                lockins, width=14,
+                **({"textvariable": self.nonlocal_iv6221_zurich_range_var} if key == "mfli"
+                   else {"text": "Autorange ON"}),
+            ).grid(row=row, column=3, sticky="w", padx=(6, 0))
 
         scan = ttk.LabelFrame(controls, text="6221-IV scan", padding=4)
         scan.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
@@ -21454,6 +21550,159 @@ class CombinedControlApp:
                 self.nonlocal_iv6221_plot_frames[(order, channel)] = frame
                 self.nonlocal_iv6221_canvases[(order, channel)] = canvas
         self._refresh_nonlocal_iv6221_plot_layout()
+
+    # The rack's Zurich, as on RT-E ------------------------------------------
+
+    def _on_nonlocal_mfli_device_changed(self) -> None:
+        """The Ref. of the chosen Zurich's wiring (NONLOCAL_MFLI_DEVICE_REFERENCE_INPUTS)."""
+        device = zurich_mfli_choice(self.nonlocal_vi_mfli_device_var.get())[0]
+        reference = NONLOCAL_MFLI_DEVICE_REFERENCE_INPUTS.get(device)
+        if reference and self.nonlocal_vi_mfli_reference_source_var.get() != reference:
+            self.nonlocal_vi_mfli_reference_source_var.set(reference)
+
+    def _nonlocal_mfli_settings(self) -> dict | None:
+        """Ref., TC and the 6221-IV Zurich harmonic, or None if the TC is not valid."""
+        try:
+            tc_s = float(self.nonlocal_mfli_tc_var.get())
+        except (TypeError, ValueError, tk.TclError):
+            return None
+        mode = str(self.nonlocal_iv6221_harmonic_vars["mfli"].get()).strip()
+        reference = self.nonlocal_vi_mfli_reference_source_var.get().strip()
+        if not (math.isfinite(tc_s) and 0 < tc_s <= 100) or mode not in PPMS_ZURICH_MODE_ORDERS \
+                or reference not in NONLOCAL_MFLI_REFERENCE_INPUTS:
+            return None
+        return {"reference": reference, "tc_s": tc_s, "mode": mode}
+
+    def _apply_nonlocal_mfli_config(self, settings: dict) -> None:
+        """Worker: the Zurich's external reference and demodulators, as the
+        RT-E Zurich row sets them (several orders: the reference on Demod 4,
+        the orders on Demods 1-3, which needs MF-MD)."""
+        controller = self.nonlocal_vi_ac_controller
+        mode, tc_s = settings["mode"], float(settings["tc_s"])
+        multi = mode in ("1+2", "1+2+3")
+        with controller.lock:
+            readback = controller.configure_mfli(
+                "AC", 1 if multi else int(mode), "R",
+                reference_source=settings["reference"],
+                sample_rate_hz=1.0 / NONLOCAL_IV6221_SAMPLE_INTERVAL_S,
+                input_impedance="10 MΩ", input_scaling=1.0, timeconstant_s=tc_s,
+                external_reference_demodulator=3 if multi else None,
+            )
+            if multi:
+                rate = float(readback.get("sample_rate_hz", NONLOCAL_SAMPLE_HZ))
+                controller.configure_second_harmonic(tc_s, rate=rate)
+                if mode == "1+2+3":
+                    controller.configure_third_harmonic(tc_s, rate=rate)
+                controller.disable_unused_ppms_demods(mode)
+
+    def _nonlocal_page_idle(self) -> bool:
+        return (
+            not self.nonlocal_vi_running
+            and not self.nonlocal_vi_busy
+            and self.nonlocal_keithley_task is None
+            and not self.closing
+            and not self.nonlocal_vi_closed
+        )
+
+    def _apply_nonlocal_mfli_settings(self, tc_edit: bool = False) -> None:
+        """A Ref., TC or Zurich harmonic change, applied to a connected,
+        idle Zurich at once (the scans set it up again when they start)."""
+        if tc_edit:
+            # Return or leaving the field: only an edited TC is applied.
+            text = self.nonlocal_mfli_tc_var.get()
+            if text == self.nonlocal_mfli_tc_seen:
+                return
+            self.nonlocal_mfli_tc_seen = text
+        controller = self.nonlocal_vi_ac_controller
+        if not controller.mfli_connected or not self._nonlocal_page_idle():
+            return
+        settings = self._nonlocal_mfli_settings()
+        if settings is None:
+            self.nonlocal_vi_status_var.set(
+                "Zurich settings not applied: TC (s) must be above 0 and at most 100"
+            )
+            return
+        self.nonlocal_mfli_applying = True
+        self.nonlocal_mfli_lock_word = "Updating"
+        self.nonlocal_vi_device_connection_vars["mfli"].set("Updating")
+        future = self.nonlocal_vi_executor.submit(self._apply_nonlocal_mfli_config, settings)
+
+        def finished(completed=future, settings=settings) -> None:
+            self.nonlocal_mfli_applying = False
+            self.nonlocal_mfli_lock_word = None
+            if self.closing or self.nonlocal_vi_closed:
+                return
+            error = completed.exception()
+            if error is None:
+                self.nonlocal_vi_status_var.set(
+                    f"Zurich: Ref. {settings['reference']}, TC {settings['tc_s']:g} s, "
+                    f"harmonic {settings['mode']} applied"
+                )
+            else:
+                self.nonlocal_vi_status_var.set(
+                    f"Zurich settings not applied: {short_status_error(error).rstrip(';；')}"
+                )
+            self._refresh_nonlocal_vi_connection_summary()
+
+        future.add_done_callback(lambda _done: self.post_ui(finished))
+
+    def _show_nonlocal_mfli_lock(self, state, range_v=None) -> None:
+        """The rack Zurich row: "Locked" / "Warning" (or a short failure), as on RT-E."""
+        word = "Locked" if state is True else "Warning" if state is False else state
+        self.nonlocal_mfli_lock_word = word
+        if self.nonlocal_vi_ac_controller.mfli_connected and not self.nonlocal_vi_busy:
+            self.nonlocal_vi_device_connection_vars["mfli"].set(word or "Connected")
+        if state is True or state is False:
+            self._set_mfli_lock_state(state, vi=True)
+        if range_v is not None:
+            self.nonlocal_iv6221_zurich_range_var.set(
+                "Autorange " + self._format_voltage_range(range_v)
+            )
+
+    def _poll_nonlocal_mfli(self) -> None:
+        """Once a second while the page is idle, as the RT-E Zurich row:
+        read the reference lock of a set-up Zurich."""
+        if self.closing or self.nonlocal_vi_closed:
+            return
+        controller = self.nonlocal_vi_ac_controller
+        if (
+            controller.mfli_connected
+            and controller.mfli_config
+            and self._nonlocal_page_idle()
+            and not self.nonlocal_mfli_poll_inflight
+            and not self.nonlocal_mfli_applying
+        ):
+            expected = getattr(controller, "configured_frequency_hz", None)
+            if not (isinstance(expected, (int, float)) and math.isfinite(expected) and expected > 0):
+                try:
+                    expected = float(self.nonlocal_iv6221_frequency_var.get())
+                except (TypeError, ValueError, tk.TclError):
+                    expected = NONLOCAL_IV6221_FREQUENCY_HZ
+            self.nonlocal_mfli_poll_inflight = True
+
+            def read(expected=expected):
+                with controller.lock:
+                    return controller.read_mfli(expected)
+
+            future = self.nonlocal_vi_executor.submit(read)
+
+            def finished(completed=future) -> None:
+                self.nonlocal_mfli_poll_inflight = False
+                if self.closing or self.nonlocal_vi_closed or not controller.mfli_connected:
+                    return
+                if not self._nonlocal_page_idle() or self.nonlocal_mfli_applying:
+                    return  # a scan or a change began meanwhile; it shows its own state
+                error = completed.exception()
+                if error is not None:
+                    self._show_nonlocal_mfli_lock("Read failed")
+                    return
+                sample = completed.result()
+                self._show_nonlocal_mfli_lock(
+                    bool(sample.get("reference_valid")), sample.get("input_range_v")
+                )
+
+            future.add_done_callback(lambda _done: self.post_ui(finished))
+        self.nonlocal_mfli_after_id = self.root.after(NONLOCAL_MFLI_POLL_MS, self._poll_nonlocal_mfli)
 
     def _nonlocal_iv6221_order_meters(self) -> dict[int, list[str]]:
         """The meters ticked Measure that read each harmonic order."""
@@ -28623,7 +28872,13 @@ class CombinedControlApp:
         for key, connected in states.items():
             self._set_nonlocal_vi_indicator(key, connected)
             self.nonlocal_vi_device_connection_vars[key].set(
-                "Connected" if connected else "Not connected"
+                (
+                    # The Zurich's lock state once read, as on RT-E.
+                    (self.__dict__.get("nonlocal_mfli_lock_word") if key == "mfli" else None)
+                    or "Connected"
+                )
+                if connected
+                else "Not connected"
             )
         labels = []
         if states["2410"]:
@@ -28807,7 +29062,22 @@ class CombinedControlApp:
             # Each MFLI has its own Data Server: DEV4435's USB link cannot
             # see DEV4414, and DEV4414's network server cannot see DEV4435.
             self.nonlocal_vi_ac_controller.mfli_server_candidates = servers
-            connector = lambda _choice: self.nonlocal_vi_ac_controller.connect_mfli(device)
+            mfli_settings = self._nonlocal_mfli_settings()
+
+            def connector(_choice, device=device, mfli_settings=mfli_settings):
+                # As RT-E: connect, then route the external reference (Ref.,
+                # TC, the 6221-IV Zurich harmonic), so the row can show the
+                # lock as soon as the 6221 runs.  A set-up failure leaves the
+                # Zurich connected (Gate-VI and the scans set it up again).
+                identity = self.nonlocal_vi_ac_controller.connect_mfli(device)
+                if mfli_settings is None:
+                    return identity
+                try:
+                    self._apply_nonlocal_mfli_config(mfli_settings)
+                except Exception as error:
+                    return f"{identity}; reference not set up: {short_status_error(error)}"
+                return f"{identity}; Ref. {mfli_settings['reference']}, TC {mfli_settings['tc_s']:g} s"
+
             label = "Zurich MFLI"
         elif key == "2182":
             resource = self.nonlocal_vi_nanovoltmeter_resource_var.get().strip()
@@ -28840,6 +29110,7 @@ class CombinedControlApp:
         error = completed.exception()
         if key == "mfli":
             self._set_mfli_lock_state(None, vi=True)
+            self.nonlocal_mfli_lock_word = None
         if error is None:
             identity = completed.result()
             if key in self.nonlocal_vi_measurement_enabled_vars:
@@ -28922,6 +29193,8 @@ class CombinedControlApp:
         self.nonlocal_vi_busy = False
         if key == "mfli":
             self._set_mfli_lock_state(None, vi=True)
+            self.nonlocal_mfli_lock_word = None
+            self.nonlocal_iv6221_zurich_range_var.set("Autorange ON")
         if key in self.nonlocal_vi_measurement_enabled_vars:
             self.nonlocal_vi_measurement_enabled_vars[key].set(False)
         if key in ("2410", "6221"):
@@ -29148,6 +29421,7 @@ class CombinedControlApp:
         self.nonlocal_vi_busy = False
         self.nonlocal_vi_running = False
         self._set_mfli_lock_state(None, vi=True)
+        self.nonlocal_mfli_lock_word = None
         self.nonlocal_vi_connection_var.set("Not connected")
         for key in ("2410", "6221", "8", "9", "mfli", "2182"):
             self._set_nonlocal_vi_indicator(key, False)
@@ -31310,14 +31584,15 @@ class CombinedControlApp:
             return False
         return True
 
-    def _nonlocal_iv6221_configure(self, source, settings: dict, initial_ma: float):
+    def _nonlocal_iv6221_configure(self, source, settings: dict, initial_ma: float,
+                                   sweep_peak_a: float | None = None):
         """The 6221 sine (output off) and the lock-ins, as RT-E sets them up."""
         frequency, readbacks = source.configure(
             initial_ma, settings["frequency_hz"], settings["compliance_v"],
             settings["lockin_configs"], settings["marker_line"],
             mfli_config=settings["mfli_config"], use_nanovoltmeter=False,
             sample_hz=1.0 / NONLOCAL_IV6221_SAMPLE_INTERVAL_S, output_mode="AC",
-            sr830_front_panel_time_constant=True,
+            sr830_front_panel_time_constant=True, sweep_peak_a=sweep_peak_a,
         )
         mode = settings["zurich_mode"]
         if settings["mfli_config"] and mode in ("1+2", "1+2+3"):
@@ -31636,7 +31911,14 @@ class CombinedControlApp:
                 # The Keithley must be off while the voltmeters read.
                 keithley.confirm_output_off("before the 6221-IV scan")
             self.nonlocal_vi_interlock.begin(NonLocalVIInterlock.SR830_READ)
-            frequency, readbacks = self._nonlocal_iv6221_configure(source, settings, plan[0][2])
+            # As the RT-E Current scan: one fixed range for the largest
+            # current, the sine started once, then only its amplitude changed
+            # (no abort/re-arm), so the reference never stops.
+            sweep_peak_a = math.sqrt(2.0) * max(value for _loop, _point, value in plan) * 1e-3
+            frequency, readbacks = self._nonlocal_iv6221_configure(
+                source, settings, plan[0][2], sweep_peak_a=sweep_peak_a
+            )
+            running = False
             # Far jumps (the first point of each pass, the jump back to Start
             # at a new loop) wait at least 10 time constants of the slowest
             # lock-in: the SR830 front-panel one read back, the Zurich's TC.
@@ -31667,7 +31949,11 @@ class CombinedControlApp:
                             raise InterruptedError("6221-IV scan stopped")
                         if keithley.connected:
                             keithley.confirm_output_off("before a 6221-IV point")
-                        actual_ma = source.set_current(target, frequency)
+                        if running:
+                            actual_ma = source.update_amplitude(target)
+                        else:
+                            actual_ma = source.set_current(target, frequency)
+                            running = True
                         self.post_ui(
                             lambda value=actual_ma: self.nonlocal_iv6221_source_var.set(
                                 f"6221 ON: {value:.4g} mA RMS / {frequency:g} Hz"
@@ -31677,25 +31963,42 @@ class CombinedControlApp:
                         if stop.wait(long_settle if far else float(settings["settle_s"])):
                             raise InterruptedError("6221-IV scan stopped")
                         if loop == 1 and point == 1:
-                            # The reference lock, at the start of each pass.
-                            sync = source.wait_references(
-                                frequency, stop, tuple(key for key in keys if key != "mfli")
-                            )
-                            if stop.is_set():
-                                raise InterruptedError("6221-IV scan stopped")
-                            self.post_ui(
-                                lambda info=sync: self._publish_reference_sync(info, "AC", vi=True)
-                            )
-                            unlocked = [
-                                NONLOCAL_METER_NAMES[key] for key in keys
-                                if not (sync.get(key) or {}).get("valid", False)
-                            ]
+                            # The reference lock, at the start of each pass;
+                            # a PLL at a few Hz can take several seconds.
+                            deadline = time.monotonic() + NONLOCAL_IV6221_REFERENCE_WAIT_S
+                            while True:
+                                sync = source.wait_references(
+                                    frequency, stop, tuple(key for key in keys if key != "mfli")
+                                )
+                                if stop.is_set():
+                                    raise InterruptedError("6221-IV scan stopped")
+                                self.post_ui(
+                                    lambda info=sync: self._publish_reference_sync(info, "AC", vi=True)
+                                )
+                                unlocked = [
+                                    key for key in keys
+                                    if not (sync.get(key) or {}).get("valid", False)
+                                ]
+                                if not unlocked or time.monotonic() >= deadline:
+                                    break
+                                self.post_ui(
+                                    lambda names=", ".join(NONLOCAL_METER_NAMES[k] for k in unlocked):
+                                    self.nonlocal_iv6221_point_var.set(
+                                        f"Transport acquisition: waiting for the reference lock ({names})"
+                                    )
+                                )
                             if unlocked:
+                                hint = (
+                                    f"; the Zurich Ref. is {settings['mfli_config']['reference_source']}"
+                                    if "mfli" in unlocked and settings["mfli_config"] else ""
+                                )
                                 raise RuntimeError(
                                     f"Lock-in reference not locked at {frequency:g} Hz: "
-                                    f"{', '.join(unlocked)}; check Trigger Link line "
-                                    f"{settings['marker_line']}, its cable and the Zurich Ref. input"
+                                    f"{', '.join(NONLOCAL_METER_NAMES[k] for k in unlocked)}; check Trigger Link line "
+                                    f"{settings['marker_line']}, its cable and the Zurich Ref. input{hint}"
                                 )
+                            if settings["mfli_config"]:
+                                self.post_ui(lambda: self._show_nonlocal_mfli_lock(True))
                         readings, discarded, compliance = self._nonlocal_iv6221_read_point(
                             source, frequency, keys, settings, stop
                         )
@@ -31850,6 +32153,12 @@ class CombinedControlApp:
         if self.nonlocal_vi_closed:
             return
         self.nonlocal_vi_closed = True
+        if self.__dict__.get("nonlocal_mfli_after_id") is not None:
+            try:
+                self.root.after_cancel(self.nonlocal_mfli_after_id)
+            except (tk.TclError, AttributeError):
+                pass
+            self.nonlocal_mfli_after_id = None
         self.nonlocal_vi_stop_event.set()
         self.nonlocal_keithley_stop_event.set()
         try:

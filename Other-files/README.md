@@ -1,5 +1,49 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local Zurich as on RT-E: Ref. by Zurich, live lock, continuous 6221 sweep (2026-10-08)
+
+On the lab PC, the Zurich (DEV4414) never locked in a Non-local 6221-IV scan
+("Lock-in reference not locked at 17.3 Hz: Zurich"). On RT-E, with the same
+cables, it showed "Locked". The two pages differed in three ways:
+
+- **Ref.:** RT-E has DEV4414 on Trigger In 1, while the Non-local rack had
+  Aux Input 1.
+  - **Ref. follows the Zurich:** choosing a Zurich now sets its wiring
+    (`NONLOCAL_MFLI_DEVICE_REFERENCE_INPUTS`). DEV4414 (Super) goes on
+    Trigger In 1, as on PPMS and RT-E. DEV4435 (Normal) goes on Aux Input 1,
+    as on STFMR and Gate-VI. The Ref. can still be changed by hand.
+  - **Default:** the rack now starts on RT-E's Zurich, DEV4414 with Trigger
+    In 1.
+- **Lock state:** RT-E sets the Zurich up when it connects and reads it once
+  a second, so its row says "Locked" or "Warning". Non-local did neither, so
+  its row could only say "Connected". Now:
+  - **On connect:** the Zurich is set up as RT-E does it, with Ref., TC and
+    the 6221-IV Zurich harmonic (`_apply_nonlocal_mfli_config`). If set-up
+    fails, the Zurich stays connected and the status says why.
+  - **On a change:** a change of Ref., TC or the Zurich harmonic is applied
+    at once.
+  - **While idle:** the row reads the lock once a second
+    (`_poll_nonlocal_mfli`, `NONLOCAL_MFLI_POLL_MS`) and shows "Locked",
+    "Warning" or "Read failed". The 6221-IV Zurich row shows the Signal
+    Input range, e.g. "Autorange 10 mV". Reads pause while a scan,
+    connection or task runs.
+- **The 6221 between points:** 6221-IV aborted and restarted the sine at
+  every point (`set_current`: ABOR, AMPL, ARM, INIT). That stops the Trigger
+  Link marker the lock-ins lock to. Now 6221-IV runs as the RT-E Current
+  scan:
+  - **Range:** `configure(sweep_peak_a=…)` sets one fixed range for the
+    largest current (`SOUR:CURR:RANG`, `SOUR:WAVE:RANG FIX`,
+    `SOUR:WAVE:DUR:CYCL INF`).
+  - **Points:** the sine starts once, and after that
+    `NonLocalACController.update_amplitude` changes only `SOUR:WAVE:AMPL`,
+    read back with the output checked on. This continues through every
+    harmonic pass.
+  - **Set 6221 and Gate-VI:** these keep the automatic range.
+- **Lock wait:** at the start of each pass the scan waits up to
+  `NONLOCAL_IV6221_REFERENCE_WAIT_S` (20 s) for every lock-in to lock, and
+  shows "waiting for the reference lock (…)". An unlocked Zurich's message
+  names its Ref. input.
+
 ## Non-local: RT-E-style settings and scan boxes, the rack's Zurich Ref./TC, run folders (2026-10-08)
 
 - **Settings and scan boxes:** 2400-IV, 6221-IV and Gate-VI each have a
