@@ -12607,8 +12607,9 @@ class CombinedControlApp:
         self.nonlocal_iv_eta_var = tk.StringVar(value="Remaining: --")
         # (point, set V, source V, current A, elapsed s, at the current limit)
         self.nonlocal_iv_rows: list[tuple] = []
-        self.nonlocal_iv_saved = True
         self.nonlocal_iv_settings: dict[str, object] = {}
+        # The live CSV of the last 2400-IV sweep (its folder is chosen at Start).
+        self.nonlocal_iv_csv_path = None
         self.nonlocal_iv_total_points = 0
         self.nonlocal_iv_canvas = None
         self.nonlocal_iv_directory = NONLOCAL_IV_SWEEP_RESULTS_DIRECTORY
@@ -21592,7 +21593,8 @@ class CombinedControlApp:
         buttons = ttk.Frame(controls)
         buttons.grid(row=5, column=0, columnspan=4, sticky="w", pady=(6, 0))
         self.nonlocal_iv_start_button = ttk.Button(
-            buttons, text="Start 2400-IV sweep", command=self.start_nonlocal_iv_sweep
+            buttons, text="Choose folder and start 2400-IV sweep",
+            command=self.start_nonlocal_iv_sweep,
         )
         self.nonlocal_iv_start_button.pack(side="left", padx=(0, 4))
         self.nonlocal_iv_stop_button = ttk.Button(
@@ -21602,10 +21604,11 @@ class CombinedControlApp:
             state="disabled",
         )
         self.nonlocal_iv_stop_button.pack(side="left", padx=(0, 4))
+        # The CSV is written point by point; the plot can be added beside it.
         self.nonlocal_iv_save_button = ttk.Button(
             buttons,
-            text="Save CSV + PNG",
-            command=self.save_nonlocal_iv_sweep,
+            text="Save plot PNG",
+            command=self.save_nonlocal_iv_png,
             state="disabled",
         )
         self.nonlocal_iv_save_button.pack(side="left")
@@ -30330,13 +30333,7 @@ class CombinedControlApp:
             state="normal" if task == "resistance" and not stopping else "disabled"
         )
         self.nonlocal_iv_start_button.configure(
-            state=(
-                "normal"
-                if free
-                and self.nonlocal_iv_safety_var.get()
-                and "nonlocal-iv-csv" not in self.active_file_exports
-                else "disabled"
-            )
+            state="normal" if free and self.nonlocal_iv_safety_var.get() else "disabled"
         )
         self.nonlocal_iv_stop_button.configure(
             state="normal" if task == "iv" and not stopping else "disabled"
@@ -30344,9 +30341,7 @@ class CombinedControlApp:
         self.nonlocal_iv_save_button.configure(
             state=(
                 "normal"
-                if task != "iv"
-                and self.nonlocal_iv_rows
-                and "nonlocal-iv-csv" not in self.active_file_exports
+                if task != "iv" and self.nonlocal_iv_rows and self.nonlocal_iv_csv_path
                 else "disabled"
             )
         )
@@ -30790,16 +30785,8 @@ class CombinedControlApp:
         except ValueError as error:
             messagebox.showwarning("2400-IV", str(error), parent=self.root)
             return
-        if "nonlocal-iv-csv" in self.active_file_exports:
-            return
         total = len(settings["voltages"])
         estimate = self._format_scan_duration(total * (float(settings["settle_s"]) + 0.15))
-        unsaved = (
-            f"\n\nThe previous sweep ({len(self.nonlocal_iv_rows)} points) has not been saved "
-            "and will be cleared."
-            if self.nonlocal_iv_rows and not self.nonlocal_iv_saved
-            else ""
-        )
         if not messagebox.askyesno(
             "Start the 2400-IV sweep?",
             f"Keithley {self.nonlocal_vi_2410_controller.model}: "
@@ -30808,56 +30795,117 @@ class CombinedControlApp:
             f"Current limit: {settings['current_limit_a']:g} A\n"
             f"Estimated time: about {estimate}"
             + (f"\nSample: {settings['sample']}" if settings["sample"] else "")
-            + unsaved,
+            + "\n\nEach point is written to a live CSV in the folder you choose next. "
+            "The Keithley is zeroed and switched off at the end.",
             parent=self.root,
         ):
             return
+        folder = filedialog.askdirectory(
+            parent=self.root,
+            title="Select the folder for the 2400-IV live CSV",
+            initialdir=str(
+                self.nonlocal_iv_directory
+                if Path(self.nonlocal_iv_directory).is_dir()
+                else Path(__file__).resolve().parent
+            ),
+        )
+        if not folder:
+            return
         if self.nonlocal_keithley_task is not None or not self._nonlocal_keithley_free("the 2400-IV sweep"):
             return
+        self.nonlocal_iv_directory = Path(folder)
+        timestamp = datetime_module.datetime.now().strftime("%Y%m%d_%H%M%S")
+        sample = re.sub(r"[^\w.-]+", "_", str(settings.get("sample", ""))).strip("._")[:40]
+        stem = f"2400-IV_{sample}_{timestamp}" if sample else f"2400-IV_{timestamp}"
+        csv_path = Path(folder) / f"{stem}.csv"
+        suffix = 1
+        while csv_path.exists() or csv_path.with_name(f"{csv_path.stem}_parameters.log").exists():
+            csv_path = Path(folder) / f"{stem}_{suffix:02d}.csv"
+            suffix += 1
+        parameters = {
+            "sample": settings.get("sample", ""),
+            "instrument.model": f"Keithley {settings.get('model', '')}",
+            "instrument.resource": settings.get("resource", ""),
+            "instrument.identity": settings.get("identity", ""),
+            "sweep.started": settings.get("started", ""),
+            "sweep.start_V": settings.get("start_v"),
+            "sweep.end_V": settings.get("end_v"),
+            "sweep.step_V": settings.get("step_v"),
+            "sweep.settle_s": settings.get("settle_s"),
+            "sweep.current_limit_A": settings.get("current_limit_a"),
+            "sweep.nplc": NONLOCAL_IV_SWEEP_NPLC,
+            "sweep.source_range_V": KEITHLEY_LOW_SOURCE_RANGE_V,
+            "sweep.ovp_V": NONLOCAL_VI_2410_SOURCE_OVP_V,
+            "sweep.points": total,
+            "output.csv": csv_path.name,
+        }
+        try:
+            self.write_parameter_log(
+                csv_path.with_name(f"{csv_path.stem}_parameters.log"),
+                self.format_parameter_log("Non-local 2400-IV parameter log", parameters),
+            )
+        except OSError as error:
+            messagebox.showerror("2400-IV", str(error), parent=self.root)
+            return
+        self.nonlocal_iv_csv_path = csv_path
         self.nonlocal_iv_settings = settings
         self.nonlocal_iv_rows = []
-        self.nonlocal_iv_saved = False
         self.nonlocal_iv_total_points = total
         self.nonlocal_iv_progress.configure(maximum=max(1, total), value=0)
         self.nonlocal_iv_eta_var.set(f"Remaining: about {estimate}")
         self.nonlocal_iv_point_var.set("Last point: --")
         self._redraw_nonlocal_iv_plot()
         self.nonlocal_vi_status_var.set(
-            f"2400-IV sweep: {settings['start_v']:g} → {settings['end_v']:g} V, {total} points…"
+            f"2400-IV sweep: {settings['start_v']:g} → {settings['end_v']:g} V, {total} points; "
+            f"live CSV {csv_path}"
         )
         self.nonlocal_vi_output_var.set(
             f"Keithley {self.nonlocal_vi_2410_controller.model} ON: 2400-IV voltage source"
         )
         self._begin_nonlocal_keithley_task(
             "iv",
-            lambda: self._nonlocal_iv_worker(settings),
+            lambda: self._nonlocal_iv_worker(settings, csv_path),
             self._finish_nonlocal_iv_sweep,
         )
 
-    def _nonlocal_iv_worker(self, settings: dict) -> None:
+    def _nonlocal_iv_worker(self, settings: dict, csv_path: Path) -> None:
         stop = self.nonlocal_keithley_stop_event
         limit = float(settings["current_limit_a"])
         settle_s = float(settings["settle_s"])
 
         def sweep(controller) -> None:
-            controller.start_iv_sweep(limit)
-            started = time.monotonic()
-            for index, target in enumerate(settings["voltages"], start=1):
-                if stop.is_set():
-                    raise InterruptedError("2400-IV sweep stopped")
-                controller.set_iv_voltage(target)
-                if stop.wait(settle_s):
-                    raise InterruptedError("2400-IV sweep stopped")
-                voltage_v, current_a = controller.read_iv_point()
-                row = (
-                    index,
-                    float(target),
-                    voltage_v,
-                    current_a,
-                    time.monotonic() - started,
-                    abs(current_a) >= limit * 0.99,
-                )
-                self.post_ui(lambda row=row: self._append_nonlocal_iv_point(row))
+            # The CSV first, so a file problem stops the sweep before the
+            # Keithley is switched on; each point is written as it is read.
+            with Path(csv_path).open("x", newline="", encoding="utf-8-sig") as file:
+                writer = csv.writer(file)
+                writer.writerow((
+                    "point", "set_voltage_V", "source_voltage_V", "current_A",
+                    "elapsed_s", "at_current_limit",
+                ))
+                file.flush()
+                controller.start_iv_sweep(limit)
+                started = time.monotonic()
+                for index, target in enumerate(settings["voltages"], start=1):
+                    if stop.is_set():
+                        raise InterruptedError("2400-IV sweep stopped")
+                    controller.set_iv_voltage(target)
+                    if stop.wait(settle_s):
+                        raise InterruptedError("2400-IV sweep stopped")
+                    voltage_v, current_a = controller.read_iv_point()
+                    row = (
+                        index,
+                        float(target),
+                        voltage_v,
+                        current_a,
+                        time.monotonic() - started,
+                        abs(current_a) >= limit * 0.99,
+                    )
+                    writer.writerow((
+                        index, f"{target:.10g}", f"{voltage_v:.10g}", f"{current_a:.10g}",
+                        f"{row[4]:.3f}", int(row[5]),
+                    ))
+                    file.flush()
+                    self.post_ui(lambda row=row: self._append_nonlocal_iv_point(row))
 
         self._run_on_nonlocal_keithley(NonLocalVIInterlock.VOLTAGE, sweep)
 
@@ -30880,13 +30928,15 @@ class CombinedControlApp:
     def _finish_nonlocal_iv_sweep(self, future) -> None:
         self.nonlocal_keithley_task = None
         done, total = len(self.nonlocal_iv_rows), self.nonlocal_iv_total_points
+        path = self.__dict__.get("nonlocal_iv_csv_path")
+        name = f" CSV: {Path(path).name}" if path and Path(path).exists() else " No CSV was written."
         self.nonlocal_vi_output_var.set(self._nonlocal_output_text())
         self.nonlocal_iv_eta_var.set("Remaining: --")
         try:
             future.result()
         except InterruptedError:
             self.nonlocal_vi_status_var.set(
-                f"2400-IV sweep stopped after {done}/{total} points; voltage zeroed and output off"
+                f"2400-IV sweep stopped after {done}/{total} points; voltage zeroed and output off.{name}"
             )
         except BaseException as error:
             self.nonlocal_vi_status_var.set(
@@ -30897,8 +30947,7 @@ class CombinedControlApp:
                 messagebox.showerror("2400-IV sweep failed", str(error), parent=self.root)
         else:
             self.nonlocal_vi_status_var.set(
-                f"2400-IV sweep complete: {done} points; voltage zeroed and output off. "
-                "Save CSV + PNG to keep it"
+                f"2400-IV sweep complete: {done} points; voltage zeroed and output off.{name}"
             )
         try:
             self._redraw_nonlocal_iv_plot()
@@ -31013,93 +31062,25 @@ class CombinedControlApp:
                 text="red: at the current limit", fill="#c62828",
             )
 
-    def save_nonlocal_iv_sweep(self) -> None:
-        export_key = "nonlocal-iv-csv"
-        if export_key in self.active_file_exports:
-            self.nonlocal_vi_status_var.set("The 2400-IV data are being saved in the background")
+    def save_nonlocal_iv_png(self) -> None:
+        """The plot as shown, as a PNG beside the sweep's live CSV."""
+        path = self.nonlocal_iv_csv_path
+        if not self.nonlocal_iv_rows or path is None:
+            self.nonlocal_vi_status_var.set("No 2400-IV sweep to save a plot of")
             return
-        rows = list(self.nonlocal_iv_rows)
-        settings = dict(self.nonlocal_iv_settings)
-        if not rows:
-            self.nonlocal_vi_status_var.set("No 2400-IV data to save")
+        png_path = Path(path).with_suffix(".png")
+        suffix = 1
+        while png_path.exists():
+            png_path = Path(path).with_name(f"{Path(path).stem}_{suffix:02d}.png")
+            suffix += 1
+        try:
+            self._redraw_nonlocal_iv_plot()
+            self.save_plot_canvas_snapshot(self.nonlocal_iv_canvas, png_path)
+        except BaseException as error:
+            self.nonlocal_vi_status_var.set(f"2400-IV plot PNG not saved: {error}")
+            messagebox.showwarning("2400-IV", f"Plot PNG not saved:\n{error}", parent=self.root)
             return
-        camera = self.pause_camera_rendering("Saving the 2400-IV CSV and plot snapshot")
-        directory = self.select_csv_save_directory(
-            "Select the folder for the 2400-IV CSV and PNG", self.nonlocal_iv_directory
-        )
-        if directory is None:
-            self.resume_camera_rendering(camera)
-            self.nonlocal_vi_status_var.set("Saving the 2400-IV data cancelled")
-            return
-        self.nonlocal_iv_directory = directory
-        timestamp = datetime_module.datetime.now().strftime("%Y%m%d_%H%M%S")
-        sample = re.sub(r"[^\w.-]+", "_", str(settings.get("sample", ""))).strip("._")[:40]
-        stem = f"IV_{sample}_{timestamp}" if sample else f"IV_{timestamp}"
-        csv_path = directory / f"{stem}.csv"
-        png_path = directory / f"{stem}.png"
-        log_path = directory / f"{stem}_parameters.log"
-        header = [
-            "point", "set_voltage_V", "source_voltage_V", "current_A",
-            "elapsed_s", "at_current_limit",
-        ]
-        csv_rows = [
-            (index, f"{target:.10g}", f"{voltage:.10g}", f"{current:.10g}",
-             f"{elapsed:.3f}", int(bool(limited)))
-            for index, target, voltage, current, elapsed, limited in rows
-        ]
-        parameters = {
-            "sample": settings.get("sample", ""),
-            "instrument.model": f"Keithley {settings.get('model', '')}",
-            "instrument.resource": settings.get("resource", ""),
-            "instrument.identity": settings.get("identity", ""),
-            "sweep.started": settings.get("started", ""),
-            "sweep.start_V": settings.get("start_v"),
-            "sweep.end_V": settings.get("end_v"),
-            "sweep.step_V": settings.get("step_v"),
-            "sweep.settle_s": settings.get("settle_s"),
-            "sweep.current_limit_A": settings.get("current_limit_a"),
-            "sweep.nplc": NONLOCAL_IV_SWEEP_NPLC,
-            "sweep.source_range_V": KEITHLEY_LOW_SOURCE_RANGE_V,
-            "sweep.ovp_V": NONLOCAL_VI_2410_SOURCE_OVP_V,
-            "sweep.completed_points": len(rows),
-            "sweep.expected_points": len(settings.get("voltages", ())),
-            "output.csv": csv_path.name,
-            "output.png": png_path.name,
-            "output.log": log_path.name,
-        }
-        log_text = self.format_parameter_log("Non-local 2400-IV parameter log", parameters)
-        self.nonlocal_vi_status_var.set("Saving the 2400-IV CSV and parameter log in the background…")
-
-        def work():
-            self.write_csv_exports(((csv_path, header, csv_rows),))
-            self.write_parameter_log(log_path, log_text)
-
-        def failed(error: BaseException) -> None:
-            self.nonlocal_vi_status_var.set(f"2400-IV CSV/parameter log save failed: {error}")
-            messagebox.showerror("2400-IV", str(error), parent=self.root)
-
-        def saved(_result) -> None:
-            try:
-                self._redraw_nonlocal_iv_plot()
-                self.save_plot_canvas_snapshot(self.nonlocal_iv_canvas, png_path)
-            except BaseException as error:
-                self.nonlocal_vi_status_var.set(f"2400-IV CSV saved; plot snapshot failed: {error}")
-                messagebox.showwarning(
-                    "2400-IV",
-                    f"CSV and parameter log saved:\n{csv_path.name}\n{log_path.name}\n\n"
-                    f"Plot snapshot save failed:\n{error}",
-                    parent=self.root,
-                )
-                return
-            self.nonlocal_iv_saved = True
-            self.nonlocal_vi_status_var.set(f"2400-IV CSV, PNG and parameter log saved: {directory}")
-            messagebox.showinfo(
-                "2400-IV",
-                f"Saved:\n{csv_path.name}\n{png_path.name}\n{log_path.name}\n\nFolder:\n{directory}",
-                parent=self.root,
-            )
-
-        self.submit_file_export(export_key, camera, work, saved, failed)
+        self.nonlocal_vi_status_var.set(f"2400-IV plot PNG saved: {png_path}")
 
     # 6221-IV ----------------------------------------------------------------
 

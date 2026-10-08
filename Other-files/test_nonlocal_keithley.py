@@ -5,6 +5,7 @@ instrument: a stand-in canvas records the drawing, and a fake SourceMeter
 answers the SCPI commands.
 """
 import threading
+from pathlib import Path
 import unittest
 from concurrent.futures import Future
 from unittest import mock
@@ -191,7 +192,8 @@ class FinishTests(unittest.TestCase):
     def test_a_stopped_or_failed_sweep_says_so(self):
         app_ = self.finished("iv", InterruptedError("stopped"))
         self.assertEqual(app_.nonlocal_vi_status_var.get(),
-                         "2400-IV sweep stopped after 1/49 points; voltage zeroed and output off")
+                         "2400-IV sweep stopped after 1/49 points; voltage zeroed and output off."
+                         " No CSV was written.")
         self.assertEqual(app_.nonlocal_iv_eta_var.get(), "Remaining: --")
         app_ = self.finished("iv", RuntimeError("bus timeout; more"), output_off=False)
         self.assertIn("2400-IV sweep stopped by an error after 1/49 points: bus timeout", app_.nonlocal_vi_status_var.get())
@@ -335,8 +337,18 @@ class WorkerTests(unittest.TestCase):
     def settings(self, voltages=(-1.0, 0.0, 1.0)):
         return {"voltages": list(voltages), "current_limit_a": 1e-3, "settle_s": 0.0}
 
+    def csv_path(self):
+        import tempfile
+        return Path(tempfile.mkdtemp()) / "2400-IV_test.csv"
+
     def test_a_sweep_reads_every_point_then_switches_off(self):
-        self.app._nonlocal_iv_worker(self.settings())
+        path = self.csv_path()
+        self.app._nonlocal_iv_worker(self.settings(), path)
+        # Each point went to the live CSV as it was read.
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+        self.assertEqual(lines[0], "point,set_voltage_V,source_voltage_V,current_A,elapsed_s,at_current_limit")
+        self.assertEqual([line.split(",")[:4] for line in lines[1:]],
+                         [["1", "-1", "-1", "-1e-09"], ["2", "0", "0", "0"], ["3", "1", "1", "1e-09"]])
         self.assertEqual(self.log, ["6221 off", "6221 confirmed off"])
         rows = []
         self.app._append_nonlocal_iv_point = rows.append
@@ -351,7 +363,7 @@ class WorkerTests(unittest.TestCase):
     def test_stop_and_errors_still_switch_off(self):
         self.app.nonlocal_keithley_stop_event.set()
         with self.assertRaises(InterruptedError):
-            self.app._nonlocal_iv_worker(self.settings())
+            self.app._nonlocal_iv_worker(self.settings(), self.csv_path())
         self.assertEqual(self.log, [], "a Stop before the start switches nothing")
         self.assertNotIn(":OUTP ON", self.meter.commands)
         self.assertEqual((self.meter.output, self.meter.voltage), (0, 0.0))
@@ -359,8 +371,11 @@ class WorkerTests(unittest.TestCase):
         self.app.nonlocal_keithley_stop_event.clear()
         self.meter.query = (lambda original: lambda command: (_ for _ in ()).throw(
             RuntimeError("VI_ERROR_TMO")) if command == ":READ?" else original(command))(self.meter.query)
+        path = self.csv_path()
         with self.assertRaisesRegex(RuntimeError, "VI_ERROR_TMO"):
-            self.app._nonlocal_iv_worker(self.settings())
+            self.app._nonlocal_iv_worker(self.settings(), path)
+        self.assertEqual(len(path.read_text(encoding="utf-8-sig").splitlines()), 1,
+                         "the header was written before the failed point")
         self.assertEqual((self.meter.output, self.meter.voltage), (0, 0.0))
         self.assertEqual(self.app.nonlocal_vi_interlock.phase, "IDLE")
 
@@ -417,33 +432,44 @@ class StartQuestionTests(unittest.TestCase):
         a.nonlocal_iv_limit_var = Var("1e-6")
         a._begin_nonlocal_keithley_task = mock.Mock()
 
-    def ask(self, answer):
-        with mock.patch.object(app.messagebox, "askyesno", return_value=answer) as question:
+    def ask(self, answer, folder=""):
+        with mock.patch.object(app.messagebox, "askyesno", return_value=answer) as question, \
+                mock.patch.object(app.filedialog, "askdirectory", return_value=folder):
             self.app.start_nonlocal_iv_sweep()
         return question.call_args[0][1] if question.called else None
 
-    def test_no_answer_starts_nothing_and_keeps_the_last_sweep(self):
-        self.app.nonlocal_iv_rows, self.app.nonlocal_iv_saved = [(1,)] * 49, False
+    def test_no_answer_or_no_folder_starts_nothing(self):
+        self.app.nonlocal_iv_rows = [(1,)] * 49
+        self.app.nonlocal_iv_directory = Path(".")
         text = self.ask(False)
         self.assertIn("-6 V → 6 V in 0.25 V steps, 49 points, 0.5 s settle", text)
         self.assertIn("Current limit: 1e-06 A", text)
         self.assertIn("Sample: 1µm Pt-Pt", text)
-        self.assertIn("The previous sweep (49 points) has not been saved", text)
+        self.assertIn("live CSV in the folder you choose next", text)
+        self.ask(True, folder="")
         self.app._begin_nonlocal_keithley_task.assert_not_called()
-        self.assertEqual(len(self.app.nonlocal_iv_rows), 49)
+        self.assertEqual(len(self.app.nonlocal_iv_rows), 49, "the last sweep stays on the plot")
 
-    def test_yes_starts_and_a_saved_sweep_is_not_mentioned(self):
+    def test_yes_and_a_folder_writes_the_log_and_starts_with_a_live_csv(self):
+        import tempfile
         a = self.app
-        a.nonlocal_iv_rows, a.nonlocal_iv_saved = [(1,)] * 49, True
+        a.nonlocal_iv_rows = [(1,)] * 49
+        a.nonlocal_iv_directory = Path(".")
         a.nonlocal_iv_progress = mock.Mock()
         a.nonlocal_iv_eta_var, a.nonlocal_iv_point_var = Var(), Var()
         a.nonlocal_vi_status_var, a.nonlocal_vi_output_var = Var(), Var()
         a._redraw_nonlocal_iv_plot = lambda: None
-        text = self.ask(True)
-        self.assertNotIn("not been saved", text)
+        folder = tempfile.mkdtemp()
+        self.ask(True, folder=folder)
         a._begin_nonlocal_keithley_task.assert_called_once()
-        self.assertEqual((a.nonlocal_iv_rows, a.nonlocal_iv_saved), ([], False))
+        self.assertEqual(a.nonlocal_iv_rows, [])
         self.assertEqual(a.nonlocal_iv_settings["current_limit_a"], 1e-6)
+        csv_path = a.nonlocal_iv_csv_path
+        self.assertEqual(csv_path.parent, Path(folder))
+        self.assertTrue(csv_path.name.startswith("2400-IV_1µm_Pt-Pt_"), csv_path.name)
+        log = csv_path.with_name(csv_path.stem + "_parameters.log").read_text(encoding="utf-8")
+        self.assertIn("sweep.current_limit_A=1e-06", log)
+        self.assertIn(f"output.csv={csv_path.name}", log)
 
 
 if __name__ == "__main__":

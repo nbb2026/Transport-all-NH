@@ -1,5 +1,23 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local 2400-IV: choose the folder at Start and save a live CSV, as 6221-IV does (2026-10-08)
+
+- **Start:** "Choose folder and start 2400-IV sweep". The Yes/No summary
+  comes first, then the folder dialog.
+  - **Files:** `2400-IV_<sample>_<time>.csv` and its `_parameters.log` are
+    created there. The log holds the sample, model, resource, identity,
+    sweep settings, NPLC, range and OVP.
+  - **During the sweep:** the worker opens the CSV before the Keithley is
+    switched on and writes each point as it is read (point, set and source
+    voltage, current, elapsed time, at the limit). A stopped or failed sweep
+    keeps its points.
+- **Save CSV + PNG → "Save plot PNG":** this button now writes the plot as
+  shown, `<csv stem>.png`, beside the CSV. A screen capture needs the plot
+  on screen, so this stays a button rather than happening at the end.
+- **Status:** the finish message names the CSV, or says none was written.
+  The "previous sweep not saved" warning is gone, because nothing is
+  unsaved any more.
+
 ## Non-local 6221-IV: lock-in settings and layout as on the STFMR page (2026-10-08)
 
 - **Layout:** like the STFMR field-sweep box. One aligned table with label:

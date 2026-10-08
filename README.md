@@ -50,7 +50,9 @@ acquisition, averaging the region of interest over the post-pulse interval.
   plotted over the last 20 s. It was on the MOKE-24 page until 2026-10-08.
 - **2400-IV** steps the Keithley voltage once from Start to End (default
   −6 to 6 V in 0.25 V steps, ±20 V at most, 20 V OVP) and plots the current
-  read at each step. It saves a CSV, the plot as a PNG and a parameter log.
+  read at each step. As on 6221-IV, the folder is chosen at Start, and each
+  point is written to a live CSV with a parameter log. "Save plot PNG" adds
+  the plot beside the CSV.
 - **6221-IV** is the RT-E Current scan on this page's 6221 and lock-ins:
   - **Sweep:** the 6221 sine is stepped in mA RMS from Start to End
     (default 0.01 to 1 mA in 0.01 mA steps), with Loops and an optional
