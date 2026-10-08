@@ -117,7 +117,7 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertNotIn("resistance", a.keithley_hazard_var.get())
         tabs = a.nonlocal_measurements
         self.assertEqual([tabs.tab(i, "text") for i in range(tabs.index("end"))],
-                         ["Gate-VI pulse scan", "|R| vs time", "I–V sweep"])
+                         ["|R| vs time", "I–V sweep", "Gate-VI pulse scan"])
         self.assertEqual(
             (a.nonlocal_iv_start_var.get(), a.nonlocal_iv_end_var.get(), a.nonlocal_iv_step_var.get(),
              a.nonlocal_iv_settle_var.get(), a.nonlocal_iv_limit_var.get()),

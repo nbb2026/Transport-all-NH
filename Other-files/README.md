@@ -1,5 +1,11 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local page: sub-tab order (2026-10-08)
+
+The sub-tabs are now in the user's order: **|R| vs time**, **I–V sweep**,
+**Gate-VI pulse scan**. |R| vs time opens first. `gui_checks.py` shoots them
+in that order.
+
 ## Non-local page: the connection box in two columns, as on PPMS and STFMR (2026-10-08)
 
 - **Connection box:** like the PPMS page's, it holds only connections, each

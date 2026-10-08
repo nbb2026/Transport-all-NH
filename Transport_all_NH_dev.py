@@ -20724,9 +20724,10 @@ class CombinedControlApp:
         gate_tab = ttk.Frame(self.nonlocal_measurements, padding=(0, 5, 0, 0))
         resistance_tab = ttk.Frame(self.nonlocal_measurements, padding=(0, 5, 0, 0))
         iv_tab = ttk.Frame(self.nonlocal_measurements, padding=(0, 5, 0, 0))
-        self.nonlocal_measurements.add(gate_tab, text="Gate-VI pulse scan")
+        # In the user's order (2026-10-08): |R| vs time, I-V sweep, Gate-VI.
         self.nonlocal_measurements.add(resistance_tab, text="|R| vs time")
         self.nonlocal_measurements.add(iv_tab, text="I–V sweep")
+        self.nonlocal_measurements.add(gate_tab, text="Gate-VI pulse scan")
         self.nonlocal_measurements.bind(
             "<<NotebookTabChanged>>",
             lambda _event: (

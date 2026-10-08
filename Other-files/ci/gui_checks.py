@@ -38,7 +38,7 @@ SCREENS = (  # (screen width, height, window width or 0 for the program's own)
 SHOT_PAGES = ("MOKE light", "MOKE motor", "MOKE magnet", "MOKE-24", "MOKE-6221",
               "Non-local", "PPMS", "RT-E", "FMR", "STFMR")
 # The Non-local page's measurements are sub-tabs; each is checked and shot.
-SUB_TABS = {"Non-local": ("nonlocal_measurements", ("gate", "resistance", "iv"))}
+SUB_TABS = {"Non-local": ("nonlocal_measurements", ("resistance", "iv", "gate"))}
 
 
 def load_program():
