@@ -52,6 +52,9 @@ class StopEvent:
     def set(self):
         self.flag = True
 
+    def clear(self):
+        self.flag = False
+
     def wait(self, seconds):
         self.clock.now += seconds
         return self.is_set()
@@ -126,6 +129,7 @@ class FakePPMS:
         self.stale_until = 0.0
         self.active = object()
         self.connected = True
+        self.fault = None     # A field status such as MagnetFailure, reported from now on.
 
     def _update(self):
         elapsed = self.world.clock.now - self.changed_at
@@ -139,7 +143,9 @@ class FakePPMS:
 
     def _reading(self):
         self._update()
-        if self.field != self.target:
+        if self.fault:
+            status = self.fault
+        elif self.field != self.target:
             status = "Charging"
         else:
             status = "StablePersistent" if self.mode == 0 else "StableDriven"
@@ -165,9 +171,10 @@ class FakeMotor:
     def __init__(self, world):
         self.world = world
         self.angle = 0.0
+        self.status = "AtTarget"
 
     def read(self):
-        return {"angle_deg": self.angle, "status": "AtTarget"}
+        return {"angle_deg": self.angle, "status": self.status}
 
     def move_and_verify(self, target, speed, cancelled=lambda: False, allow_large=False, timeout=90.0, **_):
         world = self.world
@@ -698,8 +705,9 @@ class ManualTests(unittest.TestCase):
                                stop=world.stop, motor=world.motor, clock=world.clock, sleep=world.advance)
 
     def field_to(self, world, target, mode=1):
+        distance = abs(target - world.ppms._reading()["field_oe"])
         world.ppms.set_field(target, 100.0, 1, mode)
-        world.advance(abs(target) / 100.0 + 5.0)
+        world.advance(distance / 100.0 + 5.0)
         world.events.clear()
 
     def test_move_turns_the_rotator_at_zero_field_with_the_6221_off(self):
@@ -814,6 +822,80 @@ class ManualTests(unittest.TestCase):
         self.assertIn("H +0.0 Oe StablePersistent", text)
         self.assertIn("6221 OFF", text)
 
+    def test_nothing_is_sent_while_the_rotator_moves(self):
+        # After a stopped Move the rotator can still be turning: Set H, Set I
+        # and Pulse are refused until it reads AtTarget, as on the PPMS page.
+        world = World()
+        world.motor.status = "Moving"
+        for action in (lambda run: run.manual_field(1500.0), lambda run: run.manual_current(),
+                       lambda run: run.manual_pulse(22.0), lambda run: run.manual_move(10.0, lambda a, b: True)):
+            with self.assertRaisesRegex(RuntimeError, "rotator is Moving"):
+                action(self.manual(world))
+        self.assertEqual([e for e in world.events if e[0] in ("field", "pulse", "sine", "rotate")], [])
+        world.motor.status = "AtIndexSwitch"
+        self.manual(world).manual_field(1500.0)
+
+    def test_a_refused_move_leaves_the_6221_as_it_was(self):
+        world = World()
+        run = self.manual(world)
+        run.manual_current()
+        self.field_to(world, 1500.0, mode=0)
+        with self.assertRaisesRegex(RuntimeError, "only at zero field"):
+            run.manual_move(90.0, lambda before, target: True)
+        self.assertTrue(world.source_device.output_on(), "checked before anything was turned off")
+        with self.assertRaises(ms.ManualDeclined):
+            self.field_to(world, 0.0, mode=0)
+            run.manual_move(270.0, lambda before, target: False)
+        self.assertTrue(world.source_device.output_on(), "a declined move turns nothing off")
+
+    def test_the_field_is_read_again_after_the_question(self):
+        world = World()
+
+        def answer_while_the_field_rises(before, target):
+            world.ppms.set_field(1500.0, 100.0, 1, 1)  # e.g. from MultiVu while the question was open
+            world.advance(30.0)
+            return True
+
+        with self.assertRaisesRegex(RuntimeError, "only at zero field"):
+            self.manual(world).manual_move(270.0, answer_while_the_field_rises)
+        self.assertEqual([e for e in world.events if e[0] == "rotate"], [])
+
+    def test_a_magnet_fault_ends_set_h_at_once(self):
+        world = World()
+        world.ppms.fault = "MagnetFailure"
+        start = world.clock.now
+        with self.assertRaisesRegex(RuntimeError, "MagnetFailure"):
+            self.manual(world).manual_field(1500.0)
+        self.assertLess(world.clock.now - start, 5.0)
+
+    def test_set_h_shows_the_reading_while_it_waits(self):
+        world = World()
+        self.manual(world).manual_field(1500.0)
+        shown = [payload for kind, payload in world.emitted if kind == "manual-reading"]
+        self.assertGreater(len(shown), 3)
+        self.assertLess(shown[0]["field_oe"], shown[-1]["field_oe"])
+
+    def test_stop_reports_only_the_instruments_connected(self):
+        world = World()
+        world.source.instrument = None  # Set H with only the PPMS connected
+        world.stop.stop_when = lambda: world.ppms._reading()["field_oe"] > 500
+        with mock.patch.object(ms.time, "sleep", lambda seconds: None):
+            _result, outcome, problems = ms.run_manual(self.manual(world), lambda run: run.manual_field(1500.0))
+        self.assertEqual((outcome[0], problems), ("stopped", []))
+        self.assertEqual(world.ppms.read_environment()["field_oe"], 0.0)
+        world = World()
+        world.ppms.connected = False  # Set I with only the 6221 connected
+        world.stop.stop_when = lambda: world.source_device.output_on()
+        _result, outcome, problems = ms.run_manual(self.manual(world), lambda run: run.manual_current())
+        self.assertEqual((outcome[0], problems), ("stopped", []))
+        self.assertFalse(world.source_device.output_on())
+
+    def test_manual_rate_and_compliance_are_checked(self):
+        for changes, message in (({"field_rate": "150"}, "rate"), ({"field_rate": "0"}, "rate"),
+                                 ({"compliance_v": "200"}, "ompliance"), ({"compliance_v": "-5"}, "ompliance")):
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, message):
+                ms.manual_settings(dict(ms.DEFAULTS, **changes))
+
     def test_manual_values_are_checked(self):
         with self.assertRaisesRegex(ValueError, "Read current"):
             ms.manual_settings(dict(ms.DEFAULTS), "70")
@@ -882,6 +964,81 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(len(app.rows), 2)
         self.assertEqual(app.plot.set_rows.call_count, 2, "the plot keeps every point")
         self.assertTrue(any("CSV write failed at step 2" in text for text in app.logged))
+
+    def manual_app(self, world):
+        app = self.app()
+        app.title = "MS-fourState"
+        app.ppms, app.source, app.lockin = world.ppms, world.source, world.lockin
+        app.stop_event = world.stop
+        app.busy, app.worker = False, None
+        app.motor_pending, app.field_unconfirmed = False, None
+        app.status_var, app.manual_var = mock.Mock(), mock.Mock()
+        app.safety_var = mock.Mock(get=lambda: True)
+        app._set_busy = lambda busy, running=False: None
+        app._manual_log = lambda text: None
+        app.data_directory = Path("/nonexistent")
+        return app
+
+    def finish(self, app, label, outcome, problems=(), reading=None, kind="", target=None):
+        with mock.patch.object(ms.messagebox, "showerror") as error:
+            app._manual_finished(label, lambda result: "done", None, outcome, list(problems),
+                                 reading or {}, kind, target)
+        return error
+
+    def test_a_stopped_move_blocks_until_a_reading_at_rest(self):
+        world = World()
+        app = self.manual_app(world)
+        self.finish(app, "Moving", ("stopped", core.PPMSScanCancelled("Stopped")),
+                    reading={"angle_status": "Moving", "angle_deg": 120.0}, kind="move")
+        self.assertTrue(app.motor_pending)
+        for check in (dict(ppms=True, moves=True), dict(source=True, moves=True)):
+            with self.assertRaisesRegex(ValueError, "may still be turning"):
+                app._manual_check(**check)
+        app._manual_check(source=True, safety=False)  # I off still works
+        self.finish(app, "Reading", None, reading={"angle_status": "AtTarget", "angle_deg": 270.0})
+        self.assertFalse(app.motor_pending)
+
+    def test_a_failed_set_h_blocks_move_until_zero_h(self):
+        world = World()
+        app = self.manual_app(world)
+        app.manual_vars = {"angle": mock.Mock(get=lambda: "90")}
+        app.values = {key: mock.Mock(get=lambda value=value: value) for key, value in ms.DEFAULTS.items()}
+        error = self.finish(app, "Field to +1500 Oe", ("failed", RuntimeError("read failed")), kind="field", target=1500.0)
+        self.assertEqual(app.field_unconfirmed, 1500.0)
+        self.assertIn("may still be going to +1500 Oe", error.call_args[0][1])
+        with mock.patch.object(ms.messagebox, "showerror") as refused:
+            app.manual_move()
+        self.assertIn("not confirmed", refused.call_args[0][1])
+        self.assertIsNone(app.worker)
+        self.finish(app, "Field to +0 Oe", None, kind="field", target=0.0)
+        self.assertIsNone(app.field_unconfirmed)
+
+    def test_a_failure_with_the_6221_not_connected_does_not_claim_it_was_turned_off(self):
+        world = World()
+        world.source.instrument = None
+        app = self.manual_app(world)
+        error = self.finish(app, "Field to +1500 Oe", ("failed", RuntimeError("x")), kind="field", target=1500.0)
+        self.assertNotIn("6221 has been turned off", error.call_args[0][1])
+
+    def test_a_stop_as_the_action_ends_still_turns_off(self):
+        world = World()
+        world.ppms.connected = False         # Set I with the 6221 alone (no rotator to read)
+        world.lockin_device.p["FMOD"] = 0    # The SR830 locks at once: no real-time wait
+        app = self.manual_app(world)
+        finished = []
+        app.post = lambda kind, payload=None: payload() if kind == "call" else None
+        app._manual_finished = lambda *args: finished.append(args)
+        settings = ms.manual_settings(ms.DEFAULTS)
+
+        def set_i_then_stop(run):
+            run.manual_current()
+            world.stop.set()  # Stop clicked just as Set I returns
+
+        with mock.patch.object(ms.time, "sleep", lambda seconds: None):
+            app._run_manual("Set I", settings, set_i_then_stop, lambda result: "done")
+            app.worker.join(10)
+        self.assertEqual(finished[0][3][0], "stopped")
+        self.assertFalse(world.source_device.output_on())
 
     def test_close_waits_for_a_connection_in_progress(self):
         app = self.app()

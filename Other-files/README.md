@@ -23,11 +23,28 @@ thing at a time, like the PPMS settings rows of the main program:
 - **Safety tick:** every action except I off and Read needs it.
 - **Stop:** 6221 off and 0 Oe (Driven). An error turns the 6221 off and
   leaves the field and angle.
+- **Safety review:** an adversarial review found no wrong values and no
+  overlap with runs. It found gaps, all fixed:
+  - **Rotator interlock:** nothing is sent while the rotator is not at rest.
+    A stopped Move blocks the other buttons and Start until a Read shows it
+    at rest, as the PPMS page's `ppms_motor_pending`.
+  - **Move checks:** Move checks the field and the rotator before it turns
+    anything off, reads the field again after the large-turn question, and
+    is refused after an unconfirmed Set H until Zero H.
+  - **Limits:** the field rate and compliance are checked for manual actions
+    too.
+  - **Set H wait:** Set H shows the field while it waits and ends at once on
+    MagnetFailure or CurrentError.
+  - **Stop:** a Stop just as an action ends is honoured, and an instrument
+    that is not connected is not reported as a shutdown problem.
+  - **Dialog:** a question cancelled by Stop is never shown.
+  - **Log:** manual actions are logged to `manual_log.txt`.
 
 The run engine and its checks are shared: `_shared_settings` checks the Write
 and Read values for runs and manual actions alike. The window opens 60 px
 taller (1360 × 960), so the plot keeps its height. Tests:
-`ManualTests` (12, simulated instruments) and a window check in
+`ManualTests` (19, simulated instruments), four `DisplayTests` for the
+interlocks and the late Stop, and a window check in
 `Other-files/test_ms_four_state.py`. Removing the zero-field rule for Move, or
 the stale-Persistent rule, fails them.
 

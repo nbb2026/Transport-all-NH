@@ -32,13 +32,17 @@ PPMS settings rows of `Transport_all_NH_dev.py` do:
 | Field | H Oe, Oe/s | **Set H**, **Zero H** |
 | Current | I mA RMS, f Hz; Pulse mA | **Set I**, **I off**; **Pulse** |
 
-- **Move:** turns the rotator as a run step does. The 6221 is turned off
-  first, and the move is refused unless the field is at 0 Oe (Zero H first).
-  A turn over 30° asks for confirmation, as on the PPMS page.
+- **Move:** turns the rotator as a run step does. It is refused, with
+  nothing sent or turned off, unless the field is at 0 Oe (Zero H first) and
+  the rotator is at rest. A turn over 30° asks for confirmation, as on the
+  PPMS page, and the field is read again after the answer. Then the 6221 is
+  turned off and the rotator moves.
 - **Set H and Zero H:** go to the field and end **Persistent**, as on the
-  PPMS page. Done when the readback shows Persistent at the field, by that
-  page's rule, so a reading from before the command cannot pass. Nothing is
-  resent.
+  PPMS page.
+  - Done when the readback shows Persistent at the field, by that page's
+    rule, so a reading from before the command cannot pass. Nothing is resent.
+  - The Now line shows the field every 2 s while it waits.
+  - MagnetFailure or CurrentError ends it at once.
 - **Set I:** starts the read sine (I mA RMS at f Hz, phase marker on, as in a
   read) and leaves it on. The SR830's lock to it is shown; nothing is written
   to the SR830. **I off** turns the 6221 off, read back.
@@ -48,12 +52,30 @@ PPMS settings rows of `Transport_all_NH_dev.py` do:
   also updates this readout when it ends.
 
 Decel, Oe/s and f Hz are the Write and Read boxes' own fields: changing one
-changes both. Every button except I off and Read needs the safety tick in
-the Run row.
+changes both. They are checked for manual actions as for runs: the field
+rate below 150 Oe/s, and the compliance within the 6221's range. Every
+button except I off and Read needs the safety tick in the Run row.
+
+As on the PPMS page, nothing is sent while the rotator may be moving:
+- **Rotator not at rest:** Set H, Set I, Pulse and Move are refused unless it
+  reads AtTarget.
+- **Move stopped or failed:** those buttons and Start stay refused until a
+  Read shows the rotator at rest.
+- **Set H failed:** Move is refused until a Zero H succeeds, as the PPMS may
+  still be going to that field.
+
+Every manual action and its result is written to `manual_log.txt` in the
+data folder.
 
 **Stop** during a manual action does what it does in a run: 6221 off and
-0 Oe (Driven), read back. An error turns the 6221 off and leaves the field
-and angle as they are.
+0 Oe (Driven), read back. That includes a field set earlier with Set H.
+- **Stop just as the action ends:** still honoured.
+- **Instrument not connected:** left out of the check, not reported as a
+  problem.
+
+An error turns the 6221 off and leaves the angle. After a failed Set H, the
+PPMS may still be going to that field; the command is not resent, so use
+Zero H or MultiVu.
 
 ## States
 

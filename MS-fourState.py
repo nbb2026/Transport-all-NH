@@ -106,6 +106,10 @@ DEFAULTS = {
 }
 APPROACHES = {"Linear": 0, "No overshoot": 1}
 ANGLE_TOLERANCE_DEG = 0.06  # As PPMSMotorDebug.move_and_verify.
+ROTATOR_AT_REST = ("AtTarget", "AtIndexSwitch")
+# Field statuses that end a manual Set H at once, rather than after its margin.
+FIELD_FAULTS = ("magnetfailure", "currenterror")
+MANUAL_READING_INTERVAL_S = 2.0  # The Now line while a manual Set H waits.
 LARGE_ROTATION_DEG = 30.0   # As the PPMS page's manual Move.
 FIELD_TIMEOUT_MARGIN_S = 600.0
 SHUTDOWN_FIELD_MARGIN_S = 120.0
@@ -219,6 +223,10 @@ def _shared_settings(values):
     if values["approach"] not in APPROACHES:
         raise ValueError("Choose a field approach")
     decel = _whole(values["decel"], "Rotator decel", 0, 14)
+    # Checked here too, not only per state: a manual action has no states,
+    # and Stop's return to 0 Oe needs a rate the PPMS accepts.
+    core.validate_ppms_field_command(0.0, rate)
+    core.Keithley6221Controller._validate(0.0, width_s, compliance, count)
     read_rms_a = _number(values["read_current_ma"], "Read current (mA RMS)") / 1000.0
     if not 0 < read_rms_a <= READ_CURRENT_MAX_RMS_A:
         raise ValueError(f"Read current must be above 0 and at most {READ_CURRENT_MAX_RMS_A * 1e3:g} mA RMS")
@@ -752,11 +760,14 @@ class FourStateRun:
         """6221 off and 0 Oe (Driven), both confirmed by readback.  Never moves
         the rotator.  Problems are kept in ``shutdown_problems``."""
         problems = []
+        if self.source.connected:  # Not connected (a manual action): nothing to turn off.
+            try:
+                self.source_off()
+            except Exception as error:
+                problems.append(f"6221 not confirmed off: {error}")
         try:
-            self.source_off()
-        except Exception as error:
-            problems.append(f"6221 not confirmed off: {error}")
-        try:
+            if not self.ppms.connected:
+                raise LookupError  # Nothing to return to 0 Oe from here.
             s = self.settings
             data = self.ppms.read_environment()
             # A field this run commanded may not show in the reading yet.
@@ -783,6 +794,8 @@ class FourStateRun:
                         problems.append(f"field not confirmed at 0 Oe: {data.get('field_oe')} Oe / "
                                         f"{data.get('field_status')}")
                         break
+        except LookupError:
+            pass
         except Exception as error:
             problems.append(f"0 Oe not confirmed: {error}")
         self.shutdown_problems = problems
@@ -790,20 +803,40 @@ class FourStateRun:
             self.emit("log", "Shutdown: " + "; ".join(problems) + ". Check MultiVu and the 6221.")
 
     # -- manual settings, as on the PPMS page -----------------------------
-    def manual_move(self, angle, confirm_large):
-        """Move as a run step does: 6221 off first, and only at zero field
-        (refused, nothing sent, otherwise).  A turn over LARGE_ROTATION_DEG
-        needs ``confirm_large(from_deg, to_deg)`` to return True."""
-        if self.source.connected:
-            self.source_off()
+    def require_rotator_at_rest(self):
+        """Refuse (nothing sent) unless the rotator reads AtTarget, as the PPMS
+        page blocks its controls while a move may still be under way.  Its
+        reading, or None when the PPMS is not connected here."""
+        if not self.ppms.connected:
+            return None
+        reading = self.motor.read()
+        if reading["status"] not in ROTATOR_AT_REST:
+            raise RuntimeError(
+                f"The rotator is {reading['status']} at {reading['angle_deg']:.2f}°: nothing sent. "
+                "Read until it shows AtTarget, or check MultiVu")
+        return reading
+
+    def require_zero_field(self):
         data = self.ppms.read_environment()
         if not core.CombinedControlApp._ppms_field_is_ready(data, 0.0):
             raise RuntimeError(
                 f"The rotator turns only at zero field; the field is {data.get('field_oe')} Oe / "
                 f"{data.get('field_status')}. Zero H first")
-        before = self.motor.read()
-        if abs(angle - before["angle_deg"]) > LARGE_ROTATION_DEG and not confirm_large(before["angle_deg"], angle):
-            raise ManualDeclined("Move cancelled; MOVE not sent")
+
+    def manual_move(self, angle, confirm_large):
+        """Move as a run step does: only at zero field and with the rotator at
+        rest (refused, nothing sent, otherwise), then the 6221 off.  A turn
+        over LARGE_ROTATION_DEG needs ``confirm_large(from_deg, to_deg)`` to
+        return True; the field is read again after the answer."""
+        self.require_zero_field()
+        before = self.require_rotator_at_rest()
+        if abs(angle - before["angle_deg"]) > LARGE_ROTATION_DEG:
+            if not confirm_large(before["angle_deg"], angle):
+                raise ManualDeclined("Move cancelled; MOVE not sent")
+            self.check()
+            self.require_zero_field()  # The question may have been open a while.
+        if self.source.connected:
+            self.source_off()
         return self.rotate_to(angle)
 
     def manual_field(self, target):
@@ -811,8 +844,10 @@ class FourStateRun:
         Done by that page's rule (_follow_ppms_persistent_setpoint): Persistent
         at the target once the status has left Persistent, or Persistent at
         the target PPMS_PERSISTENT_CONFIRM_S after the command, so a reading
-        from before it cannot pass.  Nothing is resent."""
+        from before it cannot pass.  Nothing is resent.  A magnet fault ends it
+        at once; the reading goes to the Now line every few seconds."""
         s = self.settings
+        self.require_rotator_at_rest()
         result = self.command_field(target, mode=0)
         sent = self.clock()
         try:
@@ -822,10 +857,17 @@ class FourStateRun:
         deadline = sent + distance / s.field_rate_oe_s + core.PPMS_PERSISTENT_MARGIN_S
         tolerance = max(core.PPMS_FIELD_TOLERANCE_OE, abs(target) * core.PPMS_FIELD_RELATIVE_TOLERANCE)
         left_persistent = False
+        shown = None
         while True:
             self.check()
             data = self.ppms.read_environment()
+            if shown is None or self.clock() - shown >= MANUAL_READING_INTERVAL_S:
+                self.emit("manual-reading", dict(data))
+                shown = self.clock()
             status = str(data.get("field_status", "")).strip().lower().replace(" ", "")
+            if any(fault in status for fault in FIELD_FAULTS):
+                raise RuntimeError(f"PPMS reports {data.get('field_status')} at {data.get('field_oe')} Oe; "
+                                   "check MultiVu (not resent)")
             try:
                 measured = float(data["field_oe"])
             except (KeyError, TypeError, ValueError):
@@ -846,6 +888,7 @@ class FourStateRun:
         """The PPMS page's Set I: the read sine (settings.read_current_rms_a,
         phase marker on), left on.  The SR830's lock to it is reported, read
         only: nothing is written to the SR830."""
+        self.require_rotator_at_rest()
         self.start_read_current()
         if not self.lockin.connected:
             return {"lock": "SR830 not connected"}
@@ -869,6 +912,7 @@ class FourStateRun:
         """One write pulse train as in a run (the Write settings), 6221 off first."""
         if pulse_ma == 0:
             raise ValueError("Pulse mA is 0: nothing to send")
+        self.require_rotator_at_rest()
         self.source_off()
         return self.pulse(pulse_ma)
 
@@ -1033,6 +1077,11 @@ class FourStateApp:
         self.run_folder = None   # The running run's folder: logs go there.
         self.last_folder = None  # The latest run's folder: Save plot goes there.
         self.record = None
+        # Set after a Move that was stopped or failed (the rotator may still
+        # be turning; cleared by a reading at rest), and after a field
+        # command that was not confirmed (Move refused until Zero H).
+        self.motor_pending = False
+        self.field_unconfirmed = None
         self._build()
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.drain_after = root.after(100, self._drain)
@@ -1244,14 +1293,22 @@ class FourStateApp:
         self.manual_var = tk.StringVar(value="Now: not read yet (Read)")
         ttk.Label(manual, textvariable=self.manual_var, justify="left").grid(
             row=0, column=6, rowspan=2, columnspan=4, sticky="nw", padx=(16, 0))
-        ttk.Label(
+        note = ttk.Label(
             manual, foreground="#8a4b00",
             text=("Set H and Zero H end Persistent; Move only at 0 Oe (6221 off first); "
                   "Pulse uses the Write box. Stop: 6221 off and 0 Oe."),
-        ).grid(row=2, column=9, sticky="w", padx=(16, 0))
+        )
+        note.grid(row=2, column=9, sticky="ew", padx=(16, 0))
+        # Wraps to the width left beside the Pulse row, rather than being cut.
+        note.bind("<Configure>", lambda event: event.widget.configure(wraplength=max(150, event.width - 4)))
 
     # -- manual settings ------------------------------------------------
-    def _manual_check(self, *, ppms=False, source=False, safety=True):
+    def _manual_check(self, *, ppms=False, source=False, safety=True, moves=False):
+        """``moves``: the action drives the rotator, field or 6221 (all but
+        I off and Read): refused while a stopped Move may still be turning."""
+        if moves and self.motor_pending:
+            raise ValueError("The rotator may still be turning after the last Move: "
+                             "press Read until it shows AtTarget (or check MultiVu)")
         if ppms:
             if not self.ppms.connected:
                 raise ValueError("Connect the PPMS first")
@@ -1269,7 +1326,10 @@ class FourStateApp:
         if self.busy:
             return
         try:
-            self._manual_check(ppms=True)
+            self._manual_check(ppms=True, moves=True)
+            if self.field_unconfirmed is not None:
+                raise ValueError(f"The last field command ({self.field_unconfirmed:+g} Oe) was not confirmed: "
+                                 "Zero H first, so the rotator never turns in a field")
             settings = manual_settings(self._manual_values())
             angle = _number(self.manual_vars["angle"].get(), "Angle")
             core.PPMSMotorDebug.validate_move(angle, settings.decel, angle)
@@ -1285,13 +1345,13 @@ class FourStateApp:
 
         self._run_manual(f"Moving the rotator to {angle:g}°", settings,
                          lambda run: run.manual_move(angle, confirm_large),
-                         lambda result: f"Rotator at {result:.4f}°")
+                         lambda result: f"Rotator at {result:.4f}°", kind="move")
 
     def manual_set_field(self, zero=False):
         if self.busy:
             return
         try:
-            self._manual_check(ppms=True)
+            self._manual_check(ppms=True, moves=True)
             settings = manual_settings(self._manual_values())
             target = 0.0 if zero else _number(self.manual_vars["field"].get(), "H")
             core.validate_ppms_field_command(target, settings.field_rate_oe_s)
@@ -1302,13 +1362,14 @@ class FourStateApp:
             self.manual_vars["field"].set("0")
         self._run_manual(f"Field to {target:+g} Oe, then Persistent", settings,
                          lambda run: run.manual_field(target),
-                         lambda result: f"Field {target:+g} Oe reached; Persistent confirmed")
+                         lambda result: f"Field {target:+g} Oe reached; Persistent confirmed",
+                         kind="field", target=target)
 
     def manual_set_current(self):
         if self.busy:
             return
         try:
-            self._manual_check(source=True)
+            self._manual_check(source=True, moves=True)
             settings = manual_settings(self._manual_values(), self.manual_vars["current_ma"].get())
         except ValueError as error:
             messagebox.showerror(self.title, str(error), parent=self.root)
@@ -1335,7 +1396,7 @@ class FourStateApp:
         if self.busy:
             return
         try:
-            self._manual_check(source=True)
+            self._manual_check(source=True, moves=True)
             settings = manual_settings(self._manual_values())
             pulse_ma = _number(self.manual_vars["pulse_ma"].get(), "Pulse mA")
             if pulse_ma == 0:
@@ -1377,7 +1438,8 @@ class FourStateApp:
 
         def ask():
             try:
-                answer.append(messagebox.askyesno(self.title, question, parent=self.root, default="no"))
+                if not self.stop_event.is_set():  # Stopped before it appeared: not asked.
+                    answer.append(messagebox.askyesno(self.title, question, parent=self.root, default="no"))
             finally:
                 answered.set()
 
@@ -1385,50 +1447,97 @@ class FourStateApp:
         while not answered.wait(0.1):
             if self.stop_event.is_set():
                 raise core.PPMSScanCancelled("Stopped")
+        if self.stop_event.is_set():
+            raise core.PPMSScanCancelled("Stopped")
         return bool(answer and answer[0])
 
-    def _run_manual(self, label, settings, operation, describe):
-        """``operation(run)`` in a worker, one action at a time; Stop is on."""
+    def _run_manual(self, label, settings, operation, describe, kind="", target=None):
+        """``operation(run)`` in a worker, one action at a time; Stop is on.
+        ``kind``: "move" or "field" for the latches; ``target``: the field."""
         self.stop_event.clear()
         self._set_busy(True, running=True)
         self.status_var.set(f"{label}…")
         self._append_log(f"Manual: {label}")
+        self._manual_log(f"Manual: {label}")
         run = FourStateRun(self.ppms, self.source, self.lockin, settings, emit=self.post, stop=self.stop_event)
 
-        def target():
-            result, outcome, problems = run_manual(run, operation)
+        def read():
             try:
-                reading = run.manual_read()
+                return run.manual_read()
             except Exception as error:
-                reading = {"error": core.short_status_error(error, 80)}
-            self.post("call", lambda: self._manual_finished(label, describe, result, outcome, problems, reading))
+                return {"error": core.short_status_error(error, 80)}
 
-        self.worker = threading.Thread(target=target, daemon=True)
+        def target_():
+            result, outcome, problems = run_manual(run, operation)
+            reading = read()
+            if outcome is None and self.stop_event.is_set():
+                # Stop came as the action ended: it still means 6221 off and
+                # 0 Oe, as it would have a moment earlier.
+                run.shutdown()
+                outcome, problems = ("stopped", core.PPMSScanCancelled("Stopped")), list(run.shutdown_problems)
+                reading = read()
+            self.post("call", lambda: self._manual_finished(
+                label, describe, result, outcome, problems, reading, kind, target))
+
+        self.worker = threading.Thread(target=target_, daemon=True)
         self.worker.start()
 
-    def _manual_finished(self, label, describe, result, outcome, problems, reading):
+    def _manual_finished(self, label, describe, result, outcome, problems, reading, kind="", target=None):
         self._set_busy(False)
         self.worker = None
         self.manual_var.set(self.format_reading(reading))
-        if outcome is None:
+        state = outcome[0] if outcome is not None else "done"
+        # Latches: a Move not completed may leave the rotator turning; a field
+        # command not confirmed may still act.  Stop's shutdown confirms 0 Oe.
+        if kind == "move" and state in ("stopped", "failed"):
+            self.motor_pending = True
+        if reading.get("angle_status") in ROTATOR_AT_REST:
+            self.motor_pending = False
+        if kind == "field" and state == "failed":
+            self.field_unconfirmed = target
+        elif (kind == "field" and state == "done" and target == 0.0) or (state == "stopped" and not problems):
+            self.field_unconfirmed = None
+        if state == "done":
             text = describe(result)
-        elif outcome[0] == "declined":
+            if self.stop_event.is_set():
+                text += " (Stop came after it had ended: nothing undone)"
+        elif state == "declined":
             text = f"{label}: {outcome[1]}"
-        elif outcome[0] == "stopped":
+        elif state == "stopped":
             text = "Stopped: " + ("6221 off and 0 Oe, read back" if not problems
                                   else "PROBLEM: " + "; ".join(problems))
-            if label.startswith("Moving"):
-                text += ". If the rotator was moving, check MultiVu"
+            if kind == "move":
+                text += ". If the rotator was moving, check MultiVu; Read until it shows AtTarget"
         else:
             text = f"{label} failed: {core.short_status_error(outcome[1], 100)}"
         self.status_var.set(text)
         self._append_log(text)
-        if outcome is not None and outcome[0] == "failed" or problems:
-            detail = str(outcome[1]) if outcome is not None and outcome[0] == "failed" else text
-            if outcome is not None and outcome[0] == "failed":
-                detail += ("\n\nThe 6221 has been turned off; the field and angle are left as they are."
-                           if not problems else "\n\n" + "\n".join(problems))
+        self._manual_log(text)
+        if state == "failed" or problems:
+            detail = str(outcome[1]) if state == "failed" else text
+            if state == "failed":
+                notes = []
+                if problems:
+                    notes += problems
+                elif self.source.connected:
+                    notes.append("The 6221 has been turned off (read back).")
+                if kind == "field":
+                    notes.append(f"The PPMS may still be going to {target:+g} Oe; the command is not resent. "
+                                 "Zero H, or MultiVu, to return to 0 Oe. Move is refused until then.")
+                else:
+                    notes.append("The field and angle are left as they are.")
+                detail += "\n\n" + "\n".join(notes)
             messagebox.showerror(self.title, detail, parent=self.root)
+
+    def _manual_log(self, text):
+        """Manual actions change the sample outside any run: one line each in
+        the data folder's manual_log.txt."""
+        try:
+            self.data_directory.mkdir(parents=True, exist_ok=True)
+            with open(self.data_directory / "manual_log.txt", "a", encoding="utf-8") as handle:
+                handle.write(f"{datetime.now().isoformat(timespec='seconds')} {text}\n")
+        except OSError:
+            pass
 
     @staticmethod
     def format_reading(reading):
@@ -1526,6 +1635,8 @@ class FourStateApp:
             self._record_lockin(payload)
         elif kind == "call":
             payload()
+        elif kind == "manual-reading":
+            self.manual_var.set(self.format_reading(payload))
 
     def _append_log(self, text, show=True):
         stamp = datetime.now().strftime("%H:%M:%S")
@@ -1662,6 +1773,9 @@ class FourStateApp:
             settings = self.current_settings()
             if not self.safety_var.get():
                 raise ValueError("Tick the safety confirmation first")
+            if self.motor_pending:
+                raise ValueError("The rotator may still be turning after the last Move: "
+                                 "press Read (Manual settings) until it shows AtTarget")
         except ValueError as error:
             messagebox.showerror(self.title, str(error), parent=self.root)
             return
@@ -1796,6 +1910,8 @@ class FourStateApp:
         if self.__dict__.get("csv_failed"):
             problems = problems + ["some CSV rows could not be written"]
         off = "6221 off and 0 Oe, read back" if not problems else "PROBLEM: " + "; ".join(problems)
+        if not problems:
+            self.field_unconfirmed = None  # The shutdown confirmed 0 Oe.
         if outcome is None:
             text = f"Finished: {count} points; {off}"
         elif outcome[0] == "stopped":
