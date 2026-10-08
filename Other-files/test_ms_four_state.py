@@ -988,6 +988,62 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual([kind for kind, _ in world.emitted if kind == "trace"], [])
 
 
+class ConsoleTests(unittest.TestCase):
+    """Every command to the instruments, and every reply, on the console."""
+
+    def test_a_visa_instrument_echoes_what_is_sent_and_read(self):
+        lines = []
+        device = mock.Mock()
+        device.query.return_value = "1\n"
+        echoed = ms.EchoedResource(device, "6221", lines.append)
+        echoed.write("OUTP OFF")
+        self.assertEqual(echoed.query("OUTP?"), "1\n", "the reply itself is unchanged")
+        echoed.timeout = 5000
+        echoed.close()
+        self.assertEqual(lines, ["6221 > OUTP OFF", "6221 > OUTP?", "6221 < 1"])
+        self.assertEqual(device.timeout, 5000, "settings reach the instrument")
+        device.close.assert_called_once()
+        device.query.side_effect = TimeoutError("VI_ERROR_TMO")
+        with self.assertRaises(TimeoutError):
+            echoed.query("SNAP? 1,2")
+        self.assertEqual(lines[-1], "6221 ! VI_ERROR_TMO")
+
+    def test_every_instrument_the_shared_manager_opens_is_echoed(self):
+        manager = mock.Mock()
+        manager.open_resource.return_value = mock.Mock(query=mock.Mock(return_value="SR830,s/n,ver"))
+        original = core.acquire_shared_visa_manager
+        self.addCleanup(setattr, core, "acquire_shared_visa_manager", original)
+        core.acquire_shared_visa_manager = lambda: manager
+        lines = []
+        ms.echo_visa_commands(lines.append, {"GPIB0::8::INSTR": "SR830"}.get)
+        acquired = core.acquire_shared_visa_manager()
+        self.assertIs(acquired, manager, "the same manager, so its reference count is kept")
+        instrument = acquired.open_resource("GPIB0::8::INSTR")
+        instrument.query("*IDN?")
+        self.assertEqual(lines, ["SR830 > *IDN?", "SR830 < SR830,s/n,ver"])
+
+    def test_the_ppms_commands_and_readings_are_echoed(self):
+        world = World()
+        lines = []
+        ppms = ms.EchoedPPMS(world.ppms, lines.append)
+        ppms.set_field(1500.0, 100.0, 1, 0)
+        self.assertEqual(lines[0], "PPMS > SetField +1500 Oe at 100 Oe/s, No overshoot, Persistent")
+        self.assertTrue(lines[1].startswith("PPMS < T 300.000 K Stable | H +0.0 Oe"))
+        self.assertTrue(ppms.connected, "everything else is the controller's own")
+        self.assertEqual(world.events[-1], ("field", 1500.0, 0))
+
+    def test_the_rotator_lines_go_to_the_console(self):
+        app = ms.FourStateApp.__new__(ms.FourStateApp)
+        posted = []
+        app.post = lambda kind, payload=None: posted.append((kind, payload))
+        app.log_from_thread("PPMS motor SEND ONCE: MOVE 270.000000 0 14")
+        app.log_from_thread("PPMS motor GetPPMSItem position=270.0")
+        app.log_from_thread("Keithley 6221 connected")
+        self.assertEqual(posted, [("command", "Rotator > SEND ONCE: MOVE 270.000000 0 14"),
+                                  ("command", "Rotator < GetPPMSItem position=270.0"),
+                                  ("log", "Keithley 6221 connected")])
+
+
 class StatusBoxTests(unittest.TestCase):
     """The PPMS status box: read only, polled while idle, fed by runs."""
 
@@ -1200,6 +1256,7 @@ class DisplayTests(unittest.TestCase):
         app.status_var = mock.Mock()
         app.status_vars = {key: mock.Mock() for key in ms.CONNECTIONS}
         app.connection_failed = {key: False for key in ms.CONNECTIONS}
+        app.resource_names = {}
         app.values = {key: mock.Mock(get=lambda value=value: value) for key, value in ms.DEFAULTS.items()}
         app.source_resource_var = mock.Mock(get=lambda: "GPIB0::30::INSTR")
         app.updates = []
@@ -1329,11 +1386,30 @@ class WindowTests(unittest.TestCase):
         error.assert_called_once()
         self.assertFalse(app.busy)
 
+    def test_the_console_shows_commands_and_counts_repeats(self):
+        app = self.app
+        self.addCleanup(app._clear_console)
+        app._clear_console()
+        app._append_log("Connecting Keithley 6221…")
+        for line in ("6221 > OUTP?", "6221 < 0", "6221 < 0", "6221 < 0", "SR830 ! VI_ERROR_TMO"):
+            app._append_command(line)
+        text = app.log.get("1.0", "end-1c")
+        self.assertIn("6221 > OUTP?", text)
+        self.assertEqual(text.count("6221 < 0"), 1, "a repeat updates its line")
+        self.assertIn("6221 < 0  ×3", text)
+        self.assertIn("SR830 ! VI_ERROR_TMO", text)
+        last = app.log.index("end-2l")
+        self.assertIn("error", app.log.tag_names(f"{last}+10c"))
+        app.show_commands_var.set(False)
+        self.addCleanup(app.show_commands_var.set, True)
+        app._append_command("6221 > *IDN?")
+        self.assertNotIn("*IDN?", app.log.get("1.0", "end-1c"), "hidden with the tick off")
+
     def test_the_plot_has_the_room(self):
         # The window opens at WINDOW_SIZE where the screen allows; the plot
         # takes what the controls leave.
         self.assertEqual(ms.WINDOW_SIZE, (1720, 1240))
-        self.assertEqual(int(self.app.log.cget("width")), 36)
+        self.assertEqual(int(self.app.log.cget("width")), 46)
 
     def test_the_mode_list_switches_the_run_row(self):
         app = self.app

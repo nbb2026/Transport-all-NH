@@ -111,6 +111,10 @@ DEFAULTS = {
 }
 APPROACHES = {"Linear": 0, "No overshoot": 1}
 CONNECTIONS = {"ppms": "PPMS (QDInstrument)", "6221": "Keithley 6221", "sr830": "SR830"}
+CONSOLE_NAMES = {"ppms": "PPMS", "6221": "6221", "sr830": "SR830"}
+CONSOLE_COLORS = {"background": "#11161c", "note": "#e8edf2", "sent": "#7fd4ff",
+                  "reply": "#a9b6c2", "error": "#ff7b72", "time": "#6c7a88"}
+CONSOLE_LINES = 3000  # Kept on screen; a run's log.txt keeps them all.
 # The PPMS status box, as the PPMS page's live readings.  Read only.  Polled
 # while idle; during a run or a manual action it shows that action's own
 # readings instead, so nothing extra is asked of the instruments.
@@ -347,6 +351,134 @@ def initialize_lockin(lockin):
             actual = sr830_query(lockin, f"{command}?", 1)[0]
             if actual != expected:
                 raise RuntimeError(f"SR830 setup readback mismatch: {command}={actual:g}, expected {expected}")
+
+
+class EchoedResource:
+    """A VISA instrument whose every write, query and read is echoed to the
+    command console, as a command-line session would show it: "> sent",
+    "< reply", "! error".  Everything else is the instrument's own."""
+
+    def __init__(self, resource, name, echo):
+        object.__setattr__(self, "_resource", resource)
+        object.__setattr__(self, "_name", name)
+        object.__setattr__(self, "_echo", echo)
+
+    def write(self, command, *args, **kwargs):
+        self._echo(f"{self._name} > {command}")
+        try:
+            return self._resource.write(command, *args, **kwargs)
+        except Exception as error:
+            self._echo(f"{self._name} ! {error}")
+            raise
+
+    def query(self, command, *args, **kwargs):
+        self._echo(f"{self._name} > {command}")
+        try:
+            reply = self._resource.query(command, *args, **kwargs)
+        except Exception as error:
+            self._echo(f"{self._name} ! {error}")
+            raise
+        self._echo(f"{self._name} < {str(reply).strip()}")
+        return reply
+
+    def read(self, *args, **kwargs):
+        reply = self._resource.read(*args, **kwargs)
+        self._echo(f"{self._name} < {str(reply).strip()}")
+        return reply
+
+    def __getattr__(self, name):
+        return getattr(self._resource, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._resource, name, value)
+
+
+_ECHO_TARGET = {"echo": lambda line: None, "name_of": str}
+
+
+def echo_visa_commands(echo, name_of):
+    """From now on every instrument the main program's shared VISA manager
+    opens is an EchoedResource named ``name_of(resource_name)``, echoing to
+    ``echo`` (the latest window's).  The manager itself stays the same
+    object, so its reference count is kept."""
+    _ECHO_TARGET.update(echo=echo, name_of=name_of)
+    acquire = core.acquire_shared_visa_manager
+    if getattr(acquire, "echoes", False) is True:
+        return
+
+    def acquire_echoed():
+        manager = acquire()
+        if getattr(manager, "_echoed", False) is not True:
+            open_resource = manager.open_resource
+
+            def open_echoed(resource_name, *args, **kwargs):
+                return EchoedResource(open_resource(resource_name, *args, **kwargs),
+                                      _ECHO_TARGET["name_of"](resource_name),
+                                      lambda line: _ECHO_TARGET["echo"](line))
+
+            manager.open_resource = open_echoed
+            manager._echoed = True
+        return manager
+
+    acquire_echoed.echoes = True
+    core.acquire_shared_visa_manager = acquire_echoed
+
+
+class EchoedPPMS:
+    """The PPMS interface with its field commands and readings echoed, as
+    EchoedResource does for VISA.  Everything else is the controller's own."""
+
+    APPROACH_NAMES = {code: name for name, code in APPROACHES.items()}
+
+    def __init__(self, ppms, echo):
+        object.__setattr__(self, "_ppms", ppms)
+        object.__setattr__(self, "_echo", echo)
+
+    @staticmethod
+    def describe(data):
+        return (f"T {float(data['temperature_k']):.3f} K {data.get('temperature_status', '')} | "
+                f"H {float(data['field_oe']):+.1f} Oe {data.get('field_status', '')}")
+
+    def _reply(self, data):
+        try:
+            self._echo(f"PPMS < {self.describe(data)}")
+        except (KeyError, TypeError, ValueError):
+            self._echo(f"PPMS < {data}")
+        return data
+
+    def connect(self, backend, host, port, *args, **kwargs):
+        self._echo(f"PPMS > connect {backend} {host}:{port}")
+        try:
+            return self._reply(self._ppms.connect(backend, host, port, *args, **kwargs))
+        except Exception as error:
+            self._echo(f"PPMS ! {error}")
+            raise
+
+    def set_field(self, target, rate, approach, mode):
+        self._echo(f"PPMS > SetField {float(target):+g} Oe at {float(rate):g} Oe/s, "
+                   f"{self.APPROACH_NAMES.get(approach, approach)}, {'Persistent' if mode == 0 else 'Driven'}")
+        try:
+            return self._reply(self._ppms.set_field(target, rate, approach, mode))
+        except Exception as error:
+            self._echo(f"PPMS ! {error}")
+            raise
+
+    def read_environment(self):
+        try:
+            return self._reply(self._ppms.read_environment())
+        except Exception as error:
+            self._echo(f"PPMS ! {error}")
+            raise
+
+    def disconnect(self):
+        self._echo("PPMS > disconnect")
+        return self._ppms.disconnect()
+
+    def __getattr__(self, name):
+        return getattr(self._ppms, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._ppms, name, value)
 
 
 def connect_lockin(lockin, resource):
@@ -1219,7 +1351,11 @@ class FourStateApp:
         root.geometry(f"{width}x{height}")
         root.minsize(*WINDOW_MINIMUM)
         self.events = queue.Queue()
-        self.ppms = core.PPMSRemoteReadbackController(self.log_from_thread)
+        # Every command to the instruments, and every reply, goes to the
+        # command console (EchoedResource, EchoedPPMS).
+        self.resource_names = {}
+        echo_visa_commands(self.echo, lambda resource: self.resource_names.get(resource.strip().upper(), resource))
+        self.ppms = EchoedPPMS(core.PPMSRemoteReadbackController(self.log_from_thread), self.echo)
         self.source = core.Keithley6221Controller(self.log_from_thread)
         self.lockin = core.SafeVisaIdentityController(self.log_from_thread, "SR830", "SR830", owner_scope=self.title)
         self.stop_event = threading.Event()
@@ -1411,10 +1547,31 @@ class FourStateApp:
         side = ttk.Frame(lower)
         side.grid(row=0, column=1, sticky="ns", padx=(8, 0))
         side.rowconfigure(1, weight=1)
+        side.columnconfigure(0, weight=1)
+        side.rowconfigure(2, weight=1)
         self.last_var = tk.StringVar(value="Last read: --")
         ttk.Label(side, textvariable=self.last_var, justify="left", width=32).grid(row=0, column=0, sticky="nw")
-        self.log = tk.Text(side, width=36, height=12, wrap="word", state="disabled")
-        self.log.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+        # The console: status lines, and, with the tick, every command sent to
+        # the instruments (">") and every reply ("<"), as on a command line.
+        bar = ttk.Frame(side)
+        bar.grid(row=1, column=0, sticky="ew", pady=(6, 2))
+        self.show_commands_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bar, text="Instrument commands", variable=self.show_commands_var).pack(side="left")
+        ttk.Button(bar, text="Clear", width=6, command=self._clear_console).pack(side="right")
+        console = ttk.Frame(side)
+        console.grid(row=2, column=0, sticky="nsew")
+        console.rowconfigure(0, weight=1)
+        console.columnconfigure(0, weight=1)
+        self.log = tk.Text(console, width=46, height=12, wrap="word", state="disabled",
+                           background=CONSOLE_COLORS["background"], foreground=CONSOLE_COLORS["note"],
+                           font="TkFixedFont", relief="flat", padx=4, pady=2)
+        self.log.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(console, orient="vertical", command=self.log.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.log.configure(yscrollcommand=scroll.set)
+        for tag in ("sent", "reply", "error", "time"):
+            self.log.tag_configure(tag, foreground=CONSOLE_COLORS[tag])
+        self.last_command = None
         self._update_connection_controls()
 
     def _build_status(self, parent):
@@ -1547,6 +1704,8 @@ class FourStateApp:
             reading = read_instrument_status(self.ppms, self.source, cryogen)
         except Exception as error:
             reading = {"time": f"failed: {core.short_status_error(error, 60)}"}
+        if "pressure_display" in reading:
+            self.echo(f"PPMS < pressure {reading['pressure_display']}, He {reading.get('helium_display', '--')}")
         self.post("status-box", reading)
 
     def _build_manual(self, page):
@@ -1900,8 +2059,17 @@ class FourStateApp:
 
     def log_from_thread(self, message):
         message = str(message)
-        quiet = message.startswith(("PPMS motor GetPPMSItem", "PPMS motor: angle="))
-        self.post("file-log" if quiet else "log", message)
+        if message.startswith("PPMS motor"):
+            # The rotator's own commands (SEND: MOVE) and readings
+            # (GetPPMSItem, angle): console lines, like every other instrument's.
+            text = message[len("PPMS motor"):].lstrip(" :")
+            self.echo(f"Rotator {'>' if 'SEND' in text else '<'} {text}")
+            return
+        self.post("log", message)
+
+    def echo(self, line):
+        """One console line from any thread: "<name> > sent", "< reply", "! error"."""
+        self.post("command", str(line))
 
     def _drain(self):
         """Handle queued events; one failing handler never stops the rest."""
@@ -1927,6 +2095,8 @@ class FourStateApp:
     def _handle(self, kind, payload):
         if kind == "log":
             self._append_log(payload)
+        elif kind == "command":
+            self._append_command(payload)
         elif kind == "file-log":
             self._append_log(payload, show=False)
         elif kind == "status":
@@ -1946,16 +2116,51 @@ class FourStateApp:
             self.status_polling = False
             self._show_status(payload)
 
-    def _append_log(self, text, show=True):
+    def _append_log(self, text, show=True, tag=None):
         stamp = datetime.now().strftime("%H:%M:%S")
         if show:
-            self.log.configure(state="normal")
-            self.log.insert("end", f"{stamp} {text}\n")
-            lines = int(self.log.index("end-1c").split(".")[0])
-            if lines > 800:
-                self.log.delete("1.0", f"{lines - 800}.0")
-            self.log.see("end")
-            self.log.configure(state="disabled")
+            self.last_command = None
+            self._console_line(stamp, text, tag)
+        self._file_log(stamp, text)
+
+    def _console_line(self, stamp, text, tag=None, replace_from=None):
+        log = self.log
+        log.configure(state="normal")
+        if replace_from is not None:
+            log.delete(replace_from, "end-1c")
+        start = log.index("end-1c")
+        log.insert("end", f"{stamp} ", "time")
+        log.insert("end", f"{text}\n", tag or ())
+        lines = int(log.index("end-1c").split(".")[0])
+        if lines > CONSOLE_LINES:
+            log.delete("1.0", f"{lines - CONSOLE_LINES}.0")
+            start = None  # Trimmed: a repeat starts a new line.
+        log.see("end")
+        log.configure(state="disabled")
+        return start
+
+    def _append_command(self, line):
+        """A console command line.  The same line again (a poll that reads the
+        same) updates the count on it ("x3") instead of adding a line."""
+        stamp = datetime.now().strftime("%H:%M:%S")
+        self._file_log(stamp, line)
+        if not self.show_commands_var.get():
+            return
+        tag = "error" if " ! " in line else "sent" if " > " in line else "reply"
+        if self.last_command is not None and self.last_command[0] == line and self.last_command[2] is not None:
+            count = self.last_command[1] + 1
+            start = self._console_line(stamp, f"{line}  ×{count}", tag, replace_from=self.last_command[2])
+            self.last_command = (line, count, start)
+        else:
+            self.last_command = (line, 1, self._console_line(stamp, line, tag))
+
+    def _clear_console(self):
+        self.log.configure(state="normal")
+        self.log.delete("1.0", "end")
+        self.log.configure(state="disabled")
+        self.last_command = None
+
+    def _file_log(self, stamp, text):
         if self.run_folder is not None:
             try:
                 with open(self.run_folder / "log.txt", "a", encoding="utf-8") as handle:
@@ -2014,6 +2219,9 @@ class FourStateApp:
             return
         label = CONNECTIONS[key]
         try:
+            if key in ("6221", "sr830"):
+                address = (self.source_resource_var if key == "6221" else self.lockin_resource_var).get()
+                self.resource_names[address.strip().upper()] = CONSOLE_NAMES[key]
             if key == "ppms":
                 port = int(self.port_var.get())
                 host, dll = self.host_var.get().strip(), self.dll_var.get().strip()

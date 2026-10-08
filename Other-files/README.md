@@ -1,5 +1,28 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MS-fourState.py: an instrument command console (2026-10-08)
+
+The log beside the plot is now a console like a command-line session. It
+shows the program's messages and, with the **Instrument commands** tick,
+every command sent to the instruments and every reply, in order:
+`6221 > OUTP?`, `6221 < 0`, `SR830 ! VI_ERROR_TMO`.
+
+- **6221 and SR830:** each instrument the shared VISA manager opens is an
+  `EchoedResource` (`echo_visa_commands`), so every write, query and read is
+  shown, from `*IDN?` at Connect on. The manager stays the same object, so
+  its reference count is unchanged.
+- **PPMS:** wrapped in `EchoedPPMS`, which shows SetField with its rate,
+  approach and end mode, each reading, and connect. The rotator's MOVE and
+  GetPPMSItem lines come from the core's logger.
+- **Display:** a line repeated unchanged is counted on its line (×N). Sent
+  lines are blue, replies grey and failures red, in a fixed-width font on a
+  dark background. **Clear** empties it. The last 3000 lines are kept, and a
+  run's `log.txt` gets every line.
+- **Tests:** `ConsoleTests` covers the echo of writes, queries and failures
+  with replies unchanged and settings forwarded, the wrapping of each opened
+  instrument, the PPMS lines and the rotator lines. A window check covers
+  the counting and the tick.
+
 ## MS-fourState.py: a timing diagram on elapsed time; A and E at +1500 Oe, −22 mA (2026-10-08)
 
 - **Plot:** a timing diagram against the time since the run started, which

@@ -54,6 +54,25 @@ and spare width. On the lab PC's 1720 px window they make two lines. The
 Write box has two columns: the pulse on the left (width, count, compliance,
 wait), the field and rotator on the right.
 
+## Console
+
+Right of the plot, under **Last read** (the latest state's X, Y, θ, R'xy, field
+and temperature), is a console in the style of a command-line session.
+- **Program messages:** run steps, warnings and connections.
+- **Instrument commands:** with the **Instrument commands** tick, every
+  command sent to an instrument and every reply, in order:
+  - `6221 > SOUR:WAVE:AMPL 1.1e-02`: a command sent;
+  - `SR830 < 1.1e-05,…`: a reply;
+  - `SR830 ! VI_ERROR_TMO`: a failed exchange.
+- **What is covered:** the 6221 and SR830 (every write and query, from
+  `*IDN?` at Connect on), the PPMS (SetField, readings, connect), and the
+  rotator (MOVE, GetPPMSItem).
+- **Repeats:** a line repeated unchanged, such as a poll that reads the same,
+  is counted on its line (×3) instead of repeated.
+- **Colours:** sent in blue, replies in grey, failures in red.
+- **Keeping it:** **Clear** empties the console. During a run every line also
+  goes to the run's `log.txt`. The console keeps its last 3000 lines.
+
 ## Manual settings
 
 Between runs, the **Manual settings** box sets one thing at a time, as the

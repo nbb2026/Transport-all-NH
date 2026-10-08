@@ -26,6 +26,20 @@ WINDOWS = (("cycle", 1720, 1240, True), ("cycle", 1360, 960, True), ("cycle", 11
 EXAMPLE = (("D", 1500, 22, 30e-6), ("A", 1500, -22, 11e-6), ("B", 1500, 22, -12.5e-6), ("E", 1500, -22, -27e-6))
 
 
+EXAMPLE_CONSOLE = (
+    "Step 2/4 (cycle 1), state A: write field +1500 Oe",
+    "PPMS > SetField +1500 Oe at 100 Oe/s, No overshoot, Driven",
+    "PPMS < T 300.002 K Stable | H +12.4 Oe Charging",
+    "PPMS < T 300.002 K Stable | H +1500.0 Oe StableDriven",
+    "PPMS < T 300.002 K Stable | H +1500.0 Oe StableDriven",
+    "6221 > SOUR:WAVE:FUNC SQU", "6221 > SYST:ERR?", "6221 < 0,\"No error\"",
+    "6221 > SOUR:WAVE:AMPL 1.1e-02", "6221 > SOUR:WAVE:INIT", "6221 > OUTP?", "6221 < 0",
+    "SR830 > SNAP? 1,2,3,4,9", "SR830 < 1.1e-05,1.1e-06,1.1e-05,5.71,317.3",
+    "SR830 > LIAS?", "SR830 < 0",
+    "SR830 > SNAP? 1,2,3,4,9", "SR830 ! VI_ERROR_TMO (example)",
+)
+
+
 def example_timeline():
     """A run's timeline, as FourStateRun.trace sends it, for the four states:
     the field up to the write field and back, the pulse, then the read."""
@@ -67,6 +81,8 @@ def main():
         for trace in example_timeline():
             app.plot.add(trace)
         app.plot.redraw()
+        for line in EXAMPLE_CONSOLE:
+            app._append_command(line) if " " in line and line.split()[1] in "<>!" else app._append_log(line)
         root.update()
         page = root.winfo_children()[0]
         clipped, cut, _pairs = inspect(page)
