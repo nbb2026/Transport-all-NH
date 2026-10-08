@@ -21180,13 +21180,14 @@ class CombinedControlApp:
 
     def _build_nonlocal_vi_read_settings(self, parent) -> ttk.Frame:
         """The pulse scan's settings for the 6221 and each voltmeter, and its
-        safety check: the 6221 and SR830s on the left, the MFLI and 2182A on
-        the right, side by side when both fit, else stacked."""
+        safety check: the 6221 and SR830s, then the MFLI and 2182A below them.
+        One column, so the "Gate-VI settings" box fits beside "Gate-VI scan"
+        in a wide window, as on the RT-E page."""
         box = ttk.Frame(parent)
         left = ttk.Frame(box)
         right = ttk.Frame(box)
         left.grid(row=0, column=0, sticky="nw")
-        right.grid(row=0, column=1, sticky="nw")
+        right.grid(row=1, column=0, sticky="nw", pady=(4, 0))
 
         def pad(row: int) -> tuple[int, int]:
             return (4 if row else 0, 0)
@@ -21316,8 +21317,7 @@ class CombinedControlApp:
             text="Voltage pulses, selected AC/DC read current and sample confirmed safe",
             variable=self.nonlocal_vi_safety_var,
             command=self._update_nonlocal_vi_controls,
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        self._arrange_pair_by_width(box, left, right, gap=24, stack_gap=4)
+        ).grid(row=2, column=0, sticky="w", pady=(6, 0))
         return box
 
     def _build_nonlocal_iv6221_tab(self, tab) -> None:

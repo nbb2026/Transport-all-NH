@@ -5,7 +5,9 @@
 - **Settings and scan boxes:** 2400-IV, 6221-IV and Gate-VI each have a
   "… settings" box (the instruments) and a "… scan" box (the sweep, the
   buttons and the readouts), as on RT-E. The two sit side by side when both
-  fit and are stacked otherwise (`_arrange_pair_by_width`).
+  fit and are stacked otherwise (`_arrange_pair_by_width`). Gate-VI's meter
+  read settings are kept in one column, so its two boxes sit side by side
+  in the 2000 px window.
 - **Rename:** the "Gate-VI pulse scan" sub-tab is now "Gate-VI scan".
 - **Zurich row:** as on RT-E, the rack's Zurich row has **Ref.** and
   **TC (s)** after its status.
