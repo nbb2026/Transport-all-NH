@@ -1,5 +1,25 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MS-fourState.py: PPMS status box, a thinner settings row, time on the x-axis (2026-10-08)
+
+- **PPMS status:** to the right of Connections, as the PPMS page's live
+  readings. Temperature, field and angle in large type with their status,
+  chamber pressure and helium level, the 6221 output and the time read.
+  - Read only, every 2 s while idle; pressure and helium every 30 s, the
+    PPMS page's own read.
+  - During a run or a manual action it shows that action's own readings, at
+    most one a second, so nothing extra is asked of the instruments.
+  - In a narrow window it moves under Connections.
+- **Settings row:** the Write box is two columns of four, with shorter labels,
+  so the States/Write/Read row is about five lines tall instead of nine, and
+  the plot gets that height.
+- **Plot:** the x-axis is the time since the run started, `time_s` as in the
+  CSV, in s, min after 10 min, or h after 3 h, instead of the step number.
+- **Tests:** `StatusBoxTests` checks the status read (read only, PPMS and
+  6221), the run's readings being shown at most once a second with each
+  rotation, the box's text, and that it polls only while idle. A test checks
+  the time axis unit.
+
 ## MS-fourState.py: one Connect per instrument, a larger plot, no A' and B' rows (2026-10-08)
 
 - **Connections:** the PPMS, the 6221 and the SR830 each have their own row:

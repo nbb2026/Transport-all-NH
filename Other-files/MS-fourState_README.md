@@ -34,6 +34,23 @@ its instrument is connected.
 The window opens at 1720 × 1240 where the screen allows (the lab PC's
 2560 × 1440 does), or smaller on a smaller screen, so the plot has the room.
 
+**PPMS status**, to the right of Connections (under it in a narrow window),
+shows what the PPMS page's live readings show:
+- temperature, field and angle in large type, each with its status;
+- chamber pressure and helium level (the PPMS page's own read, which never
+  starts a fill);
+- the 6221 output, and the time of the reading.
+
+It is read only:
+- **Idle:** read every 2 s; pressure and helium every 30 s.
+- **During a run or a manual action:** it shows that action's own readings,
+  at most one a second, and each rotation. Nothing extra is asked of the
+  instruments then.
+
+The Write box has two columns: the pulse on the left (width, count,
+compliance, wait), the field and rotator on the right. So the
+States/Write/Read row is no taller than the States table.
+
 ## Manual settings
 
 Between runs, the **Manual settings** box sets one thing at a time, as the
@@ -191,9 +208,10 @@ program, for example `MS-fourState data/20261007_153000_cycle/`:
 - `log.txt`: the status and instrument log of that run.
 - `MS-fourState_plot.eps`: the plot, saved at the end and by **Save plot**.
 
-The plot shows, per step, the write field in T, the pulse current in mA, and
-SR830 X in µV, with each point coloured by its state. State letters are drawn
-for up to 60 points.
+The plot shows the write field in T, the pulse current in mA and SR830 X in
+µV against the time since the run started (`time_s` in the CSV). The axis is
+in s, then min after 10 min, then h after 3 h. Each point is coloured by its
+state, and state letters are drawn for up to 60 points.
 
 ## Before the first run
 

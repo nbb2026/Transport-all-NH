@@ -14,6 +14,7 @@ import queue
 import sys
 import time
 import tkinter as tk
+import types
 import unittest
 from tkinter import ttk
 from pathlib import Path
@@ -402,6 +403,12 @@ class SettingsTests(unittest.TestCase):
         # D-A-B-E-B-A turns D->A, B->E, E->B and A->D: three inside, one back to D.
         self.assertEqual(endless.large_rotations(), (3, True))
         self.assertEqual(world.settings("A B").large_rotations(), (0, False))
+
+    def test_the_time_axis_unit_follows_the_run_length(self):
+        self.assertEqual(ms.time_unit(0.0), ("s", 1.0))
+        self.assertEqual(ms.time_unit(599.0), ("s", 1.0))
+        self.assertEqual(ms.time_unit(600.0), ("min", 60.0))
+        self.assertEqual(ms.time_unit(3 * 3600.0), ("h", 3600.0))
 
     def test_tick_marks_end_for_equal_values(self):
         for low, high in ((1.0, 1.0 + 1e-15), (2.5e-5, 2.5e-5), (-1e-300, 1e-300)):
@@ -913,6 +920,74 @@ class ManualTests(unittest.TestCase):
         self.assertEqual(ms.manual_settings(ms.DEFAULTS).sequence, ())
 
 
+class StatusBoxTests(unittest.TestCase):
+    """The PPMS status box: read only, polled while idle, fed by runs."""
+
+    def test_the_status_read_covers_ppms_and_6221(self):
+        world = World()
+        world.motor.angle = 270.0
+        status = ms.read_instrument_status(world.ppms, world.source, motor=world.motor)
+        self.assertEqual((status["temperature_k"], status["field_oe"], status["field_status"]),
+                         (300.0, 0.0, "StablePersistent"))
+        self.assertEqual((status["angle_deg"], status["angle_status"]), (270.0, "AtTarget"))
+        self.assertIs(status["source_on"], False)
+        self.assertEqual([e for e in world.events if e[0] in ("field", "rotate", "sr830")], [], "read only")
+        world.ppms.connected = False
+        world.source.instrument = None
+        self.assertEqual(set(ms.read_instrument_status(world.ppms, world.source)), {"time"})
+
+    def test_a_run_feeds_the_box_at_most_once_a_second(self):
+        world = World()
+        world.run(world.settings("D A"))
+        shown = [(kind, payload) for kind, payload in world.emitted if kind == "ppms-reading"]
+        fields = [p for _, p in shown if "field_oe" in p]
+        angles = [p["angle_deg"] for _, p in shown if "angle_deg" in p]
+        self.assertGreater(len(fields), 5)
+        self.assertEqual(angles, [360.0, 270.0], "each rotation is shown")
+        reads = world.clock.now - 1000.0
+        self.assertLessEqual(len(fields), reads / ms.STATUS_EMIT_S + 5)
+
+    def test_the_box_shows_what_a_reading_holds(self):
+        app = ms.FourStateApp.__new__(ms.FourStateApp)
+        app.status_box_vars = {key: mock.Mock() for key in (
+            "temperature", "temperature_status", "field", "field_status", "angle", "angle_status",
+            "pressure", "helium", "source", "time")}
+        app._show_status({"temperature_k": 300.0012, "temperature_status": "Stable", "field_oe": -1500.04,
+                          "field_status": "StableDriven", "angle_deg": 270.0, "angle_status": "AtTarget",
+                          "pressure_display": "4.98 Torr", "helium_display": "72.10%", "source_on": True,
+                          "time": "09:52:13"})
+        shown = {key: var.set.call_args[0][0] for key, var in app.status_box_vars.items()}
+        self.assertEqual(shown, {"temperature": "300.001 K", "temperature_status": "Stable",
+                                 "field": "-1500.0 Oe", "field_status": "StableDriven",
+                                 "angle": "270.00°", "angle_status": "AtTarget", "pressure": "4.98 Torr",
+                                 "helium": "72.10%", "source": "ON", "time": "09:52:13"})
+        for var in app.status_box_vars.values():
+            var.reset_mock()
+        app._show_status({"field_oe": 10.0, "field_status": "Charging"})
+        self.assertFalse(app.status_box_vars["angle"].set.called, "what a reading lacks stays")
+
+    def test_polling_only_while_idle(self):
+        world = World()
+        app = ms.FourStateApp.__new__(ms.FourStateApp)
+        app.root = FakeRoot()
+        app.ppms, app.source = world.ppms, world.source
+        app.status_polling, app.last_cryogen = False, None
+        started = []
+        app._status_worker = lambda cryogen: started.append(cryogen)
+        with mock.patch.object(ms.threading, "Thread",
+                               lambda target, args, daemon: types.SimpleNamespace(start=lambda: target(*args))):
+            app.busy = True
+            app._poll_status()
+            self.assertEqual(started, [], "nothing while a run or an action is going")
+            app.busy = False
+            app._poll_status()
+            self.assertEqual(started, [True], "pressure and helium on the first poll")
+            app.status_polling = False
+            app._poll_status()
+            self.assertEqual(started, [True, False], "then every CRYOGEN_POLL_S only")
+        self.assertEqual(len(app.root.scheduled), 3, "always rescheduled")
+
+
 class FakeRoot:
     def __init__(self):
         self.scheduled = []
@@ -1158,12 +1233,13 @@ class WindowTests(unittest.TestCase):
             self.assertIn(part, text)
 
     def test_plot_draws_three_panels(self):
-        row = dict(step=1, state="A", write_field_set_oe=-1500.0, pulse_current_ma=22.0, x_v=11e-6)
-        self.app.plot.set_rows([row, dict(row, step=2, state="B", write_field_set_oe=1500.0, x_v=-12e-6)])
+        row = dict(step=1, time_s=95.0, state="A", write_field_set_oe=-1500.0, pulse_current_ma=22.0, x_v=11e-6)
+        self.app.plot.set_rows([row, dict(row, step=2, time_s=190.0, state="B", write_field_set_oe=1500.0,
+                                          x_v=-12e-6)])
         self.root.update()
         texts = [self.app.canvas.itemcget(item, "text") for item in self.app.canvas.find_all()
                  if self.app.canvas.type(item) == "text"]
-        for label in ("H write (T)", "I pulse (mA)", "SR830 X (µV)", "A", "B", "Step"):
+        for label in ("H write (T)", "I pulse (mA)", "SR830 X (µV)", "A", "B", "Time since start (s)", "100"):
             self.assertIn(label, texts)
 
     def test_each_instrument_connects_on_its_own(self):
