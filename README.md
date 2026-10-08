@@ -54,9 +54,9 @@ SR830s, the MFLI and a 2182A) and three sub-tabs that use it:
   −6 to 6 V in 0.25 V steps, ±20 V at most, 20 V OVP) and plots the current
   read at each step. It saves a CSV, the plot as a PNG and a parameter log.
 
-Only one of the three drives the Keithley at a time. The 6221 is switched off
-before |R| or I–V starts, and the Keithley is zeroed and switched off when
-they end.
+Only one of the three drives the Keithley at a time. If the 6221 is connected
+on this page, it is switched off before |R| or I–V starts. The Keithley is
+zeroed and switched off when they end.
 
 **PPMS** controls temperature, field and rotation, and runs harmonic Hall
 transport with up to three SR830 lock-ins and the MFLI. Meters measuring the

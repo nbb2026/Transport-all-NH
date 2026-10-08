@@ -6256,10 +6256,23 @@ class NonLocalVI2410Controller:
             self._write_checked(f":SOUR:CURR {current:.12e}")
 
     def read_resistance(self) -> tuple[float, float, float]:
+        """(V, I, |R|); |R| is NaN when the current reads about zero (an
+        open circuit at the voltage limit), so that point is skipped."""
         with self.lock:
             if self.source_mode != "CURR":
                 raise RuntimeError(f"Keithley {self.model} is not in resistance-measurement current-source mode")
-            return self._read_resistance_sample()
+            if int(self._query_float(":OUTP?")) != 1:
+                raise RuntimeError(f"Keithley {self.model} output turned off during the resistance measurement")
+            response = self._require_instrument().query(":READ?").strip()
+        try:
+            values = [float(value) for value in response.split(",")]
+        except ValueError as error:
+            raise RuntimeError(f"Keithley {self.model} resistance reading cannot be parsed: {response!r}") from error
+        if len(values) < 2 or not all(math.isfinite(value) for value in values[:2]):
+            raise RuntimeError(f"Keithley {self.model} resistance reading is abnormal: {response!r}")
+        voltage_v, current_a = values[:2]
+        resistance_ohm = math.nan if abs(current_a) < 1e-15 else abs(voltage_v / current_a)
+        return voltage_v, current_a, resistance_ohm
 
     def start_iv_sweep(self, current_limit_a: float) -> None:
         """Voltage source at 0 V, output on, the current measured."""
@@ -8938,7 +8951,7 @@ class NonLocalACController:
                 output_state = int(round(self._query_float(self.source, "OUTP?")))
             if output_state != 0:
                 raise RuntimeError(
-                    f"6221 output is still ON {context}; the Gate-VI Keithley action is forbidden"
+                    f"6221 output is still ON {context}; the Non-local Keithley action is forbidden"
                 )
 
     def disconnect(self) -> None:
@@ -12535,6 +12548,7 @@ class CombinedControlApp:
         self.nonlocal_iv_eta_var = tk.StringVar(value="Remaining: --")
         # (point, set V, source V, current A, elapsed s, at the current limit)
         self.nonlocal_iv_rows: list[tuple] = []
+        self.nonlocal_iv_saved = True
         self.nonlocal_iv_settings: dict[str, object] = {}
         self.nonlocal_iv_total_points = 0
         self.nonlocal_iv_canvas = None
@@ -30129,7 +30143,13 @@ class CombinedControlApp:
             state="normal" if task == "resistance" and not stopping else "disabled"
         )
         self.nonlocal_iv_start_button.configure(
-            state="normal" if free and self.nonlocal_iv_safety_var.get() else "disabled"
+            state=(
+                "normal"
+                if free
+                and self.nonlocal_iv_safety_var.get()
+                and "nonlocal-iv-csv" not in self.active_file_exports
+                else "disabled"
+            )
         )
         self.nonlocal_iv_stop_button.configure(
             state="normal" if task == "iv" and not stopping else "disabled"
@@ -30192,10 +30212,14 @@ class CombinedControlApp:
         self._update_nonlocal_keithley_controls()
 
     def _run_on_nonlocal_keithley(self, phase: str, body) -> None:
-        """The 6221 off first and the interlock held; afterwards the Keithley
-        is zeroed, off and back in its pulse setup, whatever happened."""
+        """The 6221 off first (when connected on this page) and the interlock
+        held; afterwards the Keithley is zeroed, off and back in its pulse
+        setup, whatever happened."""
         controller = self.nonlocal_vi_2410_controller
         source = self.nonlocal_vi_ac_controller
+        stop = self.nonlocal_keithley_stop_event
+        if stop.is_set():
+            raise InterruptedError("Stopped before the Keithley was switched on")
         if source.source_connected:
             source.output_off()
             source.confirm_output_off(
@@ -30203,6 +30227,8 @@ class CombinedControlApp:
             )
         self.nonlocal_vi_interlock.begin(phase)
         try:
+            if stop.is_set():
+                raise InterruptedError("Stopped before the Keithley was switched on")
             body(controller)
         finally:
             try:
@@ -30210,6 +30236,11 @@ class CombinedControlApp:
                 self.nonlocal_keithley_output_off = True
             finally:
                 self.nonlocal_vi_interlock.end(phase)
+
+    def _nonlocal_output_warning(self) -> str:
+        if self.__dict__.get("nonlocal_keithley_output_off", True):
+            return ""
+        return f"; check the Keithley {self.nonlocal_vi_2410_controller.model} output"
 
     def _nonlocal_output_text(self) -> str:
         model = self.nonlocal_vi_2410_controller.model
@@ -30479,6 +30510,7 @@ class CombinedControlApp:
         except BaseException as error:
             self.nonlocal_vi_status_var.set(
                 f"Resistance measurement stopped by an error: {short_status_error(error)}"
+                + self._nonlocal_output_warning()
             )
             if not self.closing:
                 messagebox.showerror("Resistance measurement failed", str(error), parent=self.root)
@@ -30551,15 +30583,36 @@ class CombinedControlApp:
         except ValueError as error:
             messagebox.showwarning("I–V sweep", str(error), parent=self.root)
             return
+        if "nonlocal-iv-csv" in self.active_file_exports:
+            return
         total = len(settings["voltages"])
+        estimate = self._format_scan_duration(total * (float(settings["settle_s"]) + 0.15))
+        unsaved = (
+            f"\n\nThe previous sweep ({len(self.nonlocal_iv_rows)} points) has not been saved "
+            "and will be cleared."
+            if self.nonlocal_iv_rows and not self.nonlocal_iv_saved
+            else ""
+        )
+        if not messagebox.askyesno(
+            "Start the I–V sweep?",
+            f"Keithley {self.nonlocal_vi_2410_controller.model}: "
+            f"{settings['start_v']:g} V → {settings['end_v']:g} V in {settings['step_v']:g} V steps, "
+            f"{total} points, {settings['settle_s']:g} s settle\n"
+            f"Current limit: {settings['current_limit_a']:g} A\n"
+            f"Estimated time: about {estimate}"
+            + (f"\nSample: {settings['sample']}" if settings["sample"] else "")
+            + unsaved,
+            parent=self.root,
+        ):
+            return
+        if self.nonlocal_keithley_task is not None or not self._nonlocal_keithley_free("the I–V sweep"):
+            return
         self.nonlocal_iv_settings = settings
         self.nonlocal_iv_rows = []
+        self.nonlocal_iv_saved = False
         self.nonlocal_iv_total_points = total
         self.nonlocal_iv_progress.configure(maximum=max(1, total), value=0)
-        self.nonlocal_iv_eta_var.set(
-            "Remaining: about "
-            + self._format_scan_duration(total * (float(settings["settle_s"]) + 0.15))
-        )
+        self.nonlocal_iv_eta_var.set(f"Remaining: about {estimate}")
         self.nonlocal_iv_point_var.set("Last point: --")
         self._redraw_nonlocal_iv_plot()
         self.nonlocal_vi_status_var.set(
@@ -30631,6 +30684,7 @@ class CombinedControlApp:
         except BaseException as error:
             self.nonlocal_vi_status_var.set(
                 f"I–V sweep stopped by an error after {done}/{total} points: {short_status_error(error)}"
+                + self._nonlocal_output_warning()
             )
             if not self.closing:
                 messagebox.showerror("I–V sweep failed", str(error), parent=self.root)
@@ -30830,6 +30884,7 @@ class CombinedControlApp:
                     parent=self.root,
                 )
                 return
+            self.nonlocal_iv_saved = True
             self.nonlocal_vi_status_var.set(f"I–V CSV, PNG and parameter log saved: {directory}")
             messagebox.showinfo(
                 "I–V sweep",
@@ -34691,7 +34746,7 @@ class CombinedControlApp:
             "  • zero the MOKE-24 Keithley, switch its output off and disconnect\n"
             "  • stop Keithley 6221 pulses, zero, switch its output off and disconnect\n"
             "  • stop the Non-local IV 6221 sine wave and disconnect the 6221/SR830\n"
-            "  • switch off the Gate-VI Keithley and 6221 outputs and disconnect all instruments\n\n"
+            "  • switch off the Non-local Keithley and 6221 outputs and disconnect all instruments\n\n"
             "  • PPMS page: switch off the 6221/2400 outputs and disconnect external instruments; if a field scan is running, "
             "request field zeroing first; otherwise disconnect the client and keep the temperature/field setpoints\n\n"
             "After exiting, still confirm every instrument output and power supply is in a safe state.",

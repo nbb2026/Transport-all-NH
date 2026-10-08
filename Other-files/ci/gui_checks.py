@@ -92,6 +92,24 @@ def show(root, notebook, name):
     raise KeyError(name)
 
 
+def example_data(app):
+    """Example |R| and I-V data, so the screenshots show the plots drawn: an
+    open 1 um Pt-Pt gap reading +/-20 nA of noise from -6 to 6 V, as in the
+    user's figure.  Deterministic, and nothing is sent to an instrument."""
+    module = sys.modules["transport_ci"]
+    voltages = module.build_iv_sweep_voltages(-6, 6, 0.25)
+    noise = [((index * 37) % 17 - 8) / 8 for index in range(len(voltages))]
+    app.nonlocal_iv_settings = {"start_v": -6.0, "end_v": 6.0, "sample": "1µm Pt-Pt"}
+    app.nonlocal_iv_total_points = len(voltages)
+    app.nonlocal_iv_rows = [
+        (index + 1, voltage, voltage, 2.2e-8 * value, 0.62 * (index + 1), False)
+        for index, (voltage, value) in enumerate(zip(voltages, noise))
+    ]
+    app.nonlocal_resistance_rows = [
+        (0.2 * index, 369.7e6 * (1 + 0.002 * ((index * 7) % 5 - 2))) for index in range(100)
+    ]
+
+
 def pages(root, app, notebook, names):
     """(page, sub-tab key or "", the page shown) for every page and sub-tab."""
     for name in names:
@@ -101,6 +119,7 @@ def pages(root, app, notebook, names):
             yield name, "", tab
             continue
         inner = getattr(app, attribute)
+        example_data(app)
         for index, key in enumerate(keys):
             inner.select(index)
             for _ in range(4):

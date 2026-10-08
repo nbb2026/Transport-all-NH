@@ -11,7 +11,8 @@
   - **Gate-VI pulse scan:** the old Gate-VI interlock text, settings, run box
     and plots. The Trigger Link line is now in the run box.
   - **|R| vs time:** moved from MOKE-24. It uses the same autorange, 20 s
-    window and plot as before, on the pulse Keithley
+    window and plot as before. A reading with no current (an open circuit)
+    is skipped, as before. It runs on the pulse Keithley
     (`NonLocalVI2410Controller.start_resistance`, `set_resistance_current`,
     `read_resistance`).
   - **I–V sweep:** new, as in the user's 1 µm Pt-Pt figure.
@@ -22,7 +23,10 @@
     (`build_iv_sweep_voltages`). They are limited to ±20 V in the 20 V range.
     `start_iv_sweep` checks that the 20 V OVP reads back before the output
     goes on.
-  - **Each point:** the current is read at NPLC 1 after Settle s.
+  - **Each point:** the current is read at NPLC 1 after Settle s. The
+    voltage column is the source value the Keithley reports. At the current
+    limit the sample sees less, and a point at 99 % of the limit or more is
+    marked as at the limit.
   - **Plot:** I against V with black squares joined by a dotted line, and
     the sample name in the corner. The unit is pA, nA, µA or mA. Points at
     the current limit are red.
@@ -33,7 +37,14 @@
     I–V. Meanwhile the pulse scan, the rack's Connect/Disconnect buttons and
     the model list wait, and a Gate-VI scan or connect blocks |R| and I–V.
   - **6221 first:** before either starts, the 6221 output is switched off
-    and checked off. The interlock holds its 2410 phase throughout.
+    and checked off, if the 6221 is connected on this page. A 6221 connected
+    elsewhere is not checked. The interlock holds its 2410 phase throughout.
+  - **Before the sweep:** a Yes/No summary shows the range, the number of
+    points, the settle time, the current limit and the estimated time. It
+    also names a previous sweep that has not been saved.
+  - **Stop:** a Stop pressed before the worker reaches the Keithley switches
+    nothing on. Start waits while a save is in progress, so the PNG shows the
+    saved sweep.
   - **Afterwards:** `restore_voltage_mode` zeroes the Keithley, switches it
     off and returns it to the pulse setup (20 V, 1 mA, output off). This
     happens whether the measurement completed, was stopped or failed. The

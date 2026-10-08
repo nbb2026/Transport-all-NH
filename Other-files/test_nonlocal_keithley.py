@@ -106,6 +106,8 @@ class FakeSourceMeter:
             return str(self.ovp)
         if upper == ":READ?":
             if self.mode == "CURR":
+                if self.resistance_ohm == float("inf"):  # open: at the 5 V limit, no current
+                    return "5.000000e+00,0.000000e+00"
                 return f"{self.current_source * self.resistance_ohm:.6e},{self.current_source:.6e}"
             current = self.voltage / self.resistance_ohm
             current = max(-self.limit, min(self.limit, current))
@@ -350,6 +352,8 @@ class WorkerTests(unittest.TestCase):
         self.app.nonlocal_keithley_stop_event.set()
         with self.assertRaises(InterruptedError):
             self.app._nonlocal_iv_worker(self.settings())
+        self.assertEqual(self.log, [], "a Stop before the start switches nothing")
+        self.assertNotIn(":OUTP ON", self.meter.commands)
         self.assertEqual((self.meter.output, self.meter.voltage), (0, 0.0))
         self.assertEqual(self.app.nonlocal_vi_interlock.phase, "IDLE")
         self.app.nonlocal_keithley_stop_event.clear()
@@ -385,6 +389,61 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.meter.output, 0)
         self.assertEqual(self.meter.mode, "VOLT", "back in the pulse setup")
         self.assertEqual(self.app.nonlocal_vi_interlock.phase, "IDLE")
+
+
+class OpenCircuitTests(unittest.TestCase):
+    def test_an_open_circuit_point_is_skipped_not_fatal(self):
+        with mock.patch.object(app.time, "sleep"):
+            meter = FakeSourceMeter(resistance_ohm=float("inf"))
+            controller = connected_controller(meter)
+            controller.start_resistance(1e-9)
+            voltage, current, resistance = controller.read_resistance()
+        self.assertEqual((voltage, current), (5.0, 0.0))
+        self.assertNotEqual(resistance, resistance, "NaN: the worker skips this point")
+
+
+class StartQuestionTests(unittest.TestCase):
+    def setUp(self):
+        self.app = a = bare_app()
+        a.root = None
+        a.nonlocal_keithley_task = None
+        a._nonlocal_keithley_free = lambda what: True
+        a.nonlocal_iv_safety_var = Var(True)
+        a.active_file_exports = set()
+        a.nonlocal_vi_2410_controller = app.NonLocalVI2410Controller(lambda _m: None)
+        a.nonlocal_iv_sample_var = Var("1µm Pt-Pt")
+        a.nonlocal_iv_start_var, a.nonlocal_iv_end_var = Var("-6"), Var("6")
+        a.nonlocal_iv_step_var, a.nonlocal_iv_settle_var = Var("0.25"), Var("0.5")
+        a.nonlocal_iv_limit_var = Var("1e-6")
+        a._begin_nonlocal_keithley_task = mock.Mock()
+
+    def ask(self, answer):
+        with mock.patch.object(app.messagebox, "askyesno", return_value=answer) as question:
+            self.app.start_nonlocal_iv_sweep()
+        return question.call_args[0][1] if question.called else None
+
+    def test_no_answer_starts_nothing_and_keeps_the_last_sweep(self):
+        self.app.nonlocal_iv_rows, self.app.nonlocal_iv_saved = [(1,)] * 49, False
+        text = self.ask(False)
+        self.assertIn("-6 V → 6 V in 0.25 V steps, 49 points, 0.5 s settle", text)
+        self.assertIn("Current limit: 1e-06 A", text)
+        self.assertIn("Sample: 1µm Pt-Pt", text)
+        self.assertIn("The previous sweep (49 points) has not been saved", text)
+        self.app._begin_nonlocal_keithley_task.assert_not_called()
+        self.assertEqual(len(self.app.nonlocal_iv_rows), 49)
+
+    def test_yes_starts_and_a_saved_sweep_is_not_mentioned(self):
+        a = self.app
+        a.nonlocal_iv_rows, a.nonlocal_iv_saved = [(1,)] * 49, True
+        a.nonlocal_iv_progress = mock.Mock()
+        a.nonlocal_iv_eta_var, a.nonlocal_iv_point_var = Var(), Var()
+        a.nonlocal_vi_status_var, a.nonlocal_vi_output_var = Var(), Var()
+        a._redraw_nonlocal_iv_plot = lambda: None
+        text = self.ask(True)
+        self.assertNotIn("not been saved", text)
+        a._begin_nonlocal_keithley_task.assert_called_once()
+        self.assertEqual((a.nonlocal_iv_rows, a.nonlocal_iv_saved), ([], False))
+        self.assertEqual(a.nonlocal_iv_settings["current_limit_a"], 1e-6)
 
 
 if __name__ == "__main__":
