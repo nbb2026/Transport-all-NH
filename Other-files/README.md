@@ -1,5 +1,15 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local page: a Keithley 2400 by default (2026-10-08)
+
+The Non-local page now starts with **2400** chosen in its Model list
+(`NONLOCAL_DEFAULT_KEITHLEY_MODEL`). This covers the |R|, I–V and Gate-VI
+labels, messages and the red button text. The 2410 can still be chosen
+before connecting. MOKE-24 keeps the 2410 (`KEITHLEY_DEFAULT_MODEL`).
+
+Both models are driven the same way on this page: 20 V range, 20 V OVP, and
+the identity is checked against the chosen model at Connect.
+
 ## Non-local page: sub-tab order (2026-10-08)
 
 The sub-tabs are now in the user's order: **|R| vs time**, **I–V sweep**,

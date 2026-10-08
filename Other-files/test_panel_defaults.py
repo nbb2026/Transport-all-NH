@@ -165,17 +165,23 @@ class PanelDefaultTests(unittest.TestCase):
             vi.nonlocal_vi_2410_model_var.set(model)
             vi._on_nonlocal_vi_model_selected()
 
-        self.addCleanup(choose, "2410")
-        self.assertEqual(vi.nonlocal_vi_2410_model_var.get(), "2410", "the 2410 stays the default")
+        self.addCleanup(choose, "2400")
+        # The Non-local page starts with a 2400 (user, 2026-10-08); MOKE-24
+        # keeps the 2410.
+        self.assertEqual(vi.nonlocal_vi_2410_model_var.get(), "2400", "the 2400 is the default here")
+        self.assertEqual(controller.model, "2400")
+        self.assertEqual(vi.keithley_model_var.get(), "2410", "MOKE-24 keeps the 2410")
         self.assertEqual(tuple(vi.nonlocal_vi_model_combo.cget("values")), ("2410", "2400"))
         self.assertEqual(str(vi.nonlocal_vi_model_combo.cget("state")), "readonly")
-        self.assertEqual(vi.nonlocal_vi_off_button.cget("text"), "Stop 2410 / 6221 now")
-        choose("2400")
-        self.assertEqual(controller.model, "2400")
         self.assertEqual(vi.nonlocal_vi_keithley_label_var.get(), "Keithley 2400:")
         self.assertEqual(vi.nonlocal_vi_off_button.cget("text"), "Stop 2400 / 6221 now")
         self.assertIn("during 2400 pulses", vi.nonlocal_vi_interlock_var.get())
         self.assertEqual(vi.nonlocal_vi_plot_frames["pulse"].cget("text"), "Keithley 2400 command voltage")
+        choose("2410")
+        self.assertEqual(controller.model, "2410")
+        self.assertEqual(vi.nonlocal_vi_keithley_label_var.get(), "Keithley 2410:")
+        self.assertEqual(vi.nonlocal_vi_off_button.cget("text"), "Stop 2410 / 6221 now")
+        self.assertIn("during 2410 pulses", vi.nonlocal_vi_interlock_var.get())
         # Locked while a connect or a scan is under way.
         self.addCleanup(setattr, vi, "nonlocal_vi_busy", False)
         vi.nonlocal_vi_busy = True

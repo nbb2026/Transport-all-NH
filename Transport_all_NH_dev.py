@@ -1371,6 +1371,9 @@ NONLOCAL_RESULTS_DIRECTORY = (
 # measure the absolute sample resistance with the 2410.  These defaults
 # and the hardware interlock follow NonLocal_NH_dev.py.
 NONLOCAL_VI_2410_RESOURCE = "GPIB0::24::INSTR"
+# The Non-local page starts with a 2400 chosen (user, 2026-10-08); MOKE-24
+# keeps KEITHLEY_DEFAULT_MODEL.
+NONLOCAL_DEFAULT_KEITHLEY_MODEL = "2400"
 NONLOCAL_VI_MAX_ABS_PULSE_V = 20.0
 NONLOCAL_VI_2410_SOURCE_OVP_V = 20.0
 NONLOCAL_VI_START_PULSE_V = 20.0
@@ -12393,7 +12396,7 @@ class CombinedControlApp:
 
         self.nonlocal_vi_ac_controller = NonLocalACController(self.thread_log)
         self.nonlocal_vi_2410_controller = NonLocalVI2410Controller(
-            self.thread_log
+            self.thread_log, NONLOCAL_DEFAULT_KEITHLEY_MODEL
         )
         self.nonlocal_vi_interlock = NonLocalVIInterlock()
         self.nonlocal_vi_executor = ThreadPoolExecutor(
@@ -12409,8 +12412,8 @@ class CombinedControlApp:
         )
         # 2410 or 2400 (KEITHLEY_MODELS); while not connected the controller
         # follows this choice, so its model names every message.
-        self.nonlocal_vi_2410_model_var = tk.StringVar(value=KEITHLEY_DEFAULT_MODEL)
-        self.nonlocal_vi_keithley_label_var = tk.StringVar(value=f"Keithley {KEITHLEY_DEFAULT_MODEL}:")
+        self.nonlocal_vi_2410_model_var = tk.StringVar(value=NONLOCAL_DEFAULT_KEITHLEY_MODEL)
+        self.nonlocal_vi_keithley_label_var = tk.StringVar(value=f"Keithley {NONLOCAL_DEFAULT_KEITHLEY_MODEL}:")
         self.nonlocal_vi_interlock_var = tk.StringVar()
         self.nonlocal_vi_source_resource_var = tk.StringVar(
             value=NONLOCAL_6221_RESOURCE
@@ -12511,7 +12514,7 @@ class CombinedControlApp:
         self.nonlocal_vi_plot_frames: dict[str, object] = {}
         self.nonlocal_vi_visible_plot_keys: frozenset[str] = frozenset()
         self.nonlocal_vi_output_var = tk.StringVar(
-            value=f"Keithley {KEITHLEY_DEFAULT_MODEL} and 6221 outputs: OFF"
+            value=f"Keithley {NONLOCAL_DEFAULT_KEITHLEY_MODEL} and 6221 outputs: OFF"
         )
         self.nonlocal_vi_reference_var = tk.StringVar(value="Lock-in reference: --")
         self.nonlocal_vi_mfli_lock_var = tk.StringVar(value="MFLI ext. ref: --")
@@ -20742,7 +20745,7 @@ class CombinedControlApp:
         # Keithley or the 6221.
         self.nonlocal_vi_off_button = tk.Button(
             outer,
-            text=f"Stop {KEITHLEY_DEFAULT_MODEL} / 6221 now",
+            text=f"Stop {NONLOCAL_DEFAULT_KEITHLEY_MODEL} / 6221 now",
             command=self.stop_nonlocal_vi,
             bg="#d70018",
             fg="white",
@@ -20938,9 +20941,9 @@ class CombinedControlApp:
         for row in range(5):
             plots.rowconfigure(row, weight=1)
         definitions = (
-            ("pulse", f"Keithley {KEITHLEY_DEFAULT_MODEL} command voltage"),
+            ("pulse", f"Keithley {NONLOCAL_DEFAULT_KEITHLEY_MODEL} command voltage"),
             ("current", "6221 current readback"),
-            ("resistance", f"Keithley {KEITHLEY_DEFAULT_MODEL} resistance"),
+            ("resistance", f"Keithley {NONLOCAL_DEFAULT_KEITHLEY_MODEL} resistance"),
         )
         for column, (key, title) in enumerate(definitions):
             frame = ttk.LabelFrame(plots, text=title, padding=5)
