@@ -1546,7 +1546,6 @@ class FourStateApp:
         self.plot = StatePlot(self.canvas)
         side = ttk.Frame(lower)
         side.grid(row=0, column=1, sticky="ns", padx=(8, 0))
-        side.rowconfigure(1, weight=1)
         side.columnconfigure(0, weight=1)
         side.rowconfigure(2, weight=1)
         self.last_var = tk.StringVar(value="Last read: --")
