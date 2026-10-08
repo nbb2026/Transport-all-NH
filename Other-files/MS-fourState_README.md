@@ -224,6 +224,9 @@ for its real length:
   it is on.
 - **SR830 X (µV):** every sample of each read, in its state's colour, with
   the state's letter above it.
+- **Read periods:** each period with the read current on is shaded in all
+  three panels. 0.5 mA hardly shows beside the pulses, but the shading marks
+  when the readback was taken.
 
 The same timeline is saved as `MS-fourState_trace.csv` in the run folder,
 with columns time_s, quantity, value, unit and state. The quantities are H

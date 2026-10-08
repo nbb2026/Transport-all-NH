@@ -1122,11 +1122,29 @@ class StatePlot:
             [value for _, value, _ in samples],
         )
         labelled = len(reads) <= self.LABELLED_READS
+        # The read periods (read current on), shaded in every panel: 0.5 mA
+        # hardly shows beside the pulses, but its period is the readback's.
+        periods, since = [], None
+        for at, value in levels:
+            if value > 0 and since is None:
+                since = at
+            elif value <= 0 and since is not None:
+                periods.append((since, at))
+                since = None
+        if since is not None:
+            periods.append((since, last))
         for index, label in enumerate(self.PANELS):
             y0 = top + index * (panel_height + gap)
             y1 = y0 + panel_height
+            for start, end in periods:
+                canvas.create_rectangle(x_pixel(start), y0, max(x_pixel(end), x_pixel(start) + 2), y1,
+                                        fill="#e3ecf7", outline="")
             canvas.create_rectangle(left, y0, width - right, y1, outline="#555555")
             canvas.create_text(16, (y0 + y1) / 2, text=label, angle=90, anchor="center", font=("TkDefaultFont", 11))
+            if index == 1 and periods:
+                canvas.create_text(width - right - 6, y0 + 4, anchor="ne", fill="#46637f",
+                                   text=f"shaded: read, {max(v for _, v in levels):g} mA RMS",
+                                   font=("TkDefaultFont", 9))
             values = ranges[index]
             if values:
                 low, high = min(values), max(values)
