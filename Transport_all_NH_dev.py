@@ -1467,6 +1467,8 @@ NONLOCAL_IV6221_REFERENCE_WAIT_S = 20.0
 # this in all fails.
 NONLOCAL_IV6221_RANGE_SETTLE_TAUS = {"sr830": 5.0, "mfli": 10.0}
 NONLOCAL_IV6221_RANGE_LIMIT_S = 180.0
+# … or after this many range steps in a row (an SR830 spans 26 codes).
+NONLOCAL_IV6221_MAX_RANGE_STEPS = 30
 # SR830 OFLT codes 0-19 in seconds, to read the front-panel time constant.
 SR830_TIME_CONSTANTS_S = (
     10e-6, 30e-6, 100e-6, 300e-6, 1e-3, 3e-3, 10e-3, 30e-3, 100e-3, 300e-3,
@@ -6169,19 +6171,19 @@ class NonLocalVI2410Controller:
                     raise NonLocalVIStopped()
                 self._write_checked(":OUTP ON")
                 self.output_enabled = True
+                # The level's error check (30 ms and SYST:ERR?) comes after
+                # the pulse: inside it, it made every pulse about 80 ms long.
+                # A rejected level leaves 0 V on, switched off just the same.
                 command = f":SOUR:VOLT {voltage_v:.12g}"
                 self._require_instrument().write(command)
-                on_at = time.monotonic()
-                # The error check (30 ms and SYST:ERR?) is part of the pulse,
-                # not added to it: the pulse used to run about 80 ms long.
-                self._check_error(command)
                 if status_callback is not None:
                     status_callback(voltage_v)
-                self._wait(max(0.0, width_s - (time.monotonic() - on_at)), stop_event)
+                self._wait(width_s, stop_event)
             finally:
                 self.safe_shutdown(reset=False)
                 if status_callback is not None:
                     status_callback(0.0)
+            self._check_error(command)
             self.confirm_output_off("after the voltage pulse")
 
     def _setup_resistance_mode(self, source_current_a: float) -> None:
@@ -6619,8 +6621,14 @@ for request_line in sys.stdin:
                 EXTREF = routes[0]
             else:
                 EXTREF = 0
-            if previous_extref != EXTREF:
-                daq.setInt("/%s/extrefs/%d/enable" % (device, previous_extref), 0)
+            for other in range(2):
+                # Only the chosen reference PLL: another left on (an earlier
+                # session) would drive oscillator 0 as well.
+                if other != EXTREF:
+                    try:
+                        daq.setInt("/%s/extrefs/%d/enable" % (device, other), 0)
+                    except Exception:
+                        pass
             configured_extref_demod = extref_demod
             ac_node = "/%s/sigins/0/ac" % device
             imp50_node = "/%s/sigins/0/imp50" % device
@@ -9162,6 +9170,31 @@ class NonLocalACController:
             ),
             "sensitivity_index": sensitivity_used, "auto_range": auto_action,
         }
+
+    def mfli_has_multi_demod(self) -> bool:
+        """Whether the connected Zurich has MF-MD, found as configure_mfli
+        finds it (options, else whether Demod 2 exists)."""
+        with self.lock:
+            options = str(self.mfli_props.get("options", "")).upper()
+            has_demod_2 = self.mfli_props.get("has_demod_2")
+            if self.mfli_bridge is None and self.mfli_daq is not None:
+                if not options:
+                    try:
+                        options = str(self.mfli_daq.getString(
+                            f"/{self.mfli_device}/features/options"
+                        )).upper()
+                        self.mfli_props["options"] = options
+                    except BaseException:
+                        pass
+                if has_demod_2 is None:
+                    try:
+                        self.mfli_daq.getInt(
+                            f"/{self.mfli_device}/demods/{NONLOCAL_MFLI_EXTREF_DEMODULATOR}/enable"
+                        )
+                        has_demod_2 = True
+                    except BaseException:
+                        has_demod_2 = False
+            return ("MD" in options) if options else bool(has_demod_2)
 
     def update_amplitude(self, rms_ma: float) -> float:
         """Change only the running sine amplitude, without abort, reset or
@@ -21762,9 +21795,7 @@ class CombinedControlApp:
 
     def _nonlocal_mfli_has_multi_demod(self) -> bool:
         """Whether the connected Zurich has MF-MD (several demodulators)."""
-        props = getattr(self.nonlocal_vi_ac_controller, "mfli_props", {}) or {}
-        options = str(props.get("options", "")).upper()
-        return ("MD" in options) if options else bool(props.get("has_demod_2", False))
+        return bool(self.nonlocal_vi_ac_controller.mfli_has_multi_demod())
 
     def _nonlocal_page_idle(self) -> bool:
         return (
@@ -29286,7 +29317,8 @@ class CombinedControlApp:
     def _finish_nonlocal_vi_device_connect(
         self, key: str, label: str, completed
     ) -> None:
-        self.nonlocal_vi_busy = False
+        # Still busy while an OFF queued after this connection waits to run.
+        self.nonlocal_vi_busy = bool(self.__dict__.get("nonlocal_vi_off_pending"))
         error = completed.exception()
         if key == "mfli":
             self._set_mfli_lock_state(None, vi=True)
@@ -29370,7 +29402,8 @@ class CombinedControlApp:
     def _finish_nonlocal_vi_device_disconnect(
         self, key: str, label: str, error
     ) -> None:
-        self.nonlocal_vi_busy = False
+        # Still busy while an OFF queued after this connection waits to run.
+        self.nonlocal_vi_busy = bool(self.__dict__.get("nonlocal_vi_off_pending"))
         if key == "mfli":
             self._set_mfli_lock_state(None, vi=True)
             self.nonlocal_mfli_lock_word = None
@@ -29381,15 +29414,15 @@ class CombinedControlApp:
         model = self.nonlocal_vi_2410_controller.model
         if key == "2410":
             self.nonlocal_vi_output_var.set(
-                f"Keithley {model}: disconnected" if error is None
+                f"Keithley {model}: disconnected (OFF sent)" if error is None
                 else f"Keithley {model} output: check it"
             )
         elif key == "6221":
             self.nonlocal_vi_output_var.set(
-                "6221: disconnected" if error is None else "6221 output: check it"
+                "6221: disconnected (OFF sent)" if error is None else "6221 output: check it"
             )
             self.nonlocal_iv6221_source_var.set(
-                "6221: OFF (disconnected)" if error is None else "6221: check the output"
+                "6221: disconnected (OFF sent)" if error is None else "6221: check the output"
             )
         if key == "2410":
             self.nonlocal_resistance_safety_var.set(False)
@@ -29514,7 +29547,7 @@ class CombinedControlApp:
             raise
 
     def _finish_nonlocal_vi_connect(self, future) -> None:
-        self.nonlocal_vi_busy = False
+        self.nonlocal_vi_busy = bool(self.__dict__.get("nonlocal_vi_off_pending"))
         self._set_mfli_lock_state(None, vi=True)
         try:
             (
@@ -29607,7 +29640,7 @@ class CombinedControlApp:
             raise RuntimeError("；".join(errors))
 
     def _finish_nonlocal_vi_disconnect(self, error) -> None:
-        self.nonlocal_vi_busy = False
+        self.nonlocal_vi_busy = bool(self.__dict__.get("nonlocal_vi_off_pending"))
         self.nonlocal_vi_running = False
         self._set_mfli_lock_state(None, vi=True)
         self.nonlocal_mfli_lock_word = None
@@ -29616,11 +29649,11 @@ class CombinedControlApp:
             self._set_nonlocal_vi_indicator(key, False)
         model = self.nonlocal_vi_2410_controller.model
         self.nonlocal_vi_output_var.set(
-            f"Keithley {model} and 6221: disconnected" if error is None
+            f"Keithley {model} and 6221: disconnected (OFF sent)" if error is None
             else f"Keithley {model} and 6221 outputs: check them"
         )
         self.nonlocal_iv6221_source_var.set(
-            "6221: OFF (disconnected)" if error is None else "6221: check the output"
+            "6221: disconnected (OFF sent)" if error is None else "6221: check the output"
         )
         self.nonlocal_vi_reference_var.set("Lock-in reference: --")
         self.nonlocal_vi_safety_var.set(False)
@@ -30062,24 +30095,30 @@ class CombinedControlApp:
             "post_resistance_Ohm", "6221_trigger_link_line",
         )
 
-    def _nonlocal_vi_shutdown_outputs(self) -> None:
-        """Both outputs off, each read back off (OUTP?) before it counts."""
+    def _nonlocal_vi_shutdown_outputs(self) -> tuple[str, ...]:
+        """Both outputs off, each read back off (OUTP?) before it counts.
+        Returns the outputs read back off ("6221", "keithley"); one not
+        connected is not among them."""
         errors = []
+        confirmed = []
         if self.nonlocal_vi_ac_controller.source_connected:
             try:
                 self.nonlocal_vi_ac_controller.output_off()
                 self.nonlocal_vi_ac_controller.confirm_output_off("after switching it off")
+                confirmed.append("6221")
             except BaseException as error:
                 errors.append(str(error))
         if self.nonlocal_vi_2410_controller.connected:
             try:
                 self.nonlocal_vi_2410_controller.safe_shutdown(reset=False)
                 self.nonlocal_vi_2410_controller.confirm_output_off("after switching it off")
+                confirmed.append("keithley")
             except BaseException as error:
                 errors.append(str(error))
         self.nonlocal_vi_interlock.force_idle()
         if errors:
             raise RuntimeError("；".join(errors))
+        return tuple(confirmed)
 
     def _nonlocal_vi_record_pulse(
         self, run_start: float, voltage_v: float
@@ -30636,6 +30675,10 @@ class CombinedControlApp:
             self.nonlocal_vi_status_var.set(
                 f"VI stopped; data saved in {self.nonlocal_vi_run_directory}" + off_note + snapshot_note
             )
+            if shutdown_error is not None and not self.closing:
+                messagebox.showerror(
+                    "Non-local VI", f"Switching the outputs off failed: {shutdown_error}", parent=self.root
+                )
         else:
             self.nonlocal_vi_status_var.set(
                 f"VI complete; data saved in {self.nonlocal_vi_run_directory}" + off_note + snapshot_note
@@ -30663,6 +30706,9 @@ class CombinedControlApp:
         # are switched off now, also while a connection is being made: the
         # single worker runs this as soon as that ends.
         if not self.nonlocal_vi_running:
+            # The page stays busy until this off has run, also if a connect
+            # queued before it finishes first.
+            self.nonlocal_vi_off_pending = True
             self.nonlocal_vi_busy = True
             self._update_nonlocal_vi_controls()
             future = self.nonlocal_vi_executor.submit(
@@ -30671,25 +30717,36 @@ class CombinedControlApp:
             future.add_done_callback(
                 lambda completed: self.post_ui(
                     lambda: self._finish_nonlocal_vi_off(
-                        completed.exception()
+                        completed.exception(),
+                        () if completed.exception() is not None else completed.result(),
                     )
                 )
             )
 
-    def _finish_nonlocal_vi_off(self, error) -> None:
+    def _finish_nonlocal_vi_off(self, error, confirmed=("6221", "keithley")) -> None:
+        self.nonlocal_vi_off_pending = False
         self.nonlocal_vi_busy = False
         model = self.nonlocal_vi_2410_controller.model
-        # OFF only once read back off.
-        self.nonlocal_iv6221_source_var.set("6221: OFF" if error is None else "6221: check the output")
-        self.nonlocal_vi_output_var.set(
-            f"Keithley {model} and 6221 outputs: OFF" if error is None
-            else f"Keithley {model} and 6221 outputs: check them"
-        )
-        self.nonlocal_vi_status_var.set(
-            f"Keithley {model} and 6221 outputs are both off (read back)"
-            if error is None
-            else f"Output off warning: {error}"
-        )
+        # OFF only for an output read back off; one not connected is left as
+        # it was reported (e.g. "check the output" after a failed disconnect).
+        if error is not None:
+            self.nonlocal_iv6221_source_var.set("6221: check the output")
+            self.nonlocal_vi_output_var.set(f"Keithley {model} and 6221 outputs: check them")
+            self.nonlocal_vi_status_var.set(f"Output off warning: {error}")
+        else:
+            names = {"6221": "6221", "keithley": f"Keithley {model}"}
+            off = [names[key] for key in ("keithley", "6221") if key in confirmed]
+            if "6221" in confirmed:
+                self.nonlocal_iv6221_source_var.set("6221: OFF")
+            if off:
+                text = " and ".join(off)
+                self.nonlocal_vi_output_var.set(f"{text} output{'s' if len(off) > 1 else ''}: OFF")
+                self.nonlocal_vi_status_var.set(
+                    f"{text} output{'s are' if len(off) > 1 else ' is'} off (read back)"
+                    + ("" if len(off) > 1 else "; the other is not connected")
+                )
+            else:
+                self.nonlocal_vi_status_var.set("No output connected to switch off")
         if error is not None and not self.closing:
             messagebox.showerror("Non-local VI", str(error), parent=self.root)
         self._update_nonlocal_vi_controls()
@@ -31277,8 +31334,10 @@ class CombinedControlApp:
     def _finish_nonlocal_resistance(self, future) -> None:
         self.nonlocal_keithley_task = None
         untouched = bool(self.__dict__.get("nonlocal_keithley_untouched"))
-        if not untouched:
-            self.nonlocal_vi_output_var.set(self._nonlocal_output_text())
+        self.nonlocal_vi_output_var.set(
+            f"Keithley {self.nonlocal_vi_2410_controller.model}: not switched on" if untouched
+            else self._nonlocal_output_text()
+        )
         try:
             future.result()
         except InterruptedError:
@@ -31518,8 +31577,10 @@ class CombinedControlApp:
         except OSError:
             name = f" Run folder: {Path(path).parent.name}" if path else ""
         untouched = bool(self.__dict__.get("nonlocal_keithley_untouched"))
-        if not untouched:
-            self.nonlocal_vi_output_var.set(self._nonlocal_output_text())
+        self.nonlocal_vi_output_var.set(
+            f"Keithley {self.nonlocal_vi_2410_controller.model}: not switched on" if untouched
+            else self._nonlocal_output_text()
+        )
         self.nonlocal_iv_eta_var.set("Remaining: --")
         try:
             future.result()
@@ -32098,10 +32159,15 @@ class CombinedControlApp:
         acquire_s = float(settings["acquire_s"])
         zurich_orders = tuple(settings.get("zurich_orders", ()))
         range_settle_s = settings.get("range_settle_s", {})
+        # Long time constants get room for a few steps of their own settle.
+        range_limit_s = max(
+            NONLOCAL_IV6221_RANGE_LIMIT_S, 6.0 * max(range_settle_s.values(), default=0.0)
+        )
         started = time.monotonic()
         window_start = started
         next_sample = started
         ranging_s = 0.0
+        range_steps = 0
         valid = {key: [] for key in keys}
         discarded = {key: 0 for key in keys}
         compliance_total = compliance_run = 0
@@ -32143,21 +32209,27 @@ class CombinedControlApp:
                 compliance_run = 0
             ranged = [key for key, sample in reading.items() if sample.get("auto_range")]
             if ranged:
+                range_steps += 1
                 for key in keys:
                     discarded[key] += len(valid[key]) + 1
                 valid = {key: [] for key in keys}
                 wait_s = max(float(range_settle_s.get(key, 0.0)) for key in ranged)
-                if ranging_s + wait_s > NONLOCAL_IV6221_RANGE_LIMIT_S:
+                # On the clock (reads and ranging included) and by steps:
+                # an input overloaded above its top range ranges every read.
+                elapsed = time.monotonic() - started
+                if (elapsed + wait_s > acquire_s + NONLOCAL_IV6221_MAX_EXTRA_S + range_limit_s
+                        or range_steps > NONLOCAL_IV6221_MAX_RANGE_STEPS):
                     raise RuntimeError(
-                        f"Lock-in autorange did not settle within {NONLOCAL_IV6221_RANGE_LIMIT_S:g} s "
-                        f"({', '.join(NONLOCAL_METER_NAMES[key] for key in ranged)})"
+                        f"Lock-in autorange did not settle ({range_steps} steps in {elapsed:.0f} s; "
+                        f"{', '.join(NONLOCAL_METER_NAMES[key] for key in ranged)}): "
+                        "check the signal and its range"
                     )
-                if wait_s > 0:
-                    if stop.wait(wait_s):
-                        raise InterruptedError("6221-IV scan stopped")
-                    ranging_s += wait_s
+                if wait_s > 0 and stop.wait(wait_s):
+                    raise InterruptedError("6221-IV scan stopped")
+                ranging_s = time.monotonic() - started
                 window_start = next_sample = time.monotonic()
                 continue
+            range_steps = 0
             for key, sample in reading.items():
                 if sample.get("measurement_valid", sample.get("reference_valid", False)):
                     valid[key].append(sample)

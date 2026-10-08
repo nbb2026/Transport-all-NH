@@ -62,6 +62,35 @@ class StopAndOffTests(unittest.TestCase):
         self.assertEqual(a.nonlocal_vi_output_var.get(), "Keithley 2400 and 6221 outputs: OFF")
         self.assertEqual(a.nonlocal_iv6221_source_var.get(), "6221: OFF")
         self.assertIn("(read back)", a.nonlocal_vi_status_var.get())
+        self.assertFalse(a.nonlocal_vi_busy)
+
+    def test_off_is_claimed_only_for_an_output_read_back(self):
+        a = self.a
+        a.nonlocal_vi_ac_controller.source_connected = False   # e.g. just disconnected
+        a.nonlocal_iv6221_source_var.set("6221: check the output")
+        a.stop_nonlocal_vi()
+        self.assertEqual(a.nonlocal_vi_output_var.get(), "Keithley 2400 output: OFF")
+        self.assertEqual(a.nonlocal_iv6221_source_var.get(), "6221: check the output",
+                         "nothing was read from the 6221")
+        self.assertIn("the other is not connected", a.nonlocal_vi_status_var.get())
+
+    def test_a_connect_finishing_first_keeps_the_page_busy_until_the_off_ran(self):
+        a = self.a
+        a.nonlocal_vi_off_pending = True
+        a.nonlocal_vi_busy = True
+        for name in ("_set_mfli_lock_state", "_refresh_nonlocal_vi_connection_summary",
+                     "_redraw_nonlocal_vi_plots", "_update_k6221_controls", "_update_keithley_controls"):
+            setattr(a, name, mock.Mock())
+        a.nonlocal_vi_measurement_enabled_vars = {}
+        for name in ("nonlocal_resistance_safety_var", "nonlocal_iv_safety_var",
+                     "nonlocal_iv6221_safety_var", "nonlocal_vi_safety_var"):
+            setattr(a, name, Var(True))
+        future = Future()
+        future.set_result("KEITHLEY 2182A")
+        a._finish_nonlocal_vi_device_connect("2182", "Keithley 2182A", future)
+        self.assertTrue(a.nonlocal_vi_busy)
+        a._finish_nonlocal_vi_off(None, ("6221", "keithley"))
+        self.assertFalse(a.nonlocal_vi_busy)
 
     def test_off_is_not_claimed_when_switching_off_failed(self):
         a = self.a
@@ -81,7 +110,7 @@ class StopAndOffTests(unittest.TestCase):
                      "_update_k6221_controls", "_update_keithley_controls"):
             setattr(a, name, mock.Mock())
         a._finish_nonlocal_vi_device_disconnect("2410", "Keithley 2400", None)
-        self.assertEqual(a.nonlocal_vi_output_var.get(), "Keithley 2400: disconnected")
+        self.assertEqual(a.nonlocal_vi_output_var.get(), "Keithley 2400: disconnected (OFF sent)")
         self.assertEqual(a.nonlocal_iv6221_source_var.get(), "6221 ON: 0.1 mA RMS / 17.3 Hz",
                          "the 6221 may still be on")
         a._finish_nonlocal_vi_device_disconnect("6221", "Keithley 6221", RuntimeError("timeout"))
@@ -157,16 +186,39 @@ class KeithleyTaskTests(unittest.TestCase):
 
 
 class PulseTests(unittest.TestCase):
-    def test_the_error_check_is_part_of_the_pulse_width(self):
+    def test_the_level_is_checked_after_the_pulse_not_inside_it(self):
         meter = FakeSourceMeter()
         controller = connected_controller(meter)
-        waits = []
-        controller._wait = lambda duration, stop: waits.append(duration)
+        events = []
+        original_query, original_write = meter.query, meter.write
+        meter.query = lambda command: (events.append(("query", command)), original_query(command))[1]
+        meter.write = lambda command: (events.append(("write", command)), original_write(command))[1]
+        controller._wait = lambda duration, stop: events.append(("wait", duration))
         with mock.patch.object(app.time, "sleep", lambda seconds: None):
-            clock = iter([100.0, 100.08] + [100.2] * 20)
-            with mock.patch.object(app.time, "monotonic", lambda: next(clock)):
-                controller.apply_voltage_pulse(5.0, 0.1, threading.Event())
-        self.assertAlmostEqual(waits[0], 0.02, msg="0.1 s less the 80 ms check")
+            controller.apply_voltage_pulse(5.0, 0.1, threading.Event())
+        level_at = events.index(("write", ":SOUR:VOLT 5"))
+        self.assertEqual(events[level_at + 1], ("wait", 0.1),
+                         "the full width, with no error check between the level and the wait")
+        self.assertEqual(meter.commands[-2:], [":SOUR:VOLT 0", ":OUTP OFF"])
+        self.assertIn(("query", "SYST:ERR?"), events[level_at + 2:], "the level is checked after the pulse")
+
+    def test_a_rejected_level_fails_after_the_output_is_off(self):
+        meter = FakeSourceMeter()
+        controller = connected_controller(meter)
+        original_query = meter.query
+        state = {"pulsed": False}
+
+        def query(command):
+            if command == "SYST:ERR?" and state["pulsed"] and meter.output == 0:
+                return '-222,"Data out of range"'
+            return original_query(command)
+
+        meter.query = query
+        controller._wait = lambda duration, stop: state.update(pulsed=True)
+        with mock.patch.object(app.time, "sleep", lambda seconds: None), \
+                self.assertRaisesRegex(RuntimeError, "Data out of range"):
+            controller.apply_voltage_pulse(5.0, 0.1, threading.Event())
+        self.assertEqual(meter.output, 0)
 
     def test_a_stop_before_the_pulse_never_switches_the_output_on(self):
         meter = FakeSourceMeter()

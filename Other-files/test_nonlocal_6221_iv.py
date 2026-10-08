@@ -442,6 +442,15 @@ class AcquisitionTests(ReadingTests):
             self.run_scan(acquire_s=0.0)
         self.assertIn(1.5, [round(w, 6) for w in waits], "5 × 0.3 s after the SR830 range step")
 
+    def test_a_meter_that_keeps_ranging_fails_the_point(self):
+        source = FakeSource(readings=[{"auto_range": "SENS 26->26 (overload/high)",
+                                        "measurement_valid": False}] * 100, sr830_tau=0.0)
+        self.make(source, start="0.1", end="0.1", step="0.1")
+        with mock.patch.object(app, "NONLOCAL_IV6221_SAMPLE_INTERVAL_S", 0.001), \
+                self.assertRaisesRegex(RuntimeError, "autorange did not settle \\(31 steps"):
+            self.run_scan(acquire_s=0.0)
+        self.assertFalse(self.source.output_on)
+
     def test_the_first_point_of_a_pass_repeats_until_two_windows_agree(self):
         source = FakeSource(readings=[{"X": 9e-7}])   # settling, then steady
         self.make(source, start="0.1", end="0.2", step="0.1")
@@ -745,7 +754,7 @@ class ZurichRowTests(unittest.TestCase):
     def test_the_zurich_is_set_up_as_the_rte_row_does(self):
         a = self.page()
         controller = a.nonlocal_vi_ac_controller
-        controller.mfli_props = {"options": "MD"}
+        controller.mfli_has_multi_demod.return_value = True
         controller.configure_mfli.return_value = {"sample_rate_hz": 25.0}
         a._apply_nonlocal_mfli_config({"reference": "Trigger In 1", "tc_s": 0.1, "mode": "1+2+3"})
         args, kwargs = controller.configure_mfli.call_args
@@ -757,7 +766,7 @@ class ZurichRowTests(unittest.TestCase):
         controller.disable_unused_ppms_demods.assert_called_once_with("1+2+3")
         a = self.page()
         controller = a.nonlocal_vi_ac_controller
-        controller.mfli_props = {"options": "MD"}
+        controller.mfli_has_multi_demod.return_value = True
         controller.configure_mfli.return_value = {}
         a._apply_nonlocal_mfli_config({"reference": "Aux Input 1", "tc_s": 1.0, "mode": "2"})
         self.assertEqual(controller.configure_mfli.call_args[0], ("AC", 2, "R"))
@@ -766,7 +775,7 @@ class ZurichRowTests(unittest.TestCase):
         # Without MF-MD the rack's lock display uses the 1st harmonic alone.
         a = self.page()
         controller = a.nonlocal_vi_ac_controller
-        controller.mfli_props = {"options": "", "has_demod_2": False}
+        controller.mfli_has_multi_demod.return_value = False
         controller.configure_mfli.return_value = {}
         a._apply_nonlocal_mfli_config({"reference": "Aux Input 1", "tc_s": 0.1, "mode": "1+2+3"})
         self.assertEqual(controller.configure_mfli.call_args[0], ("AC", 1, "R"))

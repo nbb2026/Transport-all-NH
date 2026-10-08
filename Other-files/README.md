@@ -69,6 +69,26 @@ unexpectedly. Their confirmed findings are fixed below; the new tests are in
   - **CSV:** the column `in_compliance` is renamed `compliance_readings`; it
     holds a count.
   - **Time estimate:** includes each pass's first-point settle.
+- **A second review of these fixes:**
+  - **What OFF claims:** OFF is claimed only for an output actually read back
+    (`_nonlocal_vi_shutdown_outputs` returns them). An instrument that is
+    not connected keeps the state it was reported in.
+  - **Busy page:** the page stays busy until a queued OFF has run, even when
+    a connection finishes first.
+  - **Disconnects:** a disconnect says "OFF sent", because it cannot read
+    the output back.
+  - **Endless ranging:** a 6221-IV point that keeps ranging now fails by the
+    clock or after 30 steps in a row (`NONLOCAL_IV6221_MAX_RANGE_STEPS`).
+    Before, an input overloaded above its top range could hold the 6221 on
+    for minutes.
+  - **Failed shutdown after Stop:** this again opens a dialog.
+  - **Stop before a switch-on:** this takes back the "ON" text.
+  - **MF-MD before the first configure:** found as `configure_mfli` finds it
+    (`NonLocalACController.mfli_has_multi_demod`).
+  - **Legacy bridge:** switches off any other reference PLL too.
+  - **Pulse error check:** the check of the pulse level now comes after the
+    pulse, so short pulses keep their width as well. A rejected level only
+    left 0 V on, and it is switched off the same way.
 - **Not changed, for the user to decide:**
   - **Keithley output-off state:** the Keithley's "output off" is the 2400's
     NORMal mode (0 V, low compliance), not an open relay. `:OUTP:SMOD HIMP`
