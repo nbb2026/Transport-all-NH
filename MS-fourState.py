@@ -1119,7 +1119,8 @@ class FourStateApp:
         self.connection_widgets = {}   # key: (address widgets, Connect, Disconnect, lamp)
         self.connection_failed = {key: False for key in CONNECTIONS}
         for row, (key, label) in enumerate(CONNECTIONS.items()):
-            ttk.Label(connections, text=f"{label}:", width=19, anchor="e").grid(
+            # Right-aligned; the column is as wide as the longest name.
+            ttk.Label(connections, text=f"{label}:").grid(
                 row=row, column=0, sticky="e", padx=(0, 4), pady=1)
             if key == "ppms":
                 host = ttk.Combobox(connections, textvariable=self.host_var, values=core.PPMS_HOST_CHOICES, width=16)
