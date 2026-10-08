@@ -20564,7 +20564,7 @@ class CombinedControlApp:
         outer = ttk.Frame(self.nonlocal_vi_tab, padding=7)
         outer.grid(row=0, column=0, sticky="nsew")
         outer.columnconfigure(0, weight=1)
-        outer.rowconfigure(2, weight=1)
+        outer.rowconfigure(1, weight=1)
 
         connection = ttk.LabelFrame(
             outer,
@@ -20953,46 +20953,13 @@ class CombinedControlApp:
                 add="+",
             )
 
-        # Trigger Link and the red stop button on one row, the interlock text
-        # (kept word for word) under them, where it has the full page width:
-        # one line in the 2000 px window, wrapped in narrower ones.
-        safety = ttk.Frame(outer, padding=(2, 5))
-        safety.grid(row=1, column=0, sticky="ew")
-        safety.columnconfigure(2, weight=1)
-        ttk.Label(safety, text="Trigger Link output line:").grid(
-            row=0, column=0, sticky="w"
-        )
-        ttk.Entry(
-            safety, textvariable=self.nonlocal_vi_marker_line_var, width=5
-        ).grid(row=0, column=1, padx=(0, 8), sticky="w")
-        # Names the selected model; set in _refresh_nonlocal_vi_model_labels.
-        interlock = ttk.Label(
-            safety,
-            textvariable=self.nonlocal_vi_interlock_var,
-            foreground="#a34b00",
-        )
-        interlock.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(4, 0))
-        wrap_to_width(interlock)
-        self.nonlocal_vi_off_button = tk.Button(
-            safety,
-            text=f"Stop {KEITHLEY_DEFAULT_MODEL} / 6221 now",
-            command=self.stop_nonlocal_vi,
-            bg="#d70018",
-            fg="white",
-            activebackground="#a80012",
-            activeforeground="white",
-            padx=12,
-            pady=3,
-        )
-        self.nonlocal_vi_off_button.grid(
-            row=0, column=3, padx=(8, 0), sticky="e"
-        )
-
         # The measurements share the rack above.  Gate-VI keeps its layout on
         # the first sub-tab; |R| vs time (from MOKE-24) and the I-V sweep use
-        # the Keithley alone.
+        # the Keithley alone.  In the lab's 1101 px window the rack takes
+        # about half the height, so only the sub-tab strip comes between it
+        # and the measurement.
         self.nonlocal_measurements = ttk.Notebook(outer)
-        self.nonlocal_measurements.grid(row=2, column=0, sticky="nsew")
+        self.nonlocal_measurements.grid(row=1, column=0, sticky="nsew", pady=(5, 0))
         gate_tab = ttk.Frame(self.nonlocal_measurements, padding=(0, 5, 0, 0))
         resistance_tab = ttk.Frame(self.nonlocal_measurements, padding=(0, 5, 0, 0))
         iv_tab = ttk.Frame(self.nonlocal_measurements, padding=(0, 5, 0, 0))
@@ -21008,11 +20975,38 @@ class CombinedControlApp:
             ),
             add="+",
         )
+        # The red stop button at the right end of the sub-tab strip, so it
+        # shows on every sub-tab; it stops whichever measurement holds the
+        # Keithley or the 6221.
+        self.nonlocal_vi_off_button = tk.Button(
+            outer,
+            text=f"Stop {KEITHLEY_DEFAULT_MODEL} / 6221 now",
+            command=self.stop_nonlocal_vi,
+            bg="#d70018",
+            fg="white",
+            activebackground="#a80012",
+            activeforeground="white",
+            padx=12,
+            pady=1,
+        )
+        self.nonlocal_vi_off_button.grid(row=1, column=0, sticky="ne", pady=(5, 0))
+        self.nonlocal_vi_off_button.lift()
         gate_tab.columnconfigure(0, weight=1)
-        gate_tab.rowconfigure(2, weight=1)
+        gate_tab.rowconfigure(3, weight=1)
+
+        # The pulse scan's interlock (kept word for word), wrapped to the
+        # page width.  Names the selected model; set in
+        # _refresh_nonlocal_vi_model_labels.
+        interlock = ttk.Label(
+            gate_tab,
+            textvariable=self.nonlocal_vi_interlock_var,
+            foreground="#a34b00",
+        )
+        interlock.grid(row=0, column=0, sticky="ew", padx=2, pady=(0, 5))
+        wrap_to_width(interlock)
 
         settings = ttk.LabelFrame(gate_tab, text="Non-local VI voltage-pulse scan parameters", padding=7)
-        settings.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+        settings.grid(row=1, column=0, sticky="ew", pady=(0, 5))
         entries = (
             ("Start V", self.nonlocal_vi_start_voltage_var),
             ("Stop V", self.nonlocal_vi_stop_voltage_var),
@@ -21083,8 +21077,8 @@ class CombinedControlApp:
         # others.  The lock-in reference text, which lists every locked
         # meter, comes last and wraps rather than pushing anything off.
         actions = ttk.LabelFrame(gate_tab, text="Run and data", padding=7)
-        actions.grid(row=1, column=0, sticky="ew", pady=(0, 5))
-        actions.columnconfigure(2, weight=1)
+        actions.grid(row=2, column=0, sticky="ew", pady=(0, 5))
+        actions.columnconfigure(3, weight=1)
         self.nonlocal_vi_start_button = ttk.Button(
             actions,
             text="Choose folder and start scan",
@@ -21095,8 +21089,15 @@ class CombinedControlApp:
             actions, text="Stop scan", command=self.stop_nonlocal_vi
         )
         self.nonlocal_vi_stop_button.grid(row=0, column=1, padx=(0, 10))
+        # The pulse scan's 6221 trigger output, beside its buttons.
+        trigger = ttk.Frame(actions)
+        trigger.grid(row=0, column=2, sticky="w")
+        ttk.Label(trigger, text="Trigger Link output line:").pack(side="left")
+        ttk.Entry(
+            trigger, textvariable=self.nonlocal_vi_marker_line_var, width=5
+        ).pack(side="left", padx=(3, 0))
         readouts = ttk.Frame(actions)
-        readouts.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(5, 0))
+        readouts.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(5, 0))
         readouts.columnconfigure(3, weight=1)
         ttk.Label(
             readouts,
@@ -21148,7 +21149,7 @@ class CombinedControlApp:
             actions, mode="determinate", maximum=1, value=0, length=180
         )
         self.nonlocal_vi_progress.grid(
-            row=0, column=2, sticky="ew", padx=(8, 8)
+            row=0, column=3, sticky="ew", padx=(8, 8)
         )
         ttk.Label(
             actions,
@@ -21156,11 +21157,11 @@ class CombinedControlApp:
             style="Success.TLabel",
             width=20,
             anchor="w",
-        ).grid(row=0, column=3, sticky="e")
+        ).grid(row=0, column=4, sticky="e")
 
         plots = ttk.Frame(gate_tab)
         self.nonlocal_vi_plot_container = plots
-        plots.grid(row=2, column=0, sticky="nsew")
+        plots.grid(row=3, column=0, sticky="nsew")
         for column in range(3):
             plots.columnconfigure(column, weight=1)
         for row in range(5):
@@ -21288,7 +21289,7 @@ class CombinedControlApp:
             textvariable=self.nonlocal_vi_status_var,
             style="Status.TLabel",
             anchor="w",
-        ).grid(row=3, column=0, sticky="ew", pady=(5, 0))
+        ).grid(row=2, column=0, sticky="ew", pady=(5, 0))
         self._redraw_nonlocal_vi_plots()
         self._update_nonlocal_vi_controls()
 
@@ -21360,45 +21361,47 @@ class CombinedControlApp:
         )
 
     def _build_nonlocal_iv_tab(self, tab) -> None:
-        """The I-V sweep: settings on the left, the curve on the right."""
+        """The I-V sweep: a compact settings box on the left, the curve on
+        the right (in the 1101 px window the box has about 450 px of height)."""
         tab.columnconfigure(1, weight=1)
         tab.rowconfigure(0, weight=1)
-        controls = ttk.LabelFrame(tab, text="I–V sweep", padding=7)
-        controls.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
-        fields = (
-            ("Sample:", self.nonlocal_iv_sample_var, 18),
-            ("Start V:", self.nonlocal_iv_start_var, 9),
-            ("End V:", self.nonlocal_iv_end_var, 9),
-            ("Step V:", self.nonlocal_iv_step_var, 9),
-            ("Settle s:", self.nonlocal_iv_settle_var, 9),
-            ("Current limit A:", self.nonlocal_iv_limit_var, 9),
-        )
-        for row, (label, variable, width) in enumerate(fields):
-            ttk.Label(controls, text=label).grid(row=row, column=0, sticky="e", pady=2)
-            ttk.Entry(controls, textvariable=variable, width=width).grid(
-                row=row, column=1, sticky="w", padx=(4, 0), pady=2
-            )
-        note = ttk.Label(
-            controls,
+        controls = ttk.LabelFrame(
+            tab,
             text=(
-                "The voltage steps from Start to End and the current is read "
-                f"after Settle s at each step (±{NONLOCAL_VI_MAX_ABS_PULSE_V:g} V, "
-                f"{NONLOCAL_VI_2410_SOURCE_OVP_V:g} V OVP). The 6221 is switched "
-                "off first; the Keithley is zeroed and off at the end."
+                f"I–V sweep (±{NONLOCAL_VI_MAX_ABS_PULSE_V:g} V, "
+                f"{NONLOCAL_VI_2410_SOURCE_OVP_V:g} V OVP)"
             ),
-            style="Muted.TLabel",
-            wraplength=self._ui_px(300),
-            justify="left",
+            padding=7,
         )
-        note.grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        controls.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        controls.columnconfigure(3, weight=1)
+        ttk.Label(controls, text="Sample:").grid(row=0, column=0, sticky="e", pady=2)
+        ttk.Entry(
+            controls, textvariable=self.nonlocal_iv_sample_var, width=22
+        ).grid(row=0, column=1, columnspan=3, sticky="ew", padx=(4, 0), pady=2)
+        # Two pairs to a row, in reading order for the Tab key.
+        for row, column, label, variable in (
+            (1, 0, "Start V:", self.nonlocal_iv_start_var),
+            (1, 2, "End V:", self.nonlocal_iv_end_var),
+            (2, 0, "Step V:", self.nonlocal_iv_step_var),
+            (2, 2, "Settle s:", self.nonlocal_iv_settle_var),
+            (3, 0, "Current limit A:", self.nonlocal_iv_limit_var),
+        ):
+            ttk.Label(controls, text=label).grid(
+                row=row, column=column, sticky="e", pady=2,
+                padx=(10 if column else 0, 0),
+            )
+            ttk.Entry(controls, textvariable=variable, width=8).grid(
+                row=row, column=column + 1, sticky="w", padx=(4, 0), pady=2
+            )
         ttk.Checkbutton(
             controls,
             text="Wiring, current limit and voltages confirmed safe",
             variable=self.nonlocal_iv_safety_var,
             command=self._update_nonlocal_keithley_controls,
-        ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ).grid(row=4, column=0, columnspan=4, sticky="w", pady=(6, 0))
         buttons = ttk.Frame(controls)
-        buttons.grid(row=8, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        buttons.grid(row=5, column=0, columnspan=4, sticky="w", pady=(6, 0))
         self.nonlocal_iv_start_button = ttk.Button(
             buttons, text="Start I–V sweep", command=self.start_nonlocal_iv_sweep
         )
@@ -21421,18 +21424,24 @@ class CombinedControlApp:
             controls, mode="determinate", maximum=1, value=0, length=180
         )
         self.nonlocal_iv_progress.grid(
-            row=9, column=0, columnspan=2, sticky="ew", pady=(8, 0)
+            row=6, column=0, columnspan=4, sticky="ew", pady=(6, 0)
         )
         ttk.Label(
             controls, textvariable=self.nonlocal_iv_eta_var, style="Success.TLabel"
-        ).grid(row=10, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        ttk.Label(
+        ).grid(row=7, column=0, columnspan=4, sticky="w", pady=(3, 0))
+        point = ttk.Label(
             controls,
             textvariable=self.nonlocal_iv_point_var,
             style="Metric.TLabel",
             wraplength=self._ui_px(300),
             justify="left",
-        ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        )
+        point.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(3, 0))
+        point.bind(
+            "<Configure>",
+            lambda event: event.widget.configure(wraplength=max(100, event.width - 4)),
+            add="+",
+        )
         frame = ttk.LabelFrame(tab, text="Current vs voltage", padding=6)
         frame.grid(row=0, column=1, sticky="nsew")
         self.nonlocal_iv_canvas = self._nonlocal_plot_canvas(

@@ -2,11 +2,14 @@
 
 ## Non-local page: Gate-VI, |R| vs time and an I–V sweep (2026-10-08)
 
-- **The page:** the Gate-VI tab is now **Non-local**. Its instrument rack, the
-  Trigger Link line and the red stop button stay at the top. Under them,
-  three sub-tabs (`nonlocal_measurements`) share the Keithley 2410/2400:
-  - **Gate-VI pulse scan:** the old Gate-VI settings, run box and plots,
-    unchanged.
+- **The page:** the Gate-VI tab is now **Non-local**. Its instrument rack
+  stays at the top. Under it, three sub-tabs (`nonlocal_measurements`) share
+  the Keithley 2410/2400. The red stop button sits at the right end of the
+  sub-tab strip, so it shows on every sub-tab. In the lab's 1101 px window
+  the rack takes about half the height, so nothing else sits between the rack
+  and the sub-tabs.
+  - **Gate-VI pulse scan:** the old Gate-VI interlock text, settings, run box
+    and plots. The Trigger Link line is now in the run box.
   - **|R| vs time:** moved from MOKE-24. It uses the same autorange, 20 s
     window and plot as before, on the pulse Keithley
     (`NonLocalVI2410Controller.start_resistance`, `set_resistance_current`,
