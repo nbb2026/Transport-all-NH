@@ -9,19 +9,39 @@
   `nonlocal_vi_ac_controller`, the controller the pulse scan uses.
   - **Plan:** `rte_scan_plan("Current", …)` gives Start → End in mA RMS, with
     Loops and an optional round trip, as on RT-E.
-  - **Each point:** `set_current` sets the sine. After Settle s the meters
-    ticked "In scan" are read every 0.5 s for Acquire s and averaged. Only
-    samples without a lock-in warning are averaged when there are any; the
-    rest are counted as warnings.
-  - **First point:** the reference lock is checked.
+  - **Each point:** `set_current` sets the sine. After Settle s, the meters
+    ticked "In scan" are read every 0.5 s for Acquire s
+    (`_nonlocal_iv6221_read_point`).
+    - **Left out:** readings flagged unlocked, overloaded or in compliance.
+      They are counted in `<meter>_discarded`.
+    - **Autorange:** a step restarts the window, as on RT-E.
+    - **Failure:** a point fails if a meter has no valid reading within
+      Acquire s + 30 s, or if the 6221 reports compliance on three readings
+      in a row.
+  - **R and θ:** computed from the mean X and Y, as on RT-E. A mean of
+    phases near ±180° would come out near 0°.
+  - **First point:** a reference that is not locked stops the scan, with a
+    pointer to the Trigger Link line and cable.
+  - **Longer settle:** the first point, and the first point of each loop
+    without a round trip, wait at least 10 s (10 time constants), because
+    the current jumps there from far away.
   - **Defaults:** RT-E's current range, 0.01 → 1 mA in 0.01 mA steps; 17.3 Hz;
     50 V compliance. Settle 5 s and acquire 2 s, because the page's lock-in
     setup uses a 1 s time constant (RT-E's 0.5 s / 1 s would read
     unsettled values here).
 - **Meter settings:** the read settings box is built a second time
-  (`_build_nonlocal_vi_read_settings(gate=False)`, without the 6221 AC/DC
-  and the 2182A), bound to the same variables. A change on either sub-tab
-  shows on both. The Trigger Link line is shared too.
+  (`_build_nonlocal_vi_read_settings(gate=False)`), bound to the same
+  variables. A change on either sub-tab shows on both. The Trigger Link
+  line is shared too. This copy leaves out three things 6221-IV does not
+  use:
+  - the 6221 AC/DC choice;
+  - the 2182A;
+  - the Read choice, because 6221-IV records X, Y, R and θ.
+
+  The 6221-IV safety tick clears on any instrument connect or disconnect.
+- **Plot legends:** the next legend entry starts after the label as drawn
+  (`canvas.bbox`). The per-character estimate let "SR830 #8 1ω" run into the
+  next entry in the lab's Windows font.
 - **Before the scan:**
   - a Yes/No summary;
   - a choice of folder;

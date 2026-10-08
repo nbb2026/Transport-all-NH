@@ -17,8 +17,11 @@ from test_ppms_motor_debug import app
 class FakeSource:
     """The 6221 with SR830 #8 at its 2nd harmonic: X follows the current."""
 
-    def __init__(self, fail_read=False):
+    def __init__(self, fail_read=False, readings=None, locked=True):
         self.calls = []
+        # Optional list of per-read overrides for SR830 #8 (consumed in turn).
+        self.readings = list(readings or [])
+        self.locked = locked
         self.source_connected = True
         self.connected_lockin_keys = ("8",)
         self.mfli_connected = False
@@ -39,15 +42,18 @@ class FakeSource:
 
     def wait_references(self, frequency_hz, stop_event, keys):
         self.calls.append(("wait_references", tuple(keys)))
-        return {"8": {"valid": True, "frequency_hz": frequency_hz, "status": 0}}
+        return {"8": {"valid": self.locked, "frequency_hz": frequency_hz, "status": 0 if self.locked else 8}}
 
     def read_samples(self, frequency_hz, keys):
         if self.fail_read:
             raise RuntimeError("VI_ERROR_TMO")
         assert self.output_on
-        return {"8": {"X": self.current * 1e-6, "Y": 0.0, "R": self.current * 1e-6,
-                      "phase_deg": 5.0, "reference_valid": True,
-                      "measurement_valid": True, "in_compliance": False}}
+        sample = {"X": self.current * 1e-6, "Y": 0.0, "R": self.current * 1e-6,
+                  "phase_deg": 5.0, "reference_valid": True, "auto_range": "",
+                  "measurement_valid": True, "in_compliance": False, "status_text": "OK"}
+        if self.readings:
+            sample.update(self.readings.pop(0))
+        return {"8": sample}
 
     def output_off(self):
         self.calls.append(("output_off",))
@@ -84,6 +90,9 @@ class WorkerTests(unittest.TestCase):
         a._publish_reference_sync = mock.Mock()
         a.nonlocal_vi_output_var = Var()
         self.folder = Path(tempfile.mkdtemp())
+        patcher = mock.patch.object(app, "NONLOCAL_IV6221_FIRST_SETTLE_S", 0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def run_scan(self, plan, **overrides):
         path = self.folder / "6221-IV_test.csv"
@@ -127,7 +136,8 @@ class WorkerTests(unittest.TestCase):
         self.app.nonlocal_keithley_stop_event.set()
         with self.assertRaises(InterruptedError):
             self.run_scan(plan)
-        self.assertEqual(self.source.calls, [], "a Stop before the start sends nothing")
+        self.assertEqual(self.source.calls, [("output_off",), ("confirm_output_off",)],
+                         "a Stop before the start only makes sure the 6221 is off")
         self.app.nonlocal_keithley_stop_event.clear()
         self.source = FakeSource(fail_read=True)
         self.app.nonlocal_vi_ac_controller = self.source
@@ -142,6 +152,74 @@ class WorkerTests(unittest.TestCase):
         self.run_scan(app.rte_scan_plan("Current", 0.1, 0.1, 0.1, 1, False))
         contexts = [call.args[0] for call in keithley.confirm_output_off.call_args_list]
         self.assertEqual(contexts[0], "before the 6221-IV scan")
+
+
+class ReadingTests(WorkerTests):
+    """Validity, averaging and settling (the 2026-10-08 review)."""
+
+    def scan_one(self, source, **overrides):
+        self.source = source
+        self.app.nonlocal_vi_ac_controller = source
+        rows = []
+        self.app._append_nonlocal_iv6221_point = rows.append
+        path = self.folder / f"one_{len(list(self.folder.iterdir()))}.csv"
+        self.app._nonlocal_iv6221_worker(
+            settings(app.rte_scan_plan("Current", 0.1, 0.1, 0.1, 1, False), **overrides), path)
+        for callback in self.posted:
+            callback()
+        self.posted.clear()
+        return rows
+
+    def test_theta_and_r_come_from_the_mean_x_and_y(self):
+        # A negative signal near ±180°: a plain mean of the phases is 0°.
+        source = FakeSource(readings=[
+            {"X": -1e-6, "Y": 1e-8, "phase_deg": 179.4},
+            {"X": -1e-6, "Y": -1e-8, "phase_deg": -179.4},
+        ])
+        rows = self.scan_one(source, acquire_s=0.0)
+        result = rows[0]["8"]
+        self.assertGreater(abs(result["theta"]), 179.0)
+        self.assertAlmostEqual(result["R"], 1e-6, delta=1e-9)
+
+    def test_an_unlocked_reference_stops_the_scan_with_the_6221_off(self):
+        with self.assertRaisesRegex(RuntimeError, "not locked at 17.3 Hz: SR830 #8; check Trigger Link line 4"):
+            self.scan_one(FakeSource(locked=False))
+        self.assertEqual(self.source.calls[-2:], [("output_off",), ("confirm_output_off",)])
+
+    def test_readings_before_an_autorange_step_and_invalid_ones_are_left_out(self):
+        source = FakeSource(readings=[
+            {"X": 9.0, "measurement_valid": False},              # unlocked: left out
+            {"X": 9.0, "auto_range": "SENS 3->4 (overload/high)", "measurement_valid": False},
+        ])
+        rows = self.scan_one(source)
+        self.assertAlmostEqual(rows[0]["8"]["X"], 0.1e-6)
+        self.assertEqual(rows[0]["8"]["discarded"], 2)
+
+    def test_sustained_compliance_stops_the_scan(self):
+        source = FakeSource(readings=[{"in_compliance": True, "measurement_valid": False}] * 3)
+        with self.assertRaisesRegex(RuntimeError, "6221 is in compliance"):
+            self.scan_one(source, acquire_s=5.0)
+        self.assertFalse(self.source.output_on)
+
+    def test_no_valid_reading_fails_the_point(self):
+        source = FakeSource(readings=[{"measurement_valid": False, "status_text": "reference not locked"}] * 50)
+        with mock.patch.object(app, "NONLOCAL_IV6221_MAX_EXTRA_S", 0.0), \
+                mock.patch.object(app, "NONLOCAL_IV6221_SAMPLE_INTERVAL_S", 0.001):
+            with self.assertRaisesRegex(RuntimeError, "No valid lock-in reading.*SR830 #8: reference not locked"):
+                self.scan_one(source)
+
+    def test_far_jumps_settle_longer(self):
+        waits = []
+        stop = self.app.nonlocal_keithley_stop_event
+        original = stop.wait
+        stop.wait = lambda timeout=None: (waits.append(timeout), original(0))[1]
+        with mock.patch.object(app, "NONLOCAL_IV6221_FIRST_SETTLE_S", 10.0):
+            self.app._nonlocal_iv6221_worker(
+                settings(app.rte_scan_plan("Current", 0.1, 0.2, 0.1, 2, False), settle_s=5.0),
+                self.folder / "loops.csv")
+        settles = [w for w in waits if w in (5.0, 10.0)]
+        # Loop 1: 10, 5; loop 2 starts again from Start after End: 10, 5.
+        self.assertEqual(settles, [10.0, 5.0, 10.0, 5.0])
 
 
 class ParseTests(unittest.TestCase):
@@ -179,6 +257,8 @@ class ParseTests(unittest.TestCase):
             (lambda: a.nonlocal_iv6221_acquire_var.set("0"), "Acquire time"),
             (lambda: a.nonlocal_iv6221_loops_var.set("1.5"), "Loops"),
             (lambda: a.nonlocal_iv6221_frequency_var.set("x"), "valid numbers"),
+            (lambda: a.nonlocal_vi_lockin_harmonic_vars["8"].set(0), "harmonic must be 1–19999"),
+            (lambda: a.nonlocal_iv6221_frequency_var.set("60000"), "exceeds 102 kHz"),
         ):
             with self.subTest(message=message):
                 self.setUp()
@@ -196,9 +276,12 @@ class FinishAndPlotTests(unittest.TestCase):
         a.nonlocal_vi_2410_controller = app.NonLocalVI2410Controller(lambda _m: None, "2400")
         a.nonlocal_vi_output_var, a.nonlocal_vi_status_var, a.nonlocal_iv6221_eta_var = Var(), Var(), Var()
         a.nonlocal_iv6221_rows, a.nonlocal_iv6221_total_points = [{}] * 3, 100
-        a.nonlocal_iv6221_csv_path = Path("/data/6221-IV_20261008_120000.csv")
+        csv_path = Path(tempfile.mkdtemp()) / "6221-IV_20261008_120000.csv"
+        csv_path.write_text("point\n", encoding="utf-8")
+        a.nonlocal_iv6221_csv_path = csv_path
         a._redraw_nonlocal_iv6221_plots = mock.Mock()
         a._update_nonlocal_vi_controls = mock.Mock()
+        a._set_mfli_lock_state = mock.Mock()
         for error, off, expected in (
             (InterruptedError("stopped"), True,
              "6221-IV scan stopped after 3/100 points; 6221 output off. CSV: 6221-IV_20261008_120000.csv"),
@@ -214,6 +297,14 @@ class FinishAndPlotTests(unittest.TestCase):
                 self.assertEqual(a.nonlocal_vi_status_var.get(), expected)
                 self.assertIsNone(a.nonlocal_keithley_task)
         self.assertEqual(a.nonlocal_vi_output_var.get(), "6221 output: check it")
+        a._set_mfli_lock_state.assert_called_with(None, vi=True)
+        # Stopped before the first point: no CSV was made.
+        csv_path.unlink()
+        a.nonlocal_keithley_task, a.nonlocal_keithley_output_off = "iv6221", True
+        future = Future()
+        future.set_exception(InterruptedError("stopped"))
+        a._finish_nonlocal_iv6221(future)
+        self.assertTrue(a.nonlocal_vi_status_var.get().endswith("6221 output off. No CSV was written."))
 
     def test_x_y_and_theta_are_plotted_against_the_current(self):
         a = bare_app()
