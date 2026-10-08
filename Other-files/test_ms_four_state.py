@@ -926,6 +926,29 @@ class ManualTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, message):
                 ms.manual_settings(dict(ms.DEFAULTS, **changes))
 
+    def test_the_manual_pulse_has_its_own_width(self):
+        world = World()
+        app = ms.FourStateApp.__new__(ms.FourStateApp)
+        app.busy, app.motor_pending = False, False
+        app.title, app.root = "MS-fourState", None
+        app.ppms, app.source = world.ppms, world.source
+        app.safety_var = mock.Mock(get=lambda: True)
+        app.values = {key: mock.Mock(get=lambda value=value: value) for key, value in ms.DEFAULTS.items()}
+        app.manual_vars = {key: mock.Mock(get=lambda value=value: value)
+                           for key, value in dict(ms.MANUAL_DEFAULTS, pulse_width_us="50").items()}
+        sent = []
+        app._run_manual = lambda label, settings, operation, describe, **_: sent.append(settings)
+        with mock.patch.object(ms.messagebox, "askyesno", return_value=True) as asked:
+            app.manual_pulse()
+        self.assertAlmostEqual(sent[0].pulse_width_s, 50e-6, msg="the manual width")
+        self.assertEqual(ms.DEFAULTS["pulse_width_us"], "30", "the runs' width is untouched")
+        self.assertIn("50 µs", asked.call_args[0][1])
+        app.manual_vars["pulse_width_us"] = mock.Mock(get=lambda: "-5")
+        with mock.patch.object(ms.messagebox, "showerror") as refused:
+            app.manual_pulse()
+        refused.assert_called_once()
+        self.assertEqual(len(sent), 1, "a bad width sends nothing")
+
     def test_manual_values_are_checked(self):
         with self.assertRaisesRegex(ValueError, "Read current"):
             ms.manual_settings(dict(ms.DEFAULTS), "70")
@@ -1309,7 +1332,8 @@ class WindowTests(unittest.TestCase):
         app = self.app
         self.assertEqual(set(app.manual_buttons), {"Move", "Read", "Set H", "Zero H", "Set I", "I off", "Pulse"})
         self.assertEqual({key: variable.get() for key, variable in app.manual_vars.items()},
-                         {"angle": "360", "field": "0", "current_ma": "0.5", "pulse_ma": "22"})
+                         {"angle": "360", "field": "0", "current_ma": "0.5", "pulse_ma": "22",
+                          "pulse_width_us": "30"})
         # Decel, field rate and frequency are the Write and Read boxes' fields.
         entries = [w for w in app.manual_buttons["Move"].master.winfo_children() if isinstance(w, ttk.Entry)]
         shared = {str(entry.cget("textvariable")) for entry in entries}

@@ -80,9 +80,11 @@ DEFAULT_STATES = (
     ("B", 270.0, 1500.0, 22.0),
     ("E", 360.0, -1500.0, 22.0),
 )
-# The manual settings' own fields; decel, field rate, frequency and the pulse
-# width, count and compliance are shared with the Write and Read boxes.
-MANUAL_DEFAULTS = {"angle": "360", "field": "0", "current_ma": "0.5", "pulse_ma": "22"}
+# The manual settings' own fields, the manual pulse width among them (a
+# manual pulse never changes the runs' width); decel, field rate, frequency
+# and the pulse count and compliance are shared with the Write and Read boxes.
+MANUAL_DEFAULTS = {"angle": "360", "field": "0", "current_ma": "0.5", "pulse_ma": "22",
+                   "pulse_width_us": "30"}  # As the Write box starts.
 DEFAULT_SEQUENCE = "D A B E"
 DEFAULT_CYCLE = "D A B E B A"
 APP_TITLE = "MS-fourState"
@@ -1517,11 +1519,13 @@ class FourStateApp:
         button(2, 4, "Set I", self.manual_set_current)
         button(2, 5, "I off", self.manual_current_off)
         field(3, 0, "Pulse mA", self.manual_vars["pulse_ma"])
+        field(3, 2, "Width µs", self.manual_vars["pulse_width_us"])
         button(3, 4, "Pulse", self.manual_pulse)
         # Readings go to the PPMS status box.  The note wraps under the rows.
         note = ttk.Label(
             manual, foreground="#8a4b00", wraplength=400,
-            text="H ends Persistent · Move only at 0 Oe, 6221 off first · Pulse: Write box · Stop: 6221 off, 0 Oe",
+            text=("H ends Persistent · Move only at 0 Oe, 6221 off first · "
+                  "Pulse: count and compliance from Write · Stop: 6221 off, 0 Oe"),
         )
         # Across the box, so the wrapped lines always have their room.
         note.grid(row=4, column=0, columnspan=6, sticky="ew", pady=(4, 0))
@@ -1622,7 +1626,9 @@ class FourStateApp:
             return
         try:
             self._manual_check(source=True, moves=True)
-            settings = manual_settings(self._manual_values())
+            # The manual width; count and compliance from the Write box.
+            settings = manual_settings(dict(self._manual_values(),
+                                            pulse_width_us=self.manual_vars["pulse_width_us"].get()))
             pulse_ma = _number(self.manual_vars["pulse_ma"].get(), "Pulse mA")
             if pulse_ma == 0:
                 raise ValueError("Pulse mA is 0: nothing to send")

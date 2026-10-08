@@ -63,7 +63,8 @@ PPMS settings rows of `Transport_all_NH_dev.py` do:
 | --- | --- | --- |
 | Angle | Angle °, Decel 0–14 | **Move**, **Read** |
 | Field | H Oe, Oe/s | **Set H**, **Zero H** |
-| Current | I mA RMS, f Hz; Pulse mA | **Set I**, **I off**; **Pulse** |
+| Current | I mA RMS, f Hz | **Set I**, **I off** |
+| Pulse | Pulse mA, Width µs | **Pulse** |
 
 - **Move:** turns the rotator as a run step does. It is refused, with
   nothing sent or turned off, unless the field is at 0 Oe (Zero H first) and
@@ -79,8 +80,10 @@ PPMS settings rows of `Transport_all_NH_dev.py` do:
 - **Set I:** starts the read sine (I mA RMS at f Hz, phase marker on, as in a
   read) and leaves it on. The SR830's lock to it is shown; nothing is written
   to the SR830. **I off** turns the 6221 off, read back.
-- **Pulse:** sends one write of Pulse mA with the Write box's pulse width,
-  pulse count and compliance, after a confirmation, then turns the 6221 off.
+- **Pulse:** sends one write of Pulse mA, Width µs wide, after a
+  confirmation, then turns the 6221 off. The pulse count and compliance come
+  from the Write box. The width is the manual Pulse's own (it starts at
+  30 µs) and does not change the runs' pulse width.
 - **Read:** shows the angle, field, temperature and 6221 output. Each action
   also updates this readout when it ends.
 

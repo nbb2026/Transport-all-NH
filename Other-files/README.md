@@ -17,8 +17,12 @@
   - **Readings:** the "Now:" line is gone; the PPMS status box shows the
     readings, and the log keeps each one.
   - **Connections:** the DLL field is shorter.
+- **Manual pulse width:** the Pulse row has its own **Width µs** field
+  (default 30). It does not change the runs' pulse width; the count and
+  compliance still come from the Write box.
 - **Tests:** `time_ticks` (round clock ticks, seconds on a short axis, the
-  date over days) and `flow_lines`.
+  date over days), `flow_lines`, and the manual width (used, checked, and
+  leaving the runs' width alone).
 
 ## MS-fourState.py: PPMS status box, a thinner settings row, time on the x-axis (2026-10-08)
 
