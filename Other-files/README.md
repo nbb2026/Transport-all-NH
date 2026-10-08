@@ -1,5 +1,17 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MS-fourState.py: D and E at 360°, not 0° (2026-10-08)
+
+States D and E now default to 360° rather than 0°. This is the same
+orientation, so switching to or from A and B at 270° turns the rotator 90°
+instead of 270°. The Manual settings Angle box also starts at 360.
+
+If the rotator reads 0° when a run starts, the first move to D at 360° is one
+full turn. It is counted as a large rotation in the run's confirmation.
+
+The values in the States table can still be edited before a run. The tests'
+simulated sample takes D and E at 0° or 360°.
+
 ## MS-fourState.py: manual angle, field and current settings (2026-10-08)
 
 A **Manual settings** box, between Connections and the state table, sets one

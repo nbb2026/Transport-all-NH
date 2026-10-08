@@ -83,17 +83,20 @@ Defaults from the measurement table, editable in the window (1500 Oe = 0.15 T):
 
 | State | φ PPMS | H write | I pulse | |
 | --- | --- | --- | --- | --- |
-| D | 0° | +1500 Oe (Hz) | +22 mA | +H ⊥ +I |
+| D | 360° | +1500 Oe (Hz) | +22 mA | +H ⊥ +I |
 | A | 270° | −1500 Oe (Hx) | +22 mA | +H ∥ +I |
 | A' | 270° | +1500 Oe (Hx) | −22 mA | A, written the other way |
 | B | 270° | +1500 Oe (Hx) | +22 mA | +H ∥ +I |
 | B' | 270° | −1500 Oe (Hx) | −22 mA | B, written the other way |
-| E | 0° | −1500 Oe (Hz) | +22 mA | −H ⊥ +I |
+| E | 360° | −1500 Oe (Hz) | +22 mA | −H ⊥ +I |
 
 Cycles and sequences are typed as state names separated by spaces, commas or
 dashes, for example `D A B E`, `D-A-B-E-B-A` or `D A' B' E`. Switching between
 A and B, or between D and E, needs no rotation. Switching between, for
-example, A and D turns the rotator 270° each time.
+example, A and D turns the rotator 90° each time. D and E are at 360°, the
+same orientation as 0°, so that this turn is 90° rather than 270° (changed
+2026-10-08). If the rotator reads 0° when a run starts, its first move to
+360° is one full turn. It is confirmed in the summary as a large rotation.
 
 ## One step
 

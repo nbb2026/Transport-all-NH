@@ -61,13 +61,13 @@ class StopEvent:
 
 
 class Sample:
-    """Takes D/E at 0 deg (by the field sign) and A/B at 270 deg (by H x I)."""
+    """Takes D/E at 0 or 360 deg (by the field sign) and A/B at 270 deg (by H x I)."""
 
     def __init__(self):
         self.state = "E"
 
     def pulse(self, current_a, field_oe, angle_deg):
-        if abs(angle_deg) < 1:
+        if abs(angle_deg) < 1 or abs(angle_deg - 360) < 1:
             self.state = "D" if field_oe > 0 else "E"
         elif abs(angle_deg - 270) < 1:
             self.state = "A" if field_oe * current_a < 0 else "B"
@@ -356,8 +356,8 @@ class FakeSR830:
 class SettingsTests(unittest.TestCase):
     def test_defaults_are_the_figure_table(self):
         self.assertEqual(ms.DEFAULT_STATES, (
-            ("D", 0.0, 1500.0, 22.0), ("A", 270.0, -1500.0, 22.0), ("A'", 270.0, 1500.0, -22.0),
-            ("B", 270.0, 1500.0, 22.0), ("B'", 270.0, -1500.0, -22.0), ("E", 0.0, -1500.0, 22.0)))
+            ("D", 360.0, 1500.0, 22.0), ("A", 270.0, -1500.0, 22.0), ("A'", 270.0, 1500.0, -22.0),
+            ("B", 270.0, 1500.0, 22.0), ("B'", 270.0, -1500.0, -22.0), ("E", 360.0, -1500.0, 22.0)))
         settings = World().settings()
         self.assertEqual(settings.sequence, ("D", "A", "B", "E"))
         self.assertEqual(settings.pulse_width_s, 30e-6)
@@ -433,7 +433,9 @@ class RunTests(unittest.TestCase):
         world.run()
         events = world.events
         rotations = [e for e in events if e[0] == "rotate"]
-        self.assertEqual([e[1] for e in rotations], [270.0, 0.0], "D at 0 deg, A and B at 270, E back at 0")
+        # The simulated rotator starts at 0 deg: D at 360 is one full turn
+        # first, then 90 deg to A and B at 270, and 90 deg back for E.
+        self.assertEqual([e[1] for e in rotations], [360.0, 270.0, 360.0], "D at 360, A and B at 270, E at 360")
         for _, _angle, field, output, large, timeout in rotations:
             self.assertLessEqual(abs(field), 2.0, "rotates only at zero field")
             self.assertFalse(output, "rotates with the 6221 off")
@@ -441,7 +443,7 @@ class RunTests(unittest.TestCase):
             self.assertEqual(timeout, 900.0)
         pulses = [e for e in events if e[0] == "pulse"]
         self.assertEqual([(round(e[1] * 1e3, 6), e[2], e[4]) for e in pulses],
-                         [(22.0, 1500.0, 0.0), (22.0, -1500.0, 270.0), (22.0, 1500.0, 270.0), (22.0, -1500.0, 0.0)])
+                         [(22.0, 1500.0, 360.0), (22.0, -1500.0, 270.0), (22.0, 1500.0, 270.0), (22.0, -1500.0, 360.0)])
         for pulse in pulses:
             self.assertEqual(pulse[3], "StableDriven", "pulse only once the write field has settled")
             self.assertAlmostEqual(pulse[5], 30e-6, places=12, msg="30 us wide")
@@ -562,7 +564,9 @@ class RunTests(unittest.TestCase):
         self.assertEqual("".join(row["state"] for row in rows), "DABEBADA")
         for row in rows:
             self.assertAlmostEqual(row["x_v"], HALL_OHM[row["state"]] * 0.5e-3, places=12)
-        self.assertEqual([e[1] for e in world.events if e[0] == "rotate"], [270.0, 0.0, 270.0, 0.0, 270.0])
+        # From 0 deg: one full turn to D at 360, then 90 deg each way.
+        self.assertEqual([e[1] for e in world.events if e[0] == "rotate"],
+                         [360.0, 270.0, 360.0, 270.0, 360.0, 270.0])
         self.assertFalse(world.source_device.output_on())
 
     def test_two_state_switching_until_stop(self):
@@ -1132,7 +1136,7 @@ class WindowTests(unittest.TestCase):
         app = self.app
         self.assertEqual(set(app.manual_buttons), {"Move", "Read", "Set H", "Zero H", "Set I", "I off", "Pulse"})
         self.assertEqual({key: variable.get() for key, variable in app.manual_vars.items()},
-                         {"angle": "0", "field": "0", "current_ma": "0.5", "pulse_ma": "22"})
+                         {"angle": "360", "field": "0", "current_ma": "0.5", "pulse_ma": "22"})
         # Decel, field rate and frequency are the Write and Read boxes' fields.
         entries = [w for w in app.manual_buttons["Move"].master.winfo_children() if isinstance(w, ttk.Entry)]
         shared = {str(entry.cget("textvariable")) for entry in entries}

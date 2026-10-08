@@ -71,18 +71,19 @@ OE_PER_T = 10_000.0
 
 # name, PPMS angle (deg), write field (Oe), pulse current (mA).  0.15 T is
 # 1500 Oe.  A and B can each be written two ways; the primed rows are the
-# reversed field and current.
+# reversed field and current.  D and E are at 360 deg rather than 0 (the same
+# orientation): 90 deg from A and B at 270 instead of 270 deg.
 DEFAULT_STATES = (
-    ("D", 0.0, 1500.0, 22.0),
+    ("D", 360.0, 1500.0, 22.0),
     ("A", 270.0, -1500.0, 22.0),
     ("A'", 270.0, 1500.0, -22.0),
     ("B", 270.0, 1500.0, 22.0),
     ("B'", 270.0, -1500.0, -22.0),
-    ("E", 0.0, -1500.0, 22.0),
+    ("E", 360.0, -1500.0, 22.0),
 )
 # The manual settings' own fields; decel, field rate, frequency and the pulse
 # width, count and compliance are shared with the Write and Read boxes.
-MANUAL_DEFAULTS = {"angle": "0", "field": "0", "current_ma": "0.5", "pulse_ma": "22"}
+MANUAL_DEFAULTS = {"angle": "360", "field": "0", "current_ma": "0.5", "pulse_ma": "22"}
 DEFAULT_SEQUENCE = "D A B E"
 DEFAULT_CYCLE = "D A B E B A"
 APP_TITLE = "MS-fourState"
