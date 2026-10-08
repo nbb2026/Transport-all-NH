@@ -69,10 +69,27 @@ class StopAndOffTests(unittest.TestCase):
         a.nonlocal_vi_ac_controller.source_connected = False   # e.g. just disconnected
         a.nonlocal_iv6221_source_var.set("6221: check the output")
         a.stop_nonlocal_vi()
-        self.assertEqual(a.nonlocal_vi_output_var.get(), "Keithley 2400 output: OFF")
+        # A failed disconnect left "check the output": the warning stays.
+        self.assertEqual(a.nonlocal_vi_output_var.get(), "Keithley 2400 output: OFF; 6221: check it")
         self.assertEqual(a.nonlocal_iv6221_source_var.get(), "6221: check the output",
                          "nothing was read from the 6221")
+        self.assertIn("6221: check it", a.nonlocal_vi_status_var.get())
+        # Disconnected without error: simply not connected.
+        a.nonlocal_iv6221_source_var.set("6221: disconnected (OFF sent)")
+        a.nonlocal_vi_output_var.set("6221: disconnected (OFF sent)")
+        a.stop_nonlocal_vi()
+        self.assertEqual(a.nonlocal_vi_output_var.get(), "Keithley 2400 output: OFF")
         self.assertIn("the other is not connected", a.nonlocal_vi_status_var.get())
+
+    def test_two_presses_keep_the_page_busy_until_both_ran(self):
+        a = self.a
+        a.nonlocal_vi_executor.submit = lambda function, *args: Future()   # queued, not run yet
+        a.stop_nonlocal_vi()
+        a.stop_nonlocal_vi()
+        a._finish_nonlocal_vi_off(None, ("6221", "keithley"))
+        self.assertTrue(a.nonlocal_vi_busy, "the second OFF is still queued")
+        a._finish_nonlocal_vi_off(None, ("6221", "keithley"))
+        self.assertFalse(a.nonlocal_vi_busy)
 
     def test_a_connect_finishing_first_keeps_the_page_busy_until_the_off_ran(self):
         a = self.a

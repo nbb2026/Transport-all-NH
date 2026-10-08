@@ -6005,8 +6005,9 @@ class NonLocalVI2410Controller:
         self._require_instrument().write(command)
         self._check_error(command)
 
-    def _check_error(self, command: str) -> None:
-        """The error queue after ``command`` was written."""
+    def _check_error(self, command: str, after: str | None = None) -> None:
+        """The error queue after ``command`` was written (``after`` names
+        what ran since, when that is more than the command)."""
         instrument = self._require_instrument()
         time.sleep(0.03)
         response = instrument.query("SYST:ERR?").strip()
@@ -6015,7 +6016,9 @@ class NonLocalVI2410Controller:
         except ValueError as error:
             raise RuntimeError(f"Keithley {self.model} error status cannot be parsed: {response}") from error
         if code != 0:
-            raise RuntimeError(f"Keithley {self.model} reported an error after {command!r}: {response}")
+            raise RuntimeError(
+                f"Keithley {self.model} reported an error after {after or repr(command)}: {response}"
+            )
 
     def _query_float(self, command: str) -> float:
         return float(self._require_instrument().query(command).strip())
@@ -6183,7 +6186,9 @@ class NonLocalVI2410Controller:
                 self.safe_shutdown(reset=False)
                 if status_callback is not None:
                     status_callback(0.0)
-            self._check_error(command)
+            self._check_error(
+                command, after=f"the {voltage_v:g} V pulse (its level or the switch-off)"
+            )
             self.confirm_output_off("after the voltage pulse")
 
     def _setup_resistance_mode(self, source_current_a: float) -> None:
@@ -6612,7 +6617,6 @@ for request_line in sys.stdin:
             requested_order = int(request["filter_order"])
             requested_rate = float(request["sample_rate_hz"])
             extref_demod = int(request.get("extref_demod", EXTREF_DEMOD))
-            previous_extref = EXTREF
             if extref_demod == 3:
                 routes = [i for i in range(2)
                           if int(daq.getInt("/%s/extrefs/%d/demodselect" % (device, i))) == 3]
@@ -30708,7 +30712,8 @@ class CombinedControlApp:
         if not self.nonlocal_vi_running:
             # The page stays busy until this off has run, also if a connect
             # queued before it finishes first.
-            self.nonlocal_vi_off_pending = True
+            # A count: an emergency button is often pressed twice.
+            self.nonlocal_vi_off_pending = int(self.__dict__.get("nonlocal_vi_off_pending") or 0) + 1
             self.nonlocal_vi_busy = True
             self._update_nonlocal_vi_controls()
             future = self.nonlocal_vi_executor.submit(
@@ -30724,9 +30729,10 @@ class CombinedControlApp:
             )
 
     def _finish_nonlocal_vi_off(self, error, confirmed=("6221", "keithley")) -> None:
-        self.nonlocal_vi_off_pending = False
-        self.nonlocal_vi_busy = False
+        self.nonlocal_vi_off_pending = max(0, int(self.__dict__.get("nonlocal_vi_off_pending") or 0) - 1)
+        self.nonlocal_vi_busy = self.nonlocal_vi_off_pending > 0
         model = self.nonlocal_vi_2410_controller.model
+        previous_text = self.nonlocal_vi_output_var.get()
         # OFF only for an output read back off; one not connected is left as
         # it was reported (e.g. "check the output" after a failed disconnect).
         if error is not None:
@@ -30740,10 +30746,20 @@ class CombinedControlApp:
                 self.nonlocal_iv6221_source_var.set("6221: OFF")
             if off:
                 text = " and ".join(off)
-                self.nonlocal_vi_output_var.set(f"{text} output{'s' if len(off) > 1 else ''}: OFF")
+                warning = ""
+                if len(off) == 1:
+                    other = "6221" if "keithley" in confirmed else f"Keithley {model}"
+                    # E.g. a disconnect that failed just before: still "check it".
+                    if "check" in previous_text or (
+                        other == "6221" and "check" in self.nonlocal_iv6221_source_var.get()
+                    ):
+                        warning = f"; {other}: check it"
+                self.nonlocal_vi_output_var.set(
+                    f"{text} output{'s' if len(off) > 1 else ''}: OFF" + warning
+                )
                 self.nonlocal_vi_status_var.set(
                     f"{text} output{'s are' if len(off) > 1 else ' is'} off (read back)"
-                    + ("" if len(off) > 1 else "; the other is not connected")
+                    + ("" if len(off) > 1 else warning or "; the other is not connected")
                 )
             else:
                 self.nonlocal_vi_status_var.set("No output connected to switch off")
@@ -32151,8 +32167,9 @@ class CombinedControlApp:
         10 of the Zurich (``settings["range_settle_s"]``), as RT-E waits.
         For the Zurich, every reading also carries X and Y of each of its
         orders, from the demodulators.  The point fails if a meter has no
-        valid reading within Acquire s plus NONLOCAL_IV6221_MAX_EXTRA_S (plus
-        the ranging waits, at most NONLOCAL_IV6221_RANGE_LIMIT_S), or if the
+        valid reading within Acquire s plus NONLOCAL_IV6221_MAX_EXTRA_S (from
+        the last range step), if ranging goes on past the range limit or for
+        more than NONLOCAL_IV6221_MAX_RANGE_STEPS steps in a row, or if the
         6221 reports compliance on three readings in a row.
         Returns (readings per meter, discarded count per meter, compliance
         count)."""
@@ -32220,7 +32237,8 @@ class CombinedControlApp:
                 if (elapsed + wait_s > acquire_s + NONLOCAL_IV6221_MAX_EXTRA_S + range_limit_s
                         or range_steps > NONLOCAL_IV6221_MAX_RANGE_STEPS):
                     raise RuntimeError(
-                        f"Lock-in autorange did not settle ({range_steps} steps in {elapsed:.0f} s; "
+                        f"Lock-in autorange did not settle ({range_steps} range step(s) in a row, "
+                        f"{elapsed:.0f} s on this point; "
                         f"{', '.join(NONLOCAL_METER_NAMES[key] for key in ranged)}): "
                         "check the signal and its range"
                     )
@@ -32244,7 +32262,8 @@ class CombinedControlApp:
                     for key in missing
                 )
                 raise RuntimeError(
-                    f"No valid lock-in reading within {acquire_s + NONLOCAL_IV6221_MAX_EXTRA_S:g} s ({details})"
+                    f"No valid lock-in reading within {acquire_s + NONLOCAL_IV6221_MAX_EXTRA_S:g} s"
+                    + (" of the last range step" if ranging_s else "") + f" ({details})"
                 )
 
     def _nonlocal_iv6221_results(self, readings: dict, run: dict, settings: dict) -> dict:

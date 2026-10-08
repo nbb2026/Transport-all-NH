@@ -67,8 +67,8 @@ class TwoPanelTests(unittest.TestCase):
                 panel._ppms_write_sr830_checked.assert_not_called()
 
     def test_legacy_reference_controller_follows_demod_four(self):
-        block = app._MFLI_BRIDGE_SOURCE.split('            previous_extref = EXTREF', 1)[1].split('            configured_extref_demod = extref_demod', 1)[0]
-        code = textwrap.dedent('            previous_extref = EXTREF' + block)
+        block = app._MFLI_BRIDGE_SOURCE.split('            if extref_demod == 3:', 1)[1].split('            configured_extref_demod = extref_demod', 1)[0]
+        code = textwrap.dedent('            if extref_demod == 3:' + block)
         daq = Mock()
         daq.getInt.side_effect = lambda node: 1 if '/extrefs/0/' in node else 3
         env = dict(EXTREF=0, extref_demod=3, daq=daq, device='dev4414')

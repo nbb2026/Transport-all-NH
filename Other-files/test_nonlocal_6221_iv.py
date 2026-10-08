@@ -447,7 +447,7 @@ class AcquisitionTests(ReadingTests):
                                         "measurement_valid": False}] * 100, sr830_tau=0.0)
         self.make(source, start="0.1", end="0.1", step="0.1")
         with mock.patch.object(app, "NONLOCAL_IV6221_SAMPLE_INTERVAL_S", 0.001), \
-                self.assertRaisesRegex(RuntimeError, "autorange did not settle \\(31 steps"):
+                self.assertRaisesRegex(RuntimeError, "autorange did not settle \\(31 range step\\(s\\) in a row"):
             self.run_scan(acquire_s=0.0)
         self.assertFalse(self.source.output_on)
 

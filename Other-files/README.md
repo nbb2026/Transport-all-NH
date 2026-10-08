@@ -74,7 +74,9 @@ unexpectedly. Their confirmed findings are fixed below; the new tests are in
     (`_nonlocal_vi_shutdown_outputs` returns them). An instrument that is
     not connected keeps the state it was reported in.
   - **Busy page:** the page stays busy until a queued OFF has run, even when
-    a connection finishes first.
+    a connection finishes first. Pending OFFs are counted, so a second press
+    is covered too. A "check it" warning about an instrument that was not
+    read back stays visible.
   - **Disconnects:** a disconnect says "OFF sent", because it cannot read
     the output back.
   - **Endless ranging:** a 6221-IV point that keeps ranging now fails by the
