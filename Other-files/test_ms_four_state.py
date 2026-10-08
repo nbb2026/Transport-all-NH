@@ -12,6 +12,7 @@ import importlib.util
 import math
 import queue
 import sys
+import time
 import tkinter as tk
 import unittest
 from tkinter import ttk
@@ -356,8 +357,8 @@ class FakeSR830:
 class SettingsTests(unittest.TestCase):
     def test_defaults_are_the_figure_table(self):
         self.assertEqual(ms.DEFAULT_STATES, (
-            ("D", 360.0, 1500.0, 22.0), ("A", 270.0, -1500.0, 22.0), ("A'", 270.0, 1500.0, -22.0),
-            ("B", 270.0, 1500.0, 22.0), ("B'", 270.0, -1500.0, -22.0), ("E", 360.0, -1500.0, 22.0)))
+            ("D", 360.0, 1500.0, 22.0), ("A", 270.0, -1500.0, 22.0),
+            ("B", 270.0, 1500.0, 22.0), ("E", 360.0, -1500.0, 22.0)), "D, A, B and E only")
         settings = World().settings()
         self.assertEqual(settings.sequence, ("D", "A", "B", "E"))
         self.assertEqual(settings.pulse_width_s, 30e-6)
@@ -368,9 +369,9 @@ class SettingsTests(unittest.TestCase):
 
     def test_sequence_text(self):
         names = tuple(name for name, *_ in ms.DEFAULT_STATES)
-        self.assertEqual(ms.parse_sequence("d, a' B;e", names), ("D", "A'", "B", "E"))
+        self.assertEqual(ms.parse_sequence("d, a B;e", names), ("D", "A", "B", "E"))
         self.assertEqual(ms.parse_sequence("D-A-B-E-B-A", names), ("D", "A", "B", "E", "B", "A"))
-        for text in ("", "D X", "C"):
+        for text in ("", "D X", "C", "A' B'"):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 ms.parse_sequence(text, names)
 
@@ -541,9 +542,14 @@ class RunTests(unittest.TestCase):
         self.assertEqual(moves[1][0], "rotate")
         self.assertLessEqual(abs(moves[1][2]), 2.0)
 
-    def test_primed_states_reverse_field_and_current(self):
+    def test_a_and_b_written_the_other_way_in_their_rows(self):
+        # With field and current both reversed in the A and B rows, the same
+        # states are written (the A' and B' of the figure).
         world = World()
-        rows = world.run(world.settings("A' B'"))
+        values = dict(ms.DEFAULTS)
+        states = {name: (str(a), str(h), str(i)) for name, a, h, i in ms.DEFAULT_STATES}
+        states["A"], states["B"] = ("270", "1500", "-22"), ("270", "-1500", "-22")
+        rows = world.run(ms.build_settings(states, "A B", values))
         pulses = [e for e in world.events if e[0] == "pulse"]
         self.assertEqual([(round(e[1] * 1e3, 6), e[2]) for e in pulses], [(-22.0, 1500.0), (-22.0, -1500.0)])
         for row, state in zip(rows, ("A", "B")):
@@ -1044,6 +1050,62 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(finished[0][3][0], "stopped")
         self.assertFalse(world.source_device.output_on())
 
+    def connection_app(self, world):
+        app = self.app()
+        app.title = "MS-fourState"
+        app.ppms, app.source, app.lockin = world.ppms, world.source, world.lockin
+        app.busy = False
+        app.status_var = mock.Mock()
+        app.status_vars = {key: mock.Mock() for key in ms.CONNECTIONS}
+        app.connection_failed = {key: False for key in ms.CONNECTIONS}
+        app.values = {key: mock.Mock(get=lambda value=value: value) for key, value in ms.DEFAULTS.items()}
+        app.source_resource_var = mock.Mock(get=lambda: "GPIB0::30::INSTR")
+        app.updates = []
+        app._update_connection_controls = lambda: app.updates.append(dict(app.connection_failed))
+        app._set_busy = lambda busy, running=False: setattr(app, "busy", busy)
+        app.post = lambda kind, payload=None: payload() if kind == "call" else None
+        return app
+
+    def wait_idle(self, app):
+        for _ in range(200):
+            if not app.busy:
+                return
+            time.sleep(0.01)
+        self.fail("the connection worker did not finish")
+
+    def test_connect_and_disconnect_one_instrument_only(self):
+        world = World()
+        world.source.instrument = None
+        app = self.connection_app(world)
+        world.source.connect = mock.Mock(return_value="KEITHLEY INSTRUMENTS INC.,MODEL 6221")
+        world.lockin.connect = mock.Mock(side_effect=AssertionError("not asked"))
+        world.ppms.connect = mock.Mock(side_effect=AssertionError("not asked"))
+        app.connect_device("6221")
+        self.wait_idle(app)
+        world.source.connect.assert_called_once_with("GPIB0::30::INSTR", 15.0)
+        app.status_vars["6221"].set.assert_called_with("Connected: KEITHLEY INSTRUMENTS INC.,MODEL 6221")
+        world.ppms.disconnect = mock.Mock()
+        world.lockin.disconnect = mock.Mock()
+        world.source.disconnect = mock.Mock()
+        app.disconnect_device("6221")
+        self.wait_idle(app)
+        world.source.disconnect.assert_called_once()
+        world.ppms.disconnect.assert_not_called()
+        world.lockin.disconnect.assert_not_called()
+        app.status_vars["6221"].set.assert_called_with("Not connected")
+
+    def test_a_failed_connect_shows_its_reason_and_a_red_lamp(self):
+        world = World()
+        app = self.connection_app(world)
+        app.lockin_resource_var = mock.Mock(get=lambda: "GPIB0::8::INSTR")
+        world.lockin.instrument = None
+        with mock.patch.object(ms, "connect_lockin", side_effect=RuntimeError("VI_ERROR_TMO")):
+            app.connect_device("sr830")
+            self.wait_idle(app)
+        self.assertIn("Failed: ", app.status_vars["sr830"].set.call_args[0][0])
+        self.assertTrue(app.connection_failed["sr830"])
+        self.assertTrue(app.updates[-1]["sr830"], "the lamp turns red")
+
     def test_close_waits_for_a_connection_in_progress(self):
         app = self.app()
         app.title = "MS-fourState"
@@ -1103,6 +1165,27 @@ class WindowTests(unittest.TestCase):
                  if self.app.canvas.type(item) == "text"]
         for label in ("H write (T)", "I pulse (mA)", "SR830 X (µV)", "A", "B", "Step"):
             self.assertIn(label, texts)
+
+    def test_each_instrument_connects_on_its_own(self):
+        app = self.app
+        self.assertEqual(set(app.connection_widgets), {"ppms", "6221", "sr830"})
+        for key, (address, connect, disconnect, lamp) in app.connection_widgets.items():
+            with self.subTest(key=key):
+                self.assertEqual((connect.cget("text"), str(connect.cget("state"))), ("Connect", "normal"))
+                self.assertEqual((disconnect.cget("text"), str(disconnect.cget("state"))), ("Disconnect", "disabled"))
+                self.assertEqual(lamp.itemcget("lamp", "fill"), ms.LAMP_COLORS["off"])
+        app.port_var.set("not a port")
+        self.addCleanup(app.port_var.set, str(core.PPMS_QDINSTRUMENT_DEFAULT_PORT))
+        with mock.patch.object(ms.messagebox, "showerror") as error:
+            app.connection_widgets["ppms"][1].invoke()
+        error.assert_called_once()
+        self.assertFalse(app.busy)
+
+    def test_the_plot_has_the_room(self):
+        # The window opens at WINDOW_SIZE where the screen allows; the plot
+        # takes what the controls leave.
+        self.assertEqual(ms.WINDOW_SIZE, (1720, 1240))
+        self.assertEqual(int(self.app.log.cget("width")), 36)
 
     def test_the_mode_list_switches_the_run_row(self):
         app = self.app

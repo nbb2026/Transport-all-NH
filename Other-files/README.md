@@ -1,5 +1,27 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MS-fourState.py: one Connect per instrument, a larger plot, no A' and B' rows (2026-10-08)
+
+- **Connections:** the PPMS, the 6221 and the SR830 each have their own row:
+  name, address, Connect, Disconnect, a lamp and their state, as on the main
+  program's pages. "Connect all" and "Disconnect all" are gone. The lamp is
+  grey (not connected), green (connected) or red (the last connect failed,
+  with the reason beside it). One instrument connects or disconnects without
+  touching the others. An address is fixed while its instrument is
+  connected.
+- **Plot:** the window opens at 1720 × 1240 where the screen allows (the lab
+  PC's 2560 × 1440 does), up from 1360 × 960. The log column is narrower, and
+  the plot's numbers, labels and markers are larger.
+- **States:** the table lists D, A, B and E only. To write A or B the other
+  way (the figure's A' and B'), enter the reversed field and current in its
+  row.
+- **Tests:**
+  - in `Other-files/test_ms_four_state.py`, connecting or disconnecting one
+    instrument touches no other, and a failed connect shows its reason and a
+    red lamp;
+  - a window check covers the buttons;
+  - the cloud check adds the 1720 × 1240 window.
+
 ## MS-fourState.py: D and E at 360°, not 0° (2026-10-08)
 
 States D and E now default to 360° rather than 0°. This is the same

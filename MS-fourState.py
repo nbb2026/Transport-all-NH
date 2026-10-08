@@ -70,15 +70,13 @@ HERE = Path(__file__).resolve().parent
 OE_PER_T = 10_000.0
 
 # name, PPMS angle (deg), write field (Oe), pulse current (mA).  0.15 T is
-# 1500 Oe.  A and B can each be written two ways; the primed rows are the
-# reversed field and current.  D and E are at 360 deg rather than 0 (the same
-# orientation): 90 deg from A and B at 270 instead of 270 deg.
+# 1500 Oe.  D and E are at 360 deg rather than 0 (the same orientation): 90
+# deg from A and B at 270 instead of 270 deg.  A or B written the other way
+# (field and current both reversed) is entered in its row.
 DEFAULT_STATES = (
     ("D", 360.0, 1500.0, 22.0),
     ("A", 270.0, -1500.0, 22.0),
-    ("A'", 270.0, 1500.0, -22.0),
     ("B", 270.0, 1500.0, 22.0),
-    ("B'", 270.0, -1500.0, -22.0),
     ("E", 360.0, -1500.0, 22.0),
 )
 # The manual settings' own fields; decel, field rate, frequency and the pulse
@@ -87,7 +85,10 @@ MANUAL_DEFAULTS = {"angle": "360", "field": "0", "current_ma": "0.5", "pulse_ma"
 DEFAULT_SEQUENCE = "D A B E"
 DEFAULT_CYCLE = "D A B E B A"
 APP_TITLE = "MS-fourState"
-WINDOW_SIZE = (1360, 960)  # The manual settings took 60 px from the plot at 900.
+# The window opens at this size where the screen allows (the lab PC's
+# 2560 x 1440 does), else smaller, so the plot gets the room; minimum 1100 x 760.
+WINDOW_SIZE = (1720, 1240)
+WINDOW_MINIMUM = (1100, 760)
 MODES = {"cycle": "Cycle", "sequence": "Sequence"}  # The Mode list, first is the default.
 STATE_COLORS = {"D": "#000000", "A": "#c62828", "B": "#1565c0", "E": "#2e7d32"}
 DEFAULTS = {
@@ -106,6 +107,8 @@ DEFAULTS = {
     "repeats": "1",
 }
 APPROACHES = {"Linear": 0, "No overshoot": 1}
+CONNECTIONS = {"ppms": "PPMS (QDInstrument)", "6221": "Keithley 6221", "sr830": "SR830"}
+LAMP_COLORS = {"off": "#9aa0a6", "on": "#2e9d4f", "failed": "#d32f2f"}
 ANGLE_TOLERANCE_DEG = 0.06  # As PPMSMotorDebug.move_and_verify.
 ROTATOR_AT_REST = ("AtTarget", "AtIndexSwitch")
 # Field statuses that end a manual Set H at once, rather than after its margin.
@@ -185,7 +188,7 @@ class Settings:
 
 
 def parse_sequence(text, names):
-    """'D A B E', 'd,a,b,e' or "D A' B' E" -> ('D', 'A', 'B', 'E')."""
+    """'D A B E', 'd,a,b,e' or 'D-A-B-E' -> ('D', 'A', 'B', 'E')."""
     lookup = {name.upper(): name for name in names}
     sequence = []
     for token in str(text).replace(",", " ").replace(";", " ").replace("-", " ").split():
@@ -1006,7 +1009,7 @@ class StatePlot:
         steps = [row["step"] for row in self.rows]
         x_low, x_high = (0.5, max(steps) + 0.5) if steps else (0.5, 4.5)
         labelled = len(self.rows) <= self.LABELLED_POINTS
-        marker = 4 if len(self.rows) <= 200 else 2
+        marker = 5 if len(self.rows) <= 200 else 3
 
         def x_pixel(value):
             return left + (value - x_low) / (x_high - x_low) * (width - left - right)
@@ -1015,7 +1018,7 @@ class StatePlot:
             y0 = top + index * (panel_height + gap)
             y1 = y0 + panel_height
             canvas.create_rectangle(left, y0, width - right, y1, outline="#555555")
-            canvas.create_text(14, (y0 + y1) / 2, text=label, angle=90, anchor="center", font=("TkDefaultFont", 9))
+            canvas.create_text(16, (y0 + y1) / 2, text=label, angle=90, anchor="center", font=("TkDefaultFont", 11))
             values = [value_of(row) for row in self.rows]
             if values:
                 low, high = min(values), max(values)
@@ -1031,7 +1034,7 @@ class StatePlot:
             for tick in nice_ticks(low, high, 4):
                 y = y_pixel(tick)
                 canvas.create_line(left - 4, y, left, y, fill="#555555")
-                canvas.create_text(left - 6, y, text=f"{tick:g}", anchor="e", font=("TkDefaultFont", 8))
+                canvas.create_text(left - 6, y, text=f"{tick:g}", anchor="e", font=("TkDefaultFont", 10))
             points = [(x_pixel(row["step"]), y_pixel(v), base_state(row["state"]), row["state"])
                       for row, v in zip(self.rows, values)]
             if index == 2 and len(points) > 1:
@@ -1040,7 +1043,7 @@ class StatePlot:
                 color = STATE_COLORS.get(base, "#6a1b9a")
                 canvas.create_rectangle(x - marker, y - marker, x + marker, y + marker, fill=color, outline=color)
                 if index == 2 and labelled:
-                    canvas.create_text(x, y - 12, text=name, fill=color, font=("TkDefaultFont", 9, "bold"))
+                    canvas.create_text(x, y - 14, text=name, fill=color, font=("TkDefaultFont", 11, "bold"))
             if not points and index == 2:
                 canvas.create_text((left + width - right) / 2, (y0 + y1) / 2, text="Waiting for data",
                                    fill="#757575")
@@ -1049,8 +1052,8 @@ class StatePlot:
             if float(tick).is_integer() and x_low <= tick <= x_high:
                 x = x_pixel(tick)
                 canvas.create_line(x, axis_y, x, axis_y + 4, fill="#555555")
-                canvas.create_text(x, axis_y + 6, text=f"{int(tick)}", anchor="n", font=("TkDefaultFont", 8))
-        canvas.create_text((left + width - right) / 2, height - 12, text="Step", font=("TkDefaultFont", 9))
+                canvas.create_text(x, axis_y + 6, text=f"{int(tick)}", anchor="n", font=("TkDefaultFont", 10))
+        canvas.create_text((left + width - right) / 2, height - 12, text="Step", font=("TkDefaultFont", 11))
 
 
 class FourStateApp:
@@ -1062,8 +1065,10 @@ class FourStateApp:
         self.title = APP_TITLE
         self.data_directory = HERE / f"{APP_TITLE} data"
         root.title(self.title)
-        root.geometry(f"{WINDOW_SIZE[0]}x{WINDOW_SIZE[1]}")
-        root.minsize(1100, 760)
+        width = max(WINDOW_MINIMUM[0], min(WINDOW_SIZE[0], root.winfo_screenwidth() - 80))
+        height = max(WINDOW_MINIMUM[1], min(WINDOW_SIZE[1], root.winfo_screenheight() - 120))
+        root.geometry(f"{width}x{height}")
+        root.minsize(*WINDOW_MINIMUM)
         self.events = queue.Queue()
         self.ppms = core.PPMSRemoteReadbackController(self.log_from_thread)
         self.source = core.Keithley6221Controller(self.log_from_thread)
@@ -1100,7 +1105,7 @@ class FourStateApp:
 
         connections = ttk.LabelFrame(page, text="Connections", padding=6)
         connections.grid(row=0, column=0, sticky="ew")
-        connections.columnconfigure(7, weight=1)
+        connections.columnconfigure(9, weight=1)
         dll_default = next((str(p) for p in core.PPMSQDInstrumentReadbackController.candidate_dll_paths()
                             if p.is_file()), "")
         self.host_var = tk.StringVar(value=core.PPMS_DEFAULT_HOST)
@@ -1109,13 +1114,13 @@ class FourStateApp:
         self.source_resource_var = tk.StringVar(value=core.K6221_DEFAULT_RESOURCE)
         self.lockin_resource_var = tk.StringVar(value=core.PPMS_SR830_RESOURCE_OPTIONS[0])
         self.status_vars = {key: tk.StringVar(value="Not connected") for key in ("ppms", "6221", "sr830")}
-        rows = (
-            ("PPMS (QDInstrument)", "ppms"),
-            ("Keithley 6221", "6221"),
-            ("SR830", "sr830"),
-        )
-        for row, (label, key) in enumerate(rows):
-            ttk.Label(connections, text=label).grid(row=row, column=0, sticky="w", padx=(0, 6), pady=1)
+        # One row per instrument, each with its own Connect and Disconnect,
+        # as on the main program's pages: name, address, buttons, lamp, state.
+        self.connection_widgets = {}   # key: (address widgets, Connect, Disconnect, lamp)
+        self.connection_failed = {key: False for key in CONNECTIONS}
+        for row, (key, label) in enumerate(CONNECTIONS.items()):
+            ttk.Label(connections, text=f"{label}:", width=19, anchor="e").grid(
+                row=row, column=0, sticky="e", padx=(0, 4), pady=1)
             if key == "ppms":
                 host = ttk.Combobox(connections, textvariable=self.host_var, values=core.PPMS_HOST_CHOICES, width=16)
                 host.grid(row=row, column=1, sticky="w")
@@ -1123,26 +1128,31 @@ class FourStateApp:
                 port = ttk.Entry(connections, textvariable=self.port_var, width=7)
                 port.grid(row=row, column=3, sticky="w")
                 ttk.Label(connections, text="DLL").grid(row=row, column=4, sticky="e", padx=(8, 2))
-                dll = ttk.Entry(connections, textvariable=self.dll_var, width=48)
+                dll = ttk.Entry(connections, textvariable=self.dll_var, width=40)
                 dll.grid(row=row, column=5, sticky="ew")
-                self.inputs += [(host, "normal"), (port, "normal"), (dll, "normal")]
+                address = (host, port, dll)
             elif key == "6221":
-                widget = ttk.Entry(connections, textvariable=self.source_resource_var, width=18)
-                widget.grid(row=row, column=1, sticky="w")
-                self.inputs.append((widget, "normal"))
+                address = (ttk.Entry(connections, textvariable=self.source_resource_var, width=18),)
+                address[0].grid(row=row, column=1, sticky="w")
             else:
-                widget = ttk.Combobox(connections, textvariable=self.lockin_resource_var,
-                                      values=core.PPMS_SR830_RESOURCE_OPTIONS, width=16)
-                widget.grid(row=row, column=1, sticky="w")
-                self.inputs.append((widget, "normal"))
-            ttk.Label(connections, textvariable=self.status_vars[key]).grid(
-                row=row, column=7, sticky="w", padx=(12, 0))
-        buttons = ttk.Frame(connections)
-        buttons.grid(row=0, column=8, rowspan=3, sticky="e", padx=(8, 0))
-        self.connect_button = ttk.Button(buttons, text="Connect all", command=self.connect_all, width=14)
-        self.connect_button.grid(row=0, column=0, pady=1)
-        self.disconnect_button = ttk.Button(buttons, text="Disconnect all", command=self.disconnect_all, width=14)
-        self.disconnect_button.grid(row=1, column=0, pady=1)
+                address = (ttk.Combobox(connections, textvariable=self.lockin_resource_var,
+                                        values=core.PPMS_SR830_RESOURCE_OPTIONS, width=16),)
+                address[0].grid(row=row, column=1, sticky="w")
+            connect = ttk.Button(connections, text="Connect", width=8,
+                                 command=lambda selected=key: self.connect_device(selected))
+            connect.grid(row=row, column=6, padx=(10, 1), pady=1)
+            disconnect = ttk.Button(connections, text="Disconnect", width=10,
+                                    command=lambda selected=key: self.disconnect_device(selected))
+            disconnect.grid(row=row, column=7, padx=1, pady=1)
+            lamp = tk.Canvas(connections, width=16, height=16, highlightthickness=0,
+                             background=root.cget("background"))
+            lamp.create_oval(3, 3, 13, 13, fill=LAMP_COLORS["off"], outline="#6f757b", tags="lamp")
+            lamp.grid(row=row, column=8, padx=(6, 2))
+            state = ttk.Label(connections, textvariable=self.status_vars[key], anchor="w")
+            state.grid(row=row, column=9, sticky="ew")
+            # A long state (a failure) wraps rather than being cut.
+            state.bind("<Configure>", lambda event: event.widget.configure(wraplength=max(120, event.width - 4)))
+            self.connection_widgets[key] = (address, connect, disconnect, lamp)
 
         self.values = {key: tk.StringVar(value=value) for key, value in DEFAULTS.items()}
         self._build_manual(page)
@@ -1249,9 +1259,10 @@ class FourStateApp:
         side.grid(row=0, column=1, sticky="ns", padx=(8, 0))
         side.rowconfigure(1, weight=1)
         self.last_var = tk.StringVar(value="Last read: --")
-        ttk.Label(side, textvariable=self.last_var, justify="left", width=34).grid(row=0, column=0, sticky="nw")
-        self.log = tk.Text(side, width=46, height=12, wrap="word", state="disabled")
+        ttk.Label(side, textvariable=self.last_var, justify="left", width=32).grid(row=0, column=0, sticky="nw")
+        self.log = tk.Text(side, width=36, height=12, wrap="word", state="disabled")
         self.log.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+        self._update_connection_controls()
 
     def _build_manual(self, page):
         """The PPMS page's settings rows: angle, field and current, one action
@@ -1661,10 +1672,24 @@ class FourStateApp:
         state = "disabled" if busy else "normal"
         for widget, enabled in self.inputs:
             widget.configure(state="disabled" if busy else enabled)
-        self.connect_button.configure(state=state)
-        self.disconnect_button.configure(state=state)
+        self._update_connection_controls()
         self.start_button.configure(state=state)
         self.stop_button.configure(state="normal" if running else "disabled")
+
+    def _controller(self, key):
+        return {"ppms": self.ppms, "6221": self.source, "sr830": self.lockin}[key]
+
+    def _update_connection_controls(self):
+        """Connect while not connected, Disconnect while connected, neither
+        while busy; the address is fixed while connected."""
+        for key, (address, connect, disconnect, lamp) in self.connection_widgets.items():
+            connected = self._controller(key).connected
+            connect.configure(state="normal" if not self.busy and not connected else "disabled")
+            disconnect.configure(state="normal" if not self.busy and connected else "disabled")
+            for widget in address:
+                widget.configure(state="disabled" if self.busy or connected else "normal")
+            color = "on" if connected else "failed" if self.connection_failed[key] else "off"
+            lamp.itemconfigure("lamp", fill=LAMP_COLORS[color])
 
     def _in_thread(self, label, work, done):
         self._set_busy(True)
@@ -1685,71 +1710,71 @@ class FourStateApp:
         done(result, error)
 
     # -- connections ----------------------------------------------------
-    def connect_all(self):
+    def connect_device(self, key):
+        """Connect one instrument; the others are left as they are."""
+        if self.busy:
+            return
+        label = CONNECTIONS[key]
         try:
-            port = int(self.port_var.get())
-            compliance = _number(self.values["compliance_v"].get(), "6221 compliance (V)")
-            core.Keithley6221Controller._validate(0.0, 30e-6, compliance, 1)
+            if key == "ppms":
+                port = int(self.port_var.get())
+                host, dll = self.host_var.get().strip(), self.dll_var.get().strip()
+                connect = lambda: self.ppms.connect(core.PPMS_QDINSTRUMENT_BACKEND, host, port, dll)
+            elif key == "6221":
+                compliance = _number(self.values["compliance_v"].get(), "6221 compliance (V)")
+                core.Keithley6221Controller._validate(0.0, 30e-6, compliance, 1)
+                resource = self.source_resource_var.get().strip()
+                connect = lambda: self.source.connect(resource, compliance)
+            else:
+                resource = self.lockin_resource_var.get().strip()
+                connect = lambda: connect_lockin(self.lockin, resource)
         except ValueError as error:
             messagebox.showerror(self.title, str(error), parent=self.root)
             return
-        host = self.host_var.get().strip()
-        dll = self.dll_var.get().strip()
-        source_resource = self.source_resource_var.get().strip()
-        lockin_resource = self.lockin_resource_var.get().strip()
 
         def work():
-            report = {}
-            for key, connect in (
-                    ("ppms", lambda: self.ppms.connect(core.PPMS_QDINSTRUMENT_BACKEND, host, port, dll)),
-                    ("6221", lambda: self.source.connect(source_resource, compliance)),
-                    ("sr830", lambda: connect_lockin(self.lockin, lockin_resource))):
-                try:
-                    result = connect()
-                    if key == "ppms":
-                        report[key] = (True, f"Connected: {result['temperature_k']:.4g} K, "
-                                             f"{result['field_oe']:+.6g} Oe / {result['field_status']}")
-                    elif key == "sr830":
-                        report[key] = (True, f"Connected, PPMS page settings: {str(result)[:40]}")
-                    else:
-                        report[key] = (True, f"Connected: {str(result)[:60]}")
-                except Exception as error:
-                    report[key] = (False, f"Failed: {core.short_status_error(error, 110)}")
-                    self.log_from_thread(f"{key} connection failed: {error}")
-            return report
+            result = connect()
+            if key == "ppms":
+                return (f"Connected: {result['temperature_k']:.4g} K, "
+                        f"{result['field_oe']:+.6g} Oe / {result['field_status']}")
+            if key == "sr830":
+                return f"Connected, PPMS page settings: {str(result)[:40]}"
+            return f"Connected: {str(result)[:60]}"
 
-        def done(report, error):
+        def done(text, error):
+            self.connection_failed[key] = error is not None
             if error is not None:
-                messagebox.showerror(self.title, str(error), parent=self.root)
-                return
-            for key, (_ok, text) in report.items():
-                self.status_vars[key].set(text)
-            failed = [key for key, (ok, _text) in report.items() if not ok]
-            self.status_var.set("All connected" if not failed else
-                                "Not connected: " + ", ".join(failed) + " (see the log)")
+                text = f"Failed: {core.short_status_error(error, 110)}"
+                self._append_log(f"{label} connection failed: {error}")
+            self.status_vars[key].set(text)
+            self.status_var.set(f"{label}: {text}")
+            self._update_connection_controls()
 
-        self._in_thread("Connecting…", work, done)
+        self.status_vars[key].set("Connecting…")
+        self._in_thread(f"Connecting {label}…", work, done)
 
-    def disconnect_all(self):
-        def work():
-            problems = []
-            for label, controller in (("6221", self.source), ("SR830", self.lockin), ("PPMS", self.ppms)):
-                try:
-                    controller.disconnect()
-                except Exception as error:
-                    problems.append(f"{label}: {error}")
-            return problems
+    def disconnect_device(self, key):
+        """Disconnect one instrument (the 6221 turns its output off first);
+        the field and angle are left as they are."""
+        if self.busy:
+            return
+        label = CONNECTIONS[key]
 
-        def done(problems, error):
-            for variable in self.status_vars.values():
-                variable.set("Not connected")
-            if problems or error:
-                messagebox.showwarning(self.title, "; ".join(problems or []) or str(error), parent=self.root)
-                self.status_var.set("Disconnected with problems; check the 6221 front panel")
+        def done(_result, error):
+            self.connection_failed[key] = False
+            if error is not None:
+                self.status_vars[key].set(f"Disconnect problem: {core.short_status_error(error, 90)}")
+                messagebox.showwarning(self.title, f"{label}: {error}", parent=self.root)
             else:
-                self.status_var.set("Disconnected (6221 output off; field and angle unchanged)")
+                self.status_vars[key].set("Not connected")
+            self.status_var.set(
+                f"{label} disconnected" + (" (output off)" if key == "6221" else "")
+                + (" (field and angle unchanged)" if key == "ppms" else "")
+                + ("" if error is None else "; check it"))
+            self._update_connection_controls()
 
-        self._in_thread("Disconnecting…", work, done)
+        self.status_vars[key].set("Disconnecting…")
+        self._in_thread(f"Disconnecting {label}…", self._controller(key).disconnect, done)
 
     # -- run ------------------------------------------------------------
     def current_settings(self):
