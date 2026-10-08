@@ -43,10 +43,12 @@ scan against the region of interest, and the 6221
 page does both one-pulse-per-current round trips and fixed-current multi-pulse
 acquisition, averaging the region of interest over the post-pulse interval.
 
-**Non-local** has one instrument rack (Keithley 2410 or 2400, 6221, two
-SR830s, the MFLI and a 2182A) and three sub-tabs that use it:
+**Non-local** has one connection box in two columns (Keithley 2410 or 2400,
+6221 and 2182A; two SR830s and the MFLI) and three sub-tabs that use it:
 - **Gate-VI pulse scan** measures non-local voltage against a gate, with the
-  Keithley as the gate source and lock-in or nanovoltmeter detection.
+  Keithley as the gate source and lock-in or nanovoltmeter detection. Its
+  read settings (6221 output, lock-in harmonics, which meters are in the
+  scan) are on this sub-tab.
 - **|R| vs time** measures the sample resistance continuously with the
   Keithley as an autoranged current source (1 nA to 1 mA, 5 V protection),
   plotted over the last 20 s. It was on the MOKE-24 page until 2026-10-08.

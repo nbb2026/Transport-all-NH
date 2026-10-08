@@ -20586,30 +20586,19 @@ class CombinedControlApp:
             padding=7,
         )
         connection.grid(row=0, column=0, sticky="ew")
-        # Columns 0-5 hold each device's name, address, Connect, Disconnect,
-        # lamp and status; column 6 its own settings.  Spare width goes to the
-        # empty tail column 7, so neither part stretches.
-        connection.columnconfigure(7, weight=1)
-        # Devices sit on the even rows.  Each device's settings share its row
-        # when the window is wide enough, else they move to the odd row under
-        # its address (see arrange_device_settings below).
-        settings_boxes: dict[int, ttk.Frame] = {}
+        # Two columns, as on the PPMS page: the Keithleys on the left, the
+        # lock-ins on the right, side by side when both fit, else stacked.
+        # Only connections here (and the Keithley model); the pulse scan's
+        # own read settings are on its sub-tab.  Each column's grid holds a
+        # device's name, address, Connect, Disconnect, lamp and status.
+        sources = ttk.Frame(connection)
+        meters = ttk.Frame(connection)
+        sources.grid(row=0, column=0, sticky="nw")
+        meters.grid(row=0, column=1, sticky="nw")
 
-        def settings_box(row: int) -> ttk.Frame:
-            box = ttk.Frame(connection)
-            box.grid(
-                row=row, column=6, sticky="w", padx=(12, 0),
-                pady=(4 if row else 0, 0),
-            )
-            # A cell spanning to the tail puts any extra width there, so the
-            # columns shared with the other boxes keep their width.
-            box.columnconfigure(7, weight=1)
-            settings_boxes[row] = box
-            return box
-
-        def indicator(key: str, row: int, column: int) -> None:
+        def indicator(frame, key: str, row: int, column: int) -> None:
             canvas = tk.Canvas(
-                connection,
+                frame,
                 width=16,
                 height=16,
                 highlightthickness=0,
@@ -20623,17 +20612,23 @@ class CombinedControlApp:
             )
             self.nonlocal_vi_connection_indicators[key] = (canvas, item)
 
-        def device_name(row: int, **label) -> None:
+        def device_name(frame, row: int, **label) -> None:
             # Right-aligned in a fixed width, as on the STFMR and PPMS rows,
             # so every address field starts at the same place.
-            ttk.Label(connection, width=15, anchor="e", **label).grid(
+            ttk.Label(frame, width=15, anchor="e", **label).grid(
                 row=row, column=0, sticky="e", pady=(4 if row else 0, 0)
             )
 
-        def device_actions(key: str, row: int) -> None:
+        def device_address(frame, row: int, variable) -> None:
+            ttk.Entry(frame, textvariable=variable, width=18).grid(
+                row=row, column=1, padx=(0, 12), pady=(4 if row else 0, 0),
+                sticky="w",
+            )
+
+        def device_actions(frame, key: str, row: int) -> None:
             # The STFMR and PPMS button widths.
             self.nonlocal_vi_device_connect_buttons[key] = ttk.Button(
-                connection,
+                frame,
                 text="Connect",
                 width=8,
                 command=lambda device_key=key:
@@ -20643,7 +20638,7 @@ class CombinedControlApp:
                 row=row, column=2, padx=(4, 2), pady=(4 if row else 0, 0)
             )
             self.nonlocal_vi_device_disconnect_buttons[key] = ttk.Button(
-                connection,
+                frame,
                 text="Disconnect",
                 width=10,
                 command=lambda device_key=key:
@@ -20652,32 +20647,22 @@ class CombinedControlApp:
             self.nonlocal_vi_device_disconnect_buttons[key].grid(
                 row=row, column=3, padx=2, pady=(4 if row else 0, 0)
             )
-            # Keyboard focus moves through siblings in stacking order, and
-            # this device's settings box was created before its buttons,
-            # though it is drawn after them (beside them, or on the line
-            # below).  Put it back after Disconnect, as on screen, so Tab goes
-            # address, Connect, Disconnect, settings, next address.
-            box = settings_boxes.get(row)
-            if box is not None:
-                box.lift(self.nonlocal_vi_device_disconnect_buttons[key])
-            indicator(key, row, 4)
+            indicator(frame, key, row, 4)
             # As wide as the longest state, "Disconnecting…".
             ttk.Label(
-                connection,
+                frame,
                 textvariable=self.nonlocal_vi_device_connection_vars[key],
                 width=14,
                 anchor="w",
             ).grid(row=row, column=5, pady=(4 if row else 0, 0), sticky="w")
 
-        device_name(0, textvariable=self.nonlocal_vi_keithley_label_var)
-        ttk.Entry(
-            connection,
-            textvariable=self.nonlocal_vi_2410_resource_var,
-            width=18,
-        ).grid(row=0, column=1, padx=(0, 12), sticky="w")
+        device_name(sources, 0, textvariable=self.nonlocal_vi_keithley_label_var)
+        device_address(sources, 0, self.nonlocal_vi_2410_resource_var)
+        device_actions(sources, "2410", 0)
         # Which SourceMeter: 2410 or 2400, fixed while connected.  It is
         # driven the same way on this page (20 V range and OVP, 1 mA).
-        model_box = settings_box(0)
+        model_box = ttk.Frame(sources)
+        model_box.grid(row=0, column=6, sticky="w", padx=(12, 0))
         ttk.Label(model_box, text="Model:").grid(
             row=0, column=0, sticky="e", padx=(0, 3)
         )
@@ -20688,274 +20673,38 @@ class CombinedControlApp:
             state="readonly",
             width=5,
         )
-        self.nonlocal_vi_model_combo.grid(row=0, column=1, sticky="ew", padx=(0, 10))
+        self.nonlocal_vi_model_combo.grid(row=0, column=1, sticky="ew")
         self.nonlocal_vi_model_combo.bind(
             "<<ComboboxSelected>>", lambda _event: self._on_nonlocal_vi_model_selected()
         )
-        device_actions("2410", 0)
+        device_name(sources, 1, text="Keithley 6221:")
+        device_address(sources, 1, self.nonlocal_vi_source_resource_var)
+        device_actions(sources, "6221", 1)
+        device_name(sources, 2, text="Keithley 2182A:")
+        device_address(sources, 2, self.nonlocal_vi_nanovoltmeter_resource_var)
+        device_actions(sources, "2182", 2)
 
-        device_name(2, text="Keithley 6221:")
-        ttk.Entry(
-            connection,
-            textvariable=self.nonlocal_vi_source_resource_var,
-            width=18,
-        ).grid(row=2, column=1, padx=(0, 12), pady=(4, 0), sticky="w")
-        source_box = settings_box(2)
-        ttk.Label(source_box, text="Output:").grid(
-            row=0, column=0, sticky="e", padx=(0, 3)
-        )
-        self.nonlocal_vi_output_mode_combo = ttk.Combobox(
-            source_box,
-            textvariable=self.nonlocal_vi_output_mode_var,
-            values=("AC", "DC"),
-            state="readonly",
-            width=5,
-        )
-        self.nonlocal_vi_output_mode_combo.grid(
-            row=0, column=1, sticky="ew", padx=(0, 10)
-        )
-        self.nonlocal_vi_output_mode_var.trace_add(
-            "write", lambda *_args: self._on_nonlocal_vi_output_mode_changed()
-        )
-        device_actions("6221", 2)
-
-        for row, key in ((4, "8"), (6, "9")):
-            device_name(row, text=f"SR830 #{key}:")
-            ttk.Entry(
-                connection,
-                textvariable=self.nonlocal_vi_lockin_resource_vars[key],
-                width=18,
-            ).grid(
-                row=row, column=1, padx=(0, 12), pady=(4, 0), sticky="w"
-            )
-            lockin_box = settings_box(row)
-            ttk.Label(lockin_box, text="Input coupling AC/DC:").grid(
-                row=0, column=0, sticky="e", padx=(0, 3)
-            )
-            ttk.Combobox(
-                lockin_box,
-                textvariable=self.nonlocal_vi_lockin_coupling_vars[key],
-                values=("AC", "DC"),
-                state="readonly",
-                width=5,
-            ).grid(row=0, column=1, sticky="ew", padx=(0, 10))
-            ttk.Label(lockin_box, text="Harmonic:").grid(
-                row=0, column=2, sticky="e", padx=(0, 3)
-            )
-            ttk.Spinbox(
-                lockin_box,
-                from_=1,
-                to=19999,
-                textvariable=self.nonlocal_vi_lockin_harmonic_vars[key],
-                width=7,
-            ).grid(row=0, column=3, sticky="ew", padx=(0, 10))
-            ttk.Label(lockin_box, text="Read:").grid(
-                row=0, column=4, sticky="e", padx=(0, 3)
-            )
-            ttk.Combobox(
-                lockin_box,
-                textvariable=self.nonlocal_vi_lockin_channel_vars[key],
-                values=("X", "Y", "R"),
-                state="readonly",
-                width=5,
-            ).grid(row=0, column=5, sticky="ew", padx=(0, 10))
-            ttk.Checkbutton(
-                lockin_box,
-                text="In scan",
-                variable=self.nonlocal_vi_measurement_enabled_vars[key],
-                command=self._redraw_nonlocal_vi_plots,
-            ).grid(row=0, column=6, sticky="w")
-            device_actions(key, row)
-
-        device_name(8, text="Zurich MFLI:")
+        for row, key in ((0, "8"), (1, "9")):
+            device_name(meters, row, text=f"SR830 #{key}:")
+            device_address(meters, row, self.nonlocal_vi_lockin_resource_vars[key])
+            device_actions(meters, key, row)
+        device_name(meters, 2, text="Zurich MFLI:")
         # Which Zurich: chosen from the lab's two, so the Data Server that can
         # reach it is used.  As wide as the SR830 address fields above.
         vi_mfli_chooser = create_zurich_chooser(
-            connection, self.nonlocal_vi_mfli_device_var, match_chars=18
+            meters, self.nonlocal_vi_mfli_device_var, match_chars=18
         )
         vi_mfli_chooser.grid(
-            row=8, column=1, padx=(0, 12 + vi_mfli_chooser.zurich_shortfall),
+            row=2, column=1, padx=(0, 12 + vi_mfli_chooser.zurich_shortfall),
             pady=(4, 0), sticky="w",
         )
-        # The first line matches the SR830 settings above it, field for
-        # field; the MFLI-only inputs follow on a second line.
-        vi_mfli_options = settings_box(8)
-        ttk.Label(vi_mfli_options, text="Input coupling AC/DC:").grid(
-            row=0, column=0, sticky="e", padx=(0, 3)
-        )
-        ttk.Combobox(
-            vi_mfli_options, textvariable=self.nonlocal_vi_mfli_coupling_var,
-            values=("AC", "DC"), state="readonly", width=5,
-        ).grid(row=0, column=1, sticky="ew", padx=(0, 10))
-        ttk.Label(vi_mfli_options, text="Harmonic:").grid(
-            row=0, column=2, sticky="e", padx=(0, 3)
-        )
-        ttk.Spinbox(
-            vi_mfli_options, from_=1, to=1024,
-            textvariable=self.nonlocal_vi_mfli_harmonic_var, width=7,
-        ).grid(row=0, column=3, sticky="ew", padx=(0, 10))
-        ttk.Label(vi_mfli_options, text="Read:").grid(
-            row=0, column=4, sticky="e", padx=(0, 3)
-        )
-        ttk.Combobox(
-            vi_mfli_options, textvariable=self.nonlocal_vi_mfli_channel_var,
-            values=("X", "Y", "R"), state="readonly", width=5,
-        ).grid(row=0, column=5, sticky="ew", padx=(0, 10))
-        ttk.Checkbutton(
-            vi_mfli_options,
-            text="In scan (autorange)",
-            variable=self.nonlocal_vi_use_mfli_var,
-            command=self._redraw_nonlocal_vi_plots,
-        ).grid(row=0, column=6, sticky="w")
-        ttk.Label(vi_mfli_options, text="Reference input:").grid(
-            row=1, column=0, sticky="e", padx=(0, 3), pady=(4, 0)
-        )
-        ttk.Combobox(
-            vi_mfli_options,
-            textvariable=self.nonlocal_vi_mfli_reference_source_var,
-            values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS),
-            state="readonly",
-            width=13,
-        ).grid(row=1, column=1, columnspan=2, sticky="w", pady=(4, 0))
-        vi_mfli_input = ttk.Frame(vi_mfli_options)
-        vi_mfli_input.grid(
-            row=1, column=3, columnspan=5, sticky="w", pady=(4, 0)
-        )
-        ttk.Label(vi_mfli_input, text="Signal Input 1 impedance:").grid(
-            row=0, column=0, sticky="e", padx=(0, 3)
-        )
-        ttk.Combobox(
-            vi_mfli_input,
-            textvariable=self.nonlocal_vi_mfli_input_impedance_var,
-            values=("10 MΩ", "50 Ω"),
-            state="readonly",
-            width=8,
-        ).grid(row=0, column=1, sticky="w", padx=(0, 10))
-        ttk.Label(vi_mfli_input, text="Scaling:").grid(
-            row=0, column=2, sticky="e", padx=(0, 3)
-        )
-        ttk.Entry(
-            vi_mfli_input,
-            textvariable=self.nonlocal_vi_mfli_input_scaling_var,
-            width=8,
-        ).grid(row=0, column=3, sticky="w")
-        device_actions("mfli", 8)
+        device_actions(meters, "mfli", 2)
 
-        device_name(10, text="Keithley 2182A:")
-        ttk.Entry(
-            connection, textvariable=self.nonlocal_vi_nanovoltmeter_resource_var,
-            width=18,
-        ).grid(row=10, column=1, padx=(0, 12), pady=(4, 0), sticky="w")
-        ttk.Checkbutton(
-            settings_box(10), text="In scan (channel 1, NPLC 1, autorange)",
-            variable=self.nonlocal_vi_use_2182_var,
-            command=self._redraw_nonlocal_vi_plots,
-        ).grid(row=0, column=0, columnspan=7, sticky="w")
-        device_actions("2182", 10)
-        ttk.Checkbutton(
-            connection,
-            text="Voltage pulses, selected AC/DC read current and sample confirmed safe",
-            variable=self.nonlocal_vi_safety_var,
-            command=self._update_nonlocal_vi_controls,
-        ).grid(
-            row=12,
-            column=0,
-            columnspan=6,
-            sticky="w",
-            pady=(6, 0),
-        )
-        connection_summary = ttk.Label(
+        # Which instruments are connected, under both columns.
+        ttk.Label(
             connection, textvariable=self.nonlocal_vi_connection_var
-        )
-        connection_summary.grid(
-            row=13, column=0, columnspan=8, pady=(5, 0), sticky="e"
-        )
-
-        def grid_column_widths(frames) -> dict[int, int]:
-            """Each column's width in these grids: its widest one-column cell.
-
-            From requested sizes, so it is known before the first layout.
-            """
-            widths: dict[int, int] = {}
-            for frame in frames:
-                for cell in frame.grid_slaves():
-                    info = cell.grid_info()
-                    if int(info["columnspan"]) != 1:
-                        continue
-                    padx = info["padx"]
-                    pads = [
-                        int(float(str(value)))
-                        for value in (
-                            padx if isinstance(padx, (tuple, list))
-                            else str(padx).split()
-                        )
-                    ] or [0]
-                    column = int(info["column"])
-                    widths[column] = max(
-                        widths.get(column, 0),
-                        int(cell.winfo_reqwidth())
-                        + (2 * pads[0] if len(pads) == 1 else sum(pads)),
-                    )
-            return widths
-
-        # Each settings box is its own grid, so the 6221, SR830 and MFLI
-        # fields line up only if every column is equally wide in all of them.
-        try:
-            shared_widths = grid_column_widths(settings_boxes.values())
-            for box in settings_boxes.values():
-                for column, width in shared_widths.items():
-                    box.columnconfigure(column, minsize=width)
-        except (tk.TclError, TypeError, ValueError, KeyError, AttributeError):
-            pass  # stubbed widgets, as in offline tests
-
-        def arrange_device_settings(_event=None) -> None:
-            """Settings beside each device when all fit, else under it.
-
-            One decision for every row, so the boxes always share one left
-            edge.  At the lab's 1101 px default window the SR830 settings do
-            not fit beside Connect/Disconnect and would be clipped.
-            """
-            try:
-                # A LabelFrame's padding and border are not usable width.
-                available = int(connection.winfo_width()) - 2 * 7 - 4
-                devices = sum(
-                    width for column, width
-                    in grid_column_widths((connection,)).items() if column <= 5
-                )
-                needed = devices + 12 + max(
-                    int(box.winfo_reqwidth()) for box in settings_boxes.values()
-                )
-            except (tk.TclError, TypeError, ValueError, KeyError, AttributeError):
-                return
-            if available <= 1:
-                return  # not laid out yet; the first <Configure> decides
-            wide = available >= needed
-            if getattr(connection, "_pair_side_by_side", None) is wide:
-                return
-            connection._pair_side_by_side = wide
-            for row, box in settings_boxes.items():
-                if wide:
-                    box.grid_configure(
-                        row=row, column=6, columnspan=1, padx=(12, 0),
-                        pady=(4 if row else 0, 0),
-                    )
-                else:
-                    box.grid_configure(
-                        row=row + 1, column=1, columnspan=7, padx=0,
-                        pady=(3, 0),
-                    )
-            # Wide, the connection summary fits right of the safety check.
-            if wide:
-                connection_summary.grid_configure(
-                    row=12, column=6, columnspan=2, pady=(6, 0)
-                )
-            else:
-                connection_summary.grid_configure(
-                    row=13, column=0, columnspan=8, pady=(5, 0)
-                )
-
-        connection.bind("<Configure>", arrange_device_settings, add="+")
-        arrange_device_settings()
+        ).grid(row=2, column=0, columnspan=2, pady=(5, 0), sticky="e")
+        self._arrange_pair_by_width(connection, sources, meters, gap=24)
 
         def wrap_to_width(label) -> None:
             """Wrap a label's text at its current width, re-done on resize."""
@@ -21006,7 +20755,7 @@ class CombinedControlApp:
         self.nonlocal_vi_off_button.grid(row=1, column=0, sticky="ne", pady=(5, 0))
         self.nonlocal_vi_off_button.lift()
         gate_tab.columnconfigure(0, weight=1)
-        gate_tab.rowconfigure(3, weight=1)
+        gate_tab.rowconfigure(4, weight=1)
 
         # The pulse scan's interlock (kept word for word), wrapped to the
         # page width.  Names the selected model; set in
@@ -21018,9 +20767,12 @@ class CombinedControlApp:
         )
         interlock.grid(row=0, column=0, sticky="ew", padx=2, pady=(0, 5))
         wrap_to_width(interlock)
+        self._build_nonlocal_vi_read_settings(gate_tab).grid(
+            row=1, column=0, sticky="ew", pady=(0, 5)
+        )
 
         settings = ttk.LabelFrame(gate_tab, text="Non-local VI voltage-pulse scan parameters", padding=7)
-        settings.grid(row=1, column=0, sticky="ew", pady=(0, 5))
+        settings.grid(row=2, column=0, sticky="ew", pady=(0, 5))
         entries = (
             ("Start V", self.nonlocal_vi_start_voltage_var),
             ("Stop V", self.nonlocal_vi_stop_voltage_var),
@@ -21091,7 +20843,7 @@ class CombinedControlApp:
         # others.  The lock-in reference text, which lists every locked
         # meter, comes last and wraps rather than pushing anything off.
         actions = ttk.LabelFrame(gate_tab, text="Run and data", padding=7)
-        actions.grid(row=2, column=0, sticky="ew", pady=(0, 5))
+        actions.grid(row=3, column=0, sticky="ew", pady=(0, 5))
         actions.columnconfigure(3, weight=1)
         self.nonlocal_vi_start_button = ttk.Button(
             actions,
@@ -21175,7 +20927,7 @@ class CombinedControlApp:
 
         plots = ttk.Frame(gate_tab)
         self.nonlocal_vi_plot_container = plots
-        plots.grid(row=3, column=0, sticky="nsew")
+        plots.grid(row=4, column=0, sticky="nsew")
         for column in range(3):
             plots.columnconfigure(column, weight=1)
         for row in range(5):
@@ -21306,6 +21058,153 @@ class CombinedControlApp:
         ).grid(row=2, column=0, sticky="ew", pady=(5, 0))
         self._redraw_nonlocal_vi_plots()
         self._update_nonlocal_vi_controls()
+
+    def _build_nonlocal_vi_read_settings(self, parent) -> ttk.LabelFrame:
+        """The pulse scan's settings for the 6221 and each voltmeter, and its
+        safety check: the 6221 and SR830s on the left, the MFLI and 2182A on
+        the right, side by side when both fit, else stacked."""
+        box = ttk.LabelFrame(parent, text="Gate-VI read settings", padding=7)
+        left = ttk.Frame(box)
+        right = ttk.Frame(box)
+        left.grid(row=0, column=0, sticky="nw")
+        right.grid(row=0, column=1, sticky="nw")
+
+        def pad(row: int) -> tuple[int, int]:
+            return (4 if row else 0, 0)
+
+        def name(frame, row: int, text: str) -> None:
+            ttk.Label(frame, text=text, width=15, anchor="e").grid(
+                row=row, column=0, sticky="e", pady=pad(row)
+            )
+
+        def label(frame, row: int, column: int, text: str) -> None:
+            ttk.Label(frame, text=text).grid(
+                row=row, column=column, sticky="e",
+                padx=(6 if column == 1 else 0, 3), pady=pad(row),
+            )
+
+        def meter_fields(frame, row, coupling, harmonic, channel, top, check, enabled):
+            # The same fields, column for column, for each SR830 and the MFLI.
+            label(frame, row, 1, "Input coupling AC/DC:")
+            ttk.Combobox(
+                frame, textvariable=coupling, values=("AC", "DC"),
+                state="readonly", width=5,
+            ).grid(row=row, column=2, sticky="ew", padx=(0, 10), pady=pad(row))
+            label(frame, row, 3, "Harmonic:")
+            ttk.Spinbox(
+                frame, from_=1, to=top, textvariable=harmonic, width=7,
+            ).grid(row=row, column=4, sticky="ew", padx=(0, 10), pady=pad(row))
+            label(frame, row, 5, "Read:")
+            ttk.Combobox(
+                frame, textvariable=channel, values=("X", "Y", "R"),
+                state="readonly", width=5,
+            ).grid(row=row, column=6, sticky="ew", padx=(0, 10), pady=pad(row))
+            ttk.Checkbutton(
+                frame, text=check, variable=enabled,
+                command=self._redraw_nonlocal_vi_plots,
+            ).grid(row=row, column=7, sticky="w", pady=pad(row))
+
+        name(left, 0, "Keithley 6221:")
+        label(left, 0, 1, "Output:")
+        self.nonlocal_vi_output_mode_combo = ttk.Combobox(
+            left,
+            textvariable=self.nonlocal_vi_output_mode_var,
+            values=("AC", "DC"),
+            state="readonly",
+            width=5,
+        )
+        self.nonlocal_vi_output_mode_combo.grid(
+            row=0, column=2, sticky="ew", padx=(0, 10)
+        )
+        self.nonlocal_vi_output_mode_var.trace_add(
+            "write", lambda *_args: self._on_nonlocal_vi_output_mode_changed()
+        )
+        for row, key in ((1, "8"), (2, "9")):
+            name(left, row, f"SR830 #{key}:")
+            meter_fields(
+                left, row,
+                self.nonlocal_vi_lockin_coupling_vars[key],
+                self.nonlocal_vi_lockin_harmonic_vars[key],
+                self.nonlocal_vi_lockin_channel_vars[key],
+                19999, "In scan",
+                self.nonlocal_vi_measurement_enabled_vars[key],
+            )
+
+        name(right, 0, "Zurich MFLI:")
+        meter_fields(
+            right, 0,
+            self.nonlocal_vi_mfli_coupling_var,
+            self.nonlocal_vi_mfli_harmonic_var,
+            self.nonlocal_vi_mfli_channel_var,
+            1024, "In scan (autorange)",
+            self.nonlocal_vi_use_mfli_var,
+        )
+        # The MFLI-only inputs on a second line.
+        label(right, 1, 1, "Reference input:")
+        ttk.Combobox(
+            right,
+            textvariable=self.nonlocal_vi_mfli_reference_source_var,
+            values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS),
+            state="readonly",
+            width=13,
+        ).grid(row=1, column=2, columnspan=3, sticky="w", pady=pad(1))
+        mfli_input = ttk.Frame(right)
+        mfli_input.grid(row=1, column=5, columnspan=3, sticky="w", pady=pad(1))
+        ttk.Label(mfli_input, text="Signal Input 1 impedance:").grid(
+            row=0, column=0, sticky="e", padx=(0, 3)
+        )
+        ttk.Combobox(
+            mfli_input,
+            textvariable=self.nonlocal_vi_mfli_input_impedance_var,
+            values=("10 MΩ", "50 Ω"),
+            state="readonly",
+            width=8,
+        ).grid(row=0, column=1, sticky="w", padx=(0, 10))
+        ttk.Label(mfli_input, text="Scaling:").grid(
+            row=0, column=2, sticky="e", padx=(0, 3)
+        )
+        ttk.Entry(
+            mfli_input,
+            textvariable=self.nonlocal_vi_mfli_input_scaling_var,
+            width=8,
+        ).grid(row=0, column=3, sticky="w")
+        name(right, 2, "Keithley 2182A:")
+        ttk.Checkbutton(
+            right, text="In scan (channel 1, NPLC 1, autorange)",
+            variable=self.nonlocal_vi_use_2182_var,
+            command=self._redraw_nonlocal_vi_plots,
+        ).grid(row=2, column=1, columnspan=7, sticky="w", padx=(6, 0), pady=pad(2))
+
+        # Stacked, the two grids line up only if each column is as wide in
+        # both: the widest one-column cell of either.
+        try:
+            widths: dict[int, int] = {}
+            for frame in (left, right):
+                for cell in frame.grid_slaves():
+                    info = cell.grid_info()
+                    if int(info["columnspan"]) != 1:
+                        continue
+                    padx = [int(float(str(v))) for v in str(info["padx"]).split()] or [0]
+                    column = int(info["column"])
+                    widths[column] = max(
+                        widths.get(column, 0),
+                        int(cell.winfo_reqwidth())
+                        + (2 * padx[0] if len(padx) == 1 else sum(padx)),
+                    )
+            for frame in (left, right):
+                for column, width in widths.items():
+                    frame.columnconfigure(column, minsize=width)
+        except (tk.TclError, TypeError, ValueError, KeyError, AttributeError):
+            pass  # stubbed widgets, as in offline tests
+
+        ttk.Checkbutton(
+            box,
+            text="Voltage pulses, selected AC/DC read current and sample confirmed safe",
+            variable=self.nonlocal_vi_safety_var,
+            command=self._update_nonlocal_vi_controls,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self._arrange_pair_by_width(box, left, right, gap=24)
+        return box
 
     def _nonlocal_plot_canvas(self, frame, redraw) -> tk.Canvas:
         frame.rowconfigure(0, weight=1)
