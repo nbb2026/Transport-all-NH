@@ -7323,14 +7323,14 @@ class NonLocalACController:
                 diagnostics.append(f"{host}:{port}=unreachable ({error})")
         return reachable, diagnostics
 
-    def configure_second_harmonic(self, tau):
+    def configure_second_harmonic(self, tau, rate=NONLOCAL_SAMPLE_HZ):
         """Configure 2f on Demod 2 with PLL on 4, otherwise on Demod 3."""
         with self.lock:
             if self.mfli_config.get('extref_demodulator') not in (1, 3) or self.mfli_config.get('harmonic') != 1:
                 raise RuntimeError('Simultaneous measurement requires MF-MD: Demod 1 measures 1st harmonic, Demod 2 external reference, Demod 3 measures 2nd harmonic')
             if self.mfli_bridge is not None:
                 self.mfli_bridge.request('configure_second_harmonic', timeconstant=tau,
-                    rate=NONLOCAL_SAMPLE_HZ, order=NONLOCAL_LOCKIN_FILTER_ORDER)
+                    rate=rate, order=NONLOCAL_LOCKIN_FILTER_ORDER)
                 return
             index = 1 if self.mfli_config['extref_demodulator'] == 3 else 2
             base = f'/{self.mfli_device}/demods/{index}/'
@@ -7338,20 +7338,20 @@ class NonLocalACController:
                                 ('order', NONLOCAL_LOCKIN_FILTER_ORDER), ('enable', 1)):
                 self.mfli_daq.setInt(base + name, value)
             self.mfli_daq.setDouble(base + 'timeconstant', tau)
-            self.mfli_daq.setDouble(base + 'rate', NONLOCAL_SAMPLE_HZ)
+            self.mfli_daq.setDouble(base + 'rate', rate)
             self.mfli_daq.sync()
             for name, value in (('adcselect', 0), ('oscselect', 0), ('harmonic', 2), ('enable', 1)):
                 if self.mfli_daq.getInt(base + name) != value:
                     raise RuntimeError('Zurich 2nd-harmonic configuration readback mismatch: ' + name)
 
-    def configure_third_harmonic(self, tau):
+    def configure_third_harmonic(self, tau, rate=NONLOCAL_SAMPLE_HZ):
         """Configure 3f on Demod 3 with PLL on 4, otherwise on Demod 4."""
         with self.lock:
             if self.mfli_config.get('extref_demodulator') not in (1, 3) or self.mfli_config.get('harmonic') != 1:
                 raise RuntimeError('Simultaneous measurement requires MF-MD: Demod 1 measures 1st harmonic, Demod 2 external reference, Demod 4 measures 3rd harmonic')
             if self.mfli_bridge is not None:
                 self.mfli_bridge.request('configure_third_harmonic', timeconstant=tau,
-                    rate=NONLOCAL_SAMPLE_HZ, order=NONLOCAL_LOCKIN_FILTER_ORDER)
+                    rate=rate, order=NONLOCAL_LOCKIN_FILTER_ORDER)
                 return
             index = 2 if self.mfli_config['extref_demodulator'] == 3 else 3
             base = f'/{self.mfli_device}/demods/{index}/'
@@ -7359,7 +7359,7 @@ class NonLocalACController:
                                 ('order', NONLOCAL_LOCKIN_FILTER_ORDER), ('enable', 1)):
                 self.mfli_daq.setInt(base + name, value)
             self.mfli_daq.setDouble(base + 'timeconstant', tau)
-            self.mfli_daq.setDouble(base + 'rate', NONLOCAL_SAMPLE_HZ)
+            self.mfli_daq.setDouble(base + 'rate', rate)
             self.mfli_daq.sync()
             for name, value in (('adcselect', 0), ('oscselect', 0), ('harmonic', 3), ('enable', 1)):
                 if self.mfli_daq.getInt(base + name) != value:
@@ -9018,6 +9018,10 @@ class NonLocalACController:
                 raise RuntimeError(
                     f"SR830 #{key} harmonic readback mismatch: requested {harmonic}, readback {actual}"
                 )
+            # The range configure() starts at: the last pass ended at End
+            # current, the next order starts at Start, often far smaller.
+            self._write_sr830(key, "SENS 9")
+            self.sensitivity_indices[key] = int(self._query_sr830_numbers(key, "SENS?", 1)[0])
             self.low_range_counts[key] = 0
             self.range_cooldowns[key] = 0
 
@@ -21451,27 +21455,38 @@ class CombinedControlApp:
                 self.nonlocal_iv6221_canvases[(order, channel)] = canvas
         self._refresh_nonlocal_iv6221_plot_layout()
 
+    def _nonlocal_iv6221_order_meters(self) -> dict[int, list[str]]:
+        """The meters ticked Measure that read each harmonic order."""
+        meters: dict[int, list[str]] = {}
+        for key in ("8", "9", "mfli"):
+            if self.nonlocal_iv6221_measure_vars[key].get():
+                for order in PPMS_ZURICH_MODE_ORDERS.get(
+                    str(self.nonlocal_iv6221_harmonic_vars[key].get()), ()
+                ):
+                    meters.setdefault(order, []).append(NONLOCAL_METER_NAMES[key])
+        return meters
+
     def _nonlocal_iv6221_measured_orders(self) -> list[int]:
         """The harmonic orders of the lock-ins ticked Measure (order 1 if none)."""
-        orders = set()
-        for key, measure in self.nonlocal_iv6221_measure_vars.items():
-            if measure.get():
-                orders.update(PPMS_ZURICH_MODE_ORDERS.get(
-                    str(self.nonlocal_iv6221_harmonic_vars[key].get()), ()
-                ))
-        return sorted(orders) or [1]
+        return sorted(self._nonlocal_iv6221_order_meters()) or [1]
 
     def _refresh_nonlocal_iv6221_plot_layout(self) -> None:
         frames = self.__dict__.get("nonlocal_iv6221_plot_frames")
         if not frames:
             return
-        shown = self._nonlocal_iv6221_measured_orders()
+        meters = self._nonlocal_iv6221_order_meters()
+        shown = sorted(meters) or [1]
         container = self.nonlocal_iv6221_plot_container
         for order in PPMS_HARMONIC_ORDERS:
             visible = order in shown
             container.rowconfigure(order - 1, weight=1 if visible else 0)
-            for channel in ("X", "Y", "theta"):
+            for channel, title in (("X", "X"), ("Y", "Y"), ("theta", "θ")):
                 frame = frames[(order, channel)]
+                # The meters in the title, as on RT-E ("1st harmonic X — Zurich").
+                names = ", ".join(meters.get(order, ()))
+                frame.configure(
+                    text=f"{PPMS_HARMONIC_LABELS[order]} {title}" + (f" — {names}" if names else "")
+                )
                 if visible:
                     frame.grid()
                 else:
@@ -28913,6 +28928,7 @@ class CombinedControlApp:
             self.nonlocal_vi_output_var.set(
                 f"Keithley {self.nonlocal_vi_2410_controller.model} and 6221 outputs: OFF"
             )
+            self.nonlocal_iv6221_source_var.set("6221: OFF")
         if key == "2410":
             self.nonlocal_resistance_safety_var.set(False)
             self.nonlocal_iv_safety_var.set(False)
@@ -29136,6 +29152,7 @@ class CombinedControlApp:
         for key in ("2410", "6221", "8", "9", "mfli", "2182"):
             self._set_nonlocal_vi_indicator(key, False)
         self.nonlocal_vi_output_var.set(f"Keithley {self.nonlocal_vi_2410_controller.model} and 6221 outputs: OFF")
+        self.nonlocal_iv6221_source_var.set("6221: OFF")
         self.nonlocal_vi_reference_var.set("Lock-in reference: --")
         self.nonlocal_vi_safety_var.set(False)
         self.nonlocal_vi_status_var.set(
@@ -30065,6 +30082,7 @@ class CombinedControlApp:
         self.nonlocal_vi_running = False
         self._set_mfli_lock_state(None, vi=True)
         self.nonlocal_vi_output_var.set(f"Keithley {self.nonlocal_vi_2410_controller.model} and 6221 outputs: OFF")
+        self.nonlocal_iv6221_source_var.set("6221: OFF")
         self.nonlocal_vi_eta_var.set("Remaining: 00:00:00")
         self._redraw_nonlocal_vi_plots()
         if self.nonlocal_vi_run_directory is not None:
@@ -30405,9 +30423,7 @@ class CombinedControlApp:
         self.nonlocal_keithley_output_off = False
         self.nonlocal_keithley_task = kind
         self.nonlocal_last_task = kind
-        if kind in ("resistance", "iv"):
-            # These switch the 6221 off before the Keithley sources.
-            self.nonlocal_iv6221_source_var.set("6221: OFF")
+        self.nonlocal_6221_off_unconfirmed = False
         self._update_nonlocal_vi_controls()
         try:
             future = self.nonlocal_vi_executor.submit(worker)
@@ -30429,6 +30445,8 @@ class CombinedControlApp:
             if task == "resistance"
             else "Stopping the 2400-IV sweep; zeroing and switching the output off next…"
             if task == "iv"
+            else "Stopping Set 6221; switching the 6221 off next…"
+            if task == "iv6221set"
             else "Stopping the 6221-IV scan; switching the 6221 off next…"
         )
         self._update_nonlocal_keithley_controls()
@@ -30443,10 +30461,17 @@ class CombinedControlApp:
         if stop.is_set():
             raise InterruptedError("Stopped before the Keithley was switched on")
         if source.source_connected:
-            source.output_off()
-            source.confirm_output_off(
-                f"before the Keithley {controller.model} measurement"
-            )
+            try:
+                source.output_off()
+                source.confirm_output_off(
+                    f"before the Keithley {controller.model} measurement"
+                )
+            except BaseException:
+                # The Keithley was never switched on; the 6221 may still be.
+                self.nonlocal_6221_off_unconfirmed = True
+                self.post_ui(lambda: self.nonlocal_iv6221_source_var.set("6221: check the output"))
+                raise
+            self.post_ui(lambda: self.nonlocal_iv6221_source_var.set("6221: OFF"))
         self.nonlocal_vi_interlock.begin(phase)
         try:
             if stop.is_set():
@@ -30460,6 +30485,8 @@ class CombinedControlApp:
                 self.nonlocal_vi_interlock.end(phase)
 
     def _nonlocal_output_warning(self) -> str:
+        if self.__dict__.get("nonlocal_6221_off_unconfirmed"):
+            return "; check the 6221 output"
         if self.__dict__.get("nonlocal_keithley_output_off", True):
             return ""
         if self.nonlocal_keithley_task in ("iv6221", "iv6221set") or self.__dict__.get(
@@ -30469,6 +30496,8 @@ class CombinedControlApp:
 
     def _nonlocal_output_text(self) -> str:
         model = self.nonlocal_vi_2410_controller.model
+        if self.__dict__.get("nonlocal_6221_off_unconfirmed"):
+            return "6221 output: check it"
         if self.__dict__.get("nonlocal_keithley_output_off", True):
             return f"Keithley {model} and 6221 outputs: OFF"
         return f"Keithley {model} output: check it"
@@ -31131,7 +31160,6 @@ class CombinedControlApp:
             frequency_hz = float(self.nonlocal_iv6221_frequency_var.get())
             compliance_v = float(self.nonlocal_iv6221_compliance_var.get())
             marker_line = int(self.nonlocal_vi_marker_line_var.get())
-            tc_s = float(self.nonlocal_mfli_tc_var.get())
             measured = tuple(
                 key for key in ("8", "9", "mfli") if self.nonlocal_iv6221_measure_vars[key].get()
             )
@@ -31145,7 +31173,7 @@ class CombinedControlApp:
             raise ValueError("6221-IV settings must be valid numbers") from error
         except (TypeError, tk.TclError) as error:
             raise ValueError("6221-IV settings must be valid numbers") from error
-        if not all(math.isfinite(value) for value in (current_ma, frequency_hz, compliance_v, tc_s)):
+        if not all(math.isfinite(value) for value in (current_ma, frequency_hz, compliance_v)):
             raise ValueError("6221-IV settings must be finite values")
         if not measured:
             raise ValueError("Tick Measure for at least one lock-in")
@@ -31161,8 +31189,14 @@ class CombinedControlApp:
             raise ValueError("6221 compliance must be within 0.1–105 V")
         if not 1 <= marker_line <= 6:
             raise ValueError("6221 Trigger Link output line must be within 1–6")
-        if "mfli" in measured and not 0 < tc_s <= 100:
-            raise ValueError("The Zurich TC must be above 0 and at most 100 s")
+        tc_s = math.nan
+        if "mfli" in measured:
+            try:
+                tc_s = float(self.nonlocal_mfli_tc_var.get())
+            except (TypeError, ValueError, tk.TclError):
+                pass
+            if not (math.isfinite(tc_s) and 0 < tc_s <= 100):
+                raise ValueError("The Zurich TC (s) on the rack must be above 0 and at most 100 s")
         for key in measured:
             limit = 500000.0 if key == "mfli" else 102000.0
             if frequency_hz * max(orders[key]) > limit:
@@ -31207,7 +31241,9 @@ class CombinedControlApp:
                 "input_scaling": 1.0,
                 "timeconstant_s": tc_s,
                 "auto_range": True,
-                "external_reference_demodulator": 3,
+                # Several orders need MF-MD: Demod 4 takes the reference and
+                # Demods 1-3 the orders, as on PPMS/RT-E.
+                "external_reference_demodulator": 3 if len(orders["mfli"]) > 1 else None,
             }
         return {
             "current_ma": current_ma, "frequency_hz": frequency_hz,
@@ -31283,13 +31319,15 @@ class CombinedControlApp:
             sample_hz=1.0 / NONLOCAL_IV6221_SAMPLE_INTERVAL_S, output_mode="AC",
             sr830_front_panel_time_constant=True,
         )
-        if settings["mfli_config"]:
-            mode = settings["zurich_mode"]
+        mode = settings["zurich_mode"]
+        if settings["mfli_config"] and mode in ("1+2", "1+2+3"):
             tc_s = float(settings["mfli_config"]["timeconstant_s"])
-            if mode in ("1+2", "1+2+3"):
-                source.configure_second_harmonic(tc_s)
+            # At Demod 1's transfer rate: 6221-IV reads every 0.2 s, and at
+            # PPMS's 1 Sa/s a reading could predate the current step.
+            rate = float(readbacks.get("mfli", {}).get("sample_rate_hz", NONLOCAL_SAMPLE_HZ))
+            source.configure_second_harmonic(tc_s, rate=rate)
             if mode == "1+2+3":
-                source.configure_third_harmonic(tc_s)
+                source.configure_third_harmonic(tc_s, rate=rate)
             source.disable_unused_ppms_demods(mode)
         return frequency, readbacks
 
@@ -31323,10 +31361,15 @@ class CombinedControlApp:
             frequency, _readbacks = self._nonlocal_iv6221_configure(
                 source, settings, settings["current_ma"]
             )
+            if self.nonlocal_keithley_stop_event.is_set():
+                raise InterruptedError("Stopped before the 6221 was switched on")
             actual = source.set_current(settings["current_ma"], frequency)
+            if self.nonlocal_keithley_stop_event.is_set():
+                raise InterruptedError("Stopped as the 6221 switched on; switched off again")
         except BaseException:
             try:
                 source.output_off()
+                source.confirm_output_off("after Set 6221 stopped or failed")
                 self.nonlocal_keithley_output_off = True
             except BaseException:
                 pass
@@ -31338,10 +31381,21 @@ class CombinedControlApp:
         try:
             actual, frequency = future.result()
         except BaseException as error:
-            self.nonlocal_iv6221_source_var.set(
-                "6221: OFF" if self.__dict__.get("nonlocal_keithley_output_off") else "6221: check the output"
+            off = bool(self.__dict__.get("nonlocal_keithley_output_off"))
+            self.nonlocal_iv6221_source_var.set("6221: OFF" if off else "6221: check the output")
+            self.nonlocal_vi_output_var.set(
+                self._nonlocal_output_text() if off else "6221 output: check it"
             )
-            self.nonlocal_vi_status_var.set(f"Set 6221 failed: {short_status_error(error).rstrip(';；')}")
+            if isinstance(error, InterruptedError):
+                self.nonlocal_vi_status_var.set(
+                    "Set 6221 stopped; 6221 output off (read back)" if off
+                    else "Set 6221 stopped; check the 6221 output"
+                )
+            else:
+                self.nonlocal_vi_status_var.set(
+                    f"Set 6221 failed: {short_status_error(error).rstrip(';；')}"
+                    + ("; 6221 output off (read back)" if off else "; check the 6221 output")
+                )
             if not self.closing and not isinstance(error, InterruptedError):
                 messagebox.showerror("Set 6221", str(error), parent=self.root)
         else:
@@ -31783,6 +31837,8 @@ class CombinedControlApp:
                 "θ (°)" if channel == "theta" else channel,
                 "Shown point by point once a 6221-IV scan starts",
                 markers=True, auto_voltage_unit=channel != "theta", series_labels=labels,
+                # The title names the meters; a legend tells two or more apart.
+                show_legend=len(series) > 1,
                 # The PPMS/RT-E meter colours, fixed per meter.
                 series_colors={
                     "8": PPMS_METER_COLORS["830_a"], "9": PPMS_METER_COLORS["830_b"],

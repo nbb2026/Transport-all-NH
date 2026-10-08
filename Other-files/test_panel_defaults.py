@@ -168,6 +168,9 @@ class PanelDefaultTests(unittest.TestCase):
         shown = [order for order in app.PPMS_HARMONIC_ORDERS
                  if a.nonlocal_iv6221_plot_frames[(order, "X")].winfo_manager()]
         self.assertEqual(shown, [1, 2, 3])
+        # The meters in each title, as on RT-E.
+        self.assertEqual(a.nonlocal_iv6221_plot_frames[(2, "theta")].cget("text"),
+                         "2nd harmonic θ — Zurich")
         a.nonlocal_iv6221_harmonic_vars["mfli"].set("2")
         self.addCleanup(a._refresh_nonlocal_iv6221_plot_layout)
         self.addCleanup(a.nonlocal_iv6221_harmonic_vars["mfli"].set, "1+2+3")

@@ -41,9 +41,30 @@
     at a new loop, wait at least 10 time constants of the slowest lock-in.
   - **Plots:** one X / Y / θ row per measured order, with the meters
     overlaid in the PPMS colours. Rows are hidden for orders nobody
-    measures.
+    measures. As on RT-E, each title names its meters ("2nd harmonic θ —
+    Zurich"); a legend appears only when two or more share a plot.
+  - **Zurich with one order:** this needs no MF-MD. It uses Gate-VI's
+    reference routing, as the old 6221-IV did. Only 1+2 and 1+2+3 put the
+    reference on Demod 4.
+  - **Extra Zurich orders:** these run at Demod 1's transfer rate (25 Sa/s)
+    rather than PPMS's 1 Sa/s, so a reading every 0.2 s never comes from
+    before the current step. `configure_second_harmonic` and
+    `configure_third_harmonic` take an optional `rate`, and PPMS is
+    unchanged.
+  - **SR830 at a new pass:** it restarts at the range `configure()` starts
+    at (SENS 9, read back), because the next order starts at Start current.
   - **CSV:** `harmonic_pass`, then the SR830 columns (with the harmonic of
     that pass) and `Zurich_<n>w_X/Y/R/theta` per order.
+- **6221 state after the review:**
+  - **Stopping Set 6221:** "6221 / 2400 OFF" pressed while Set 6221 is
+    configuring or switching on now leaves the 6221 off, and reads that back.
+  - **The "6221: …" label:**
+    - |R| and 2400-IV show "6221: OFF" only once the 6221 has been read back
+      off.
+    - If it will not switch off, the label and status name the 6221.
+    - A Gate-VI scan, Disconnect all, or disconnecting the 6221 also sets
+      the label to OFF.
+  - **The rack TC:** it is checked only when the Zurich is ticked Measure.
 - **Run folders:** each 2400-IV and 6221-IV run now writes its own folder
   (`_nonlocal_make_run_directory`), as PPMS, STFMR and Gate-VI do.
   - **2400-IV:** `2400-IV_<sample>_<time>/` holds `<folder>.csv`,

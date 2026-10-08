@@ -43,20 +43,22 @@ class FakeSource:
                            dict(lockin_configs), marker_line, options))
         self.harmonics = {key: config["harmonic"] for key, config in lockin_configs.items()}
         self.mfli_configured = bool(options.get("mfli_config"))
-        if self.mfli_configured:
-            self.zurich_orders = (options["mfli_config"]["harmonic"],)
-        return frequency_hz, {
+        readbacks = {
             key: {"harmonic": config["harmonic"], "meter_type": "SR830",
                   "time_constant_s": self.sr830_tau}
             for key, config in lockin_configs.items()
         }
+        if self.mfli_configured:
+            self.zurich_orders = (options["mfli_config"]["harmonic"],)
+            readbacks["mfli"] = {"meter_type": "MFLI", "sample_rate_hz": 25.0}
+        return frequency_hz, readbacks
 
-    def configure_second_harmonic(self, tau):
-        self.calls.append(("configure_second_harmonic", tau))
+    def configure_second_harmonic(self, tau, rate=1.0):
+        self.calls.append(("configure_second_harmonic", tau, rate))
         self.zurich_orders = (1, 2)
 
-    def configure_third_harmonic(self, tau):
-        self.calls.append(("configure_third_harmonic", tau))
+    def configure_third_harmonic(self, tau, rate=1.0):
+        self.calls.append(("configure_third_harmonic", tau, rate))
         self.zurich_orders = (1, 2, 3)
 
     def disable_unused_ppms_demods(self, mode):
@@ -263,10 +265,12 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual((mfli["harmonic"], mfli["external_reference_demodulator"],
                           mfli["timeconstant_s"], mfli["reference_source"], mfli["coupling"]),
                          (1, 3, 0.3, "Aux Input 1", "AC"))
+        # The extra orders at Demod 1's transfer rate, not PPMS's 1 Sa/s.
         self.assertEqual([c for c in calls if c[0] in ("configure_second_harmonic",
                                                         "configure_third_harmonic",
                                                         "disable_unused_ppms_demods")],
-                         [("configure_second_harmonic", 0.3), ("configure_third_harmonic", 0.3),
+                         [("configure_second_harmonic", 0.3, 25.0),
+                          ("configure_third_harmonic", 0.3, 25.0),
                           ("disable_unused_ppms_demods", "1+2+3")])
         rows = self.rows(path)
         header = rows[0]
@@ -282,9 +286,13 @@ class WorkerTests(unittest.TestCase):
         self.make(source, start="0.1", end="0.1", step="0.1",
                   harmonics={"mfli": "2"}, measure={"8": False, "mfli": True})
         path, _settings = self.run_scan()
-        self.assertEqual(source.calls[0][6]["mfli_config"]["harmonic"], 2)
+        mfli = source.calls[0][6]["mfli_config"]
+        self.assertEqual(mfli["harmonic"], 2)
+        # One order needs no MF-MD: Gate-VI's reference routing, as before.
+        self.assertIsNone(mfli["external_reference_demodulator"])
         self.assertNotIn(("read_mfli_four_demods",), source.calls)
-        self.assertIn(("disable_unused_ppms_demods", "2"), source.calls)
+        self.assertFalse([c for c in source.calls if c[0] in (
+            "configure_second_harmonic", "configure_third_harmonic", "disable_unused_ppms_demods")])
         rows = self.rows(path)
         self.assertAlmostEqual(float(rows[1][rows[0].index("Zurich_2w_X_V")]), 0.1e-7 * 2)
 
@@ -408,9 +416,14 @@ class ParseTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     a._parse_nonlocal_iv6221_settings()
         a = page(FakeSource(mfli=True), measure={"mfli": True})
-        a.nonlocal_mfli_tc_var.set("0")
-        with self.assertRaisesRegex(ValueError, "Zurich TC"):
-            a._parse_nonlocal_iv6221_settings()
+        for value in ("0", ""):
+            a.nonlocal_mfli_tc_var.set(value)
+            with self.assertRaisesRegex(ValueError, "The Zurich TC \\(s\\) on the rack"):
+                a._parse_nonlocal_iv6221_settings()
+        # Not measured, the Zurich's TC does not matter.
+        a = page(FakeSource())
+        a.nonlocal_mfli_tc_var.set("")
+        self.assertIsNone(a._parse_nonlocal_iv6221_settings()["mfli_config"])
 
 
 class RunFolderTests(unittest.TestCase):
@@ -442,7 +455,8 @@ class ControllerTests(unittest.TestCase):
                 self.harmonic = int(command.split()[1])
 
         def query(self, command):
-            return {"*ESR?": "0", "HARM?": str(self.harmonic), "OFLT?": str(self.oflt)}[command]
+            return {"*ESR?": "0", "HARM?": str(self.harmonic), "OFLT?": str(self.oflt),
+                    "SENS?": "9"}[command]
 
     def controller(self, lockin):
         controller = app.NonLocalACController(lambda _m: None)
@@ -459,9 +473,12 @@ class ControllerTests(unittest.TestCase):
         lockin = self.FakeSR830()
         controller = self.controller(lockin)
         controller.low_range_counts["8"] = controller.range_cooldowns["8"] = 3
+        controller.sensitivity_indices["8"] = 22
         with mock.patch.object(app.time, "sleep"):
             controller.set_lockin_harmonic("8", 3)
-        self.assertEqual(lockin.commands, ["HARM 3"])
+        # The next order starts at the range configure() starts at.
+        self.assertEqual(lockin.commands, ["HARM 3", "SENS 9"])
+        self.assertEqual(controller.sensitivity_indices["8"], 9)
         self.assertEqual((controller.low_range_counts["8"], controller.range_cooldowns["8"]), (0, 0))
         lockin.query = lambda command: {"*ESR?": "0", "HARM?": "1"}[command]
         with mock.patch.object(app.time, "sleep"), \
@@ -492,6 +509,56 @@ class SetCurrentTests(unittest.TestCase):
         a.nonlocal_vi_2410_controller.confirm_output_off.assert_called_once()
         self.assertTrue(source.output_on, "left on until 6221 / 2400 OFF or a scan")
 
+    def test_a_stop_while_set_6221_configures_leaves_the_6221_off(self):
+        source = FakeSource()
+        a = page(source)
+        a.nonlocal_vi_2410_controller = mock.Mock(connected=False)
+        a.nonlocal_keithley_stop_event = threading.Event()
+        a.nonlocal_keithley_output_off = False
+        original = source.configure
+
+        def configure_then_stop(*args, **kwargs):
+            a.nonlocal_keithley_stop_event.set()   # "6221 / 2400 OFF" pressed meanwhile
+            return original(*args, **kwargs)
+
+        source.configure = configure_then_stop
+        with self.assertRaises(InterruptedError):
+            a._nonlocal_iv6221_set_worker(a._parse_nonlocal_iv6221_lockins())
+        self.assertNotIn("set_current", [c[0] for c in source.calls])
+        self.assertEqual(source.calls[-2:], [("output_off",), ("confirm_output_off",)])
+        self.assertTrue(a.nonlocal_keithley_output_off)
+        # Pressed just as it switched on: switched off again.
+        source = FakeSource()
+        a.nonlocal_vi_ac_controller = source
+        a.nonlocal_keithley_stop_event.clear()
+        a.nonlocal_keithley_output_off = False
+        original_set = source.set_current
+
+        def set_then_stop(*args):
+            a.nonlocal_keithley_stop_event.set()
+            return original_set(*args)
+
+        source.set_current = set_then_stop
+        with self.assertRaises(InterruptedError):
+            a._nonlocal_iv6221_set_worker(a._parse_nonlocal_iv6221_lockins())
+        self.assertFalse(source.output_on)
+        self.assertEqual(source.calls[-2:], [("output_off",), ("confirm_output_off",)])
+
+    def test_finish_of_a_stopped_set_says_the_6221_is_off(self):
+        a = bare_app()
+        a.closing = True
+        a.nonlocal_keithley_task = "iv6221set"
+        a.nonlocal_keithley_output_off = True
+        a.nonlocal_vi_2410_controller = app.NonLocalVI2410Controller(lambda _m: None, "2400")
+        a.nonlocal_iv6221_source_var, a.nonlocal_vi_output_var, a.nonlocal_vi_status_var = Var(), Var(), Var()
+        a._update_nonlocal_vi_controls = mock.Mock()
+        future = Future()
+        future.set_exception(InterruptedError("stopped"))
+        a._finish_nonlocal_iv6221_set(future)
+        self.assertEqual(a.nonlocal_iv6221_source_var.get(), "6221: OFF")
+        self.assertEqual(a.nonlocal_vi_status_var.get(), "Set 6221 stopped; 6221 output off (read back)")
+        self.assertIsNone(a.nonlocal_keithley_task)
+
     def test_a_failed_set_switches_the_6221_off(self):
         source = FakeSource()
         source.set_current = mock.Mock(side_effect=RuntimeError("compliance"))
@@ -501,7 +568,7 @@ class SetCurrentTests(unittest.TestCase):
         a.nonlocal_keithley_output_off = False
         with self.assertRaisesRegex(RuntimeError, "compliance"):
             a._nonlocal_iv6221_set_worker(a._parse_nonlocal_iv6221_lockins())
-        self.assertEqual(source.calls[-1], ("output_off",))
+        self.assertEqual(source.calls[-2:], [("output_off",), ("confirm_output_off",)])
         self.assertTrue(a.nonlocal_keithley_output_off)
 
 
@@ -575,6 +642,7 @@ class FinishAndPlotTests(unittest.TestCase):
         self.assertTrue(any(text.startswith("X (µV)") for text in second if text), second)
         first = a.nonlocal_iv6221_canvases[(1, "X")].texts()
         self.assertNotIn("SR830 #8", first)
+        self.assertNotIn("Zurich", first, "one meter: named in the frame title, no legend")
         self.assertTrue(any(text.startswith("X (µV)") for text in first if text),
                         "the second pass's 9 V Zurich point is not drawn")
         self.assertIn("θ (°)", a.nonlocal_iv6221_canvases[(2, "theta")].texts())

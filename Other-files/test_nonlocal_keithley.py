@@ -333,6 +333,7 @@ class WorkerTests(unittest.TestCase):
         self.posted = []
         self.app.post_ui = self.posted.append
         self.app.nonlocal_vi_status_var = Var()
+        self.app.nonlocal_iv6221_source_var = Var()
 
     def settings(self, voltages=(-1.0, 0.0, 1.0)):
         return {"voltages": list(voltages), "current_limit_a": 1e-3, "settle_s": 0.0}
@@ -404,6 +405,31 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.meter.output, 0)
         self.assertEqual(self.meter.mode, "VOLT", "back in the pulse setup")
         self.assertEqual(self.app.nonlocal_vi_interlock.phase, "IDLE")
+
+
+class SixTwoTwoOneOffTests(WorkerTests):
+    """|R| and 2400-IV switch the 6221 off first (review of 2026-10-08)."""
+
+    def test_the_6221_label_says_off_only_once_read_back_off(self):
+        self.app._run_on_nonlocal_keithley(app.NonLocalVIInterlock.RESISTANCE, lambda controller: None)
+        for callback in self.posted:
+            callback()
+        self.assertEqual(self.app.nonlocal_iv6221_source_var.get(), "6221: OFF")
+        self.assertFalse(self.app.__dict__.get("nonlocal_6221_off_unconfirmed"))
+
+    def test_a_6221_that_will_not_switch_off_is_named(self):
+        def still_on(context):
+            raise RuntimeError(f"6221 output is still ON {context}")
+
+        self.app.nonlocal_vi_ac_controller.confirm_output_off = still_on
+        with self.assertRaisesRegex(RuntimeError, "still ON"):
+            self.app._run_on_nonlocal_keithley(app.NonLocalVIInterlock.RESISTANCE, lambda controller: None)
+        for callback in self.posted:
+            callback()
+        self.assertEqual(self.app.nonlocal_iv6221_source_var.get(), "6221: check the output")
+        self.assertEqual(self.app._nonlocal_output_warning(), "; check the 6221 output")
+        self.assertEqual(self.app._nonlocal_output_text(), "6221 output: check it")
+        self.assertEqual(self.meter.output, 0, "the Keithley was never switched on")
 
 
 class OpenCircuitTests(unittest.TestCase):
