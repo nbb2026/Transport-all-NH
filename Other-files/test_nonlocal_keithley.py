@@ -191,10 +191,10 @@ class FinishTests(unittest.TestCase):
     def test_a_stopped_or_failed_sweep_says_so(self):
         app_ = self.finished("iv", InterruptedError("stopped"))
         self.assertEqual(app_.nonlocal_vi_status_var.get(),
-                         "I–V sweep stopped after 1/49 points; voltage zeroed and output off")
+                         "2400-IV sweep stopped after 1/49 points; voltage zeroed and output off")
         self.assertEqual(app_.nonlocal_iv_eta_var.get(), "Remaining: --")
         app_ = self.finished("iv", RuntimeError("bus timeout; more"), output_off=False)
-        self.assertIn("stopped by an error after 1/49 points: bus timeout", app_.nonlocal_vi_status_var.get())
+        self.assertIn("2400-IV sweep stopped by an error after 1/49 points: bus timeout", app_.nonlocal_vi_status_var.get())
         self.assertEqual(app_.nonlocal_vi_output_var.get(), "Keithley 2410 output: check it",
                          "an output that may still be on is not called off")
 
@@ -297,7 +297,7 @@ class SweepControllerTests(unittest.TestCase):
         self.assertIn(":SENS:CURR:PROT 0.001", self.meter.commands)
         self.assertEqual((self.meter.output, self.meter.voltage), (0, 0.0))
         self.assertEqual(self.controller.source_mode, "VOLT")
-        with self.assertRaisesRegex(RuntimeError, "not set up for the I–V sweep"):
+        with self.assertRaisesRegex(RuntimeError, "not set up for the 2400-IV sweep"):
             self.controller.set_iv_voltage(1)
 
 

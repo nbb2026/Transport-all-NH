@@ -110,18 +110,45 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertEqual(str(moke.keithley_model_combo.cget("state")), "readonly")
 
     def test_resistance_moved_from_moke_24_to_non_local(self):
-        """2026-10-08: MOKE-24 keeps the MOKE voltage scan; |R| vs time and
-        the new I-V sweep are on the Non-local page with Gate-VI."""
+        """2026-10-08: MOKE-24 keeps the MOKE voltage scan; |R| vs time, the
+        2400-IV sweep and 6221-IV (the RT-E Current scan) are on the
+        Non-local page with Gate-VI."""
         a = self.app
         self.assertFalse(hasattr(a, "keithley_resistance_button"))
         self.assertNotIn("resistance", a.keithley_hazard_var.get())
         tabs = a.nonlocal_measurements
         self.assertEqual([tabs.tab(i, "text") for i in range(tabs.index("end"))],
-                         ["|R| vs time", "I–V sweep", "Gate-VI pulse scan"])
+                         ["|R| vs time", "2400-IV", "6221-IV", "Gate-VI pulse scan"])
+        # 6221-IV starts at RT-E's current range and excitation.
+        self.assertEqual(
+            (a.nonlocal_iv6221_start_var.get(), a.nonlocal_iv6221_end_var.get(),
+             a.nonlocal_iv6221_step_var.get(), a.nonlocal_iv6221_loops_var.get(),
+             a.nonlocal_iv6221_frequency_var.get(), a.nonlocal_iv6221_compliance_var.get(),
+             a.nonlocal_iv6221_settle_var.get(), a.nonlocal_iv6221_acquire_var.get()),
+            ("0.01", "1", "0.01", "1", "17.3", "50", "5", "2"))
+        self.assertFalse(a.nonlocal_iv6221_round_trip_var.get())
         self.assertEqual(
             (a.nonlocal_iv_start_var.get(), a.nonlocal_iv_end_var.get(), a.nonlocal_iv_step_var.get(),
              a.nonlocal_iv_settle_var.get(), a.nonlocal_iv_limit_var.get()),
             ("-6", "6", "0.25", "0.5", "0.001"))
+
+    def test_6221_iv_shares_the_meter_settings_and_waits_for_the_6221(self):
+        a = self.app
+        self.addCleanup(a.nonlocal_iv6221_safety_var.set, False)
+        a.nonlocal_iv6221_safety_var.set(True)
+        a._update_nonlocal_vi_controls()
+        self.assertEqual(str(a.nonlocal_iv6221_start_button.cget("state")), "disabled",
+                         "the 6221 is not connected")
+        # The 6221-IV read settings are a second view of the Gate-VI ones.
+        spinboxes = []
+        pending = [a.nonlocal_vi_tab]
+        while pending:
+            widget = pending.pop()
+            pending.extend(widget.winfo_children())
+            if widget.winfo_class() == "TSpinbox" and str(widget.cget("textvariable")) == str(
+                    a.nonlocal_vi_lockin_harmonic_vars["8"]):
+                spinboxes.append(widget)
+        self.assertEqual(len(spinboxes), 2, "SR830 #8 harmonic on Gate-VI and on 6221-IV")
 
     def test_non_local_measurements_take_turns_on_the_keithley(self):
         a = self.app

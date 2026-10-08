@@ -1,5 +1,55 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local page: 6221-IV (the RT-E Current scan); I–V sweep renamed 2400-IV (2026-10-08)
+
+- **Sub-tabs:** |R| vs time, **2400-IV** (the Keithley I–V sweep, renamed),
+  **6221-IV** (new), Gate-VI pulse scan.
+- **What 6221-IV does:** the RT-E Current scan, run on the Non-local page's
+  own 6221, SR830 #8/#9 and MFLI, so nothing is connected twice. It uses
+  `nonlocal_vi_ac_controller`, the controller the pulse scan uses.
+  - **Plan:** `rte_scan_plan("Current", …)` gives Start → End in mA RMS, with
+    Loops and an optional round trip, as on RT-E.
+  - **Each point:** `set_current` sets the sine. After Settle s the meters
+    ticked "In scan" are read every 0.5 s for Acquire s and averaged. Only
+    samples without a lock-in warning are averaged when there are any; the
+    rest are counted as warnings.
+  - **First point:** the reference lock is checked.
+  - **Defaults:** RT-E's current range, 0.01 → 1 mA in 0.01 mA steps; 17.3 Hz;
+    50 V compliance. Settle 5 s and acquire 2 s, because the page's lock-in
+    setup uses a 1 s time constant (RT-E's 0.5 s / 1 s would read
+    unsettled values here).
+- **Meter settings:** the read settings box is built a second time
+  (`_build_nonlocal_vi_read_settings(gate=False)`, without the 6221 AC/DC
+  and the 2182A), bound to the same variables. A change on either sub-tab
+  shows on both. The Trigger Link line is shared too.
+- **Before the scan:**
+  - a Yes/No summary;
+  - a choice of folder;
+  - `6221-IV_<time>.csv` and `_parameters.log` are written there.
+- **During and after:**
+  - One row per point is written to the CSV: currents, frequency, and for
+    each meter its harmonic, X, Y, R, θ, sample and warning counts, and
+    compliance.
+  - X, Y and θ are plotted against the current, one coloured series per
+    meter, using `_draw_nonlocal_series`.
+- **Safety:**
+  - Only one of |R|, 2400-IV, 6221-IV and the pulse scan runs at a time
+    (`nonlocal_keithley_task`).
+  - A connected Keithley is checked off before the scan and at each point.
+  - The 6221 is switched off and checked off afterwards, whether the scan
+    finished, was stopped or failed.
+  - The red button stops it.
+- **Tests:** `test_nonlocal_6221_iv.py` covers:
+  - the steps and the CSV;
+  - loops and the round trip;
+  - Stop and a failed read leaving the 6221 off;
+  - the Keithley check;
+  - refused settings;
+  - finish messages and the plots.
+
+  `test_panel_defaults.py` checks the sub-tabs, the defaults and the shared
+  settings.
+
 ## Non-local page: a Keithley 2400 by default (2026-10-08)
 
 The Non-local page now starts with **2400** chosen in its Model list

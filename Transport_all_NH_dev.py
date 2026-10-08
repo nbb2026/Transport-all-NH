@@ -1416,6 +1416,24 @@ NONLOCAL_IV_SWEEP_MAX_POINTS = 10_000
 NONLOCAL_IV_SWEEP_RESULTS_DIRECTORY = (
     Path(__file__).resolve().parent / f"{Path(__file__).stem}_NonLocal_IV_sweep_Results"
 )
+# 6221-IV (user, 2026-10-08): the RT-E Current scan on the Non-local page's
+# own 6221, SR830 #8/#9 and MFLI.  The 6221 sine is stepped in mA RMS from
+# Start to End (Loops, optional round trip); at each step the lock-ins are
+# read after Settle s and averaged over Acquire s.  Range and excitation are
+# RT-E's start-up values; settle and acquire suit the 1 s time constant this
+# page's lock-in setup uses.
+NONLOCAL_IV6221_START_MA = 0.01
+NONLOCAL_IV6221_END_MA = 1.0
+NONLOCAL_IV6221_STEP_MA = 0.01
+NONLOCAL_IV6221_FREQUENCY_HZ = 17.3   # RT-E's RTE_TRANSPORT_FREQUENCY_HZ
+NONLOCAL_IV6221_COMPLIANCE_V = 50.0
+NONLOCAL_IV6221_SETTLE_S = 5.0
+NONLOCAL_IV6221_ACQUIRE_S = 2.0
+NONLOCAL_IV6221_SAMPLE_INTERVAL_S = 0.5
+NONLOCAL_IV6221_RESULTS_DIRECTORY = (
+    Path(__file__).resolve().parent / f"{Path(__file__).stem}_NonLocal_6221_IV_Results"
+)
+NONLOCAL_METER_NAMES = {"8": "SR830 #8", "9": "SR830 #9", "mfli": "MFLI", "2182": "2182A"}
 
 # PPMS sample-environment control can use either of Quantum Design's remote
 # bridges.  The laboratory topology already has QDInstrument_Server.exe next
@@ -4603,7 +4621,7 @@ def build_iv_sweep_voltages(start_v: float, end_v: float, step_v: float,
     voltages = cycle[: (len(cycle) + 1) // 2]
     if len(voltages) > NONLOCAL_IV_SWEEP_MAX_POINTS:
         raise ValueError(
-            f"The I–V sweep has {len(voltages)} points, more than "
+            f"The 2400-IV sweep has {len(voltages)} points, more than "
             f"{NONLOCAL_IV_SWEEP_MAX_POINTS}; please increase the step"
         )
     return voltages
@@ -6300,7 +6318,7 @@ class NonLocalVI2410Controller:
             self._write_checked(":OUTP ON")
             self.output_enabled = True
             if int(self._query_float(":OUTP?")) != 1:
-                raise RuntimeError(f"Keithley {self.model} output did not turn on for the I–V sweep")
+                raise RuntimeError(f"Keithley {self.model} output did not turn on for the 2400-IV sweep")
 
     def set_iv_voltage(self, voltage_v: float) -> None:
         voltage = float(voltage_v)
@@ -6308,14 +6326,14 @@ class NonLocalVI2410Controller:
             raise ValueError(f"I–V voltage must be within ±{NONLOCAL_VI_MAX_ABS_PULSE_V:g} V")
         with self.lock:
             if self.source_mode != "VOLT" or not self.output_enabled:
-                raise RuntimeError(f"Keithley {self.model} is not set up for the I–V sweep")
+                raise RuntimeError(f"Keithley {self.model} is not set up for the 2400-IV sweep")
             self._write_checked(f":SOUR:VOLT {voltage:.12g}")
 
     def read_iv_point(self) -> tuple[float, float]:
         """(source voltage V, measured current A)."""
         with self.lock:
             if int(self._query_float(":OUTP?")) != 1:
-                raise RuntimeError(f"Keithley {self.model} output turned off during the I–V sweep")
+                raise RuntimeError(f"Keithley {self.model} output turned off during the 2400-IV sweep")
             response = self._require_instrument().query(":READ?").strip()
         try:
             values = [float(value) for value in response.split(",")]
@@ -12556,6 +12574,26 @@ class CombinedControlApp:
         self.nonlocal_iv_total_points = 0
         self.nonlocal_iv_canvas = None
         self.nonlocal_iv_directory = NONLOCAL_IV_SWEEP_RESULTS_DIRECTORY
+        # 6221-IV: the RT-E Current scan on this page's 6221 and lock-ins.
+        # The meters' settings are shared with Gate-VI (same instruments).
+        self.nonlocal_iv6221_safety_var = tk.BooleanVar(value=False)
+        self.nonlocal_iv6221_start_var = tk.StringVar(value=f"{NONLOCAL_IV6221_START_MA:g}")
+        self.nonlocal_iv6221_end_var = tk.StringVar(value=f"{NONLOCAL_IV6221_END_MA:g}")
+        self.nonlocal_iv6221_step_var = tk.StringVar(value=f"{NONLOCAL_IV6221_STEP_MA:g}")
+        self.nonlocal_iv6221_loops_var = tk.StringVar(value="1")
+        self.nonlocal_iv6221_round_trip_var = tk.BooleanVar(value=False)
+        self.nonlocal_iv6221_frequency_var = tk.StringVar(value=f"{NONLOCAL_IV6221_FREQUENCY_HZ:g}")
+        self.nonlocal_iv6221_compliance_var = tk.StringVar(value=f"{NONLOCAL_IV6221_COMPLIANCE_V:g}")
+        self.nonlocal_iv6221_settle_var = tk.StringVar(value=f"{NONLOCAL_IV6221_SETTLE_S:g}")
+        self.nonlocal_iv6221_acquire_var = tk.StringVar(value=f"{NONLOCAL_IV6221_ACQUIRE_S:g}")
+        self.nonlocal_iv6221_eta_var = tk.StringVar(value="Remaining: --")
+        self.nonlocal_iv6221_point_var = tk.StringVar(value="Last point: --")
+        self.nonlocal_iv6221_rows: list[dict] = []
+        self.nonlocal_iv6221_settings: dict[str, object] = {}
+        self.nonlocal_iv6221_total_points = 0
+        self.nonlocal_iv6221_csv_path = None
+        self.nonlocal_iv6221_canvases: dict[str, object] = {}
+        self.nonlocal_iv6221_directory = NONLOCAL_IV6221_RESULTS_DIRECTORY
 
         self._initialize_ppms_state()
 
@@ -20727,9 +20765,12 @@ class CombinedControlApp:
         gate_tab = ttk.Frame(self.nonlocal_measurements, padding=(0, 5, 0, 0))
         resistance_tab = ttk.Frame(self.nonlocal_measurements, padding=(0, 5, 0, 0))
         iv_tab = ttk.Frame(self.nonlocal_measurements, padding=(0, 5, 0, 0))
-        # In the user's order (2026-10-08): |R| vs time, I-V sweep, Gate-VI.
+        iv6221_tab = ttk.Frame(self.nonlocal_measurements, padding=(0, 5, 0, 0))
+        # In the user's order (2026-10-08): |R| vs time, 2400-IV (the
+        # Keithley I-V sweep), 6221-IV (the RT-E Current scan), Gate-VI.
         self.nonlocal_measurements.add(resistance_tab, text="|R| vs time")
-        self.nonlocal_measurements.add(iv_tab, text="I–V sweep")
+        self.nonlocal_measurements.add(iv_tab, text="2400-IV")
+        self.nonlocal_measurements.add(iv6221_tab, text="6221-IV")
         self.nonlocal_measurements.add(gate_tab, text="Gate-VI pulse scan")
         self.nonlocal_measurements.bind(
             "<<NotebookTabChanged>>",
@@ -20737,6 +20778,7 @@ class CombinedControlApp:
                 self._redraw_nonlocal_vi_plots(),
                 self._redraw_nonlocal_resistance_plot(),
                 self._redraw_nonlocal_iv_plot(),
+                self._redraw_nonlocal_iv6221_plots(),
             ),
             add="+",
         )
@@ -21057,6 +21099,7 @@ class CombinedControlApp:
 
         self._build_nonlocal_resistance_tab(resistance_tab)
         self._build_nonlocal_iv_tab(iv_tab)
+        self._build_nonlocal_iv6221_tab(iv6221_tab)
 
         ttk.Label(
             outer,
@@ -21067,10 +21110,14 @@ class CombinedControlApp:
         self._redraw_nonlocal_vi_plots()
         self._update_nonlocal_vi_controls()
 
-    def _build_nonlocal_vi_read_settings(self, parent) -> ttk.Frame:
-        """The pulse scan's settings for the 6221 and each voltmeter, and its
-        safety check: the 6221 and SR830s on the left, the MFLI and 2182A on
-        the right, side by side when both fit, else stacked."""
+    def _build_nonlocal_vi_read_settings(self, parent, *, gate: bool = True) -> ttk.Frame:
+        """The settings for the 6221 and each voltmeter, and a safety check:
+        the 6221 and SR830s on the left, the MFLI and 2182A on the right,
+        side by side when both fit, else stacked.
+
+        Built for Gate-VI and again for 6221-IV (``gate=False``: no 6221
+        output mode and no 2182A, as 6221-IV is the AC lock-in scan).  Both
+        copies use the same variables, so a change shows in both."""
         box = ttk.Frame(parent)
         left = ttk.Frame(box)
         right = ttk.Frame(box)
@@ -21109,25 +21156,26 @@ class CombinedControlApp:
             ).grid(row=row, column=6, sticky="ew", padx=(0, 10), pady=pad(row))
             ttk.Checkbutton(
                 frame, text=check, variable=enabled,
-                command=self._redraw_nonlocal_vi_plots,
+                command=self._redraw_nonlocal_meter_plots,
             ).grid(row=row, column=7, sticky="w", pady=pad(row))
 
-        name(left, 0, "Keithley 6221:")
-        label(left, 0, 1, "Output:")
-        self.nonlocal_vi_output_mode_combo = ttk.Combobox(
-            left,
-            textvariable=self.nonlocal_vi_output_mode_var,
-            values=("AC", "DC"),
-            state="readonly",
-            width=5,
-        )
-        self.nonlocal_vi_output_mode_combo.grid(
-            row=0, column=2, sticky="ew", padx=(0, 10)
-        )
-        self.nonlocal_vi_output_mode_var.trace_add(
-            "write", lambda *_args: self._on_nonlocal_vi_output_mode_changed()
-        )
-        for row, key in ((1, "8"), (2, "9")):
+        if gate:
+            name(left, 0, "Keithley 6221:")
+            label(left, 0, 1, "Output:")
+            self.nonlocal_vi_output_mode_combo = ttk.Combobox(
+                left,
+                textvariable=self.nonlocal_vi_output_mode_var,
+                values=("AC", "DC"),
+                state="readonly",
+                width=5,
+            )
+            self.nonlocal_vi_output_mode_combo.grid(
+                row=0, column=2, sticky="ew", padx=(0, 10)
+            )
+            self.nonlocal_vi_output_mode_var.trace_add(
+                "write", lambda *_args: self._on_nonlocal_vi_output_mode_changed()
+            )
+        for row, key in ((1, "8"), (2, "9")) if gate else ((0, "8"), (1, "9")):
             name(left, row, f"SR830 #{key}:")
             meter_fields(
                 left, row,
@@ -21177,12 +21225,13 @@ class CombinedControlApp:
             textvariable=self.nonlocal_vi_mfli_input_scaling_var,
             width=8,
         ).pack(side="left")
-        name(right, 2, "Keithley 2182A:")
-        ttk.Checkbutton(
-            right, text="In scan (channel 1, NPLC 1, autorange)",
-            variable=self.nonlocal_vi_use_2182_var,
-            command=self._redraw_nonlocal_vi_plots,
-        ).grid(row=2, column=1, columnspan=8, sticky="w", padx=(6, 0), pady=pad(2))
+        if gate:
+            name(right, 2, "Keithley 2182A:")
+            ttk.Checkbutton(
+                right, text="In scan (channel 1, NPLC 1, autorange)",
+                variable=self.nonlocal_vi_use_2182_var,
+                command=self._redraw_nonlocal_vi_plots,
+            ).grid(row=2, column=1, columnspan=8, sticky="w", padx=(6, 0), pady=pad(2))
 
         # Stacked, the two grids line up only if each column is as wide in
         # both: the widest one-column cell of either.
@@ -21208,12 +21257,102 @@ class CombinedControlApp:
 
         ttk.Checkbutton(
             box,
-            text="Voltage pulses, selected AC/DC read current and sample confirmed safe",
-            variable=self.nonlocal_vi_safety_var,
+            text=(
+                "Voltage pulses, selected AC/DC read current and sample confirmed safe"
+                if gate
+                else "6221 current range, compliance, wiring and sample confirmed safe"
+            ),
+            variable=self.nonlocal_vi_safety_var if gate else self.nonlocal_iv6221_safety_var,
             command=self._update_nonlocal_vi_controls,
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self._arrange_pair_by_width(box, left, right, gap=24, stack_gap=4)
         return box
+
+    def _build_nonlocal_iv6221_tab(self, tab) -> None:
+        """6221-IV: the RT-E Current scan on this page's 6221 and lock-ins.
+        Parameters and the meters' settings on top, the run box, then X, Y
+        and θ against the 6221 current."""
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(2, weight=1)
+        settings = ttk.LabelFrame(
+            tab, text="6221-IV parameters and read settings (the RT-E Current scan)", padding=7
+        )
+        settings.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+        # Spare width goes to the empty tail column 10.
+        settings.columnconfigure(10, weight=1)
+        for row, fields in enumerate((
+            (("Start mA RMS:", self.nonlocal_iv6221_start_var),
+             ("End mA RMS:", self.nonlocal_iv6221_end_var),
+             ("Step mA RMS:", self.nonlocal_iv6221_step_var),
+             ("Loops:", self.nonlocal_iv6221_loops_var)),
+            (("Frequency Hz:", self.nonlocal_iv6221_frequency_var),
+             ("Compliance V:", self.nonlocal_iv6221_compliance_var),
+             ("Settle s:", self.nonlocal_iv6221_settle_var),
+             ("Acquire s:", self.nonlocal_iv6221_acquire_var),
+             ("Trigger Link line:", self.nonlocal_vi_marker_line_var)),
+        )):
+            for slot, (text, variable) in enumerate(fields):
+                ttk.Label(settings, text=text).grid(
+                    row=row, column=2 * slot, sticky="e", pady=2
+                )
+                ttk.Entry(settings, textvariable=variable, width=8).grid(
+                    row=row, column=2 * slot + 1, sticky="w", padx=(3, 10), pady=2
+                )
+        ttk.Checkbutton(
+            settings, text="Round trip", variable=self.nonlocal_iv6221_round_trip_var
+        ).grid(row=0, column=8, columnspan=2, sticky="w", pady=2)
+        self._build_nonlocal_vi_read_settings(settings, gate=False).grid(
+            row=2, column=0, columnspan=11, sticky="ew", pady=(6, 0)
+        )
+
+        actions = ttk.LabelFrame(tab, text="Run and data", padding=7)
+        actions.grid(row=1, column=0, sticky="ew", pady=(0, 5))
+        actions.columnconfigure(2, weight=1)
+        self.nonlocal_iv6221_start_button = ttk.Button(
+            actions, text="Choose folder and start scan", command=self.start_nonlocal_iv6221
+        )
+        self.nonlocal_iv6221_start_button.grid(row=0, column=0, padx=(0, 4))
+        self.nonlocal_iv6221_stop_button = ttk.Button(
+            actions, text="Stop scan", command=self.stop_nonlocal_keithley_task, state="disabled"
+        )
+        self.nonlocal_iv6221_stop_button.grid(row=0, column=1, padx=(0, 10))
+        self.nonlocal_iv6221_progress = ttk.Progressbar(
+            actions, mode="determinate", maximum=1, value=0, length=180
+        )
+        self.nonlocal_iv6221_progress.grid(row=0, column=2, sticky="ew", padx=(0, 8))
+        ttk.Label(
+            actions, textvariable=self.nonlocal_iv6221_eta_var,
+            style="Success.TLabel", width=20, anchor="w",
+        ).grid(row=0, column=3, sticky="e")
+        point = ttk.Label(
+            actions, textvariable=self.nonlocal_iv6221_point_var,
+            style="Metric.TLabel", anchor="w",
+        )
+        point.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(5, 0))
+        show_trimmed(point, self.nonlocal_iv6221_point_var)
+
+        plots = ttk.Frame(tab)
+        plots.grid(row=2, column=0, sticky="nsew")
+        plots.rowconfigure(0, weight=1)
+        for column, (key, title) in enumerate((
+            ("X", "X vs 6221 current"),
+            ("Y", "Y vs 6221 current"),
+            ("theta", "θ vs 6221 current"),
+        )):
+            plots.columnconfigure(column, weight=1, uniform="nonlocal_iv6221")
+            frame = ttk.LabelFrame(plots, text=title, padding=5)
+            frame.grid(
+                row=0, column=column, sticky="nsew",
+                padx=(0 if column == 0 else 3, 0 if column == 2 else 3),
+            )
+            self.nonlocal_iv6221_canvases[key] = self._nonlocal_plot_canvas(
+                frame, self._redraw_nonlocal_iv6221_plots
+            )
+
+    def _redraw_nonlocal_meter_plots(self) -> None:
+        """An "In scan" tick changes the plots of Gate-VI and 6221-IV."""
+        self._redraw_nonlocal_vi_plots()
+        self._redraw_nonlocal_iv6221_plots()
 
     def _nonlocal_plot_canvas(self, frame, redraw) -> tk.Canvas:
         frame.rowconfigure(0, weight=1)
@@ -21290,7 +21429,7 @@ class CombinedControlApp:
         controls = ttk.LabelFrame(
             tab,
             text=(
-                f"I–V sweep (±{NONLOCAL_VI_MAX_ABS_PULSE_V:g} V, "
+                f"2400-IV (±{NONLOCAL_VI_MAX_ABS_PULSE_V:g} V, "
                 f"{NONLOCAL_VI_2410_SOURCE_OVP_V:g} V OVP)"
             ),
             padding=7,
@@ -21325,7 +21464,7 @@ class CombinedControlApp:
         buttons = ttk.Frame(controls)
         buttons.grid(row=5, column=0, columnspan=4, sticky="w", pady=(6, 0))
         self.nonlocal_iv_start_button = ttk.Button(
-            buttons, text="Start I–V sweep", command=self.start_nonlocal_iv_sweep
+            buttons, text="Start 2400-IV sweep", command=self.start_nonlocal_iv_sweep
         )
         self.nonlocal_iv_start_button.pack(side="left", padx=(0, 4))
         self.nonlocal_iv_stop_button = ttk.Button(
@@ -21692,6 +21831,7 @@ class CombinedControlApp:
             self._redraw_nonlocal_vi_plots()
             self._redraw_nonlocal_resistance_plot()
             self._redraw_nonlocal_iv_plot()
+            self._redraw_nonlocal_iv6221_plots()
 
     @contextmanager
     def camera_render_paused(self, reason: str):
@@ -29126,7 +29266,7 @@ class CombinedControlApp:
         if self.nonlocal_keithley_task is not None:
             messagebox.showwarning(
                 "Non-local VI",
-                "The |R| or I–V measurement is using the Keithley; stop it first.",
+                "|R|, 2400-IV or 6221-IV is running on this page; stop it first.",
                 parent=self.root,
             )
             return
@@ -30025,7 +30165,7 @@ class CombinedControlApp:
     # ---- Non-local page: |R| vs time and the I-V sweep on the pulse Keithley
 
     def _update_nonlocal_keithley_controls(self) -> None:
-        if "nonlocal_iv_save_button" not in self.__dict__:
+        if "nonlocal_iv6221_stop_button" not in self.__dict__:
             return
         task = self.nonlocal_keithley_task
         stopping = self.nonlocal_keithley_stop_event.is_set()
@@ -30071,6 +30211,21 @@ class CombinedControlApp:
                 else "disabled"
             )
         )
+        # 6221-IV needs the 6221, not the Keithley.
+        self.nonlocal_iv6221_start_button.configure(
+            state=(
+                "normal"
+                if self.nonlocal_vi_ac_controller.source_connected
+                and task is None
+                and not self.nonlocal_vi_running
+                and not self.nonlocal_vi_busy
+                and self.nonlocal_iv6221_safety_var.get()
+                else "disabled"
+            )
+        )
+        self.nonlocal_iv6221_stop_button.configure(
+            state="normal" if task == "iv6221" and not stopping else "disabled"
+        )
 
     def _nonlocal_keithley_free(self, what: str) -> bool:
         controller = self.nonlocal_vi_2410_controller
@@ -30096,6 +30251,7 @@ class CombinedControlApp:
         self.nonlocal_keithley_stop_event.clear()
         self.nonlocal_keithley_output_off = False
         self.nonlocal_keithley_task = kind
+        self.nonlocal_last_task = kind
         self._update_nonlocal_vi_controls()
         try:
             future = self.nonlocal_vi_executor.submit(worker)
@@ -30115,7 +30271,9 @@ class CombinedControlApp:
         self.nonlocal_vi_status_var.set(
             "Stopping the |R| measurement; zeroing and switching the output off next…"
             if task == "resistance"
-            else "Stopping the I–V sweep; zeroing and switching the output off next…"
+            else "Stopping the 2400-IV sweep; zeroing and switching the output off next…"
+            if task == "iv"
+            else "Stopping the 6221-IV scan; switching the 6221 off next…"
         )
         self._update_nonlocal_keithley_controls()
 
@@ -30148,6 +30306,8 @@ class CombinedControlApp:
     def _nonlocal_output_warning(self) -> str:
         if self.__dict__.get("nonlocal_keithley_output_off", True):
             return ""
+        if self.nonlocal_keithley_task == "iv6221" or self.__dict__.get("nonlocal_last_task") == "iv6221":
+            return "; check the 6221 output"
         return f"; check the Keithley {self.nonlocal_vi_2410_controller.model} output"
 
     def _nonlocal_output_text(self) -> str:
@@ -30417,7 +30577,7 @@ class CombinedControlApp:
             )
         except BaseException as error:
             self.nonlocal_vi_status_var.set(
-                f"Resistance measurement stopped by an error: {short_status_error(error)}"
+                f"Resistance measurement stopped by an error: {short_status_error(error).rstrip(';；')}"
                 + self._nonlocal_output_warning()
             )
             if not self.closing:
@@ -30477,11 +30637,11 @@ class CombinedControlApp:
     def start_nonlocal_iv_sweep(self) -> None:
         if self.nonlocal_keithley_task is not None:
             return
-        if not self._nonlocal_keithley_free("the I–V sweep"):
+        if not self._nonlocal_keithley_free("the 2400-IV sweep"):
             return
         if not self.nonlocal_iv_safety_var.get():
             messagebox.showwarning(
-                "I–V sweep",
+                "2400-IV",
                 "Tick the wiring, current limit and voltages confirmation first.",
                 parent=self.root,
             )
@@ -30489,7 +30649,7 @@ class CombinedControlApp:
         try:
             settings = self._parse_nonlocal_iv_settings()
         except ValueError as error:
-            messagebox.showwarning("I–V sweep", str(error), parent=self.root)
+            messagebox.showwarning("2400-IV", str(error), parent=self.root)
             return
         if "nonlocal-iv-csv" in self.active_file_exports:
             return
@@ -30502,7 +30662,7 @@ class CombinedControlApp:
             else ""
         )
         if not messagebox.askyesno(
-            "Start the I–V sweep?",
+            "Start the 2400-IV sweep?",
             f"Keithley {self.nonlocal_vi_2410_controller.model}: "
             f"{settings['start_v']:g} V → {settings['end_v']:g} V in {settings['step_v']:g} V steps, "
             f"{total} points, {settings['settle_s']:g} s settle\n"
@@ -30513,7 +30673,7 @@ class CombinedControlApp:
             parent=self.root,
         ):
             return
-        if self.nonlocal_keithley_task is not None or not self._nonlocal_keithley_free("the I–V sweep"):
+        if self.nonlocal_keithley_task is not None or not self._nonlocal_keithley_free("the 2400-IV sweep"):
             return
         self.nonlocal_iv_settings = settings
         self.nonlocal_iv_rows = []
@@ -30524,10 +30684,10 @@ class CombinedControlApp:
         self.nonlocal_iv_point_var.set("Last point: --")
         self._redraw_nonlocal_iv_plot()
         self.nonlocal_vi_status_var.set(
-            f"I–V sweep: {settings['start_v']:g} → {settings['end_v']:g} V, {total} points…"
+            f"2400-IV sweep: {settings['start_v']:g} → {settings['end_v']:g} V, {total} points…"
         )
         self.nonlocal_vi_output_var.set(
-            f"Keithley {self.nonlocal_vi_2410_controller.model} ON: I–V voltage source"
+            f"Keithley {self.nonlocal_vi_2410_controller.model} ON: 2400-IV voltage source"
         )
         self._begin_nonlocal_keithley_task(
             "iv",
@@ -30545,10 +30705,10 @@ class CombinedControlApp:
             started = time.monotonic()
             for index, target in enumerate(settings["voltages"], start=1):
                 if stop.is_set():
-                    raise InterruptedError("I–V sweep stopped")
+                    raise InterruptedError("2400-IV sweep stopped")
                 controller.set_iv_voltage(target)
                 if stop.wait(settle_s):
-                    raise InterruptedError("I–V sweep stopped")
+                    raise InterruptedError("2400-IV sweep stopped")
                 voltage_v, current_a = controller.read_iv_point()
                 row = (
                     index,
@@ -30587,18 +30747,18 @@ class CombinedControlApp:
             future.result()
         except InterruptedError:
             self.nonlocal_vi_status_var.set(
-                f"I–V sweep stopped after {done}/{total} points; voltage zeroed and output off"
+                f"2400-IV sweep stopped after {done}/{total} points; voltage zeroed and output off"
             )
         except BaseException as error:
             self.nonlocal_vi_status_var.set(
-                f"I–V sweep stopped by an error after {done}/{total} points: {short_status_error(error)}"
+                f"2400-IV sweep stopped by an error after {done}/{total} points: {short_status_error(error).rstrip(';；')}"
                 + self._nonlocal_output_warning()
             )
             if not self.closing:
-                messagebox.showerror("I–V sweep failed", str(error), parent=self.root)
+                messagebox.showerror("2400-IV sweep failed", str(error), parent=self.root)
         else:
             self.nonlocal_vi_status_var.set(
-                f"I–V sweep complete: {done} points; voltage zeroed and output off. "
+                f"2400-IV sweep complete: {done} points; voltage zeroed and output off. "
                 "Save CSV + PNG to keep it"
             )
         try:
@@ -30717,20 +30877,20 @@ class CombinedControlApp:
     def save_nonlocal_iv_sweep(self) -> None:
         export_key = "nonlocal-iv-csv"
         if export_key in self.active_file_exports:
-            self.nonlocal_vi_status_var.set("The I–V data are being saved in the background")
+            self.nonlocal_vi_status_var.set("The 2400-IV data are being saved in the background")
             return
         rows = list(self.nonlocal_iv_rows)
         settings = dict(self.nonlocal_iv_settings)
         if not rows:
-            self.nonlocal_vi_status_var.set("No I–V data to save")
+            self.nonlocal_vi_status_var.set("No 2400-IV data to save")
             return
-        camera = self.pause_camera_rendering("Saving the I–V CSV and plot snapshot")
+        camera = self.pause_camera_rendering("Saving the 2400-IV CSV and plot snapshot")
         directory = self.select_csv_save_directory(
-            "Select the folder for the I–V CSV and PNG", self.nonlocal_iv_directory
+            "Select the folder for the 2400-IV CSV and PNG", self.nonlocal_iv_directory
         )
         if directory is None:
             self.resume_camera_rendering(camera)
-            self.nonlocal_vi_status_var.set("Saving the I–V data cancelled")
+            self.nonlocal_vi_status_var.set("Saving the 2400-IV data cancelled")
             return
         self.nonlocal_iv_directory = directory
         timestamp = datetime_module.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -30768,39 +30928,418 @@ class CombinedControlApp:
             "output.png": png_path.name,
             "output.log": log_path.name,
         }
-        log_text = self.format_parameter_log("Non-local I–V sweep parameter log", parameters)
-        self.nonlocal_vi_status_var.set("Saving the I–V CSV and parameter log in the background…")
+        log_text = self.format_parameter_log("Non-local 2400-IV parameter log", parameters)
+        self.nonlocal_vi_status_var.set("Saving the 2400-IV CSV and parameter log in the background…")
 
         def work():
             self.write_csv_exports(((csv_path, header, csv_rows),))
             self.write_parameter_log(log_path, log_text)
 
         def failed(error: BaseException) -> None:
-            self.nonlocal_vi_status_var.set(f"I–V CSV/parameter log save failed: {error}")
-            messagebox.showerror("I–V sweep", str(error), parent=self.root)
+            self.nonlocal_vi_status_var.set(f"2400-IV CSV/parameter log save failed: {error}")
+            messagebox.showerror("2400-IV", str(error), parent=self.root)
 
         def saved(_result) -> None:
             try:
                 self._redraw_nonlocal_iv_plot()
                 self.save_plot_canvas_snapshot(self.nonlocal_iv_canvas, png_path)
             except BaseException as error:
-                self.nonlocal_vi_status_var.set(f"I–V CSV saved; plot snapshot failed: {error}")
+                self.nonlocal_vi_status_var.set(f"2400-IV CSV saved; plot snapshot failed: {error}")
                 messagebox.showwarning(
-                    "I–V sweep",
+                    "2400-IV",
                     f"CSV and parameter log saved:\n{csv_path.name}\n{log_path.name}\n\n"
                     f"Plot snapshot save failed:\n{error}",
                     parent=self.root,
                 )
                 return
             self.nonlocal_iv_saved = True
-            self.nonlocal_vi_status_var.set(f"I–V CSV, PNG and parameter log saved: {directory}")
+            self.nonlocal_vi_status_var.set(f"2400-IV CSV, PNG and parameter log saved: {directory}")
             messagebox.showinfo(
-                "I–V sweep",
+                "2400-IV",
                 f"Saved:\n{csv_path.name}\n{png_path.name}\n{log_path.name}\n\nFolder:\n{directory}",
                 parent=self.root,
             )
 
         self.submit_file_export(export_key, camera, work, saved, failed)
+
+    # 6221-IV ----------------------------------------------------------------
+
+    def _parse_nonlocal_iv6221_settings(self) -> dict[str, object]:
+        source = self.nonlocal_vi_ac_controller
+        try:
+            start_ma = float(self.nonlocal_iv6221_start_var.get())
+            end_ma = float(self.nonlocal_iv6221_end_var.get())
+            step_ma = abs(float(self.nonlocal_iv6221_step_var.get()))
+            loops = self.nonlocal_iv6221_loops_var.get()
+            frequency_hz = float(self.nonlocal_iv6221_frequency_var.get())
+            compliance_v = float(self.nonlocal_iv6221_compliance_var.get())
+            settle_s = float(self.nonlocal_iv6221_settle_var.get())
+            acquire_s = float(self.nonlocal_iv6221_acquire_var.get())
+            marker_line = int(self.nonlocal_vi_marker_line_var.get())
+            connected = set(source.connected_lockin_keys)
+            for key in ("8", "9"):
+                if self.nonlocal_vi_measurement_enabled_vars[key].get() and key not in connected:
+                    raise ValueError(f"SR830 #{key} is ticked In scan but is not connected")
+            lockin_configs = {
+                key: {
+                    "coupling": self.nonlocal_vi_lockin_coupling_vars[key].get().strip().upper(),
+                    "harmonic": int(self.nonlocal_vi_lockin_harmonic_vars[key].get()),
+                    "channel": self.nonlocal_vi_lockin_channel_vars[key].get().strip().upper(),
+                    "resource": self.nonlocal_vi_lockin_resource_vars[key].get().strip(),
+                }
+                for key in source.connected_lockin_keys
+                if self.nonlocal_vi_measurement_enabled_vars[key].get()
+            }
+            mfli_config = None
+            if self.nonlocal_vi_use_mfli_var.get():
+                if not source.mfli_connected:
+                    raise ValueError("The Zurich MFLI is ticked In scan but is not connected")
+                mfli_config = {
+                    "coupling": self.nonlocal_vi_mfli_coupling_var.get().strip().upper(),
+                    "reference_source": self.nonlocal_vi_mfli_reference_source_var.get().strip(),
+                    "harmonic": int(self.nonlocal_vi_mfli_harmonic_var.get()),
+                    "channel": self.nonlocal_vi_mfli_channel_var.get().strip().upper(),
+                    "resource": (
+                        getattr(source, "mfli_device", "")
+                        or zurich_mfli_choice(self.nonlocal_vi_mfli_device_var.get())[0]
+                    ),
+                    "input_impedance": self.nonlocal_vi_mfli_input_impedance_var.get().strip(),
+                    "input_scaling": float(self.nonlocal_vi_mfli_input_scaling_var.get()),
+                    "auto_range": True,
+                }
+        except ValueError as error:
+            if "In scan" in str(error):
+                raise
+            raise ValueError("6221-IV parameters must be valid numbers") from error
+        except (TypeError, tk.TclError) as error:
+            raise ValueError("6221-IV parameters must be valid numbers") from error
+        if not all(math.isfinite(value) for value in (
+                start_ma, end_ma, step_ma, frequency_hz, compliance_v, settle_s, acquire_s)):
+            raise ValueError("6221-IV parameters must be finite values")
+        plan = rte_scan_plan(
+            "Current", start_ma, end_ma, step_ma, loops,
+            bool(self.nonlocal_iv6221_round_trip_var.get()),
+        )
+        currents = [value for _loop, _point, value in plan]
+        if min(currents) <= 0.0:
+            raise ValueError("6221-IV currents must be above 0 mA RMS (the sine amplitude)")
+        if math.sqrt(2.0) * max(currents) * 1e-3 > NONLOCAL_MAX_PEAK_A:
+            raise ValueError("The largest 6221-IV current exceeds the 6221's 105 mA sine peak")
+        if not 1e-3 <= frequency_hz <= 1e5:
+            raise ValueError("6221 frequency must be within 0.001–100000 Hz")
+        if not K6221_MIN_COMPLIANCE_V <= compliance_v <= K6221_MAX_COMPLIANCE_V:
+            raise ValueError("6221 compliance must be within 0.1–105 V")
+        if not 0.0 <= settle_s <= 3600.0:
+            raise ValueError("Settle time must be within 0–3600 s")
+        if not 0.0 < acquire_s <= 3600.0:
+            raise ValueError("Acquire time must be above 0 and at most 3600 s")
+        if not 1 <= marker_line <= 6:
+            raise ValueError("6221 Trigger Link output line must be within 1–6")
+        if not lockin_configs and not mfli_config:
+            raise ValueError("Tick In scan for at least one connected SR830 or the MFLI")
+        keys = tuple(sorted(lockin_configs, key=int)) + (("mfli",) if mfli_config else ())
+        return {
+            "start_ma": start_ma, "end_ma": end_ma, "step_ma": step_ma,
+            "loops": int(float(loops)),
+            "round_trip": bool(self.nonlocal_iv6221_round_trip_var.get()),
+            "frequency_hz": frequency_hz, "compliance_v": compliance_v,
+            "settle_s": settle_s, "acquire_s": acquire_s, "marker_line": marker_line,
+            "lockin_configs": lockin_configs, "mfli_config": mfli_config,
+            "measurement_keys": keys, "plan": plan,
+            "started": datetime_module.datetime.now().isoformat(timespec="seconds"),
+        }
+
+    def start_nonlocal_iv6221(self) -> None:
+        if self.nonlocal_keithley_task is not None:
+            return
+        if not self.nonlocal_vi_ac_controller.source_connected:
+            messagebox.showwarning("6221-IV", "Connect the 6221 first", parent=self.root)
+            return
+        if self.nonlocal_vi_running or self.nonlocal_vi_busy:
+            messagebox.showwarning(
+                "6221-IV", "The page is busy; start when the running scan or connection ends",
+                parent=self.root,
+            )
+            return
+        if not self.nonlocal_iv6221_safety_var.get():
+            messagebox.showwarning(
+                "6221-IV",
+                "Tick the 6221 current range, compliance, wiring and sample confirmation first.",
+                parent=self.root,
+            )
+            return
+        try:
+            settings = self._parse_nonlocal_iv6221_settings()
+        except ValueError as error:
+            messagebox.showwarning("6221-IV", str(error), parent=self.root)
+            return
+        total = len(settings["plan"])
+        estimate = self._format_scan_duration(
+            total * (settings["settle_s"] + settings["acquire_s"] + 0.3)
+        )
+        meters = ", ".join(
+            f"{NONLOCAL_METER_NAMES[key]} (harmonic "
+            f"{(settings['lockin_configs'].get(key) or settings['mfli_config'])['harmonic']})"
+            for key in settings["measurement_keys"]
+        )
+        if not messagebox.askyesno(
+            "Start the 6221-IV scan?",
+            f"6221 sine {settings['start_ma']:g} → {settings['end_ma']:g} mA RMS in "
+            f"{settings['step_ma']:g} mA steps"
+            + (", round trip" if settings["round_trip"] else "")
+            + f", {settings['loops']} loop(s): {total} points\n"
+            f"{settings['frequency_hz']:g} Hz, compliance {settings['compliance_v']:g} V, "
+            f"Trigger Link line {settings['marker_line']}\n"
+            f"Settle {settings['settle_s']:g} s, acquire {settings['acquire_s']:g} s per point\n"
+            f"Meters: {meters}\n"
+            f"Estimated time: about {estimate}\n\n"
+            "Each point is written to a live CSV in the folder you choose next. "
+            "The 6221 is switched off at the end.",
+            parent=self.root,
+        ):
+            return
+        folder = filedialog.askdirectory(
+            parent=self.root,
+            title="Select the folder for the 6221-IV live CSV",
+            initialdir=str(
+                self.nonlocal_iv6221_directory
+                if Path(self.nonlocal_iv6221_directory).is_dir()
+                else Path(__file__).resolve().parent
+            ),
+        )
+        if not folder:
+            return
+        if self.nonlocal_keithley_task is not None or self.nonlocal_vi_running or self.nonlocal_vi_busy:
+            return
+        self.nonlocal_iv6221_directory = Path(folder)
+        stem = f"6221-IV_{datetime_module.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        csv_path = Path(folder) / f"{stem}.csv"
+        suffix = 1
+        while csv_path.exists() or csv_path.with_name(f"{csv_path.stem}_parameters.log").exists():
+            csv_path = Path(folder) / f"{stem}_{suffix:02d}.csv"
+            suffix += 1
+        parameters = {
+            key: value for key, value in settings.items()
+            if key not in {"plan", "lockin_configs", "mfli_config", "measurement_keys"}
+        }
+        parameters["points"] = total
+        parameters["meters"] = meters
+        for key, config in settings["lockin_configs"].items():
+            parameters[f"sr830_{key}"] = config
+        parameters["mfli"] = settings["mfli_config"]
+        parameters["6221_resource"] = self.nonlocal_vi_source_resource_var.get().strip()
+        parameters["output.csv"] = csv_path.name
+        try:
+            self.write_parameter_log(
+                csv_path.with_name(f"{csv_path.stem}_parameters.log"),
+                self.format_parameter_log("Non-local 6221-IV parameter log", parameters),
+            )
+        except OSError as error:
+            messagebox.showerror("6221-IV", str(error), parent=self.root)
+            return
+        self.nonlocal_iv6221_settings = settings
+        self.nonlocal_iv6221_rows = []
+        self.nonlocal_iv6221_total_points = total
+        self.nonlocal_iv6221_csv_path = csv_path
+        self.nonlocal_iv6221_progress.configure(maximum=max(1, total), value=0)
+        self.nonlocal_iv6221_eta_var.set(f"Remaining: about {estimate}")
+        self.nonlocal_iv6221_point_var.set("Last point: --")
+        self._redraw_nonlocal_iv6221_plots()
+        self.nonlocal_vi_status_var.set(f"6221-IV: {total} points; live CSV {csv_path}")
+        self.nonlocal_vi_output_var.set("6221 ON: 6221-IV scan")
+        self._begin_nonlocal_keithley_task(
+            "iv6221",
+            lambda: self._nonlocal_iv6221_worker(settings, csv_path),
+            self._finish_nonlocal_iv6221,
+        )
+
+    @staticmethod
+    def _nonlocal_iv6221_header(keys) -> list[str]:
+        header = [
+            "point", "loop", "loop_point", "set_current_rms_mA", "current_rms_mA",
+            "frequency_Hz", "elapsed_s",
+        ]
+        for key in keys:
+            name = NONLOCAL_METER_NAMES[key].replace(" #", "_").replace(" ", "_")
+            header += [
+                f"{name}_harmonic", f"{name}_X_V", f"{name}_Y_V", f"{name}_R_V",
+                f"{name}_theta_deg", f"{name}_samples", f"{name}_warnings",
+                f"{name}_in_compliance",
+            ]
+        return header
+
+    def _nonlocal_iv6221_worker(self, settings: dict, csv_path: Path) -> None:
+        stop = self.nonlocal_keithley_stop_event
+        source = self.nonlocal_vi_ac_controller
+        keithley = self.nonlocal_vi_2410_controller
+        keys = tuple(settings["measurement_keys"])
+        plan = settings["plan"]
+        if stop.is_set():
+            raise InterruptedError("Stopped before the 6221 was switched on")
+        if keithley.connected:
+            # The Keithley must be off while the voltmeters read.
+            keithley.confirm_output_off("before the 6221-IV scan")
+        self.nonlocal_vi_interlock.begin(NonLocalVIInterlock.SR830_READ)
+        try:
+            frequency, readbacks = source.configure(
+                plan[0][2], settings["frequency_hz"], settings["compliance_v"],
+                settings["lockin_configs"], settings["marker_line"],
+                mfli_config=settings["mfli_config"], use_nanovoltmeter=False,
+                sample_hz=1.0 / NONLOCAL_IV6221_SAMPLE_INTERVAL_S, output_mode="AC",
+            )
+            with Path(csv_path).open("x", newline="", encoding="utf-8-sig") as file:
+                writer = csv.writer(file)
+                writer.writerow(self._nonlocal_iv6221_header(keys))
+                file.flush()
+                started = time.monotonic()
+                for index, (loop, point, target) in enumerate(plan, 1):
+                    if stop.is_set():
+                        raise InterruptedError("6221-IV scan stopped")
+                    if keithley.connected:
+                        keithley.confirm_output_off("before a 6221-IV point")
+                    actual_ma = source.set_current(target, frequency)
+                    self.post_ui(
+                        lambda value=actual_ma: self.nonlocal_vi_output_var.set(
+                            f"6221 ON: {value:.6g} mA RMS / {frequency:g} Hz"
+                        )
+                    )
+                    if stop.wait(settings["settle_s"]):
+                        raise InterruptedError("6221-IV scan stopped")
+                    if index == 1:
+                        sync = source.wait_references(
+                            frequency, stop, tuple(settings["lockin_configs"])
+                        )
+                        if stop.is_set():
+                            raise InterruptedError("6221-IV scan stopped")
+                        self.post_ui(
+                            lambda info=sync: self._publish_reference_sync(info, "AC", vi=True)
+                        )
+                    samples = {key: [] for key in keys}
+                    read_start = time.monotonic()
+                    next_sample = read_start
+                    while True:
+                        if stop.wait(max(0.0, next_sample - time.monotonic())):
+                            raise InterruptedError("6221-IV scan stopped")
+                        for key, sample in source.read_samples(frequency, keys).items():
+                            samples[key].append(sample)
+                        next_sample += NONLOCAL_IV6221_SAMPLE_INTERVAL_S
+                        if time.monotonic() - read_start >= settings["acquire_s"]:
+                            break
+                    row = {
+                        "index": index, "loop": loop, "point": point,
+                        "set_current_rms_ma": float(target), "current_rms_ma": float(actual_ma),
+                        "frequency_hz": float(frequency),
+                        "elapsed_s": time.monotonic() - started,
+                    }
+                    csv_row = [
+                        index, loop, point, f"{target:.10g}", f"{actual_ma:.10g}",
+                        f"{frequency:.10g}", f"{row['elapsed_s']:.3f}",
+                    ]
+                    for key in keys:
+                        got = samples[key]
+                        valid = [s for s in got if s.get("measurement_valid", s["reference_valid"])]
+                        used = valid or got
+                        result = {
+                            "harmonic": readbacks.get(key, {}).get("harmonic", ""),
+                            "X": statistics.fmean(s["X"] for s in used),
+                            "Y": statistics.fmean(s["Y"] for s in used),
+                            "R": statistics.fmean(s["R"] for s in used),
+                            "theta": statistics.fmean(s["phase_deg"] for s in used),
+                            "samples": len(used),
+                            "warnings": len(got) - len(valid),
+                            "in_compliance": sum(bool(s["in_compliance"]) for s in got),
+                        }
+                        row[key] = result
+                        csv_row += [
+                            result["harmonic"], f"{result['X']:.10g}", f"{result['Y']:.10g}",
+                            f"{result['R']:.10g}", f"{result['theta']:.6g}",
+                            result["samples"], result["warnings"], result["in_compliance"],
+                        ]
+                    writer.writerow(csv_row)
+                    file.flush()
+                    self.post_ui(lambda data=row: self._append_nonlocal_iv6221_point(data))
+        finally:
+            try:
+                self.nonlocal_vi_interlock.end(NonLocalVIInterlock.SR830_READ)
+            finally:
+                source.output_off()
+                source.confirm_output_off("after the 6221-IV scan")
+                self.nonlocal_keithley_output_off = True
+
+    def _append_nonlocal_iv6221_point(self, row: dict) -> None:
+        self.nonlocal_iv6221_rows.append(row)
+        index = int(row["index"])
+        total = max(1, int(self.nonlocal_iv6221_total_points))
+        try:
+            self.nonlocal_iv6221_progress.configure(value=index)
+        except (AttributeError, tk.TclError):
+            pass
+        remaining = max(0.0, float(row["elapsed_s"]) / index * (total - index))
+        self.nonlocal_iv6221_eta_var.set(f"Remaining: {self._format_scan_duration(remaining)}")
+        warnings = sum(
+            result["warnings"] for key, result in row.items()
+            if key in NONLOCAL_METER_NAMES and isinstance(result, dict)
+        )
+        self.nonlocal_iv6221_point_var.set(
+            f"Point {index}/{total}: I = {row['current_rms_ma']:.4g} mA RMS"
+            + (f"; {warnings} sample(s) with a lock-in warning" if warnings else "")
+        )
+        self._redraw_nonlocal_iv6221_plots()
+
+    def _finish_nonlocal_iv6221(self, future) -> None:
+        self.nonlocal_keithley_task = None
+        done, total = len(self.nonlocal_iv6221_rows), self.nonlocal_iv6221_total_points
+        name = Path(self.nonlocal_iv6221_csv_path).name if self.nonlocal_iv6221_csv_path else ""
+        off = bool(self.__dict__.get("nonlocal_keithley_output_off", True))
+        self.nonlocal_vi_output_var.set(
+            self._nonlocal_output_text() if off else "6221 output: check it"
+        )
+        self.nonlocal_iv6221_eta_var.set("Remaining: --")
+        try:
+            future.result()
+        except InterruptedError:
+            self.nonlocal_vi_status_var.set(
+                f"6221-IV scan stopped after {done}/{total} points; 6221 output off. CSV: {name}"
+            )
+        except BaseException as error:
+            self.nonlocal_vi_status_var.set(
+                f"6221-IV scan stopped by an error after {done}/{total} points: "
+                f"{short_status_error(error).rstrip(';；')}" + self._nonlocal_output_warning()
+            )
+            if not self.closing:
+                messagebox.showerror("6221-IV scan failed", str(error), parent=self.root)
+        else:
+            self.nonlocal_vi_status_var.set(
+                f"6221-IV scan complete: {done} points; 6221 output off (read back). CSV: {name}"
+            )
+        try:
+            self._redraw_nonlocal_iv6221_plots()
+        finally:
+            self._update_nonlocal_vi_controls()
+
+    def _redraw_nonlocal_iv6221_plots(self) -> None:
+        canvases = self.__dict__.get("nonlocal_iv6221_canvases") or {}
+        rows = list(self.__dict__.get("nonlocal_iv6221_rows", ()))
+        keys = tuple(self.__dict__.get("nonlocal_iv6221_settings", {}).get("measurement_keys", ()))
+        labels = {}
+        for key in keys:
+            harmonic = next((row[key]["harmonic"] for row in rows if key in row), "")
+            labels[key] = f"{NONLOCAL_METER_NAMES[key]} {harmonic}ω" if harmonic != "" else NONLOCAL_METER_NAMES[key]
+        for channel, (y_label, voltage) in (
+            ("X", ("X", True)), ("Y", ("Y", True)), ("theta", ("θ (°)", False)),
+        ):
+            canvas = canvases.get(channel)
+            if not self._canvas_is_visible(canvas):
+                continue
+            series = {
+                key: [(row["current_rms_ma"], row[key][channel]) for row in rows if key in row]
+                for key in keys
+            }
+            self._draw_nonlocal_series(
+                canvas, series, "6221 current (mA RMS)", y_label,
+                "Shown point by point once a 6221-IV scan starts",
+                markers=True, auto_voltage_unit=voltage, series_labels=labels,
+            )
 
     def safe_close_nonlocal_vi(self) -> None:
         if self.nonlocal_vi_closed:

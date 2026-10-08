@@ -44,19 +44,29 @@ page does both one-pulse-per-current round trips and fixed-current multi-pulse
 acquisition, averaging the region of interest over the post-pulse interval.
 
 **Non-local** has one connection box in two columns (Keithley 2410 or 2400,
-6221 and 2182A; two SR830s and the MFLI) and three sub-tabs that use it:
+6221 and 2182A; two SR830s and the MFLI) and four sub-tabs that use it:
 - **|R| vs time** measures the sample resistance continuously with the
   Keithley as an autoranged current source (1 nA to 1 mA, 5 V protection),
   plotted over the last 20 s. It was on the MOKE-24 page until 2026-10-08.
-- **I–V sweep** steps the Keithley voltage once from Start to End (default
+- **2400-IV** steps the Keithley voltage once from Start to End (default
   −6 to 6 V in 0.25 V steps, ±20 V at most, 20 V OVP) and plots the current
   read at each step. It saves a CSV, the plot as a PNG and a parameter log.
+- **6221-IV** is the RT-E Current scan on this page's 6221 and lock-ins:
+  - **Sweep:** the 6221 sine is stepped in mA RMS from Start to End
+    (default 0.01 to 1 mA in 0.01 mA steps), with Loops and an optional
+    round trip. Excitation is 17.3 Hz, 50 V compliance.
+  - **Each point:** the lock-ins ticked "In scan" are read after Settle s
+    and averaged over Acquire s.
+  - **Output:** X, Y and θ are plotted against the current, and each point
+    is written to a live CSV. The 6221 is switched off and read back at the
+    end.
+  - **Meter settings:** the same as Gate-VI's (one copy on each sub-tab).
 - **Gate-VI pulse scan** measures non-local voltage against a gate, with the
   Keithley as the gate source and lock-in or nanovoltmeter detection. Its
   read settings (6221 output, lock-in harmonics, which meters are in the
   scan) are on this sub-tab.
 
-Only one of the three drives the Keithley at a time. If the 6221 is connected
+Only one of the four runs at a time. If the 6221 is connected
 on this page, it is switched off before |R| or I–V starts. The Keithley is
 zeroed and switched off when they end.
 
