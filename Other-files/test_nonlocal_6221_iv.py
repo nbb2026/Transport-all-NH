@@ -215,7 +215,11 @@ class ReadingTests(WorkerTests):
         stop.wait = lambda timeout=None: (waits.append(timeout), original(0))[1]
         with mock.patch.object(app, "NONLOCAL_IV6221_FIRST_SETTLE_S", 10.0):
             self.app._nonlocal_iv6221_worker(
-                settings(app.rte_scan_plan("Current", 0.1, 0.2, 0.1, 2, False), settle_s=5.0),
+                # A zero acquire window takes one reading per point, so the
+                # only other waits are the 0 s ones before each reading
+                # (Windows' coarse clock made a tiny window take several).
+                settings(app.rte_scan_plan("Current", 0.1, 0.2, 0.1, 2, False),
+                         settle_s=5.0, acquire_s=0.0),
                 self.folder / "loops.csv")
         settles = [w for w in waits if w in (5.0, 10.0)]
         # Loop 1: 10, 5; loop 2 starts again from Start after End: 10, 5.
