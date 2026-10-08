@@ -14,6 +14,7 @@ import queue
 import sys
 import tkinter as tk
 import unittest
+from tkinter import ttk
 from pathlib import Path
 from unittest import mock
 
@@ -684,6 +685,142 @@ class RunTests(unittest.TestCase):
         self.assertAlmostEqual(rows[0]["x_v"], HALL_OHM["D"] * 0.5e-3, places=12)
 
 
+class ManualTests(unittest.TestCase):
+    """The manual settings (Move, Set H, Zero H, Set I, I off, Pulse, Read),
+    as on the PPMS page, against the simulated instruments."""
+
+    def manual(self, world, current_ma=None, **changes):
+        values = dict(ms.DEFAULTS)
+        values.update(changes)
+        settings = ms.manual_settings(values, current_ma)
+        return ms.FourStateRun(world.ppms, world.source, world.lockin, settings,
+                               emit=lambda kind, payload: world.emitted.append((kind, payload)),
+                               stop=world.stop, motor=world.motor, clock=world.clock, sleep=world.advance)
+
+    def field_to(self, world, target, mode=1):
+        world.ppms.set_field(target, 100.0, 1, mode)
+        world.advance(abs(target) / 100.0 + 5.0)
+        world.events.clear()
+
+    def test_move_turns_the_rotator_at_zero_field_with_the_6221_off(self):
+        world = World()
+        run = self.manual(world)
+        run.manual_current()  # The read sine is on before the move.
+        asked = []
+        angle = run.manual_move(90.0, lambda before, target: asked.append((before, target)) or True)
+        self.assertEqual(angle, 90.0)
+        self.assertEqual(asked, [(0.0, 90.0)], "a turn over 30 deg is confirmed first")
+        rotate = [e for e in world.events if e[0] == "rotate"]
+        self.assertEqual(rotate, [("rotate", 90.0, 0.0, False, True, 900.0)], "6221 off, 0 Oe, large move")
+
+    def test_a_small_turn_needs_no_confirmation(self):
+        world = World()
+        self.manual(world).manual_move(10.0, lambda before, target: self.fail("not asked"))
+        self.assertEqual(world.motor.angle, 10.0)
+
+    def test_move_is_refused_away_from_zero_field(self):
+        world = World()
+        self.field_to(world, 1500.0)
+        with self.assertRaisesRegex(RuntimeError, "only at zero field"):
+            self.manual(world).manual_move(90.0, lambda before, target: True)
+        self.assertEqual([e for e in world.events if e[0] in ("rotate", "field")], [], "nothing sent")
+
+    def test_a_large_turn_declined_sends_nothing(self):
+        world = World()
+        result, outcome, problems = ms.run_manual(
+            self.manual(world), lambda run: run.manual_move(270.0, lambda before, target: False))
+        self.assertEqual(outcome[0], "declined")
+        self.assertEqual(problems, [])
+        self.assertEqual([e for e in world.events if e[0] in ("rotate", "field")], [])
+
+    def test_set_h_ends_persistent_as_on_the_ppms_page(self):
+        world = World()
+        start = world.clock.now
+        data = self.manual(world).manual_field(1500.0)
+        self.assertEqual([e for e in world.events if e[0] == "field"], [("field", 1500.0, 0)], "Persistent end mode")
+        self.assertEqual((data["field_oe"], data["field_status"]), (1500.0, "StablePersistent"))
+        self.assertGreaterEqual(world.clock.now - start, 1500.0 / float(ms.DEFAULTS["field_rate"]))
+
+    def test_a_stale_persistent_reading_is_not_taken_for_arrival(self):
+        # The PPMS still reports Persistent at the old field for a while.
+        world = World()
+        world.ppms.lag_s = 5.0
+        data = self.manual(world).manual_field(1500.0)
+        self.assertEqual(data["field_oe"], 1500.0)
+        # Zero H while already Persistent at 0 Oe: confirmed only after the
+        # PPMS page's confirmation time, as the reading may predate the command.
+        world = World()
+        world.ppms.lag_s = 30.0
+        start = world.clock.now
+        self.manual(world).manual_field(0.0)
+        self.assertGreaterEqual(world.clock.now - start, core.PPMS_PERSISTENT_CONFIRM_S)
+
+    def test_stop_during_set_h_returns_to_zero_driven(self):
+        world = World()
+        world.stop.stop_when = lambda: world.ppms.target == 1500.0 and world.ppms._reading()["field_oe"] > 500
+        with mock.patch.object(ms.time, "sleep", lambda seconds: None):
+            result, outcome, problems = ms.run_manual(self.manual(world), lambda run: run.manual_field(1500.0))
+        self.assertEqual(outcome[0], "stopped")
+        self.assertEqual([e for e in world.events if e[0] == "field"], [("field", 1500.0, 0), ("field", 0.0, 1)])
+        self.assertEqual(world.ppms.read_environment()["field_oe"], 0.0)
+        self.assertEqual(problems, [])
+        self.assertFalse(world.source_device.output_on())
+
+    def test_set_i_starts_the_read_sine_and_writes_nothing_to_the_sr830(self):
+        world = World()
+        result = self.manual(world, current_ma="0.8").manual_current()
+        sine = [e for e in world.events if e[0] == "sine"]
+        self.assertEqual(len(sine), 1)
+        self.assertAlmostEqual(sine[0][1], 0.8e-3)
+        self.assertEqual(sine[0][3], "ON", "phase marker on, the SR830 reference")
+        self.assertTrue(world.source_device.output_on(), "left on, as the PPMS page's Set I")
+        self.assertIn("not locked", result["lock"], "the SR830 is still set to its internal reference")
+        self.assertEqual([e for e in world.events if e[0] == "sr830"], [], "nothing written to the SR830")
+        world.lockin_device.p["FMOD"] = 0
+        self.assertIn("SR830 locked", self.manual(world, current_ma="0.8").manual_current()["lock"])
+
+    def test_an_error_turns_the_6221_off_and_leaves_the_field(self):
+        world = World()
+        self.field_to(world, 1500.0, mode=0)
+        run = self.manual(world)
+        run.manual_current()
+        world.source_device.errors.append('-222,"Parameter data out of range"')
+        result, outcome, problems = ms.run_manual(run, lambda run: run.manual_pulse(22.0))
+        self.assertEqual(outcome[0], "failed")
+        self.assertFalse(world.source_device.output_on())
+        self.assertEqual([e for e in world.events if e[0] == "field"], [], "the field is left")
+        self.assertEqual(world.ppms.read_environment()["field_oe"], 1500.0)
+
+    def test_pulse_uses_the_write_settings_and_ends_off(self):
+        world = World()
+        result = self.manual(world, pulse_width_us="50", pulse_count="3").manual_pulse(-22.0)
+        pulse = [e for e in world.events if e[0] == "pulse"]
+        self.assertEqual(len(pulse), 1)
+        self.assertAlmostEqual(pulse[0][1], -0.022)
+        self.assertAlmostEqual(pulse[0][5], 50e-6)
+        self.assertEqual(pulse[0][6], 3)
+        self.assertFalse(world.source_device.output_on())
+        self.assertIs(result["in_compliance"], False)
+        with self.assertRaisesRegex(ValueError, "nothing to send"):
+            self.manual(world).manual_pulse(0.0)
+
+    def test_read_shows_angle_field_and_output(self):
+        world = World()
+        world.motor.angle = 270.0
+        reading = self.manual(world).manual_read()
+        self.assertEqual((reading["angle_deg"], reading["field_oe"], reading["source_on"]), (270.0, 0.0, False))
+        text = ms.FourStateApp.format_reading(reading)
+        self.assertIn("φ 270.00° (AtTarget)", text)
+        self.assertIn("H +0.0 Oe StablePersistent", text)
+        self.assertIn("6221 OFF", text)
+
+    def test_manual_values_are_checked(self):
+        with self.assertRaisesRegex(ValueError, "Read current"):
+            ms.manual_settings(dict(ms.DEFAULTS), "70")
+        self.assertEqual(ms.manual_settings(dict(ms.DEFAULTS), "0.8").read_current_rms_a, 0.8e-3)
+        self.assertEqual(ms.manual_settings(ms.DEFAULTS).sequence, ())
+
+
 class FakeRoot:
     def __init__(self):
         self.scheduled = []
@@ -833,6 +970,26 @@ class WindowTests(unittest.TestCase):
         self.assertIn("Run this once?", app.summary(settings))
         app.sequence_var.set("D A B E")
         self.assertEqual(app.cycle_var.get(), "D A B E B A", "each mode keeps its own states")
+
+    def test_manual_settings_as_on_the_ppms_page(self):
+        app = self.app
+        self.assertEqual(set(app.manual_buttons), {"Move", "Read", "Set H", "Zero H", "Set I", "I off", "Pulse"})
+        self.assertEqual({key: variable.get() for key, variable in app.manual_vars.items()},
+                         {"angle": "0", "field": "0", "current_ma": "0.5", "pulse_ma": "22"})
+        # Decel, field rate and frequency are the Write and Read boxes' fields.
+        entries = [w for w in app.manual_buttons["Move"].master.winfo_children() if isinstance(w, ttk.Entry)]
+        shared = {str(entry.cget("textvariable")) for entry in entries}
+        for key in ("decel", "field_rate", "read_frequency_hz"):
+            self.assertIn(str(app.values[key]), shared)
+        with mock.patch.object(ms.messagebox, "showerror") as error:
+            app.manual_buttons["Set H"].invoke()
+            app.manual_buttons["I off"].invoke()
+        self.assertEqual(error.call_count, 2, "each needs its instrument connected")
+        self.assertIsNone(app.worker)
+        self.addCleanup(app._set_busy, False)
+        app._set_busy(True, running=True)
+        self.assertEqual({str(b.cget("state")) for b in app.manual_buttons.values()}, {"disabled"})
+        self.assertEqual(str(app.stop_button.cget("state")), "normal", "Stop works during a manual action")
 
     def test_a_window_opened_in_sequence_mode(self):
         window = tk.Toplevel(self.root)

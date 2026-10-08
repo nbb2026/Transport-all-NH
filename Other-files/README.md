@@ -1,5 +1,36 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MS-fourState.py: manual angle, field and current settings (2026-10-08)
+
+A **Manual settings** box, between Connections and the state table, sets one
+thing at a time, like the PPMS settings rows of the main program:
+
+| Row | Fields | Buttons |
+| --- | --- | --- |
+| Angle | Angle °, Decel | Move, Read |
+| Field | H Oe, Oe/s | Set H, Zero H |
+| Current | I mA RMS, f Hz; Pulse mA | Set I, I off; Pulse |
+
+- **Move:** only at 0 Oe, with the 6221 turned off first. Turns over 30° ask
+  for confirmation.
+- **Set H / Zero H:** end Persistent, confirmed by the PPMS page's readback
+  rule.
+- **Set I:** leaves the read sine on, and shows the SR830 lock without writing
+  to the SR830.
+- **Pulse:** sends one write with the Write box's width, count and compliance.
+- **Read:** shows angle, field, temperature and 6221 output.
+- **Shared fields:** Decel, Oe/s and f Hz are the Write/Read boxes' own fields.
+- **Safety tick:** every action except I off and Read needs it.
+- **Stop:** 6221 off and 0 Oe (Driven). An error turns the 6221 off and
+  leaves the field and angle.
+
+The run engine and its checks are shared: `_shared_settings` checks the Write
+and Read values for runs and manual actions alike. The window opens 60 px
+taller (1360 × 960), so the plot keeps its height. Tests:
+`ManualTests` (12, simulated instruments) and a window check in
+`Other-files/test_ms_four_state.py`. Removing the zero-field rule for Move, or
+the stale-Persistent rule, fails them.
+
 ## MOKE-24 and Gate-VI: laid out like STFMR and PPMS; Gate-VI drives a 2410 or 2400 (2026-10-07)
 
 **MOKE-24 page**, top to bottom:
@@ -202,6 +233,7 @@ re-enabled them when the read ended.
   box. This refreshes the controls, usually between reads.
 - **Test:** `test_a_background_read_never_locks_the_zurich_controls` in
   `Other-files/test_ppms_two_panels.py`. It fails on the old code.
+
 ## MS-fourState.py: PPMS state writing and zero-field read (2026-10-06)
 
 A new program in the repository root. For each state of a sequence,

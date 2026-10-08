@@ -21,6 +21,40 @@ It uses the instrument code of `Transport_all_NH_dev.py`, which must sit in
 the same folder. Close the PPMS, 6221 and SR830 connections in `Transport_all_NH_dev.py`
 first. Two programs must never drive the same instruments.
 
+## Manual settings
+
+Between runs, the **Manual settings** box sets one thing at a time, as the
+PPMS settings rows of `Transport_all_NH_dev.py` do:
+
+| Row | Fields | Buttons |
+| --- | --- | --- |
+| Angle | Angle °, Decel 0–14 | **Move**, **Read** |
+| Field | H Oe, Oe/s | **Set H**, **Zero H** |
+| Current | I mA RMS, f Hz; Pulse mA | **Set I**, **I off**; **Pulse** |
+
+- **Move:** turns the rotator as a run step does. The 6221 is turned off
+  first, and the move is refused unless the field is at 0 Oe (Zero H first).
+  A turn over 30° asks for confirmation, as on the PPMS page.
+- **Set H and Zero H:** go to the field and end **Persistent**, as on the
+  PPMS page. Done when the readback shows Persistent at the field, by that
+  page's rule, so a reading from before the command cannot pass. Nothing is
+  resent.
+- **Set I:** starts the read sine (I mA RMS at f Hz, phase marker on, as in a
+  read) and leaves it on. The SR830's lock to it is shown; nothing is written
+  to the SR830. **I off** turns the 6221 off, read back.
+- **Pulse:** sends one write of Pulse mA with the Write box's pulse width,
+  pulse count and compliance, after a confirmation, then turns the 6221 off.
+- **Read:** shows the angle, field, temperature and 6221 output. Each action
+  also updates this readout when it ends.
+
+Decel, Oe/s and f Hz are the Write and Read boxes' own fields: changing one
+changes both. Every button except I off and Read needs the safety tick in
+the Run row.
+
+**Stop** during a manual action does what it does in a run: 6221 off and
+0 Oe (Driven), read back. An error turns the 6221 off and leaves the field
+and angle as they are.
+
 ## States
 
 Defaults from the measurement table, editable in the window (1500 Oe = 0.15 T):
@@ -155,7 +189,12 @@ modes against simulated instruments:
 - a sample that takes the state written by the last pulse.
 
 They check the order of every action, the values read, each stop and the
-shutdown confirmation. Each safety rule was broken in a copy, and the tests
+shutdown confirmation. The manual settings are tested the same way:
+- Move only at zero field with the 6221 off, and large turns confirmed;
+- Set H ending Persistent, with a stale reading not taken for arrival;
+- Stop returning to 0 Oe, and an error leaving the field;
+- Set I writing nothing to the SR830;
+- the pulse using the Write settings. Each safety rule was broken in a copy, and the tests
 catch all of them. A cloud check, `Other-files/ci/ms_four_state_checks.py`,
 builds the window in each mode on GitHub's Linux and Windows machines and saves
 screenshots. Nothing has been run on the instruments yet.

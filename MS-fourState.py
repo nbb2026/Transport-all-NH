@@ -22,6 +22,14 @@ Stop, an error or the end of the run turns the 6221 off and returns the field
 to 0 Oe (Driven), confirmed by readback.  The rotator stays where it is: it
 has no software stop, so keep MultiVu's Motion Control at hand.
 
+Manual settings, as on the main program's PPMS page, set one thing at a time
+between runs: Move turns the rotator (only at zero field, 6221 off first);
+Set H and Zero H go to a field and end Persistent; Set I starts the read sine
+and leaves it on; I off turns the 6221 off; Pulse sends one write pulse train
+with the Write settings; Read shows the angle, field, temperature and 6221
+output.  Stop during one of them does what it does in a run (6221 off, 0 Oe
+Driven); an error turns the 6221 off and leaves the field and angle.
+
 The instrument code is that of Transport_all_NH_dev.py, which must be in the
 same folder.  Close that program's PPMS, 6221 and SR830 connections first:
 two programs must never drive the same instruments.
@@ -72,9 +80,13 @@ DEFAULT_STATES = (
     ("B'", 270.0, -1500.0, -22.0),
     ("E", 0.0, -1500.0, 22.0),
 )
+# The manual settings' own fields; decel, field rate, frequency and the pulse
+# width, count and compliance are shared with the Write and Read boxes.
+MANUAL_DEFAULTS = {"angle": "0", "field": "0", "current_ma": "0.5", "pulse_ma": "22"}
 DEFAULT_SEQUENCE = "D A B E"
 DEFAULT_CYCLE = "D A B E B A"
 APP_TITLE = "MS-fourState"
+WINDOW_SIZE = (1360, 960)  # The manual settings took 60 px from the plot at 900.
 MODES = {"cycle": "Cycle", "sequence": "Sequence"}  # The Mode list, first is the default.
 STATE_COLORS = {"D": "#000000", "A": "#c62828", "B": "#1565c0", "E": "#2e7d32"}
 DEFAULTS = {
@@ -198,12 +210,8 @@ def _whole(text, label, low, high):
     return int(value)
 
 
-def build_settings(states, sequence_text, values, autorange=True, until_stop=False):
-    """Check every value the run will send, before anything is sent.
-
-    ``states``: {name: (angle text, field Oe text, pulse mA text)};
-    ``values``: the DEFAULTS keys as entered.
-    """
+def _shared_settings(values):
+    """The Write and Read boxes' values, checked: Settings keyword arguments."""
     width_s = _number(values["pulse_width_us"], "Pulse width (us)") / 1e6
     count = _whole(values["pulse_count"], "Pulses per write", 1, 1000)
     compliance = _number(values["compliance_v"], "Compliance (V)")
@@ -211,16 +219,6 @@ def build_settings(states, sequence_text, values, autorange=True, until_stop=Fal
     if values["approach"] not in APPROACHES:
         raise ValueError("Choose a field approach")
     decel = _whole(values["decel"], "Rotator decel", 0, 14)
-    parsed = {}
-    for name, (angle_text, field_text, pulse_text) in states.items():
-        angle = _number(angle_text, f"{name} angle")
-        field = _number(field_text, f"{name} field")
-        pulse_ma = _number(pulse_text, f"{name} pulse current")
-        core.PPMSMotorDebug.validate_move(angle, decel, angle)
-        core.validate_ppms_field_command(field, rate)
-        core.Keithley6221Controller._validate(pulse_ma / 1000.0, width_s, compliance, count)
-        parsed[name] = (angle, field, pulse_ma)
-    sequence = parse_sequence(sequence_text, tuple(parsed))
     read_rms_a = _number(values["read_current_ma"], "Read current (mA RMS)") / 1000.0
     if not 0 < read_rms_a <= READ_CURRENT_MAX_RMS_A:
         raise ValueError(f"Read current must be above 0 and at most {READ_CURRENT_MAX_RMS_A * 1e3:g} mA RMS")
@@ -236,15 +234,47 @@ def build_settings(states, sequence_text, values, autorange=True, until_stop=Fal
     read_time = _number(values["read_time_s"], "Read time (s)")
     if not 0.5 <= read_time <= 3600:
         raise ValueError("Read time must be 0.5-3600 s")
-    repeats = None if until_stop else _whole(values["repeats"], "Repeats", 1, 100_000)
-    return Settings(
-        states=parsed, sequence=sequence, repeats=repeats,
+    return dict(
         pulse_width_s=width_s, pulse_count=count, compliance_v=compliance,
         field_rate_oe_s=rate, approach_code=APPROACHES[values["approach"]],
         field_settle_s=settle["field_settle_s"], after_pulse_s=settle["after_pulse_s"],
         decel=decel, read_current_rms_a=read_rms_a, read_frequency_hz=frequency,
-        read_time_s=read_time, read_settle_s=settle["read_settle_s"], autorange=bool(autorange),
+        read_time_s=read_time, read_settle_s=settle["read_settle_s"],
     )
+
+
+def build_settings(states, sequence_text, values, autorange=True, until_stop=False):
+    """Check every value the run will send, before anything is sent.
+
+    ``states``: {name: (angle text, field Oe text, pulse mA text)};
+    ``values``: the DEFAULTS keys as entered.
+    """
+    shared = _shared_settings(values)
+    parsed = {}
+    for name, (angle_text, field_text, pulse_text) in states.items():
+        angle = _number(angle_text, f"{name} angle")
+        field = _number(field_text, f"{name} field")
+        pulse_ma = _number(pulse_text, f"{name} pulse current")
+        core.PPMSMotorDebug.validate_move(angle, shared["decel"], angle)
+        core.validate_ppms_field_command(field, shared["field_rate_oe_s"])
+        core.Keithley6221Controller._validate(
+            pulse_ma / 1000.0, shared["pulse_width_s"], shared["compliance_v"], shared["pulse_count"])
+        parsed[name] = (angle, field, pulse_ma)
+    sequence = parse_sequence(sequence_text, tuple(parsed))
+    repeats = None if until_stop else _whole(values["repeats"], "Repeats", 1, 100_000)
+    return Settings(states=parsed, sequence=sequence, repeats=repeats, autorange=bool(autorange), **shared)
+
+
+def manual_settings(values, current_ma_text=None):
+    """The shared settings for one manual action: no states, nothing to cycle.
+    ``current_ma_text`` replaces the read current (the manual I mA RMS)."""
+    if current_ma_text is not None:
+        values = dict(values, read_current_ma=current_ma_text)
+    return Settings(states={}, sequence=(), repeats=1, autorange=False, **_shared_settings(values))
+
+
+class ManualDeclined(Exception):
+    """A manual action the user declined at its confirmation; nothing sent."""
 
 
 def sr830_query(lockin, command, count):
@@ -363,11 +393,12 @@ class FourStateRun:
         return max(0.1, 5.0 * tau_seconds(int(sr830_query(self.lockin, "OFLT?", 1)[0])))
 
     # -- field and angle ------------------------------------------------
-    def command_field(self, target):
+    def command_field(self, target, mode=1):
+        """``mode`` 1 Driven (runs), 0 Persistent (the manual Set H)."""
         self.check()
         self.commanded_field = target  # Before sending: it may take effect even if the call fails.
         s = self.settings
-        return self.ppms.set_field(target, s.field_rate_oe_s, s.approach_code, 1)
+        return self.ppms.set_field(target, s.field_rate_oe_s, s.approach_code, mode)
 
     def field_to(self, target):
         """Driven setpoint; returns the reading once settled for the settle time."""
@@ -758,6 +789,125 @@ class FourStateRun:
         if problems:
             self.emit("log", "Shutdown: " + "; ".join(problems) + ". Check MultiVu and the 6221.")
 
+    # -- manual settings, as on the PPMS page -----------------------------
+    def manual_move(self, angle, confirm_large):
+        """Move as a run step does: 6221 off first, and only at zero field
+        (refused, nothing sent, otherwise).  A turn over LARGE_ROTATION_DEG
+        needs ``confirm_large(from_deg, to_deg)`` to return True."""
+        if self.source.connected:
+            self.source_off()
+        data = self.ppms.read_environment()
+        if not core.CombinedControlApp._ppms_field_is_ready(data, 0.0):
+            raise RuntimeError(
+                f"The rotator turns only at zero field; the field is {data.get('field_oe')} Oe / "
+                f"{data.get('field_status')}. Zero H first")
+        before = self.motor.read()
+        if abs(angle - before["angle_deg"]) > LARGE_ROTATION_DEG and not confirm_large(before["angle_deg"], angle):
+            raise ManualDeclined("Move cancelled; MOVE not sent")
+        return self.rotate_to(angle)
+
+    def manual_field(self, target):
+        """The PPMS page's Set H and Zero H: to ``target``, ending Persistent.
+        Done by that page's rule (_follow_ppms_persistent_setpoint): Persistent
+        at the target once the status has left Persistent, or Persistent at
+        the target PPMS_PERSISTENT_CONFIRM_S after the command, so a reading
+        from before it cannot pass.  Nothing is resent."""
+        s = self.settings
+        result = self.command_field(target, mode=0)
+        sent = self.clock()
+        try:
+            distance = abs(target - float(result["field_oe"]))
+        except (KeyError, TypeError, ValueError):
+            distance = abs(target)
+        deadline = sent + distance / s.field_rate_oe_s + core.PPMS_PERSISTENT_MARGIN_S
+        tolerance = max(core.PPMS_FIELD_TOLERANCE_OE, abs(target) * core.PPMS_FIELD_RELATIVE_TOLERANCE)
+        left_persistent = False
+        while True:
+            self.check()
+            data = self.ppms.read_environment()
+            status = str(data.get("field_status", "")).strip().lower().replace(" ", "")
+            try:
+                measured = float(data["field_oe"])
+            except (KeyError, TypeError, ValueError):
+                measured = math.nan
+            at_target = abs(measured - target) <= tolerance
+            if status not in ("persistent", "stablepersistent"):
+                left_persistent = True  # Ramping, or the switch warming or cooling.
+            elif at_target and (left_persistent or self.clock() - sent >= core.PPMS_PERSISTENT_CONFIRM_S):
+                return data
+            elif left_persistent and not at_target:
+                raise RuntimeError(f"Persistent at {measured:+.7g} Oe, not {target:+g} Oe; check MultiVu (not resent)")
+            if self.clock() >= deadline:
+                raise RuntimeError(f"Not Persistent at {target:+g} Oe in time: {data.get('field_oe')} Oe / "
+                                   f"{data.get('field_status')}; check MultiVu (not resent)")
+            self.wait(0.5)
+
+    def manual_current(self):
+        """The PPMS page's Set I: the read sine (settings.read_current_rms_a,
+        phase marker on), left on.  The SR830's lock to it is reported, read
+        only: nothing is written to the SR830."""
+        self.start_read_current()
+        if not self.lockin.connected:
+            return {"lock": "SR830 not connected"}
+        expected = self.settings.read_frequency_hz
+        deadline = self.clock() + core.PPMS_TRANSPORT_REFERENCE_TIMEOUT_S
+        try:
+            while True:
+                frequency = sr830_query(self.lockin, "FREQ?", 1)[0]
+                status = int(round(sr830_query(self.lockin, "LIAS?", 1)[0]))
+                if not status & 8 and math.isclose(frequency, expected, rel_tol=5e-3, abs_tol=0.1):
+                    return {"lock": f"SR830 locked at {frequency:.6g} Hz"}
+                if self.clock() >= deadline:
+                    return {"lock": f"SR830 not locked ({frequency:.6g} Hz, LIAS={status}); check its reference input"}
+                self.wait(0.2)
+        except core.PPMSScanCancelled:
+            raise
+        except Exception as error:
+            return {"lock": f"SR830 lock not read: {core.short_status_error(error, 60)}"}
+
+    def manual_pulse(self, pulse_ma):
+        """One write pulse train as in a run (the Write settings), 6221 off first."""
+        if pulse_ma == 0:
+            raise ValueError("Pulse mA is 0: nothing to send")
+        self.source_off()
+        return self.pulse(pulse_ma)
+
+    def manual_read(self):
+        """Angle, field, temperature and 6221 output, as far as connected."""
+        reading = {}
+        if self.ppms.connected:
+            reading.update(self.ppms.read_environment())
+            try:
+                angle = self.motor.read()
+                reading["angle_deg"], reading["angle_status"] = angle["angle_deg"], angle["status"]
+            except Exception as error:
+                reading["angle_error"] = core.short_status_error(error, 60)
+        if self.source.connected:
+            reading["source_on"] = int(round(source_query(self.source, "OUTP?"))) == 1
+        return reading
+
+
+def run_manual(run, operation):
+    """One manual action: (result, outcome, problems).  ``outcome`` is None,
+    or ("declined" | "stopped" | "failed", error).  On Stop the run's shutdown
+    (6221 off, 0 Oe Driven, read back); on an error the 6221 is turned off
+    and the field and angle are left as they are."""
+    try:
+        return operation(run), None, []
+    except ManualDeclined as error:
+        return None, ("declined", error), []
+    except core.PPMSScanCancelled as error:
+        run.shutdown()
+        return None, ("stopped", error), list(run.shutdown_problems)
+    except BaseException as error:
+        problems = []
+        if run.source.connected:
+            try:
+                run.source_off()
+            except Exception as off_error:
+                problems.append(f"6221 not confirmed off: {off_error}")
+        return None, ("failed", error), problems
+
 
 def nice_ticks(low, high, count=5):
     if not (math.isfinite(low) and math.isfinite(high)):
@@ -867,7 +1017,7 @@ class FourStateApp:
         self.title = APP_TITLE
         self.data_directory = HERE / f"{APP_TITLE} data"
         root.title(self.title)
-        root.geometry("1360x900")
+        root.geometry(f"{WINDOW_SIZE[0]}x{WINDOW_SIZE[1]}")
         root.minsize(1100, 760)
         self.events = queue.Queue()
         self.ppms = core.PPMSRemoteReadbackController(self.log_from_thread)
@@ -895,7 +1045,7 @@ class FourStateApp:
         page = ttk.Frame(root, padding=8)
         page.grid(row=0, column=0, sticky="nsew")
         page.columnconfigure(0, weight=1)
-        page.rowconfigure(3, weight=1)
+        page.rowconfigure(4, weight=1)
         self.inputs = []
 
         connections = ttk.LabelFrame(page, text="Connections", padding=6)
@@ -944,8 +1094,11 @@ class FourStateApp:
         self.disconnect_button = ttk.Button(buttons, text="Disconnect all", command=self.disconnect_all, width=14)
         self.disconnect_button.grid(row=1, column=0, pady=1)
 
+        self.values = {key: tk.StringVar(value=value) for key, value in DEFAULTS.items()}
+        self._build_manual(page)
+
         middle = ttk.Frame(page)
-        middle.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        middle.grid(row=2, column=0, sticky="ew", pady=(6, 0))
         for column in range(3):
             middle.columnconfigure(column, weight=1, uniform="setup")
 
@@ -964,7 +1117,6 @@ class FourStateApp:
                 self.inputs.append((entry, "normal"))
             self.state_vars[name] = variables
 
-        self.values = {key: tk.StringVar(value=value) for key, value in DEFAULTS.items()}
         write = ttk.LabelFrame(middle, text="Write", padding=6)
         write.grid(row=0, column=1, sticky="nsew", padx=4)
         self._parameter_rows(write, (
@@ -991,7 +1143,7 @@ class FourStateApp:
         self.inputs.append((autorange, "normal"))
 
         run = ttk.LabelFrame(page, text="Run", padding=6)
-        run.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        run.grid(row=3, column=0, sticky="ew", pady=(6, 0))
         run.columnconfigure(12, weight=1)
         self.mode_var = tk.StringVar(value=MODES[self.initial_mode])
         ttk.Label(run, text="Mode").grid(row=0, column=0, sticky="w")
@@ -1037,7 +1189,7 @@ class FourStateApp:
         ).grid(row=1, column=0, columnspan=13, sticky="w", pady=(4, 0))
 
         lower = ttk.Frame(page)
-        lower.grid(row=3, column=0, sticky="nsew", pady=(6, 0))
+        lower.grid(row=4, column=0, sticky="nsew", pady=(6, 0))
         lower.columnconfigure(0, weight=1)
         lower.rowconfigure(0, weight=1)
         self.canvas = tk.Canvas(lower, background="#ffffff", highlightthickness=0)
@@ -1050,6 +1202,252 @@ class FourStateApp:
         ttk.Label(side, textvariable=self.last_var, justify="left", width=34).grid(row=0, column=0, sticky="nw")
         self.log = tk.Text(side, width=46, height=12, wrap="word", state="disabled")
         self.log.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+
+    def _build_manual(self, page):
+        """The PPMS page's settings rows: angle, field and current, one action
+        at a time.  Decel, field rate and frequency are the Write and Read
+        boxes' own fields (the same values); the pulse uses the Write box's
+        width, count and compliance."""
+        manual = ttk.LabelFrame(page, text="Manual settings (as on the PPMS page)", padding=6)
+        manual.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        manual.columnconfigure(9, weight=1)
+        self.manual_vars = {key: tk.StringVar(value=value) for key, value in MANUAL_DEFAULTS.items()}
+        self.manual_buttons = {}
+
+        def field(row, column, label, variable):
+            ttk.Label(manual, text=label).grid(row=row, column=column, sticky="e",
+                                               padx=(0 if column == 0 else 10, 3), pady=1)
+            entry = ttk.Entry(manual, textvariable=variable, width=8)
+            entry.grid(row=row, column=column + 1, sticky="w", pady=1)
+            self.inputs.append((entry, "normal"))
+
+        def button(row, column, text, command):
+            widget = ttk.Button(manual, text=text, command=command, width=8)
+            widget.grid(row=row, column=column, padx=(8 if column == 4 else 2, 2), pady=1)
+            self.inputs.append((widget, "normal"))
+            self.manual_buttons[text] = widget
+
+        field(0, 0, "Angle °", self.manual_vars["angle"])
+        field(0, 2, "Decel 0–14", self.values["decel"])
+        button(0, 4, "Move", self.manual_move)
+        button(0, 5, "Read", self.manual_read)
+        field(1, 0, "H Oe", self.manual_vars["field"])
+        field(1, 2, "Oe/s", self.values["field_rate"])
+        button(1, 4, "Set H", self.manual_set_field)
+        button(1, 5, "Zero H", lambda: self.manual_set_field(zero=True))
+        field(2, 0, "I mA RMS", self.manual_vars["current_ma"])
+        field(2, 2, "f Hz", self.values["read_frequency_hz"])
+        button(2, 4, "Set I", self.manual_set_current)
+        button(2, 5, "I off", self.manual_current_off)
+        field(2, 6, "Pulse mA", self.manual_vars["pulse_ma"])
+        button(2, 8, "Pulse", self.manual_pulse)
+        self.manual_var = tk.StringVar(value="Now: not read yet (Read)")
+        ttk.Label(manual, textvariable=self.manual_var, justify="left").grid(
+            row=0, column=6, rowspan=2, columnspan=4, sticky="nw", padx=(16, 0))
+        ttk.Label(
+            manual, foreground="#8a4b00",
+            text=("Set H and Zero H end Persistent; Move only at 0 Oe (6221 off first); "
+                  "Pulse uses the Write box. Stop: 6221 off and 0 Oe."),
+        ).grid(row=2, column=9, sticky="w", padx=(16, 0))
+
+    # -- manual settings ------------------------------------------------
+    def _manual_check(self, *, ppms=False, source=False, safety=True):
+        if ppms:
+            if not self.ppms.connected:
+                raise ValueError("Connect the PPMS first")
+            if self.ppms.backend != core.PPMS_QDINSTRUMENT_BACKEND:
+                raise ValueError("The rotator and field need the QDInstrument interface")
+        if source and not self.source.connected:
+            raise ValueError("Connect the 6221 first")
+        if safety and not self.safety_var.get():
+            raise ValueError("Tick the safety confirmation (under Run) first")
+
+    def _manual_values(self):
+        return {key: variable.get() for key, variable in self.values.items()}
+
+    def manual_move(self):
+        if self.busy:
+            return
+        try:
+            self._manual_check(ppms=True)
+            settings = manual_settings(self._manual_values())
+            angle = _number(self.manual_vars["angle"].get(), "Angle")
+            core.PPMSMotorDebug.validate_move(angle, settings.decel, angle)
+        except ValueError as error:
+            messagebox.showerror(self.title, str(error), parent=self.root)
+            return
+
+        def confirm_large(before, target):
+            return self._ask_from_worker(
+                f"Rotator {before:.4f}° → {target:g}°: a turn over {LARGE_ROTATION_DEG:g}°.\n"
+                "Confirm the mechanical travel and wiring clearance; the rotator has no "
+                "software stop (keep MultiVu Motion Control at hand). Continue?")
+
+        self._run_manual(f"Moving the rotator to {angle:g}°", settings,
+                         lambda run: run.manual_move(angle, confirm_large),
+                         lambda result: f"Rotator at {result:.4f}°")
+
+    def manual_set_field(self, zero=False):
+        if self.busy:
+            return
+        try:
+            self._manual_check(ppms=True)
+            settings = manual_settings(self._manual_values())
+            target = 0.0 if zero else _number(self.manual_vars["field"].get(), "H")
+            core.validate_ppms_field_command(target, settings.field_rate_oe_s)
+        except ValueError as error:
+            messagebox.showerror(self.title, str(error), parent=self.root)
+            return
+        if zero:
+            self.manual_vars["field"].set("0")
+        self._run_manual(f"Field to {target:+g} Oe, then Persistent", settings,
+                         lambda run: run.manual_field(target),
+                         lambda result: f"Field {target:+g} Oe reached; Persistent confirmed")
+
+    def manual_set_current(self):
+        if self.busy:
+            return
+        try:
+            self._manual_check(source=True)
+            settings = manual_settings(self._manual_values(), self.manual_vars["current_ma"].get())
+        except ValueError as error:
+            messagebox.showerror(self.title, str(error), parent=self.root)
+            return
+        rms_ma, frequency = settings.read_current_rms_a * 1e3, settings.read_frequency_hz
+        self._run_manual(f"6221 sine {rms_ma:g} mA RMS at {frequency:g} Hz", settings,
+                         lambda run: run.manual_current(),
+                         lambda result: f"6221 ON, read back: {rms_ma:g} mA RMS at {frequency:g} Hz; "
+                                        f"{result['lock']}")
+
+    def manual_current_off(self):
+        if self.busy:
+            return
+        try:
+            self._manual_check(source=True, safety=False)
+        except ValueError as error:
+            messagebox.showerror(self.title, str(error), parent=self.root)
+            return
+        # The defaults, so a typing slip elsewhere never blocks turning off.
+        self._run_manual("6221 off", manual_settings(DEFAULTS), lambda run: run.source_off(),
+                         lambda result: "6221 output OFF, read back")
+
+    def manual_pulse(self):
+        if self.busy:
+            return
+        try:
+            self._manual_check(source=True)
+            settings = manual_settings(self._manual_values())
+            pulse_ma = _number(self.manual_vars["pulse_ma"].get(), "Pulse mA")
+            if pulse_ma == 0:
+                raise ValueError("Pulse mA is 0: nothing to send")
+            core.Keithley6221Controller._validate(
+                pulse_ma / 1000.0, settings.pulse_width_s, settings.compliance_v, settings.pulse_count)
+        except ValueError as error:
+            messagebox.showerror(self.title, str(error), parent=self.root)
+            return
+        width_us, count = settings.pulse_width_s * 1e6, settings.pulse_count
+        if not messagebox.askyesno(
+                self.title,
+                f"Send {count} pulse{'s' if count > 1 else ''} of {pulse_ma:+g} mA, {width_us:g} µs, "
+                f"compliance {settings.compliance_v:g} V, at the present field and angle?",
+                parent=self.root, default="no"):
+            return
+
+        def describe(result):
+            text = f"Pulse sent: {pulse_ma:+g} mA, {width_us:g} µs × {count}; 6221 off, read back"
+            if result.get("in_compliance") is True:
+                text += f"; the 6221 reached compliance ({settings.compliance_v:g} V)"
+            return text
+
+        self._run_manual(f"Pulse {pulse_ma:+g} mA", settings, lambda run: run.manual_pulse(pulse_ma), describe)
+
+    def manual_read(self):
+        if self.busy:
+            return
+        if not (self.ppms.connected or self.source.connected):
+            messagebox.showerror(self.title, "Connect the PPMS or the 6221 first", parent=self.root)
+            return
+        self._run_manual("Reading", manual_settings(DEFAULTS), lambda run: None,
+                         lambda result: "Read: see Now in Manual settings")
+
+    def _ask_from_worker(self, question):
+        """Ask on the Tk thread and wait for the answer; Stop cancels."""
+        answered = threading.Event()
+        answer = []
+
+        def ask():
+            try:
+                answer.append(messagebox.askyesno(self.title, question, parent=self.root, default="no"))
+            finally:
+                answered.set()
+
+        self.post("call", ask)
+        while not answered.wait(0.1):
+            if self.stop_event.is_set():
+                raise core.PPMSScanCancelled("Stopped")
+        return bool(answer and answer[0])
+
+    def _run_manual(self, label, settings, operation, describe):
+        """``operation(run)`` in a worker, one action at a time; Stop is on."""
+        self.stop_event.clear()
+        self._set_busy(True, running=True)
+        self.status_var.set(f"{label}…")
+        self._append_log(f"Manual: {label}")
+        run = FourStateRun(self.ppms, self.source, self.lockin, settings, emit=self.post, stop=self.stop_event)
+
+        def target():
+            result, outcome, problems = run_manual(run, operation)
+            try:
+                reading = run.manual_read()
+            except Exception as error:
+                reading = {"error": core.short_status_error(error, 80)}
+            self.post("call", lambda: self._manual_finished(label, describe, result, outcome, problems, reading))
+
+        self.worker = threading.Thread(target=target, daemon=True)
+        self.worker.start()
+
+    def _manual_finished(self, label, describe, result, outcome, problems, reading):
+        self._set_busy(False)
+        self.worker = None
+        self.manual_var.set(self.format_reading(reading))
+        if outcome is None:
+            text = describe(result)
+        elif outcome[0] == "declined":
+            text = f"{label}: {outcome[1]}"
+        elif outcome[0] == "stopped":
+            text = "Stopped: " + ("6221 off and 0 Oe, read back" if not problems
+                                  else "PROBLEM: " + "; ".join(problems))
+            if label.startswith("Moving"):
+                text += ". If the rotator was moving, check MultiVu"
+        else:
+            text = f"{label} failed: {core.short_status_error(outcome[1], 100)}"
+        self.status_var.set(text)
+        self._append_log(text)
+        if outcome is not None and outcome[0] == "failed" or problems:
+            detail = str(outcome[1]) if outcome is not None and outcome[0] == "failed" else text
+            if outcome is not None and outcome[0] == "failed":
+                detail += ("\n\nThe 6221 has been turned off; the field and angle are left as they are."
+                           if not problems else "\n\n" + "\n".join(problems))
+            messagebox.showerror(self.title, detail, parent=self.root)
+
+    @staticmethod
+    def format_reading(reading):
+        if "error" in reading:
+            return f"Now: not read ({reading['error']})"
+        first, second = [], []
+        if "angle_deg" in reading:
+            first.append(f"φ {float(reading['angle_deg']):.2f}° ({reading.get('angle_status')})")
+        elif "angle_error" in reading:
+            first.append(f"φ not read ({reading['angle_error']})")
+        if "field_oe" in reading:
+            first.append(f"H {float(reading['field_oe']):+.1f} Oe {reading.get('field_status', '')}")
+        if "temperature_k" in reading:
+            second.append(f"T {float(reading['temperature_k']):.3f} K")
+        if "source_on" in reading:
+            second.append(f"6221 {'ON' if reading['source_on'] else 'OFF'}")
+        if not first and not second:
+            return "Now: nothing connected to read"
+        return "Now: " + "   ".join(first) + ("\n" + "   ".join(second) if second else "")
 
     def _parameter_rows(self, frame, rows):
         for row, (label, key) in enumerate(rows):
