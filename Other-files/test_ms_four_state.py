@@ -464,7 +464,7 @@ class RunTests(unittest.TestCase):
         order = [e[0] if e[0] != "field" else f"field {e[1]:+g}" for e in events
                  if e[0] in ("field", "pulse", "sine", "rotate")]
         self.assertEqual(order, [
-            "field +1500", "pulse", "field +0", "sine",
+            "rotate", "field +1500", "pulse", "field +0", "sine",  # 0 -> D at 360 deg first
             "rotate", "field -1500", "pulse", "field +0", "sine",
             "field +1500", "pulse", "field +0", "sine",
             "rotate", "field -1500", "pulse", "field +0", "sine"])
