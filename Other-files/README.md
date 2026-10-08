@@ -202,6 +202,60 @@ re-enabled them when the read ended.
   box. This refreshes the controls, usually between reads.
 - **Test:** `test_a_background_read_never_locks_the_zurich_controls` in
   `Other-files/test_ppms_two_panels.py`. It fails on the old code.
+## MS-fourState.py: PPMS state writing and zero-field read (2026-10-06)
+
+A new program in the repository root. For each state of a sequence,
+`MS-fourState.py`:
+
+1. turns the PPMS rotator to the state's angle at zero field;
+2. sets the write field (Driven);
+3. sends the 6221 pulse (default ±22 mA, 30 µs, one pulse);
+4. returns the field to 0 Oe;
+5. reads the SR830 first harmonic X, Y and θ with a 0.5 mA RMS sine.
+
+It plots X, the field and the pulse current per step, and writes a CSV. The
+states follow the measurement table (D 0°/+0.15 T, A and B 270°/∓0.15 T,
+E 0°/−0.15 T, with A' and B' the reversed field and current), all editable.
+The default sequence is D A B E.
+
+Its Mode list has two modes, at the user's choice (2026-10-07):
+
+- **Cycle** (default) repeats a cycle of states (default D-A-B-E-B-A-D-…)
+  for a set number of cycles, or until Stop.
+- **Sequence** runs the states once, in the order typed; for example
+  `A B A B A B` switches between two states.
+
+On 2026-10-06 there were also two launcher files, `MS-cycleState.py` and
+`MS-twoState.py`, and a "Two states" mode. All are now in the one file.
+
+- **Instrument code:** it is the main program's. That covers the PPMS
+  connection, field setpoints and their settled check, the rotator's
+  verified Move, the 6221 controller, and the PPMS page's sine with its
+  phase marker as the SR830 reference. It also covers the SR830 query and
+  checked-write helpers and its connection baseline. The main program
+  itself is unchanged.
+- **Stops:** Stop, an error or the end turns the 6221 off and returns the
+  field to 0 Oe, both confirmed by readback. Shutdown follows the field the
+  run commanded, not a possibly stale reading. The rotator has no software
+  stop.
+- **Pulse:** the MOKE-6221 page's commands and order (ARM, `OUTP ON`,
+  INIT), with every setting read back before ARM. The 6221's latched
+  compliance bit is recorded for every pulse. What the 6221 outputs between
+  ARM and INIT is not measured, so check it with an oscilloscope before
+  the first run.
+- **Review:** an independent review before the first hardware run found
+  14 problems, and a second review of the fixes five more. All are fixed,
+  each with a test, except the pulse shape between ARM and INIT, which
+  needs the oscilloscope. Among them: a stale reading could skip the return
+  to zero; a disconnect left an SR830 error latched, which failed the next
+  Start; and one display error could freeze the window.
+- **Docs:** `Other-files/MS-fourState_README.md` has the procedure, the
+  checks before the first run (an oscilloscope look at the pulse; compliance
+  15 V) and the data files.
+- **Tests:** `Other-files/test_ms_four_state.py` runs against simulated
+  instruments; breaking each safety rule in a copy is caught. The windows
+  are checked on GitHub with `Other-files/ci/ms_four_state_checks.py`.
+- **Status:** not yet run on the instruments.
 
 ## PPMS: Set H and Zero H end Persistent (2026-10-04)
 
