@@ -21,6 +21,36 @@ It uses the instrument code of `Transport_all_NH_dev.py`, which must sit in
 the same folder. Close the PPMS, 6221 and SR830 connections in `Transport_all_NH_dev.py`
 first. Two programs must never drive the same instruments.
 
+## Connections
+
+Each instrument has its own row: name, address, **Connect**, **Disconnect**,
+a lamp and its state, as on the main program's pages. The lamp is grey when
+not connected, green when connected and red after a failed connect. The
+reason is shown beside it. Connecting or disconnecting one instrument leaves
+the others as they are. The 6221 turns its output off when it disconnects;
+disconnecting the PPMS leaves the field and angle. An address is fixed while
+its instrument is connected.
+
+The window opens at 1720 × 1240 where the screen allows (the lab PC's
+2560 × 1440 does), or smaller on a smaller screen, so the plot has the room.
+
+**PPMS status**, to the right of Connections (under it in a narrow window),
+shows what the PPMS page's live readings show:
+- temperature, field and angle in large type, each with its status;
+- chamber pressure and helium level (the PPMS page's own read, which never
+  starts a fill);
+- the 6221 output, and the time of the reading.
+
+It is read only:
+- **Idle:** read every 2 s; pressure and helium every 30 s.
+- **During a run or a manual action:** it shows that action's own readings,
+  at most one a second, and each rotation. Nothing extra is asked of the
+  instruments then.
+
+The Write box has two columns: the pulse on the left (width, count,
+compliance, wait), the field and rotator on the right. So the
+States/Write/Read row is no taller than the States table.
+
 ## Manual settings
 
 Between runs, the **Manual settings** box sets one thing at a time, as the
@@ -83,17 +113,18 @@ Defaults from the measurement table, editable in the window (1500 Oe = 0.15 T):
 
 | State | φ PPMS | H write | I pulse | |
 | --- | --- | --- | --- | --- |
-| D | 0° | +1500 Oe (Hz) | +22 mA | +H ⊥ +I |
+| D | 360° | +1500 Oe (Hz) | +22 mA | +H ⊥ +I |
 | A | 270° | −1500 Oe (Hx) | +22 mA | +H ∥ +I |
-| A' | 270° | +1500 Oe (Hx) | −22 mA | A, written the other way |
 | B | 270° | +1500 Oe (Hx) | +22 mA | +H ∥ +I |
-| B' | 270° | −1500 Oe (Hx) | −22 mA | B, written the other way |
-| E | 0° | −1500 Oe (Hz) | +22 mA | −H ⊥ +I |
+| E | 360° | −1500 Oe (Hz) | +22 mA | −H ⊥ +I |
 
 Cycles and sequences are typed as state names separated by spaces, commas or
-dashes, for example `D A B E`, `D-A-B-E-B-A` or `D A' B' E`. Switching between
+dashes, for example `D A B E` or `D-A-B-E-B-A`. Switching between
 A and B, or between D and E, needs no rotation. Switching between, for
-example, A and D turns the rotator 270° each time.
+example, A and D turns the rotator 90° each time. D and E are at 360°, the
+same orientation as 0°, so that this turn is 90° rather than 270° (changed
+2026-10-08). If the rotator reads 0° when a run starts, its first move to
+360° is one full turn. It is confirmed in the summary as a large rotation.
 
 ## One step
 
@@ -130,7 +161,7 @@ example, A and D turns the rotator 270° each time.
 
 ## The SR830
 
-On **Connect all** the SR830 gets the PPMS page's baseline, each setting
+On **Connect** the SR830 gets the PPMS page's baseline, each setting
 checked with `*ESR?` and read back. The baseline is: first harmonic,
 external reference (`FMOD 0`, `RSLP 1`), A−B input, shield floating,
 AC-coupled, line and sync filters off, 1 s time constant, 12 dB/oct, normal
@@ -177,9 +208,10 @@ program, for example `MS-fourState data/20261007_153000_cycle/`:
 - `log.txt`: the status and instrument log of that run.
 - `MS-fourState_plot.eps`: the plot, saved at the end and by **Save plot**.
 
-The plot shows, per step, the write field in T, the pulse current in mA, and
-SR830 X in µV, with each point coloured by its state. State letters are drawn
-for up to 60 points.
+The plot shows the write field in T, the pulse current in mA and SR830 X in
+µV against the time since the run started (`time_s` in the CSV). The axis is
+in s, then min after 10 min, then h after 3 h. Each point is coloured by its
+state, and state letters are drawn for up to 60 points.
 
 ## Before the first run
 

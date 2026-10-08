@@ -12,7 +12,9 @@ import importlib.util
 import math
 import queue
 import sys
+import time
 import tkinter as tk
+import types
 import unittest
 from tkinter import ttk
 from pathlib import Path
@@ -61,13 +63,13 @@ class StopEvent:
 
 
 class Sample:
-    """Takes D/E at 0 deg (by the field sign) and A/B at 270 deg (by H x I)."""
+    """Takes D/E at 0 or 360 deg (by the field sign) and A/B at 270 deg (by H x I)."""
 
     def __init__(self):
         self.state = "E"
 
     def pulse(self, current_a, field_oe, angle_deg):
-        if abs(angle_deg) < 1:
+        if abs(angle_deg) < 1 or abs(angle_deg - 360) < 1:
             self.state = "D" if field_oe > 0 else "E"
         elif abs(angle_deg - 270) < 1:
             self.state = "A" if field_oe * current_a < 0 else "B"
@@ -356,8 +358,8 @@ class FakeSR830:
 class SettingsTests(unittest.TestCase):
     def test_defaults_are_the_figure_table(self):
         self.assertEqual(ms.DEFAULT_STATES, (
-            ("D", 0.0, 1500.0, 22.0), ("A", 270.0, -1500.0, 22.0), ("A'", 270.0, 1500.0, -22.0),
-            ("B", 270.0, 1500.0, 22.0), ("B'", 270.0, -1500.0, -22.0), ("E", 0.0, -1500.0, 22.0)))
+            ("D", 360.0, 1500.0, 22.0), ("A", 270.0, -1500.0, 22.0),
+            ("B", 270.0, 1500.0, 22.0), ("E", 360.0, -1500.0, 22.0)), "D, A, B and E only")
         settings = World().settings()
         self.assertEqual(settings.sequence, ("D", "A", "B", "E"))
         self.assertEqual(settings.pulse_width_s, 30e-6)
@@ -368,9 +370,9 @@ class SettingsTests(unittest.TestCase):
 
     def test_sequence_text(self):
         names = tuple(name for name, *_ in ms.DEFAULT_STATES)
-        self.assertEqual(ms.parse_sequence("d, a' B;e", names), ("D", "A'", "B", "E"))
+        self.assertEqual(ms.parse_sequence("d, a B;e", names), ("D", "A", "B", "E"))
         self.assertEqual(ms.parse_sequence("D-A-B-E-B-A", names), ("D", "A", "B", "E", "B", "A"))
-        for text in ("", "D X", "C"):
+        for text in ("", "D X", "C", "A' B'"):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 ms.parse_sequence(text, names)
 
@@ -401,6 +403,12 @@ class SettingsTests(unittest.TestCase):
         # D-A-B-E-B-A turns D->A, B->E, E->B and A->D: three inside, one back to D.
         self.assertEqual(endless.large_rotations(), (3, True))
         self.assertEqual(world.settings("A B").large_rotations(), (0, False))
+
+    def test_the_time_axis_unit_follows_the_run_length(self):
+        self.assertEqual(ms.time_unit(0.0), ("s", 1.0))
+        self.assertEqual(ms.time_unit(599.0), ("s", 1.0))
+        self.assertEqual(ms.time_unit(600.0), ("min", 60.0))
+        self.assertEqual(ms.time_unit(3 * 3600.0), ("h", 3600.0))
 
     def test_tick_marks_end_for_equal_values(self):
         for low, high in ((1.0, 1.0 + 1e-15), (2.5e-5, 2.5e-5), (-1e-300, 1e-300)):
@@ -433,7 +441,9 @@ class RunTests(unittest.TestCase):
         world.run()
         events = world.events
         rotations = [e for e in events if e[0] == "rotate"]
-        self.assertEqual([e[1] for e in rotations], [270.0, 0.0], "D at 0 deg, A and B at 270, E back at 0")
+        # The simulated rotator starts at 0 deg: D at 360 is one full turn
+        # first, then 90 deg to A and B at 270, and 90 deg back for E.
+        self.assertEqual([e[1] for e in rotations], [360.0, 270.0, 360.0], "D at 360, A and B at 270, E at 360")
         for _, _angle, field, output, large, timeout in rotations:
             self.assertLessEqual(abs(field), 2.0, "rotates only at zero field")
             self.assertFalse(output, "rotates with the 6221 off")
@@ -441,7 +451,7 @@ class RunTests(unittest.TestCase):
             self.assertEqual(timeout, 900.0)
         pulses = [e for e in events if e[0] == "pulse"]
         self.assertEqual([(round(e[1] * 1e3, 6), e[2], e[4]) for e in pulses],
-                         [(22.0, 1500.0, 0.0), (22.0, -1500.0, 270.0), (22.0, 1500.0, 270.0), (22.0, -1500.0, 0.0)])
+                         [(22.0, 1500.0, 360.0), (22.0, -1500.0, 270.0), (22.0, 1500.0, 270.0), (22.0, -1500.0, 360.0)])
         for pulse in pulses:
             self.assertEqual(pulse[3], "StableDriven", "pulse only once the write field has settled")
             self.assertAlmostEqual(pulse[5], 30e-6, places=12, msg="30 us wide")
@@ -462,7 +472,7 @@ class RunTests(unittest.TestCase):
         order = [e[0] if e[0] != "field" else f"field {e[1]:+g}" for e in events
                  if e[0] in ("field", "pulse", "sine", "rotate")]
         self.assertEqual(order, [
-            "field +1500", "pulse", "field +0", "sine",
+            "rotate", "field +1500", "pulse", "field +0", "sine",  # 0 -> D at 360 deg first
             "rotate", "field -1500", "pulse", "field +0", "sine",
             "field +1500", "pulse", "field +0", "sine",
             "rotate", "field -1500", "pulse", "field +0", "sine"])
@@ -539,9 +549,14 @@ class RunTests(unittest.TestCase):
         self.assertEqual(moves[1][0], "rotate")
         self.assertLessEqual(abs(moves[1][2]), 2.0)
 
-    def test_primed_states_reverse_field_and_current(self):
+    def test_a_and_b_written_the_other_way_in_their_rows(self):
+        # With field and current both reversed in the A and B rows, the same
+        # states are written (the A' and B' of the figure).
         world = World()
-        rows = world.run(world.settings("A' B'"))
+        values = dict(ms.DEFAULTS)
+        states = {name: (str(a), str(h), str(i)) for name, a, h, i in ms.DEFAULT_STATES}
+        states["A"], states["B"] = ("270", "1500", "-22"), ("270", "-1500", "-22")
+        rows = world.run(ms.build_settings(states, "A B", values))
         pulses = [e for e in world.events if e[0] == "pulse"]
         self.assertEqual([(round(e[1] * 1e3, 6), e[2]) for e in pulses], [(-22.0, 1500.0), (-22.0, -1500.0)])
         for row, state in zip(rows, ("A", "B")):
@@ -562,7 +577,9 @@ class RunTests(unittest.TestCase):
         self.assertEqual("".join(row["state"] for row in rows), "DABEBADA")
         for row in rows:
             self.assertAlmostEqual(row["x_v"], HALL_OHM[row["state"]] * 0.5e-3, places=12)
-        self.assertEqual([e[1] for e in world.events if e[0] == "rotate"], [270.0, 0.0, 270.0, 0.0, 270.0])
+        # From 0 deg: one full turn to D at 360, then 90 deg each way.
+        self.assertEqual([e[1] for e in world.events if e[0] == "rotate"],
+                         [360.0, 270.0, 360.0, 270.0, 360.0, 270.0])
         self.assertFalse(world.source_device.output_on())
 
     def test_two_state_switching_until_stop(self):
@@ -903,6 +920,74 @@ class ManualTests(unittest.TestCase):
         self.assertEqual(ms.manual_settings(ms.DEFAULTS).sequence, ())
 
 
+class StatusBoxTests(unittest.TestCase):
+    """The PPMS status box: read only, polled while idle, fed by runs."""
+
+    def test_the_status_read_covers_ppms_and_6221(self):
+        world = World()
+        world.motor.angle = 270.0
+        status = ms.read_instrument_status(world.ppms, world.source, motor=world.motor)
+        self.assertEqual((status["temperature_k"], status["field_oe"], status["field_status"]),
+                         (300.0, 0.0, "StablePersistent"))
+        self.assertEqual((status["angle_deg"], status["angle_status"]), (270.0, "AtTarget"))
+        self.assertIs(status["source_on"], False)
+        self.assertEqual([e for e in world.events if e[0] in ("field", "rotate", "sr830")], [], "read only")
+        world.ppms.connected = False
+        world.source.instrument = None
+        self.assertEqual(set(ms.read_instrument_status(world.ppms, world.source)), {"time"})
+
+    def test_a_run_feeds_the_box_at_most_once_a_second(self):
+        world = World()
+        world.run(world.settings("D A"))
+        shown = [(kind, payload) for kind, payload in world.emitted if kind == "ppms-reading"]
+        fields = [p for _, p in shown if "field_oe" in p]
+        angles = [p["angle_deg"] for _, p in shown if "angle_deg" in p]
+        self.assertGreater(len(fields), 5)
+        self.assertEqual(angles, [360.0, 270.0], "each rotation is shown")
+        reads = world.clock.now - 1000.0
+        self.assertLessEqual(len(fields), reads / ms.STATUS_EMIT_S + 5)
+
+    def test_the_box_shows_what_a_reading_holds(self):
+        app = ms.FourStateApp.__new__(ms.FourStateApp)
+        app.status_box_vars = {key: mock.Mock() for key in (
+            "temperature", "temperature_status", "field", "field_status", "angle", "angle_status",
+            "pressure", "helium", "source", "time")}
+        app._show_status({"temperature_k": 300.0012, "temperature_status": "Stable", "field_oe": -1500.04,
+                          "field_status": "StableDriven", "angle_deg": 270.0, "angle_status": "AtTarget",
+                          "pressure_display": "4.98 Torr", "helium_display": "72.10%", "source_on": True,
+                          "time": "09:52:13"})
+        shown = {key: var.set.call_args[0][0] for key, var in app.status_box_vars.items()}
+        self.assertEqual(shown, {"temperature": "300.001 K", "temperature_status": "Stable",
+                                 "field": "-1500.0 Oe", "field_status": "StableDriven",
+                                 "angle": "270.00°", "angle_status": "AtTarget", "pressure": "4.98 Torr",
+                                 "helium": "72.10%", "source": "ON", "time": "09:52:13"})
+        for var in app.status_box_vars.values():
+            var.reset_mock()
+        app._show_status({"field_oe": 10.0, "field_status": "Charging"})
+        self.assertFalse(app.status_box_vars["angle"].set.called, "what a reading lacks stays")
+
+    def test_polling_only_while_idle(self):
+        world = World()
+        app = ms.FourStateApp.__new__(ms.FourStateApp)
+        app.root = FakeRoot()
+        app.ppms, app.source = world.ppms, world.source
+        app.status_polling, app.last_cryogen = False, None
+        started = []
+        app._status_worker = lambda cryogen: started.append(cryogen)
+        with mock.patch.object(ms.threading, "Thread",
+                               lambda target, args, daemon: types.SimpleNamespace(start=lambda: target(*args))):
+            app.busy = True
+            app._poll_status()
+            self.assertEqual(started, [], "nothing while a run or an action is going")
+            app.busy = False
+            app._poll_status()
+            self.assertEqual(started, [True], "pressure and helium on the first poll")
+            app.status_polling = False
+            app._poll_status()
+            self.assertEqual(started, [True, False], "then every CRYOGEN_POLL_S only")
+        self.assertEqual(len(app.root.scheduled), 3, "always rescheduled")
+
+
 class FakeRoot:
     def __init__(self):
         self.scheduled = []
@@ -1040,6 +1125,62 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(finished[0][3][0], "stopped")
         self.assertFalse(world.source_device.output_on())
 
+    def connection_app(self, world):
+        app = self.app()
+        app.title = "MS-fourState"
+        app.ppms, app.source, app.lockin = world.ppms, world.source, world.lockin
+        app.busy = False
+        app.status_var = mock.Mock()
+        app.status_vars = {key: mock.Mock() for key in ms.CONNECTIONS}
+        app.connection_failed = {key: False for key in ms.CONNECTIONS}
+        app.values = {key: mock.Mock(get=lambda value=value: value) for key, value in ms.DEFAULTS.items()}
+        app.source_resource_var = mock.Mock(get=lambda: "GPIB0::30::INSTR")
+        app.updates = []
+        app._update_connection_controls = lambda: app.updates.append(dict(app.connection_failed))
+        app._set_busy = lambda busy, running=False: setattr(app, "busy", busy)
+        app.post = lambda kind, payload=None: payload() if kind == "call" else None
+        return app
+
+    def wait_idle(self, app):
+        for _ in range(200):
+            if not app.busy:
+                return
+            time.sleep(0.01)
+        self.fail("the connection worker did not finish")
+
+    def test_connect_and_disconnect_one_instrument_only(self):
+        world = World()
+        world.source.instrument = None
+        app = self.connection_app(world)
+        world.source.connect = mock.Mock(return_value="KEITHLEY INSTRUMENTS INC.,MODEL 6221")
+        world.lockin.connect = mock.Mock(side_effect=AssertionError("not asked"))
+        world.ppms.connect = mock.Mock(side_effect=AssertionError("not asked"))
+        app.connect_device("6221")
+        self.wait_idle(app)
+        world.source.connect.assert_called_once_with("GPIB0::30::INSTR", 15.0)
+        app.status_vars["6221"].set.assert_called_with("Connected: KEITHLEY INSTRUMENTS INC.,MODEL 6221")
+        world.ppms.disconnect = mock.Mock()
+        world.lockin.disconnect = mock.Mock()
+        world.source.disconnect = mock.Mock()
+        app.disconnect_device("6221")
+        self.wait_idle(app)
+        world.source.disconnect.assert_called_once()
+        world.ppms.disconnect.assert_not_called()
+        world.lockin.disconnect.assert_not_called()
+        app.status_vars["6221"].set.assert_called_with("Not connected")
+
+    def test_a_failed_connect_shows_its_reason_and_a_red_lamp(self):
+        world = World()
+        app = self.connection_app(world)
+        app.lockin_resource_var = mock.Mock(get=lambda: "GPIB0::8::INSTR")
+        world.lockin.instrument = None
+        with mock.patch.object(ms, "connect_lockin", side_effect=RuntimeError("VI_ERROR_TMO")):
+            app.connect_device("sr830")
+            self.wait_idle(app)
+        self.assertIn("Failed: ", app.status_vars["sr830"].set.call_args[0][0])
+        self.assertTrue(app.connection_failed["sr830"])
+        self.assertTrue(app.updates[-1]["sr830"], "the lamp turns red")
+
     def test_close_waits_for_a_connection_in_progress(self):
         app = self.app()
         app.title = "MS-fourState"
@@ -1092,13 +1233,35 @@ class WindowTests(unittest.TestCase):
             self.assertIn(part, text)
 
     def test_plot_draws_three_panels(self):
-        row = dict(step=1, state="A", write_field_set_oe=-1500.0, pulse_current_ma=22.0, x_v=11e-6)
-        self.app.plot.set_rows([row, dict(row, step=2, state="B", write_field_set_oe=1500.0, x_v=-12e-6)])
+        row = dict(step=1, time_s=95.0, state="A", write_field_set_oe=-1500.0, pulse_current_ma=22.0, x_v=11e-6)
+        self.app.plot.set_rows([row, dict(row, step=2, time_s=190.0, state="B", write_field_set_oe=1500.0,
+                                          x_v=-12e-6)])
         self.root.update()
         texts = [self.app.canvas.itemcget(item, "text") for item in self.app.canvas.find_all()
                  if self.app.canvas.type(item) == "text"]
-        for label in ("H write (T)", "I pulse (mA)", "SR830 X (µV)", "A", "B", "Step"):
+        for label in ("H write (T)", "I pulse (mA)", "SR830 X (µV)", "A", "B", "Time since start (s)", "100"):
             self.assertIn(label, texts)
+
+    def test_each_instrument_connects_on_its_own(self):
+        app = self.app
+        self.assertEqual(set(app.connection_widgets), {"ppms", "6221", "sr830"})
+        for key, (address, connect, disconnect, lamp) in app.connection_widgets.items():
+            with self.subTest(key=key):
+                self.assertEqual((connect.cget("text"), str(connect.cget("state"))), ("Connect", "normal"))
+                self.assertEqual((disconnect.cget("text"), str(disconnect.cget("state"))), ("Disconnect", "disabled"))
+                self.assertEqual(lamp.itemcget("lamp", "fill"), ms.LAMP_COLORS["off"])
+        app.port_var.set("not a port")
+        self.addCleanup(app.port_var.set, str(core.PPMS_QDINSTRUMENT_DEFAULT_PORT))
+        with mock.patch.object(ms.messagebox, "showerror") as error:
+            app.connection_widgets["ppms"][1].invoke()
+        error.assert_called_once()
+        self.assertFalse(app.busy)
+
+    def test_the_plot_has_the_room(self):
+        # The window opens at WINDOW_SIZE where the screen allows; the plot
+        # takes what the controls leave.
+        self.assertEqual(ms.WINDOW_SIZE, (1720, 1240))
+        self.assertEqual(int(self.app.log.cget("width")), 36)
 
     def test_the_mode_list_switches_the_run_row(self):
         app = self.app
@@ -1132,7 +1295,7 @@ class WindowTests(unittest.TestCase):
         app = self.app
         self.assertEqual(set(app.manual_buttons), {"Move", "Read", "Set H", "Zero H", "Set I", "I off", "Pulse"})
         self.assertEqual({key: variable.get() for key, variable in app.manual_vars.items()},
-                         {"angle": "0", "field": "0", "current_ma": "0.5", "pulse_ma": "22"})
+                         {"angle": "360", "field": "0", "current_ma": "0.5", "pulse_ma": "22"})
         # Decel, field rate and frequency are the Write and Read boxes' fields.
         entries = [w for w in app.manual_buttons["Move"].master.winfo_children() if isinstance(w, ttk.Entry)]
         shared = {str(entry.cget("textvariable")) for entry in entries}

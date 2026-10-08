@@ -3,7 +3,7 @@
     python Other-files/ci/ms_four_state_checks.py --shots DIR
 
 Builds the program (no instruments are connected) at 96 DPI, as on the lab
-PC, at its own 1360x960 window, at its 1100x760 minimum and widened to
+PC, at its own 1720x1240 window (on a 2560x1440 screen), at 1360x960, at its 1100x760 minimum and widened to
 2000 px, with a few example points in the plot, in its default Cycle mode;
 and in Sequence mode at 1360 px.  Reports widgets that stick
 out past the window and text that does not fit, and saves a screenshot of
@@ -21,8 +21,8 @@ from gui_checks import inspect, screenshot  # noqa: E402
 
 PROGRAM = Path(__file__).resolve().parents[2] / "MS-fourState.py"
 # (mode, width, height, must fit)
-WINDOWS = (("cycle", 1360, 960, True), ("cycle", 1100, 760, False), ("cycle", 2000, 1100, True),
-           ("sequence", 1360, 960, True))
+WINDOWS = (("cycle", 1720, 1240, True), ("cycle", 1360, 960, True), ("cycle", 1100, 760, False),
+           ("cycle", 2000, 1100, True), ("sequence", 1360, 960, True))
 EXAMPLE = (("D", 1500, 22, 30e-6), ("A", -1500, 22, 11e-6), ("B", 1500, 22, -12.5e-6), ("E", -1500, 22, -27e-6))
 
 
@@ -43,7 +43,7 @@ def main():
         root.geometry(f"{width}x{height}+0+0")
         for _ in range(6):
             root.update()
-        app.plot.set_rows([dict(step=i, state=s, write_field_set_oe=h, pulse_current_ma=c, x_v=x)
+        app.plot.set_rows([dict(step=i, time_s=95.0 * i, state=s, write_field_set_oe=h, pulse_current_ma=c, x_v=x)
                            for i, (s, h, c, x) in enumerate(EXAMPLE, 1)])
         root.update()
         page = root.winfo_children()[0]

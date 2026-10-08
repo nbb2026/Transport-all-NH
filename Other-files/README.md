@@ -1,5 +1,59 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MS-fourState.py: PPMS status box, a thinner settings row, time on the x-axis (2026-10-08)
+
+- **PPMS status:** to the right of Connections, as the PPMS page's live
+  readings. Temperature, field and angle in large type with their status,
+  chamber pressure and helium level, the 6221 output and the time read.
+  - Read only, every 2 s while idle; pressure and helium every 30 s, the
+    PPMS page's own read.
+  - During a run or a manual action it shows that action's own readings, at
+    most one a second, so nothing extra is asked of the instruments.
+  - In a narrow window it moves under Connections.
+- **Settings row:** the Write box is two columns of four, with shorter labels,
+  so the States/Write/Read row is about five lines tall instead of nine, and
+  the plot gets that height.
+- **Plot:** the x-axis is the time since the run started, `time_s` as in the
+  CSV, in s, min after 10 min, or h after 3 h, instead of the step number.
+- **Tests:** `StatusBoxTests` checks the status read (read only, PPMS and
+  6221), the run's readings being shown at most once a second with each
+  rotation, the box's text, and that it polls only while idle. A test checks
+  the time axis unit.
+
+## MS-fourState.py: one Connect per instrument, a larger plot, no A' and B' rows (2026-10-08)
+
+- **Connections:** the PPMS, the 6221 and the SR830 each have their own row:
+  name, address, Connect, Disconnect, a lamp and their state, as on the main
+  program's pages. "Connect all" and "Disconnect all" are gone. The lamp is
+  grey (not connected), green (connected) or red (the last connect failed,
+  with the reason beside it). One instrument connects or disconnects without
+  touching the others. An address is fixed while its instrument is
+  connected.
+- **Plot:** the window opens at 1720 × 1240 where the screen allows (the lab
+  PC's 2560 × 1440 does), up from 1360 × 960. The log column is narrower, and
+  the plot's numbers, labels and markers are larger.
+- **States:** the table lists D, A, B and E only. To write A or B the other
+  way (the figure's A' and B'), enter the reversed field and current in its
+  row.
+- **Tests:**
+  - in `Other-files/test_ms_four_state.py`, connecting or disconnecting one
+    instrument touches no other, and a failed connect shows its reason and a
+    red lamp;
+  - a window check covers the buttons;
+  - the cloud check adds the 1720 × 1240 window.
+
+## MS-fourState.py: D and E at 360°, not 0° (2026-10-08)
+
+States D and E now default to 360° rather than 0°. This is the same
+orientation, so switching to or from A and B at 270° turns the rotator 90°
+instead of 270°. The Manual settings Angle box also starts at 360.
+
+If the rotator reads 0° when a run starts, the first move to D at 360° is one
+full turn. It is counted as a large rotation in the run's confirmation.
+
+The values in the States table can still be edited before a run. The tests'
+simulated sample takes D and E at 0° or 360°.
+
 ## MS-fourState.py: manual angle, field and current settings (2026-10-08)
 
 A **Manual settings** box, between Connections and the state table, sets one
