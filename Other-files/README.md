@@ -1,5 +1,83 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local: fixes from a review of the whole module (2026-10-08)
+
+Five reviewers read the Non-local code: the instrument controllers, |R| and
+2400-IV, Gate-VI and the connections, 6221-IV and the page, and the latest
+Zurich/6221 change. None found a path that switches an output on
+unexpectedly. Their confirmed findings are fixed below; the new tests are in
+`test_nonlocal_review.py` and `test_nonlocal_6221_iv.py`.
+
+- **Outputs and Stop:**
+  - **Stop during a connect:** the red Stop and "6221 / 2400 OFF" now switch
+    the outputs off even while an instrument is being connected. Before,
+    after Set 6221 they did nothing in that window.
+  - **OFF is read back:** `_nonlocal_vi_shutdown_outputs` reads each output
+    back off (`confirm_output_off`). "OFF" is shown only after that; a
+    failure shows "check them".
+  - **Gate-VI shutdown failures:** a failed shutdown at the end of a Gate-VI
+    scan is reported beside the scan's own error, not in its place.
+  - **Disconnecting one instrument:** disconnecting the Keithley alone no
+    longer reports the 6221 as OFF, and the 6221 likewise.
+  - **Stop before a source switches on:** the Keithley pulse and the
+    resistance current source check Stop just before `OUTP ON`.
+- **Keithley:**
+  - **Pulse width:** Gate-VI pulses were about 80 ms longer than set, because
+    the error check after the voltage write ran inside the pulse. The check
+    now counts toward the width.
+  - **2400-IV current limit:** read back (`:SENS:CURR:PROT?`, within 1 %) and
+    used to mark the points at the limit.
+  - **Errors:** when the measurement fails and the return to the pulse setup
+    also fails, both errors are named.
+  - **Stop before the start:** a Stop before the Keithley was touched now says
+    so and changes no output label.
+  - **Status and log:** a failed 2400-IV sweep names its run folder, and the
+    parameter log's start time is when the run folder is made.
+- **Zurich:**
+  - **Waiting:** scans wait only for a Zurich they set up (`mfli_in_scan`). A
+    Zurich that is only connected cost Gate-VI up to 5 s a point, even in DC
+    mode.
+  - **Autorange:** `sync()` comes before polling, as `zhinst.utils` does it.
+    An input overload ranges up and spoils that reading, and with no raw
+    extrema a small R never ranges down (the STFMR rules).
+  - **Legacy bridge:** replies carry the request id, so a late reply is never
+    taken for the next request's.
+  - **Demodulators:** the ones disabled follow the reference routing; any
+    other reference PLL is switched off on configure; disconnect disables
+    the demodulator actually used for the reference.
+  - **Stop during the reference wait:** this no longer raises `KeyError:
+    'lia_status'`.
+  - **The rack row:**
+    - The Zurich list is held while one is connected, and Ref., TC and the
+      6221-IV lock-in choices are held while a measurement runs.
+    - The Ref. follows another Zurich only while none is connected.
+    - "Locked" is cleared when a measurement starts.
+    - Without MF-MD the rack shows the 1st-harmonic lock.
+- **SR830:**
+  - **Overload after a range change:** after a sensitivity change, the next
+    LIAS? is read once and dropped, as on PPMS/RT-E. The change itself
+    latches the overload bits.
+  - **Unreadable status:** an unreadable `*ESR?` after a setting now sends
+    the setting again, instead of hiding a rejection.
+- **6221-IV, as RT-E:**
+  - **Settle after a range step:** 5 τ of that SR830, or 10 τ of the Zurich.
+    Ranging longer than 180 s fails the point.
+  - **First point of each pass:** windows are repeated until two agree (at
+    most 10). The count goes in the new CSV column `settle_windows`.
+  - **Plot:** one line per loop, one legend entry per meter, and the legend
+    is drawn above compact plots.
+  - **CSV:** the column `in_compliance` is renamed `compliance_readings`; it
+    holds a count.
+  - **Time estimate:** includes each pass's first-point settle.
+- **Not changed, for the user to decide:**
+  - **Keithley output-off state:** the Keithley's "output off" is the 2400's
+    NORMal mode (0 V, low compliance), not an open relay. `:OUTP:SMOD HIMP`
+    would make the gate float while the meters read. That is an instrument
+    setting, not changed without approval.
+  - **Dead code:** the old `nonlocal_*` state from an earlier page, and the
+    unreachable connect-all/disconnect-all functions, are kept for a separate
+    cleanup.
+
 ## Non-local Zurich as on RT-E: Ref. by Zurich, live lock, continuous 6221 sweep (2026-10-08)
 
 On the lab PC, the Zurich (DEV4414) never locked in a Non-local 6221-IV scan

@@ -1462,6 +1462,11 @@ NONLOCAL_MFLI_POLL_MS = 1000
 # At the start of each pass, how long 6221-IV waits for every lock-in to
 # lock to the 6221 reference before it gives up.
 NONLOCAL_IV6221_REFERENCE_WAIT_S = 20.0
+# After an autorange step the reading waits as RT-E does: 5 time constants
+# of that SR830, 10 of the Zurich; a point whose ranging takes longer than
+# this in all fails.
+NONLOCAL_IV6221_RANGE_SETTLE_TAUS = {"sr830": 5.0, "mfli": 10.0}
+NONLOCAL_IV6221_RANGE_LIMIT_S = 180.0
 # SR830 OFLT codes 0-19 in seconds, to read the front-panel time constant.
 SR830_TIME_CONSTANTS_S = (
     10e-6, 30e-6, 100e-6, 300e-6, 1e-3, 3e-3, 10e-3, 30e-3, 100e-3, 300e-3,
@@ -5995,8 +6000,12 @@ class NonLocalVI2410Controller:
         return self.instrument
 
     def _write_checked(self, command: str) -> None:
+        self._require_instrument().write(command)
+        self._check_error(command)
+
+    def _check_error(self, command: str) -> None:
+        """The error queue after ``command`` was written."""
         instrument = self._require_instrument()
-        instrument.write(command)
         time.sleep(0.03)
         response = instrument.query("SYST:ERR?").strip()
         try:
@@ -6155,12 +6164,20 @@ class NonLocalVI2410Controller:
                 )
             try:
                 self._write_checked(":SOUR:VOLT 0")
+                # A Stop pressed since the last wait: no output at all.
+                if stop_event.is_set():
+                    raise NonLocalVIStopped()
                 self._write_checked(":OUTP ON")
                 self.output_enabled = True
-                self._write_checked(f":SOUR:VOLT {voltage_v:.12g}")
+                command = f":SOUR:VOLT {voltage_v:.12g}"
+                self._require_instrument().write(command)
+                on_at = time.monotonic()
+                # The error check (30 ms and SYST:ERR?) is part of the pulse,
+                # not added to it: the pulse used to run about 80 ms long.
+                self._check_error(command)
                 if status_callback is not None:
                     status_callback(voltage_v)
-                self._wait(width_s, stop_event)
+                self._wait(max(0.0, width_s - (time.monotonic() - on_at)), stop_event)
             finally:
                 self.safe_shutdown(reset=False)
                 if status_callback is not None:
@@ -6213,6 +6230,9 @@ class NonLocalVI2410Controller:
         status_callback: Callable[[float], None] | None = None,
     ) -> dict:
         with self.lock:
+            # A Stop since the last wait: the current source is not switched on.
+            if stop_event.is_set():
+                raise NonLocalVIStopped()
             cleanup_errors = []
             try:
                 index = 0
@@ -6336,8 +6356,9 @@ class NonLocalVI2410Controller:
         resistance_ohm = math.nan if abs(current_a) < 1e-15 else abs(voltage_v / current_a)
         return voltage_v, current_a, resistance_ohm
 
-    def start_iv_sweep(self, current_limit_a: float) -> None:
-        """Voltage source at 0 V, output on, the current measured."""
+    def start_iv_sweep(self, current_limit_a: float) -> float:
+        """Voltage source at 0 V, output on, the current measured.  Returns
+        the current limit as the instrument reads it back."""
         limit = float(current_limit_a)
         if not (math.isfinite(limit) and 0.0 < limit <= NONLOCAL_IV_SWEEP_MAX_COMPLIANCE_A):
             raise ValueError(
@@ -6355,11 +6376,19 @@ class NonLocalVI2410Controller:
                     f"Keithley {self.model} over-voltage protection reads {ovp:g} V, "
                     f"not the {NONLOCAL_VI_2410_SOURCE_OVP_V:g} V asked for"
                 )
+            # The current limit as set, so the at-limit marking uses it.
+            protection = self._query_float(":SENS:CURR:PROT?")
+            if not (math.isfinite(protection) and abs(protection - limit) <= limit * 0.01):
+                raise RuntimeError(
+                    f"Keithley {self.model} current limit reads {protection:g} A, "
+                    f"not the {limit:g} A asked for"
+                )
             self._write_checked(f":SENS:CURR:NPLC {NONLOCAL_IV_SWEEP_NPLC:.12g}")
             self._write_checked(":OUTP ON")
             self.output_enabled = True
             if int(self._query_float(":OUTP?")) != 1:
                 raise RuntimeError(f"Keithley {self.model} output did not turn on for the 2400-IV sweep")
+            return protection
 
     def set_iv_voltage(self, voltage_v: float) -> None:
         voltage = float(voltage_v)
@@ -6420,9 +6449,14 @@ API_LEVEL = int(sys.argv[2])
 DEMOD = int(sys.argv[3])
 EXTREF_DEMOD = 1
 EXTREF = 0
+# The id of the request being answered, echoed in its reply, so a reply that
+# arrives after its request timed out is never taken for the next one's.
+REQUEST_ID = None
 
 
 def emit(payload):
+    if REQUEST_ID is not None and "id" not in payload:
+        payload["id"] = REQUEST_ID
     sys.stdout.write(PREFIX + json.dumps(payload, ensure_ascii=True) + "\n")
     sys.stdout.flush()
 
@@ -6465,6 +6499,9 @@ def run_autorange(timeout_s=8.0):
     old_range = float(daq.getDouble("/%s/sigins/0/range" % device))
     autorange_node = "/%s/sigins/0/autorange" % device
     daq.setInt(autorange_node, 1)
+    # As zhinst.utils.sigin_autorange: the set must take effect before the
+    # poll, or a stale 0 ends it at once.
+    daq.sync()
     deadline = time.monotonic() + float(timeout_s)
     while int(daq.getInt(autorange_node)) != 0:
         if time.monotonic() >= deadline:
@@ -6532,8 +6569,10 @@ except BaseException:
     sys.exit(2)
 
 for request_line in sys.stdin:
+    REQUEST_ID = None
     try:
         request = json.loads(request_line)
+        REQUEST_ID = request.get("id")
         command = request.get("command")
         if command in ("configure_second_harmonic", "configure_third_harmonic"):
             harmonic = 2 if command == "configure_second_harmonic" else 3
@@ -6887,14 +6926,25 @@ class LegacyMFLIBridge:
             return ""
         return "; legacy environment output: " + " | ".join(self.diagnostics[-5:])
 
-    def _receive(self, timeout_s: float) -> dict[str, object]:
-        try:
-            reply = self.responses.get(timeout=max(0.1, float(timeout_s)))
-        except queue.Empty as error:
-            raise RuntimeError(
-                f"The legacy LabOne bridge did not reply within {timeout_s:g} s"
-                + self._diagnostic_suffix()
-            ) from error
+    def _receive(self, timeout_s: float, request_id: int | None = None) -> dict[str, object]:
+        deadline = time.monotonic() + max(0.1, float(timeout_s))
+        while True:
+            try:
+                reply = self.responses.get(timeout=max(0.01, deadline - time.monotonic()))
+            except queue.Empty as error:
+                raise RuntimeError(
+                    f"The legacy LabOne bridge did not reply within {timeout_s:g} s"
+                    + self._diagnostic_suffix()
+                ) from error
+            # A late reply to an earlier, timed-out request is dropped; a
+            # reply without an id answers a line the bridge could not read.
+            if (
+                request_id is None
+                or reply.get("_eof")
+                or reply.get("id") in (None, request_id)
+            ):
+                break
+            self._append_diagnostic(f"dropped a late reply to request {reply.get('id')}")
         if reply.get("_eof"):
             exit_code = self.process.poll() if self.process is not None else None
             raise RuntimeError(
@@ -6917,7 +6967,8 @@ class LegacyMFLIBridge:
             )
         if self.process.stdin is None:
             raise RuntimeError("Legacy LabOne bridge stdin is unavailable")
-        payload = {"command": str(command)}
+        self.request_id = getattr(self, "request_id", 0) + 1
+        payload = {"command": str(command), "id": self.request_id}
         payload.update(parameters)
         try:
             self.process.stdin.write(json.dumps(payload, ensure_ascii=True) + "\n")
@@ -6926,7 +6977,7 @@ class LegacyMFLIBridge:
             raise RuntimeError(
                 "Cannot send a command to the legacy LabOne bridge" + self._diagnostic_suffix()
             ) from error
-        return self._receive(timeout_s)
+        return self._receive(timeout_s, self.request_id)
 
     def close(self, force: bool = False) -> None:
         process = self.process
@@ -6993,6 +7044,13 @@ class NonLocalACController:
         # 6221-IV may switch the MFLI input autorange off; every configure()
         # sets it again (Gate-VI keeps it on).
         self.mfli_auto_range_enabled = True
+        # Whether the last configure() set the Zurich up for its scan: a
+        # Zurich that is only connected (and set up for the rack's lock
+        # display) is not waited for.
+        self.mfli_in_scan = False
+        # A sensitivity change latches the SR830 overload bits; the next
+        # LIAS? is read once and discarded, as on PPMS/RT-E.
+        self.lias_clear_pending: dict[str, bool] = {}
 
     @property
     def connected(self) -> bool:
@@ -7069,13 +7127,37 @@ class NonLocalACController:
 
     def _write_sr830(self, key: str, command: str) -> None:
         lockin = self.lockins[key]
-        lockin.write(command)
-        time.sleep(0.03)
-        event_status = int(self._query_sr830_numbers(key, "*ESR?", 1)[0])
-        if event_status & 0x30:
-            raise RuntimeError(
-                f"SR830 #{key} rejected {command!r}; *ESR?={event_status}"
-            )
+        for attempt in (1, 2):
+            lockin.write(command)
+            time.sleep(0.03)
+            # *ESR? clears as it is read, so a garbled reply cannot simply be
+            # asked for again (that would read 0 and hide a rejection).  Every
+            # command sent here sets a value (HARM, SENS, …): on an unreadable
+            # reply the buffer is cleared and the command sent once more.
+            response = ""
+            try:
+                response = lockin.query("*ESR?").strip()
+                event_status = int(float(response))
+            except Exception as error:
+                if attempt == 2:
+                    raise RuntimeError(
+                        f"SR830 #{key} status after {command!r} is unreadable: {response!r}"
+                    ) from error
+                self.logger(
+                    f"SR830 #{key} *ESR? after {command!r} gave {response!r}; "
+                    "clearing the buffer and sending the command again"
+                )
+                try:
+                    lockin.clear()
+                except Exception:
+                    pass
+                time.sleep(0.08)
+                continue
+            if event_status & 0x30:
+                raise RuntimeError(
+                    f"SR830 #{key} rejected {command!r}; *ESR?={event_status}"
+                )
+            return
 
     def _write_2182(self, command: str) -> None:
         meter = self.nanovoltmeter
@@ -7121,7 +7203,7 @@ class NonLocalACController:
                 self._write_2182(command)
             time.sleep(0.5)
             return {
-                "resource": "GPIB 7",
+                "resource": self.nanovoltmeter_resource or NONLOCAL_2182_RESOURCE,
                 "channel": channel,
                 "nplc": float(nplc),
                 "autozero": True,
@@ -7378,7 +7460,13 @@ class NonLocalACController:
 
     def disable_unused_ppms_demods(self, mode):
         """Leave only the mode's measurement demodulators and PLL enabled."""
-        indices = (1, 2) if mode in ('1', '2', '3') else (2,) if mode == '1+2' else ()
+        # The 1st, 2nd and 3rd harmonic demodulators for this reference
+        # routing (configure_second/third_harmonic): Demods 1-3 with the
+        # reference on Demod 4, else Demods 1, 3, 4 with it on Demod 2.
+        extref = self.mfli_config.get('extref_demodulator')
+        measuring = (0, 1, 2) if extref == 3 else (0, 2, 3) if extref == 1 else (0,)
+        used = len(PPMS_ZURICH_MODE_ORDERS.get(str(mode), (1,)))
+        indices = tuple(measuring[used:])
         with self.lock:
             if self.mfli_bridge is not None:
                 if indices:
@@ -7943,9 +8031,16 @@ class NonLocalACController:
             if len(routes) != 1:
                 raise RuntimeError('Cannot identify the external-reference controller for Demod 4')
             extref = routes[0]
-        previous_extref = int(self.mfli_config.get('extref_channel', 0))
-        if self.mfli_bridge is None and previous_extref != extref:
-            self.mfli_daq.setInt(f'/{self.mfli_device}/extrefs/{previous_extref}/enable', 0)
+        if self.mfli_bridge is None:
+            # Only the chosen reference PLL: another left on (by an earlier
+            # session or a crash) would drive oscillator 0 as well.
+            for other in range(2):
+                if other == extref:
+                    continue
+                try:
+                    self.mfli_daq.setInt(f'/{self.mfli_device}/extrefs/{other}/enable', 0)
+                except BaseException:
+                    pass  # a base MFLI has one
         if self.mfli_bridge is not None:
             reply = self.mfli_bridge.request(
                 "configure",
@@ -8641,6 +8736,7 @@ class NonLocalACController:
                 self.sensitivity_indices[key] = sensitivity
                 self.low_range_counts[key] = 0
                 self.range_cooldowns[key] = 0
+                self.lias_clear_pending[key] = True
                 time_constant_code = int(self._query_sr830_numbers(key, "OFLT?", 1)[0])
                 readbacks[key] = {
                     "meter_type": "SR830",
@@ -8654,6 +8750,7 @@ class NonLocalACController:
                     "channel": requested["channel"],
                     "resource": f"GPIB {key}",
                 }
+            self.mfli_in_scan = False
             if mfli_config:
                 readbacks["mfli"] = self.configure_mfli(
                     str(mfli_config["coupling"]),
@@ -8673,6 +8770,7 @@ class NonLocalACController:
                 self.mfli_auto_range_enabled = bool(mfli_config.get("auto_range", True))
                 if not self.mfli_auto_range_enabled:
                     self.mfli_initial_autorange_pending = False
+                self.mfli_in_scan = True
             if use_nanovoltmeter:
                 readbacks["2182"] = {
                     "meter_type": "2182A",
@@ -8688,6 +8786,7 @@ class NonLocalACController:
                 if abs(float(rms_ma)) > 105.0:
                     raise ValueError("6221 DC current must be within ±105 mA")
                 requested_a = float(rms_ma) * 1e-3
+                self.output_enabled = True
                 for command in (
                     f"SOUR:CURR {requested_a:.12e}",
                     "OUTP ON",
@@ -8712,6 +8811,7 @@ class NonLocalACController:
             peak_a = math.sqrt(2.0) * float(rms_ma) * 1e-3
             if peak_a > NONLOCAL_MAX_PEAK_A:
                 raise ValueError("6221 sine-wave peak exceeds 105 mA")
+            self.output_enabled = True
             for command in (
                 "SOUR:WAVE:ABOR",
                 f"SOUR:WAVE:AMPL {peak_a:.12e}",
@@ -8749,7 +8849,9 @@ class NonLocalACController:
             key: self._wait_reference_one(key, frequency_hz, stop_event)
             for key in keys
         }
-        if self.mfli_connected and self.mfli_config:
+        # Only a Zurich this scan set up: one merely connected (the rack's
+        # lock display sets it up too) must not cost a scan 5 s a point.
+        if self.mfli_connected and self.mfli_config and self.__dict__.get("mfli_in_scan"):
             results["mfli"] = self._wait_mfli_reference(
                 frequency_hz, stop_event
             )
@@ -8766,6 +8868,7 @@ class NonLocalACController:
         last_sample = {
             "reference_valid": False,
             "reference_frequency_hz": math.nan,
+            "lia_status": 8,
             "status_text": (
                 f"{self.mfli_config.get('reference_source', NONLOCAL_MFLI_DEFAULT_REFERENCE_INPUT)} "
                 "external reference not locked"
@@ -8838,6 +8941,9 @@ class NonLocalACController:
             autorange_node = f"/{device}/sigins/0/autorange"
             old_range = float(self.mfli_daq.getDouble(range_node))
             self.mfli_daq.setInt(autorange_node, 1)
+            # As zhinst.utils.sigin_autorange: the set must take effect
+            # before the poll, or a stale 0 ends it at once.
+            self.mfli_daq.sync()
             deadline = time.monotonic() + 8.0
             while int(self.mfli_daq.getInt(autorange_node)) != 0:
                 if time.monotonic() >= deadline:
@@ -8949,6 +9055,7 @@ class NonLocalACController:
                 raise RuntimeError(f"SR830 #{key} auto-range readback is inconsistent")
             self.sensitivity_indices[key] = actual
             self.range_cooldowns[key] = 3
+            self.lias_clear_pending[key] = True
             return f"SENS {old}->{actual} ({reason})"
         return ""
 
@@ -8991,7 +9098,13 @@ class NonLocalACController:
                     }
                 elif key == "mfli":
                     sample = self.read_mfli(expected_frequency_hz)
-                    sample["auto_range"] = self._auto_range_mfli(sample)
+                    if sample.get("input_overload") is True and self.__dict__.get(
+                            "mfli_auto_range_enabled", True):
+                        sample["auto_range"] = self._run_mfli_autorange("input overload")
+                    elif sample.get("input_extrema_valid", True):
+                        sample["auto_range"] = self._auto_range_mfli(sample)
+                    else:
+                        sample["auto_range"] = ""
                     sample.update(
                         output_on=output_on,
                         measurement_condition=measurement_condition,
@@ -9002,6 +9115,7 @@ class NonLocalACController:
                         and not sample["lia_status"]
                         and not sample["in_compliance"]
                         and not sample["auto_range"]
+                        and sample.get("input_overload") is not True
                     )
                     samples[key] = sample
                 else:
@@ -9020,6 +9134,9 @@ class NonLocalACController:
     ) -> dict:
         lockin = self.lockins[key]
         values = self._query_sr830_numbers(key, "SNAP? 1,2,3,4,9", 5)
+        if self.lias_clear_pending.pop(key, False):
+            # The range change itself set the overload bits: read and drop.
+            self._query_sr830_numbers(key, "LIAS?", 1)
         status = int(self._query_sr830_numbers(key, "LIAS?", 1)[0])
         sensitivity_used = self.sensitivity_indices[key]
         auto_action = self._auto_range(key, values[2], status)
@@ -9090,6 +9207,7 @@ class NonLocalACController:
             # current, the next order starts at Start, often far smaller.
             self._write_sr830(key, "SENS 9")
             self.sensitivity_indices[key] = int(self._query_sr830_numbers(key, "SENS?", 1)[0])
+            self.lias_clear_pending[key] = True
             self.low_range_counts[key] = 0
             self.range_cooldowns[key] = 0
 
@@ -9156,11 +9274,13 @@ class NonLocalACController:
                         f"{NONLOCAL_MFLI_DEMODULATOR}/enable",
                         0,
                     )
-                    mfli_daq.setInt(
-                        f"/{self.mfli_device}/demods/"
-                        f"{NONLOCAL_MFLI_EXTREF_DEMODULATOR}/enable",
-                        0,
-                    )
+                    extref_demod = int(self.mfli_config.get(
+                        "extref_demodulator", NONLOCAL_MFLI_EXTREF_DEMODULATOR
+                    ))
+                    if extref_demod != NONLOCAL_MFLI_DEMODULATOR:
+                        mfli_daq.setInt(
+                            f"/{self.mfli_device}/demods/{extref_demod}/enable", 0
+                        )
                     mfli_daq.sync()
                 except BaseException:
                     pass
@@ -12620,6 +12740,9 @@ class CombinedControlApp:
         self.nonlocal_mfli_applying = False
         self.nonlocal_mfli_after_id = None
         self.nonlocal_mfli_tc_seen = None
+        self.nonlocal_mfli_device_seen = zurich_mfli_choice(
+            self.nonlocal_vi_mfli_device_var.get()
+        )[0]
         self.nonlocal_vi_mfli_harmonic_var = tk.IntVar(value=NONLOCAL_HARMONIC)
         self.nonlocal_vi_mfli_channel_var = tk.StringVar(value="R")
         self.nonlocal_vi_mfli_input_impedance_var = tk.StringVar(
@@ -20907,6 +21030,7 @@ class CombinedControlApp:
         vi_mfli_chooser = create_zurich_chooser(
             meters, self.nonlocal_vi_mfli_device_var, match_chars=18
         )
+        self.nonlocal_vi_mfli_chooser = vi_mfli_chooser
         vi_mfli_chooser.grid(
             row=2, column=1, padx=(0, 12 + vi_mfli_chooser.zurich_shortfall),
             pady=(4, 0), sticky="w",
@@ -20923,6 +21047,7 @@ class CombinedControlApp:
             width=12,
         )
         reference_combo.grid(row=2, column=7, pady=(4, 0))
+        self.nonlocal_mfli_reference_combo = reference_combo
         # A change is applied to a connected Zurich at once, as on RT-E.
         reference_combo.bind(
             "<<ComboboxSelected>>", lambda _event: self._apply_nonlocal_mfli_settings(), add="+"
@@ -20930,6 +21055,7 @@ class CombinedControlApp:
         ttk.Label(meters, text="TC (s)").grid(row=2, column=8, padx=(8, 3), pady=(4, 0))
         tc_entry = ttk.Entry(meters, textvariable=self.nonlocal_mfli_tc_var, width=6)
         tc_entry.grid(row=2, column=9, pady=(4, 0))
+        self.nonlocal_mfli_tc_entry = tc_entry
         for sequence in ("<Return>", "<FocusOut>"):
             tc_entry.bind(sequence, lambda _event: self._apply_nonlocal_mfli_settings(tc_edit=True), add="+")
         self.nonlocal_mfli_after_id = self.root.after(NONLOCAL_MFLI_POLL_MS, self._poll_nonlocal_mfli)
@@ -21458,6 +21584,9 @@ class CombinedControlApp:
             params, text="6221 / 2400 OFF", width=15, command=self.stop_nonlocal_vi
         )
         self.nonlocal_iv6221_off_button.grid(row=3, column=5, columnspan=2, sticky="e", padx=4)
+        # The lock-in choices, held while a measurement runs (its plots and
+        # CSV follow the choices it started with).
+        self.nonlocal_iv6221_choice_widgets = []
         for row, key in enumerate(("8", "9", "mfli")):
             ttk.Label(lockins, text=f"{NONLOCAL_METER_NAMES[key]} harmonic").grid(
                 row=row, column=0, sticky="e", padx=(12, 3), pady=2
@@ -21467,6 +21596,7 @@ class CombinedControlApp:
                 values=tuple(PPMS_ZURICH_MODE_ORDERS), width=7, state="readonly",
             )
             combo.grid(row=row, column=1, sticky="ew", pady=2)
+            self.nonlocal_iv6221_choice_widgets.append((combo, "readonly"))
             combo.bind(
                 "<<ComboboxSelected>>",
                 lambda _event: self._refresh_nonlocal_iv6221_plot_layout(), add="+",
@@ -21477,10 +21607,12 @@ class CombinedControlApp:
                     "<<ComboboxSelected>>",
                     lambda _event: self._apply_nonlocal_mfli_settings(), add="+",
                 )
-            ttk.Checkbutton(
+            measure = ttk.Checkbutton(
                 lockins, text="Measure", variable=self.nonlocal_iv6221_measure_vars[key],
                 command=self._refresh_nonlocal_iv6221_plot_layout,
-            ).grid(row=row, column=2, padx=3)
+            )
+            measure.grid(row=row, column=2, padx=3)
+            self.nonlocal_iv6221_choice_widgets.append((measure, "normal"))
             ttk.Label(
                 lockins, width=14,
                 **({"textvariable": self.nonlocal_iv6221_zurich_range_var} if key == "mfli"
@@ -21554,11 +21686,39 @@ class CombinedControlApp:
     # The rack's Zurich, as on RT-E ------------------------------------------
 
     def _on_nonlocal_mfli_device_changed(self) -> None:
-        """The Ref. of the chosen Zurich's wiring (NONLOCAL_MFLI_DEVICE_REFERENCE_INPUTS)."""
+        """The Ref. of the chosen Zurich's wiring (NONLOCAL_MFLI_DEVICE_REFERENCE_INPUTS),
+        when another Zurich is chosen and none is connected."""
         device = zurich_mfli_choice(self.nonlocal_vi_mfli_device_var.get())[0]
+        if device == self.__dict__.get("nonlocal_mfli_device_seen"):
+            return  # the same Zurich again: a Ref. set by hand stays
+        self.nonlocal_mfli_device_seen = device
+        controller = self.__dict__.get("nonlocal_vi_ac_controller")
+        if controller is not None and controller.mfli_connected:
+            return
         reference = NONLOCAL_MFLI_DEVICE_REFERENCE_INPUTS.get(device)
         if reference and self.nonlocal_vi_mfli_reference_source_var.get() != reference:
             self.nonlocal_vi_mfli_reference_source_var.set(reference)
+
+    def _update_nonlocal_mfli_controls(self) -> None:
+        """The Zurich list while one is connected, and Ref./TC and the
+        6221-IV lock-in choices while a measurement runs, are held, as on
+        RT-E: a change then would not reach the instrument."""
+        idle = self._nonlocal_page_idle()
+        connected = self.nonlocal_vi_ac_controller.mfli_connected
+        for widget, active, enabled in (
+            (self.__dict__.get("nonlocal_vi_mfli_chooser"), "readonly",
+             idle and not connected),
+            (self.__dict__.get("nonlocal_mfli_reference_combo"), "readonly", idle),
+            (self.__dict__.get("nonlocal_mfli_tc_entry"), "normal", idle),
+            *((widget, active, idle) for widget, active in self.__dict__.get(
+                "nonlocal_iv6221_choice_widgets", ())),
+        ):
+            if widget is None:
+                continue
+            try:
+                widget.configure(state=active if enabled else "disabled")
+            except (tk.TclError, AttributeError):
+                pass
 
     def _nonlocal_mfli_settings(self) -> dict | None:
         """Ref., TC and the 6221-IV Zurich harmonic, or None if the TC is not valid."""
@@ -21567,6 +21727,7 @@ class CombinedControlApp:
         except (TypeError, ValueError, tk.TclError):
             return None
         mode = str(self.nonlocal_iv6221_harmonic_vars["mfli"].get()).strip()
+        # As RT-E's row: the Zurich's 6221-IV harmonic mode.
         reference = self.nonlocal_vi_mfli_reference_source_var.get().strip()
         if not (math.isfinite(tc_s) and 0 < tc_s <= 100) or mode not in PPMS_ZURICH_MODE_ORDERS \
                 or reference not in NONLOCAL_MFLI_REFERENCE_INPUTS:
@@ -21580,6 +21741,10 @@ class CombinedControlApp:
         controller = self.nonlocal_vi_ac_controller
         mode, tc_s = settings["mode"], float(settings["tc_s"])
         multi = mode in ("1+2", "1+2+3")
+        if multi and not self._nonlocal_mfli_has_multi_demod():
+            # Without MF-MD the rack shows the lock on the 1st harmonic; the
+            # 6221-IV scan itself still asks for (and reports) the option.
+            mode, multi = "1", False
         with controller.lock:
             readback = controller.configure_mfli(
                 "AC", 1 if multi else int(mode), "R",
@@ -21595,6 +21760,12 @@ class CombinedControlApp:
                     controller.configure_third_harmonic(tc_s, rate=rate)
                 controller.disable_unused_ppms_demods(mode)
 
+    def _nonlocal_mfli_has_multi_demod(self) -> bool:
+        """Whether the connected Zurich has MF-MD (several demodulators)."""
+        props = getattr(self.nonlocal_vi_ac_controller, "mfli_props", {}) or {}
+        options = str(props.get("options", "")).upper()
+        return ("MD" in options) if options else bool(props.get("has_demod_2", False))
+
     def _nonlocal_page_idle(self) -> bool:
         return (
             not self.nonlocal_vi_running
@@ -21607,15 +21778,13 @@ class CombinedControlApp:
     def _apply_nonlocal_mfli_settings(self, tc_edit: bool = False) -> None:
         """A Ref., TC or Zurich harmonic change, applied to a connected,
         idle Zurich at once (the scans set it up again when they start)."""
-        if tc_edit:
-            # Return or leaving the field: only an edited TC is applied.
-            text = self.nonlocal_mfli_tc_var.get()
-            if text == self.nonlocal_mfli_tc_seen:
-                return
-            self.nonlocal_mfli_tc_seen = text
+        text = self.nonlocal_mfli_tc_var.get()
+        if tc_edit and text == self.nonlocal_mfli_tc_seen:
+            return  # Return or leaving the field: only an edited TC is applied
         controller = self.nonlocal_vi_ac_controller
         if not controller.mfli_connected or not self._nonlocal_page_idle():
             return
+        self.nonlocal_mfli_tc_seen = text
         settings = self._nonlocal_mfli_settings()
         if settings is None:
             self.nonlocal_vi_status_var.set(
@@ -21633,7 +21802,9 @@ class CombinedControlApp:
             if self.closing or self.nonlocal_vi_closed:
                 return
             error = completed.exception()
-            if error is None:
+            if not self._nonlocal_page_idle():
+                pass  # a measurement began meanwhile; its status stays
+            elif error is None:
                 self.nonlocal_vi_status_var.set(
                     f"Zurich: Ref. {settings['reference']}, TC {settings['tc_s']:g} s, "
                     f"harmonic {settings['mode']} applied"
@@ -28610,6 +28781,13 @@ class CombinedControlApp:
                 canvas.create_text(width / 2, height / 2, text="Increase the window height", anchor="center")
                 return
             top, bottom = 14, 44
+            # A legend gets the space above the plot, clear of the curves.
+            legend_names = {
+                (series_labels or {}).get(key, str(key).split("_loop_", 1)[0])
+                for key, rows in series.items() if rows
+            }
+            if show_legend and len(legend_names) > 1:
+                top = 26
         hide_x_labels = getattr(canvas, "ppms_hide_x_labels", False) is True
         if hide_x_labels:
             bottom = 10
@@ -28696,6 +28874,7 @@ class CombinedControlApp:
         series_labels = {} if series_labels is None else dict(series_labels)
         series_colors = {} if series_colors is None else dict(series_colors)
         legend_x = left + 8
+        legend_drawn: set[str] = set()
         order = {"8": 0, "9": 1, "10": 2, "mfli": 3, "2182": 4}
         def base_series_key(series_key):
             return str(series_key).split("_loop_", 1)[0]
@@ -28777,7 +28956,8 @@ class CombinedControlApp:
                     else "Zurich MFLI" if base_key == "mfli"
                     else f"SR830 #{base_key}"
                 )
-            if show_legend and legend_label:
+            if show_legend and legend_label and legend_label not in legend_drawn:
+                legend_drawn.add(legend_label)
                 canvas.create_line(
                     legend_x, 12, legend_x + 18, 12, fill=color, width=2
                 )
@@ -29197,11 +29377,20 @@ class CombinedControlApp:
             self.nonlocal_iv6221_zurich_range_var.set("Autorange ON")
         if key in self.nonlocal_vi_measurement_enabled_vars:
             self.nonlocal_vi_measurement_enabled_vars[key].set(False)
-        if key in ("2410", "6221"):
+        # Only the instrument disconnected: the other may still be on.
+        model = self.nonlocal_vi_2410_controller.model
+        if key == "2410":
             self.nonlocal_vi_output_var.set(
-                f"Keithley {self.nonlocal_vi_2410_controller.model} and 6221 outputs: OFF"
+                f"Keithley {model}: disconnected" if error is None
+                else f"Keithley {model} output: check it"
             )
-            self.nonlocal_iv6221_source_var.set("6221: OFF")
+        elif key == "6221":
+            self.nonlocal_vi_output_var.set(
+                "6221: disconnected" if error is None else "6221 output: check it"
+            )
+            self.nonlocal_iv6221_source_var.set(
+                "6221: OFF (disconnected)" if error is None else "6221: check the output"
+            )
         if key == "2410":
             self.nonlocal_resistance_safety_var.set(False)
             self.nonlocal_iv_safety_var.set(False)
@@ -29425,8 +29614,14 @@ class CombinedControlApp:
         self.nonlocal_vi_connection_var.set("Not connected")
         for key in ("2410", "6221", "8", "9", "mfli", "2182"):
             self._set_nonlocal_vi_indicator(key, False)
-        self.nonlocal_vi_output_var.set(f"Keithley {self.nonlocal_vi_2410_controller.model} and 6221 outputs: OFF")
-        self.nonlocal_iv6221_source_var.set("6221: OFF")
+        model = self.nonlocal_vi_2410_controller.model
+        self.nonlocal_vi_output_var.set(
+            f"Keithley {model} and 6221: disconnected" if error is None
+            else f"Keithley {model} and 6221 outputs: check them"
+        )
+        self.nonlocal_iv6221_source_var.set(
+            "6221: OFF (disconnected)" if error is None else "6221: check the output"
+        )
         self.nonlocal_vi_reference_var.set("Lock-in reference: --")
         self.nonlocal_vi_safety_var.set(False)
         self.nonlocal_vi_status_var.set(
@@ -29804,6 +29999,9 @@ class CombinedControlApp:
         self.nonlocal_vi_run_directory = run_directory
         self.nonlocal_vi_stop_event.clear()
         self.nonlocal_vi_running = True
+        self.nonlocal_vi_shutdown_error = None
+        # The rack Zurich row's lock state is the scan's now.
+        self.nonlocal_mfli_lock_word = None
         self._set_mfli_lock_state(None, vi=True)
         with self.nonlocal_vi_data_lock:
             self.nonlocal_vi_time_rows = []
@@ -29865,15 +30063,18 @@ class CombinedControlApp:
         )
 
     def _nonlocal_vi_shutdown_outputs(self) -> None:
+        """Both outputs off, each read back off (OUTP?) before it counts."""
         errors = []
         if self.nonlocal_vi_ac_controller.source_connected:
             try:
                 self.nonlocal_vi_ac_controller.output_off()
+                self.nonlocal_vi_ac_controller.confirm_output_off("after switching it off")
             except BaseException as error:
                 errors.append(str(error))
         if self.nonlocal_vi_2410_controller.connected:
             try:
                 self.nonlocal_vi_2410_controller.safe_shutdown(reset=False)
+                self.nonlocal_vi_2410_controller.confirm_output_off("after switching it off")
             except BaseException as error:
                 errors.append(str(error))
         self.nonlocal_vi_interlock.force_idle()
@@ -30290,8 +30491,15 @@ class CombinedControlApp:
                     )
                 )
         finally:
+            # A shutdown failure is kept beside the scan's own error, not in
+            # its place (the finish reports both).
+            self.nonlocal_vi_shutdown_error = None
             try:
                 self._nonlocal_vi_shutdown_outputs()
+            except BaseException as shutdown_error:
+                self.nonlocal_vi_shutdown_error = shutdown_error
+                if shutdown_error.__context__ is None:
+                    raise  # no scan error to report: this is the error
             finally:
                 for file in (raw_file, summary_file, resistance_file):
                     if file is not None:
@@ -30355,9 +30563,16 @@ class CombinedControlApp:
         )
         self.nonlocal_vi_running = False
         self._set_mfli_lock_state(None, vi=True)
-        self.nonlocal_vi_output_var.set(f"Keithley {self.nonlocal_vi_2410_controller.model} and 6221 outputs: OFF")
-        self.nonlocal_iv6221_source_var.set("6221: OFF")
+        shutdown_error = self.__dict__.get("nonlocal_vi_shutdown_error")
+        outputs_off = shutdown_error is None
+        model = self.nonlocal_vi_2410_controller.model
+        self.nonlocal_vi_output_var.set(
+            f"Keithley {model} and 6221 outputs: OFF" if outputs_off
+            else f"Keithley {model} and 6221 outputs: check them"
+        )
+        self.nonlocal_iv6221_source_var.set("6221: OFF" if outputs_off else "6221: check the output")
         self.nonlocal_vi_eta_var.set("Remaining: 00:00:00")
+        snapshot_note = ""
         self._redraw_nonlocal_vi_plots()
         if self.nonlocal_vi_run_directory is not None:
             try:
@@ -30397,22 +30612,33 @@ class CombinedControlApp:
                             ),
                         )
             except BaseException as snapshot_error:
-                self.nonlocal_vi_status_var.set(
-                    f"CSV saved; plot snapshot save failed: {snapshot_error}"
-                )
+                # Kept for the final status, which would otherwise replace it.
+                snapshot_note = f"; plot snapshot save failed: {short_status_error(snapshot_error)}"
+        off_note = (
+            "" if outputs_off
+            else "; switching the outputs off failed, check them"
+            + ("" if shutdown_error is error else f": {short_status_error(shutdown_error)}")
+        )
         if error is not None and not isinstance(error, NonLocalVIStopped):
             self.nonlocal_vi_status_var.set(
-                f"VI failed; all outputs off: {error}"
+                f"VI failed: {short_status_error(error).rstrip(';；')}"
+                + ("; all outputs off (read back)" if outputs_off else off_note)
+                + snapshot_note
             )
             if not self.closing:
-                messagebox.showerror("Non-local VI", str(error), parent=self.root)
+                messagebox.showerror(
+                    "Non-local VI",
+                    str(error) + (f"\n\nSwitching the outputs off also failed: {shutdown_error}"
+                                  if shutdown_error is not None and shutdown_error is not error else ""),
+                    parent=self.root,
+                )
         elif stopped:
             self.nonlocal_vi_status_var.set(
-                f"VI stopped; data saved in {self.nonlocal_vi_run_directory}"
+                f"VI stopped; data saved in {self.nonlocal_vi_run_directory}" + off_note + snapshot_note
             )
         else:
             self.nonlocal_vi_status_var.set(
-                f"VI complete; data saved in {self.nonlocal_vi_run_directory}"
+                f"VI complete; data saved in {self.nonlocal_vi_run_directory}" + off_note + snapshot_note
             )
         self._update_nonlocal_vi_controls()
         self._update_k6221_controls()
@@ -30433,7 +30659,10 @@ class CombinedControlApp:
         self.nonlocal_vi_status_var.set(
             f"Stopping VI and switching off the Keithley {self.nonlocal_vi_2410_controller.model} and 6221 outputs…"
         )
-        if not self.nonlocal_vi_running and not self.nonlocal_vi_busy:
+        # A running Gate-VI scan switches off itself.  Otherwise the outputs
+        # are switched off now, also while a connection is being made: the
+        # single worker runs this as soon as that ends.
+        if not self.nonlocal_vi_running:
             self.nonlocal_vi_busy = True
             self._update_nonlocal_vi_controls()
             future = self.nonlocal_vi_executor.submit(
@@ -30449,11 +30678,15 @@ class CombinedControlApp:
 
     def _finish_nonlocal_vi_off(self, error) -> None:
         self.nonlocal_vi_busy = False
-        if error is None:
-            self.nonlocal_iv6221_source_var.set("6221: OFF")
-        self.nonlocal_vi_output_var.set(f"Keithley {self.nonlocal_vi_2410_controller.model} and 6221 outputs: OFF")
+        model = self.nonlocal_vi_2410_controller.model
+        # OFF only once read back off.
+        self.nonlocal_iv6221_source_var.set("6221: OFF" if error is None else "6221: check the output")
+        self.nonlocal_vi_output_var.set(
+            f"Keithley {model} and 6221 outputs: OFF" if error is None
+            else f"Keithley {model} and 6221 outputs: check them"
+        )
         self.nonlocal_vi_status_var.set(
-            f"Keithley {self.nonlocal_vi_2410_controller.model} and 6221 outputs are both off"
+            f"Keithley {model} and 6221 outputs are both off (read back)"
             if error is None
             else f"Output off warning: {error}"
         )
@@ -30671,6 +30904,7 @@ class CombinedControlApp:
         self.nonlocal_iv6221_stop_button.configure(
             state="normal" if task == "iv6221" and not stopping else "disabled"
         )
+        self._update_nonlocal_mfli_controls()
 
     def _nonlocal_keithley_free(self, what: str) -> bool:
         controller = self.nonlocal_vi_2410_controller
@@ -30698,6 +30932,10 @@ class CombinedControlApp:
         self.nonlocal_keithley_task = kind
         self.nonlocal_last_task = kind
         self.nonlocal_6221_off_unconfirmed = False
+        # Until _run_on_nonlocal_keithley switches anything, a Stop leaves
+        # every output as it was.
+        self.nonlocal_keithley_untouched = True
+        self.nonlocal_mfli_lock_word = None
         self._update_nonlocal_vi_controls()
         try:
             future = self.nonlocal_vi_executor.submit(worker)
@@ -30734,6 +30972,7 @@ class CombinedControlApp:
         stop = self.nonlocal_keithley_stop_event
         if stop.is_set():
             raise InterruptedError("Stopped before the Keithley was switched on")
+        self.nonlocal_keithley_untouched = False
         if source.source_connected:
             try:
                 source.output_off()
@@ -30753,8 +30992,17 @@ class CombinedControlApp:
             body(controller)
         finally:
             try:
-                controller.restore_voltage_mode()
-                self.nonlocal_keithley_output_off = True
+                try:
+                    controller.restore_voltage_mode()
+                    self.nonlocal_keithley_output_off = True
+                except BaseException as restore_error:
+                    # Name the measurement's own failure too, not only this one.
+                    original = restore_error.__context__
+                    if original is not None and not isinstance(original, InterruptedError):
+                        raise RuntimeError(
+                            f"{original}; then switching back to the pulse setup failed: {restore_error}"
+                        ) from restore_error
+                    raise
             finally:
                 self.nonlocal_vi_interlock.end(phase)
 
@@ -31028,11 +31276,15 @@ class CombinedControlApp:
 
     def _finish_nonlocal_resistance(self, future) -> None:
         self.nonlocal_keithley_task = None
-        self.nonlocal_vi_output_var.set(self._nonlocal_output_text())
+        untouched = bool(self.__dict__.get("nonlocal_keithley_untouched"))
+        if not untouched:
+            self.nonlocal_vi_output_var.set(self._nonlocal_output_text())
         try:
             future.result()
         except InterruptedError:
             self.nonlocal_vi_status_var.set(
+                "Resistance measurement stopped before the Keithley was switched on"
+                if untouched else
                 "Continuous resistance measurement finished; last 20 s kept, source current zeroed and output off"
             )
         except BaseException as error:
@@ -31140,6 +31392,7 @@ class CombinedControlApp:
         if self.nonlocal_keithley_task is not None or not self._nonlocal_keithley_free("the 2400-IV sweep"):
             return
         self.nonlocal_iv_directory = Path(folder)
+        settings["started"] = datetime_module.datetime.now().isoformat(timespec="seconds")
         # A folder per run, as on the STFMR and Gate-VI pages.
         try:
             run_directory = self._nonlocal_make_run_directory(
@@ -31210,7 +31463,8 @@ class CombinedControlApp:
                     "elapsed_s", "at_current_limit",
                 ))
                 file.flush()
-                controller.start_iv_sweep(limit)
+                # The limit as the Keithley reads it back marks the points at it.
+                limit_read = controller.start_iv_sweep(limit)
                 started = time.monotonic()
                 for index, target in enumerate(settings["voltages"], start=1):
                     if stop.is_set():
@@ -31225,7 +31479,7 @@ class CombinedControlApp:
                         voltage_v,
                         current_a,
                         time.monotonic() - started,
-                        abs(current_a) >= limit * 0.99,
+                        abs(current_a) >= limit_read * 0.99,
                     )
                     writer.writerow((
                         index, f"{target:.10g}", f"{voltage_v:.10g}", f"{current_a:.10g}",
@@ -31256,22 +31510,28 @@ class CombinedControlApp:
         self.nonlocal_keithley_task = None
         done, total = len(self.nonlocal_iv_rows), self.nonlocal_iv_total_points
         path = self.__dict__.get("nonlocal_iv_csv_path")
-        name = (
-            f" Run folder: {Path(path).parent.name}" if path and Path(path).exists()
-            else " No CSV was written."
-        )
-        self.nonlocal_vi_output_var.set(self._nonlocal_output_text())
+        try:
+            name = (
+                f" Run folder: {Path(path).parent.name}" if path and Path(path).exists()
+                else " No CSV was written."
+            )
+        except OSError:
+            name = f" Run folder: {Path(path).parent.name}" if path else ""
+        untouched = bool(self.__dict__.get("nonlocal_keithley_untouched"))
+        if not untouched:
+            self.nonlocal_vi_output_var.set(self._nonlocal_output_text())
         self.nonlocal_iv_eta_var.set("Remaining: --")
         try:
             future.result()
         except InterruptedError:
             self.nonlocal_vi_status_var.set(
-                f"2400-IV sweep stopped after {done}/{total} points; voltage zeroed and output off.{name}"
+                f"2400-IV sweep stopped before the Keithley was switched on.{name}" if untouched
+                else f"2400-IV sweep stopped after {done}/{total} points; voltage zeroed and output off.{name}"
             )
         except BaseException as error:
             self.nonlocal_vi_status_var.set(
                 f"2400-IV sweep stopped by an error after {done}/{total} points: {short_status_error(error).rstrip(';；')}"
-                + self._nonlocal_output_warning()
+                + self._nonlocal_output_warning() + "." + name
             )
             if not self.closing:
                 messagebox.showerror("2400-IV sweep failed", str(error), parent=self.root)
@@ -31541,10 +31801,13 @@ class CombinedControlApp:
             raise ValueError("6221-IV scan parameters must be valid numbers") from error
         if not all(math.isfinite(value) for value in (start_ma, end_ma, step_ma, settle_s, acquire_s)):
             raise ValueError("6221-IV scan parameters must be finite values")
-        plan = rte_scan_plan(
-            "Current", start_ma, end_ma, step_ma, loops,
-            bool(self.nonlocal_iv6221_round_trip_var.get()),
-        )
+        try:
+            plan = rte_scan_plan(
+                "Current", start_ma, end_ma, step_ma, loops,
+                bool(self.nonlocal_iv6221_round_trip_var.get()),
+            )
+        except ValueError as error:
+            raise ValueError(str(error).replace("RT-E", "6221-IV")) from error
         currents = [value for _loop, _point, value in plan]
         if min(currents) <= 0.0:
             raise ValueError("6221-IV currents must be above 0 mA RMS (the sine amplitude)")
@@ -31690,8 +31953,16 @@ class CombinedControlApp:
             return
         points = len(settings["plan"])
         total = points * len(settings["passes"])
+        # Each pass also settles its first point for 10 time constants (the
+        # Zurich's TC; an SR830's front-panel one adds to this) and checks it
+        # in a second window.
+        first_point_s = (
+            NONLOCAL_IV6221_FIRST_SETTLE_TAUS * float(settings["mfli_config"]["timeconstant_s"])
+            if settings["mfli_config"] else 0.0
+        ) + settings["acquire_s"]
         estimate = self._format_scan_duration(
             total * (settings["settle_s"] + settings["acquire_s"] + 0.3)
+            + len(settings["passes"]) * first_point_s
         )
         meters = ", ".join(
             f"{NONLOCAL_METER_NAMES[key]} {self.nonlocal_iv6221_harmonic_vars[key].get()}"
@@ -31728,6 +31999,7 @@ class CombinedControlApp:
         if self.nonlocal_keithley_task is not None or self.nonlocal_vi_running or self.nonlocal_vi_busy:
             return
         self.nonlocal_iv6221_directory = Path(folder)
+        settings["started"] = datetime_module.datetime.now().isoformat(timespec="seconds")
         try:
             run_directory = self._nonlocal_make_run_directory(Path(folder), "6221-IV")
         except OSError as error:
@@ -31794,7 +32066,7 @@ class CombinedControlApp:
     def _nonlocal_iv6221_header(settings: dict) -> list[str]:
         header = [
             "point", "harmonic_pass", "loop", "loop_point", "set_current_rms_mA",
-            "current_rms_mA", "frequency_Hz", "elapsed_s",
+            "current_rms_mA", "frequency_Hz", "elapsed_s", "settle_windows",
         ]
         for key in settings["measured"]:
             if key == "mfli":
@@ -31806,25 +32078,30 @@ class CombinedControlApp:
                 name = f"SR830_{key}"
                 header += [f"{name}_harmonic", f"{name}_X_V", f"{name}_Y_V", f"{name}_R_V",
                            f"{name}_theta_deg", f"{name}_samples", f"{name}_discarded"]
-        return header + ["in_compliance"]
+        # How many readings of the point found the 6221 in compliance.
+        return header + ["compliance_readings"]
 
     def _nonlocal_iv6221_read_point(self, source, frequency: float, keys, settings: dict, stop):
         """Each meter's valid readings over Acquire s, as RT-E takes them.
 
-        Readings flagged unlocked, overloaded or in compliance are left out,
-        and an autorange step starts the window again (that reading was on
-        the old range).  For the Zurich, every reading also carries X and Y
-        of each of its orders, from the demodulators.  The point fails if a
-        meter has no valid reading within Acquire s plus
-        NONLOCAL_IV6221_MAX_EXTRA_S, or if the 6221 reports compliance on
-        three readings in a row.
+        Readings flagged unlocked, overloaded or in compliance are left out.
+        An autorange step starts the window again (that reading was on the
+        old range) after the meter settles: 5 time constants of that SR830,
+        10 of the Zurich (``settings["range_settle_s"]``), as RT-E waits.
+        For the Zurich, every reading also carries X and Y of each of its
+        orders, from the demodulators.  The point fails if a meter has no
+        valid reading within Acquire s plus NONLOCAL_IV6221_MAX_EXTRA_S (plus
+        the ranging waits, at most NONLOCAL_IV6221_RANGE_LIMIT_S), or if the
+        6221 reports compliance on three readings in a row.
         Returns (readings per meter, discarded count per meter, compliance
         count)."""
         acquire_s = float(settings["acquire_s"])
         zurich_orders = tuple(settings.get("zurich_orders", ()))
+        range_settle_s = settings.get("range_settle_s", {})
         started = time.monotonic()
         window_start = started
         next_sample = started
+        ranging_s = 0.0
         valid = {key: [] for key in keys}
         discarded = {key: 0 for key in keys}
         compliance_total = compliance_run = 0
@@ -31864,20 +32141,31 @@ class CombinedControlApp:
                     )
             else:
                 compliance_run = 0
-            if any(sample.get("auto_range") for sample in reading.values()):
+            ranged = [key for key, sample in reading.items() if sample.get("auto_range")]
+            if ranged:
                 for key in keys:
                     discarded[key] += len(valid[key]) + 1
                 valid = {key: [] for key in keys}
-                window_start = now
-            else:
-                for key, sample in reading.items():
-                    if sample.get("measurement_valid", sample.get("reference_valid", False)):
-                        valid[key].append(sample)
-                    else:
-                        discarded[key] += 1
-                if now - window_start >= acquire_s and all(valid[key] for key in keys):
-                    return valid, discarded, compliance_total
-            if now - started >= acquire_s + NONLOCAL_IV6221_MAX_EXTRA_S:
+                wait_s = max(float(range_settle_s.get(key, 0.0)) for key in ranged)
+                if ranging_s + wait_s > NONLOCAL_IV6221_RANGE_LIMIT_S:
+                    raise RuntimeError(
+                        f"Lock-in autorange did not settle within {NONLOCAL_IV6221_RANGE_LIMIT_S:g} s "
+                        f"({', '.join(NONLOCAL_METER_NAMES[key] for key in ranged)})"
+                    )
+                if wait_s > 0:
+                    if stop.wait(wait_s):
+                        raise InterruptedError("6221-IV scan stopped")
+                    ranging_s += wait_s
+                window_start = next_sample = time.monotonic()
+                continue
+            for key, sample in reading.items():
+                if sample.get("measurement_valid", sample.get("reference_valid", False)):
+                    valid[key].append(sample)
+                else:
+                    discarded[key] += 1
+            if now - window_start >= acquire_s and all(valid[key] for key in keys):
+                return valid, discarded, compliance_total
+            if now - started >= acquire_s + NONLOCAL_IV6221_MAX_EXTRA_S + ranging_s:
                 missing = [key for key in keys if not valid[key]] or list(keys)
                 details = "; ".join(
                     f"{NONLOCAL_METER_NAMES[key]}: {last.get(key, {}).get('status_text') or 'autoranging'}"
@@ -31886,6 +32174,47 @@ class CombinedControlApp:
                 raise RuntimeError(
                     f"No valid lock-in reading within {acquire_s + NONLOCAL_IV6221_MAX_EXTRA_S:g} s ({details})"
                 )
+
+    def _nonlocal_iv6221_results(self, readings: dict, run: dict, settings: dict) -> dict:
+        """(meter, harmonic order) → the point's mean X, Y, R, θ, the number
+        of readings, and the scale its noise floor is judged against."""
+        results = {}
+        for key, used in readings.items():
+            if not used:
+                continue
+            if key == "mfli":
+                scale = float(used[-1].get("input_range_v") or 0.0)
+                for order in settings["zurich_orders"]:
+                    result = self._nonlocal_mean_xy([sample["orders"][order] for sample in used])
+                    results[("mfli", order)] = dict(result, samples=len(used), scale=scale)
+            else:
+                index = used[-1].get("sensitivity_index")
+                scale = (
+                    NONLOCAL_SR830_FULL_SCALE_V[index]
+                    if isinstance(index, int) and 0 <= index < len(NONLOCAL_SR830_FULL_SCALE_V)
+                    else 0.0
+                )
+                result = self._nonlocal_mean_xy([(sample["X"], sample["Y"]) for sample in used])
+                results[(key, run["harmonics"][key])] = dict(result, samples=len(used), scale=scale)
+        return results
+
+    @staticmethod
+    def _nonlocal_iv6221_settled(previous: dict | None, current: dict) -> bool:
+        """RT-E's first-point test: every series' X and Y moved less than 2 %
+        of its R, or 0.2 % of its range (so noise near zero cannot hold it)."""
+        if not previous:
+            return False
+        for name, result in current.items():
+            before = previous.get(name)
+            if before is None:
+                return False
+            tolerance = max(
+                PPMS_FIRST_POINT_TOLERANCE_FRACTION * result["R"],
+                PPMS_FIRST_POINT_FLOOR_FRACTION * result.get("scale", 0.0),
+            )
+            if abs(result["X"] - before["X"]) > tolerance or abs(result["Y"] - before["Y"]) > tolerance:
+                return False
+        return bool(current)
 
     @staticmethod
     def _nonlocal_mean_xy(pairs) -> dict:
@@ -31930,6 +32259,19 @@ class CombinedControlApp:
                 taus.append(float(settings["mfli_config"]["timeconstant_s"]))
             longest_tau = max((tau for tau in taus if math.isfinite(tau)), default=0.0)
             long_settle = max(float(settings["settle_s"]), NONLOCAL_IV6221_FIRST_SETTLE_TAUS * longest_tau)
+            # After an autorange step, as RT-E: 5 τ of that SR830, 10 τ of the Zurich.
+            range_settle_s = {
+                key: NONLOCAL_IV6221_RANGE_SETTLE_TAUS["sr830"] * float(
+                    readbacks.get(key, {}).get("time_constant_s", math.nan)
+                )
+                for key in settings["lockin_configs"]
+            }
+            range_settle_s = {key: value for key, value in range_settle_s.items() if math.isfinite(value)}
+            if settings["mfli_config"]:
+                range_settle_s["mfli"] = NONLOCAL_IV6221_RANGE_SETTLE_TAUS["mfli"] * float(
+                    settings["mfli_config"]["timeconstant_s"]
+                )
+            settings = dict(settings, range_settle_s=range_settle_s)
             with Path(csv_path).open("x", newline="", encoding="utf-8-sig") as file:
                 writer = csv.writer(file)
                 writer.writerow(self._nonlocal_iv6221_header(settings))
@@ -31999,42 +32341,63 @@ class CombinedControlApp:
                                 )
                             if settings["mfli_config"]:
                                 self.post_ui(lambda: self._show_nonlocal_mfli_lock(True))
-                        readings, discarded, compliance = self._nonlocal_iv6221_read_point(
-                            source, frequency, keys, settings, stop
-                        )
+                        # The first point of each pass, as RT-E's: windows of
+                        # Acquire s until two in a row agree (at most 10).
+                        first = loop == 1 and point == 1
+                        windows, previous = 0, None
+                        discarded_total: dict[str, int] = {}
+                        compliance_total = 0
+                        while True:
+                            windows += 1
+                            if first:
+                                self.post_ui(
+                                    lambda n=windows: self.nonlocal_iv6221_point_var.set(
+                                        f"Transport acquisition: first point, settling window "
+                                        f"{n}/{PPMS_FIRST_POINT_MAX_WINDOWS}"
+                                    )
+                                )
+                            readings, discarded, compliance = self._nonlocal_iv6221_read_point(
+                                source, frequency, keys, settings, stop
+                            )
+                            # Every window's left-out readings count for the point.
+                            for key, count in discarded.items():
+                                discarded_total[key] = discarded_total.get(key, 0) + count
+                            compliance_total += compliance
+                            results = self._nonlocal_iv6221_results(readings, run, settings)
+                            if (not first or windows >= PPMS_FIRST_POINT_MAX_WINDOWS
+                                    or self._nonlocal_iv6221_settled(previous, results)):
+                                break
+                            previous = results
+                        discarded, compliance = discarded_total, compliance_total
                         row = {
                             "index": index, "pass": run["pass"], "loop": loop, "point": point,
                             "set_current_rms_ma": float(target), "current_rms_ma": float(actual_ma),
                             "frequency_hz": float(frequency),
                             "elapsed_s": time.monotonic() - started,
-                            "series": {}, "discarded": sum(discarded.values()),
+                            "series": {name: result for name, result in results.items()},
+                            "discarded": sum(discarded.values()), "windows": windows,
                         }
                         csv_row = [
                             index, run["pass"], loop, point, f"{target:.10g}", f"{actual_ma:.10g}",
-                            f"{frequency:.10g}", f"{row['elapsed_s']:.3f}",
+                            f"{frequency:.10g}", f"{row['elapsed_s']:.3f}", windows,
                         ]
                         for key in settings["measured"]:
                             if key == "mfli":
                                 used = readings.get("mfli", [])
                                 for order in settings["zurich_orders"]:
-                                    if used:
-                                        result = self._nonlocal_mean_xy(
-                                            [sample["orders"][order] for sample in used]
-                                        )
-                                        row["series"][("mfli", order)] = result
+                                    result = results.get(("mfli", order))
+                                    if result is not None:
                                         csv_row += [f"{result['X']:.10g}", f"{result['Y']:.10g}",
                                                     f"{result['R']:.10g}", f"{result['theta']:.6g}"]
                                     else:
                                         csv_row += ["", "", "", ""]
                                 csv_row += [len(used), discarded.get("mfli", "")]
                             elif key in keys:
-                                used = readings[key]
                                 harmonic = run["harmonics"][key]
-                                result = self._nonlocal_mean_xy([(s["X"], s["Y"]) for s in used])
-                                row["series"][(key, harmonic)] = result
+                                result = results[(key, harmonic)]
                                 csv_row += [harmonic, f"{result['X']:.10g}", f"{result['Y']:.10g}",
                                             f"{result['R']:.10g}", f"{result['theta']:.6g}",
-                                            len(used), discarded[key]]
+                                            result["samples"], discarded[key]]
                             else:
                                 # This SR830's orders ended in an earlier pass.
                                 csv_row += ["", "", "", "", "", "", ""]
@@ -32126,22 +32489,26 @@ class CombinedControlApp:
                 continue
             series = {}
             for key in ("8", "9", "mfli"):
-                points = [
-                    (row["current_rms_ma"], row["series"][(key, order)][channel])
-                    for row in rows if (key, order) in row.get("series", {})
+                for row in rows:
+                    if (key, order) not in row.get("series", {}):
+                        continue
                     # The Zurich reads every order in every pass: its curve
                     # is the first pass's.
-                    and (key != "mfli" or row["pass"] == 1)
-                ]
-                if points:
-                    series[key] = points
+                    if key == "mfli" and row["pass"] != 1:
+                        continue
+                    # One line per loop, as RT-E: no line from End back to Start.
+                    name = f"{key}_loop_{row.get('loop', 1)}"
+                    series.setdefault(name, []).append(
+                        (row["current_rms_ma"], row["series"][(key, order)][channel])
+                    )
+                    labels[name] = NONLOCAL_METER_NAMES[key]
             self._draw_nonlocal_series(
                 canvas, series, "6221 current (mA RMS)",
                 "θ (°)" if channel == "theta" else channel,
                 "Shown point by point once a 6221-IV scan starts",
                 markers=True, auto_voltage_unit=channel != "theta", series_labels=labels,
                 # The title names the meters; a legend tells two or more apart.
-                show_legend=len(series) > 1,
+                show_legend=len({name.split("_loop_", 1)[0] for name in series}) > 1,
                 # The PPMS/RT-E meter colours, fixed per meter.
                 series_colors={
                     "8": PPMS_METER_COLORS["830_a"], "9": PPMS_METER_COLORS["830_b"],

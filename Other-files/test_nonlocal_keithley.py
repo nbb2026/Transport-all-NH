@@ -105,6 +105,8 @@ class FakeSourceMeter:
             return str(self.output)
         if upper == ":SOUR:VOLT:PROT?":
             return str(self.ovp)
+        if upper == ":SENS:CURR:PROT?":
+            return str(self.limit)
         if upper == ":READ?":
             if self.mode == "CURR":
                 if self.resistance_ohm == float("inf"):  # open: at the 5 V limit, no current

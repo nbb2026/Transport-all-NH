@@ -382,11 +382,15 @@ class ReadingTests(WorkerTests):
             return original(frequency_hz, stop_event, keys)
 
         source.wait_references = late
+        shown = []
         with mock.patch.object(app, "NONLOCAL_IV6221_REFERENCE_WAIT_S", 60.0):
-            rows = self.scan_one(source)
+            self.make(source, start="0.1", end="0.1", step="0.1")
+            self.app.nonlocal_iv6221_point_var.set = shown.append
+            self.run_scan("late.csv")
+            rows = self.appended()
         self.assertEqual(sum(c[0] == "wait_references" for c in source.calls), 3)
         self.assertEqual(len(rows), 1)
-        self.assertIn("waiting for the reference lock (SR830 #8)", self.app.nonlocal_iv6221_point_var.get())
+        self.assertIn("Transport acquisition: waiting for the reference lock (SR830 #8)", shown)
 
     def test_an_unlocked_zurich_names_its_ref_input(self):
         source = FakeSource(keys=(), mfli=True, locked=False)
@@ -422,6 +426,46 @@ class ReadingTests(WorkerTests):
             with self.assertRaisesRegex(RuntimeError, "No valid lock-in reading.*SR830 #8: reference not locked"):
                 self.scan_one(source)
 
+
+class AcquisitionTests(ReadingTests):
+    """Ranging, first-point windows and loops, as on RT-E (review, 2026-10-08)."""
+
+    def test_after_an_autorange_step_the_meter_settles_as_on_rte(self):
+        source = FakeSource(readings=[{"auto_range": "SENS 9->10 (overload/high)",
+                                        "measurement_valid": False}], sr830_tau=0.3)
+        self.make(source, start="0.1", end="0.2", step="0.1")
+        waits = []
+        stop = self.app.nonlocal_keithley_stop_event
+        original = stop.wait
+        stop.wait = lambda timeout=None: (waits.append(timeout), original(0))[1]
+        with mock.patch.object(app, "NONLOCAL_IV6221_SAMPLE_INTERVAL_S", 0.001):
+            self.run_scan(acquire_s=0.0)
+        self.assertIn(1.5, [round(w, 6) for w in waits], "5 × 0.3 s after the SR830 range step")
+
+    def test_the_first_point_of_a_pass_repeats_until_two_windows_agree(self):
+        source = FakeSource(readings=[{"X": 9e-7}])   # settling, then steady
+        self.make(source, start="0.1", end="0.2", step="0.1")
+        path, _settings = self.run_scan(acquire_s=0.0)
+        rows = self.rows(path)
+        windows = [row[rows[0].index("settle_windows")] for row in rows[1:]]
+        self.assertEqual(windows, ["3", "1"], "first point: 3 windows; later points: 1")
+        self.assertIn("compliance_readings", rows[0])
+
+    def test_each_loop_is_its_own_line(self):
+        a = bare_app()
+        canvas = mock.Mock()
+        a.nonlocal_iv6221_canvases = {(1, "X"): canvas}
+        a.nonlocal_iv6221_rows = [
+            {"pass": 1, "loop": loop, "current_rms_ma": current,
+             "series": {("mfli", 1): {"X": current, "Y": 0.0, "theta": 0.0}}}
+            for loop in (1, 2) for current in (0.1, 0.2)
+        ]
+        a._draw_nonlocal_series = mock.Mock()
+        a._redraw_nonlocal_iv6221_plots()
+        series = a._draw_nonlocal_series.call_args[0][1]
+        self.assertEqual(series, {"mfli_loop_1": [(0.1, 0.1), (0.2, 0.2)],
+                                  "mfli_loop_2": [(0.1, 0.1), (0.2, 0.2)]})
+        self.assertFalse(a._draw_nonlocal_series.call_args[1]["show_legend"], "one meter: no legend")
 
 class ParseTests(unittest.TestCase):
     def test_the_rte_defaults(self):
@@ -701,6 +745,7 @@ class ZurichRowTests(unittest.TestCase):
     def test_the_zurich_is_set_up_as_the_rte_row_does(self):
         a = self.page()
         controller = a.nonlocal_vi_ac_controller
+        controller.mfli_props = {"options": "MD"}
         controller.configure_mfli.return_value = {"sample_rate_hz": 25.0}
         a._apply_nonlocal_mfli_config({"reference": "Trigger In 1", "tc_s": 0.1, "mode": "1+2+3"})
         args, kwargs = controller.configure_mfli.call_args
@@ -712,9 +757,19 @@ class ZurichRowTests(unittest.TestCase):
         controller.disable_unused_ppms_demods.assert_called_once_with("1+2+3")
         a = self.page()
         controller = a.nonlocal_vi_ac_controller
+        controller.mfli_props = {"options": "MD"}
         controller.configure_mfli.return_value = {}
         a._apply_nonlocal_mfli_config({"reference": "Aux Input 1", "tc_s": 1.0, "mode": "2"})
         self.assertEqual(controller.configure_mfli.call_args[0], ("AC", 2, "R"))
+        self.assertIsNone(controller.configure_mfli.call_args[1]["external_reference_demodulator"])
+        controller.configure_second_harmonic.assert_not_called()
+        # Without MF-MD the rack's lock display uses the 1st harmonic alone.
+        a = self.page()
+        controller = a.nonlocal_vi_ac_controller
+        controller.mfli_props = {"options": "", "has_demod_2": False}
+        controller.configure_mfli.return_value = {}
+        a._apply_nonlocal_mfli_config({"reference": "Aux Input 1", "tc_s": 0.1, "mode": "1+2+3"})
+        self.assertEqual(controller.configure_mfli.call_args[0], ("AC", 1, "R"))
         self.assertIsNone(controller.configure_mfli.call_args[1]["external_reference_demodulator"])
         controller.configure_second_harmonic.assert_not_called()
 
