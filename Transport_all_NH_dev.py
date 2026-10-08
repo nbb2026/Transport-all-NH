@@ -20836,8 +20836,10 @@ class CombinedControlApp:
 
         settings.bind("<Configure>", arrange_parameters, add="+")
         arrange_parameters()
+        # The full box width, so its two columns can sit side by side; it
+        # starts stacked at its own (narrow) width otherwise.
         self._build_nonlocal_vi_read_settings(settings).grid(
-            row=4, column=0, columnspan=13, sticky="w", pady=(6, 0)
+            row=4, column=0, columnspan=13, sticky="ew", pady=(6, 0)
         )
 
         # Buttons, progress and time left on the first row; the readouts on
