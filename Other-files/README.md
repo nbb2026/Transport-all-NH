@@ -1,24 +1,29 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
-## Non-local page: the connection box in two columns (2026-10-08)
+## Non-local page: the connection box in two columns, as on PPMS and STFMR (2026-10-08)
 
-- **Connection box:** like the PPMS page's, it now holds only connections, in
-  two columns that sit side by side when both fit and stack otherwise:
+- **Connection box:** like the PPMS page's, it holds only connections, each
+  row with its own state, in two columns:
   - **Left:** the Keithley 2410/2400 with its Model, the 6221 and the 2182A.
   - **Right:** SR830 #8, SR830 #9 and the Zurich MFLI.
-  - **Below them:** the connected-instruments summary.
-- **Gate-VI read settings:** the pulse scan's own settings moved to a new box
-  at the top of the Gate-VI sub-tab (`_build_nonlocal_vi_read_settings`). It
-  also has two columns: the 6221 and the SR830s on the left, the MFLI and the
-  2182A on the right. It holds:
+  - **Narrow window:** the columns stack at the same row spacing, one list
+    as on the STFMR page.
+  - **Summary line:** gone. `nonlocal_vi_connection_var` is still kept up to
+    date.
+- **Gate-VI read settings:** the pulse scan's own settings moved into its
+  parameter box, now "Gate-VI scan parameters and read settings"
+  (`_build_nonlocal_vi_read_settings`), as STFMR keeps its meter settings
+  with the sweep parameters. They are in two columns: the 6221 and the
+  SR830s on the left, the MFLI and the 2182A on the right. The box holds:
   - the 6221 AC/DC output;
   - each lock-in's coupling, harmonic, Read and "In scan";
-  - the MFLI reference input, impedance and scaling;
+  - the MFLI reference input, impedance and scaling. These are on one strip
+    that ends in a tail column, so the MFLI fields line up with the SR830
+    rows;
   - the 2182A "In scan";
   - the Gate-VI safety check.
-
-  The |R| and I–V sub-tabs, which do not use these settings, get the height
-  back.
+- **Result:** the |R| and I–V sub-tabs, which do not use these settings, get
+  the height back.
 
 ## Non-local page: Gate-VI, |R| vs time and an I–V sweep (2026-10-08)
 

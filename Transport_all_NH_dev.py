@@ -20588,9 +20588,10 @@ class CombinedControlApp:
         connection.grid(row=0, column=0, sticky="ew")
         # Two columns, as on the PPMS page: the Keithleys on the left, the
         # lock-ins on the right, side by side when both fit, else stacked.
-        # Only connections here (and the Keithley model); the pulse scan's
-        # own read settings are on its sub-tab.  Each column's grid holds a
-        # device's name, address, Connect, Disconnect, lamp and status.
+        # Only connections here (and the Keithley model), each row with its
+        # own state; the pulse scan's read settings are with its parameters,
+        # as on the STFMR page.  Each column's grid holds a device's name,
+        # address, Connect, Disconnect, lamp and status.
         sources = ttk.Frame(connection)
         meters = ttk.Frame(connection)
         sources.grid(row=0, column=0, sticky="nw")
@@ -20699,12 +20700,9 @@ class CombinedControlApp:
             pady=(4, 0), sticky="w",
         )
         device_actions(meters, "mfli", 2)
-
-        # Which instruments are connected, under both columns.
-        ttk.Label(
-            connection, textvariable=self.nonlocal_vi_connection_var
-        ).grid(row=2, column=0, columnspan=2, pady=(5, 0), sticky="e")
-        self._arrange_pair_by_width(connection, sources, meters, gap=24)
+        # Stacked in a narrow window, the lock-ins follow the Keithleys at the
+        # same row spacing, one list as on the STFMR page.
+        self._arrange_pair_by_width(connection, sources, meters, gap=24, stack_gap=4)
 
         def wrap_to_width(label) -> None:
             """Wrap a label's text at its current width, re-done on resize."""
@@ -20755,7 +20753,7 @@ class CombinedControlApp:
         self.nonlocal_vi_off_button.grid(row=1, column=0, sticky="ne", pady=(5, 0))
         self.nonlocal_vi_off_button.lift()
         gate_tab.columnconfigure(0, weight=1)
-        gate_tab.rowconfigure(4, weight=1)
+        gate_tab.rowconfigure(3, weight=1)
 
         # The pulse scan's interlock (kept word for word), wrapped to the
         # page width.  Names the selected model; set in
@@ -20767,12 +20765,13 @@ class CombinedControlApp:
         )
         interlock.grid(row=0, column=0, sticky="ew", padx=2, pady=(0, 5))
         wrap_to_width(interlock)
-        self._build_nonlocal_vi_read_settings(gate_tab).grid(
-            row=1, column=0, sticky="ew", pady=(0, 5)
-        )
 
-        settings = ttk.LabelFrame(gate_tab, text="Non-local VI voltage-pulse scan parameters", padding=7)
-        settings.grid(row=2, column=0, sticky="ew", pady=(0, 5))
+        # The scan parameters, then each meter's read settings and the safety
+        # check, in one box as on the STFMR page.  Spare width goes to the
+        # empty tail column 12, so the parameter columns keep their width.
+        settings = ttk.LabelFrame(gate_tab, text="Gate-VI scan parameters and read settings", padding=7)
+        settings.grid(row=1, column=0, sticky="ew", pady=(0, 5))
+        settings.columnconfigure(12, weight=1)
         entries = (
             ("Start V", self.nonlocal_vi_start_voltage_var),
             ("Stop V", self.nonlocal_vi_stop_voltage_var),
@@ -20837,13 +20836,16 @@ class CombinedControlApp:
 
         settings.bind("<Configure>", arrange_parameters, add="+")
         arrange_parameters()
+        self._build_nonlocal_vi_read_settings(settings).grid(
+            row=4, column=0, columnspan=13, sticky="w", pady=(6, 0)
+        )
 
         # Buttons, progress and time left on the first row; the readouts on
         # the second, each a fixed-width box so a new value never moves the
         # others.  The lock-in reference text, which lists every locked
         # meter, comes last and wraps rather than pushing anything off.
         actions = ttk.LabelFrame(gate_tab, text="Run and data", padding=7)
-        actions.grid(row=3, column=0, sticky="ew", pady=(0, 5))
+        actions.grid(row=2, column=0, sticky="ew", pady=(0, 5))
         actions.columnconfigure(3, weight=1)
         self.nonlocal_vi_start_button = ttk.Button(
             actions,
@@ -20927,7 +20929,7 @@ class CombinedControlApp:
 
         plots = ttk.Frame(gate_tab)
         self.nonlocal_vi_plot_container = plots
-        plots.grid(row=4, column=0, sticky="nsew")
+        plots.grid(row=3, column=0, sticky="nsew")
         for column in range(3):
             plots.columnconfigure(column, weight=1)
         for row in range(5):
@@ -21059,11 +21061,11 @@ class CombinedControlApp:
         self._redraw_nonlocal_vi_plots()
         self._update_nonlocal_vi_controls()
 
-    def _build_nonlocal_vi_read_settings(self, parent) -> ttk.LabelFrame:
+    def _build_nonlocal_vi_read_settings(self, parent) -> ttk.Frame:
         """The pulse scan's settings for the 6221 and each voltmeter, and its
         safety check: the 6221 and SR830s on the left, the MFLI and 2182A on
         the right, side by side when both fit, else stacked."""
-        box = ttk.LabelFrame(parent, text="Gate-VI read settings", padding=7)
+        box = ttk.Frame(parent)
         left = ttk.Frame(box)
         right = ttk.Frame(box)
         left.grid(row=0, column=0, sticky="nw")
@@ -21139,19 +21141,22 @@ class CombinedControlApp:
             1024, "In scan (autorange)",
             self.nonlocal_vi_use_mfli_var,
         )
-        # The MFLI-only inputs on a second line.
+        # The MFLI-only inputs on a second line: one strip after its label,
+        # ending in the tail column 8, so it never widens the columns it
+        # shares with the SR830 rows.
+        right.columnconfigure(8, weight=1)
         label(right, 1, 1, "Reference input:")
+        mfli_input = ttk.Frame(right)
+        mfli_input.grid(row=1, column=2, columnspan=7, sticky="w", pady=pad(1))
         ttk.Combobox(
-            right,
+            mfli_input,
             textvariable=self.nonlocal_vi_mfli_reference_source_var,
             values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS),
             state="readonly",
             width=13,
-        ).grid(row=1, column=2, columnspan=3, sticky="w", pady=pad(1))
-        mfli_input = ttk.Frame(right)
-        mfli_input.grid(row=1, column=5, columnspan=3, sticky="w", pady=pad(1))
-        ttk.Label(mfli_input, text="Signal Input 1 impedance:").grid(
-            row=0, column=0, sticky="e", padx=(0, 3)
+        ).pack(side="left", padx=(0, 10))
+        ttk.Label(mfli_input, text="Signal Input 1 impedance:").pack(
+            side="left", padx=(0, 3)
         )
         ttk.Combobox(
             mfli_input,
@@ -21159,21 +21164,19 @@ class CombinedControlApp:
             values=("10 MΩ", "50 Ω"),
             state="readonly",
             width=8,
-        ).grid(row=0, column=1, sticky="w", padx=(0, 10))
-        ttk.Label(mfli_input, text="Scaling:").grid(
-            row=0, column=2, sticky="e", padx=(0, 3)
-        )
+        ).pack(side="left", padx=(0, 10))
+        ttk.Label(mfli_input, text="Scaling:").pack(side="left", padx=(0, 3))
         ttk.Entry(
             mfli_input,
             textvariable=self.nonlocal_vi_mfli_input_scaling_var,
             width=8,
-        ).grid(row=0, column=3, sticky="w")
+        ).pack(side="left")
         name(right, 2, "Keithley 2182A:")
         ttk.Checkbutton(
             right, text="In scan (channel 1, NPLC 1, autorange)",
             variable=self.nonlocal_vi_use_2182_var,
             command=self._redraw_nonlocal_vi_plots,
-        ).grid(row=2, column=1, columnspan=7, sticky="w", padx=(6, 0), pady=pad(2))
+        ).grid(row=2, column=1, columnspan=8, sticky="w", padx=(6, 0), pady=pad(2))
 
         # Stacked, the two grids line up only if each column is as wide in
         # both: the widest one-column cell of either.
@@ -21203,7 +21206,7 @@ class CombinedControlApp:
             variable=self.nonlocal_vi_safety_var,
             command=self._update_nonlocal_vi_controls,
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        self._arrange_pair_by_width(box, left, right, gap=24)
+        self._arrange_pair_by_width(box, left, right, gap=24, stack_gap=4)
         return box
 
     def _nonlocal_plot_canvas(self, frame, redraw) -> tk.Canvas:
