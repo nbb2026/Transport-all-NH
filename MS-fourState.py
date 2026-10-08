@@ -1520,11 +1520,11 @@ class FourStateApp:
         button(3, 4, "Pulse", self.manual_pulse)
         # Readings go to the PPMS status box.  The note wraps under the rows.
         note = ttk.Label(
-            manual, foreground="#8a4b00", wraplength=420,
-            text=("Set H and Zero H end Persistent; Move only at 0 Oe (6221 off first); "
-                  "Pulse uses the Write box. Stop: 6221 off and 0 Oe."),
+            manual, foreground="#8a4b00", wraplength=400,
+            text="H ends Persistent · Move only at 0 Oe, 6221 off first · Pulse: Write box · Stop: 6221 off, 0 Oe",
         )
-        note.grid(row=4, column=0, columnspan=6, sticky="w", pady=(4, 0))
+        # Across the box, so the wrapped lines always have their room.
+        note.grid(row=4, column=0, columnspan=6, sticky="ew", pady=(4, 0))
         return manual
 
     # -- manual settings ------------------------------------------------
@@ -2211,6 +2211,10 @@ class FourStateApp:
                 self.root.after_cancel(getattr(self, after))
             except (AttributeError, tk.TclError):
                 pass
+        try:
+            self.root.update_idletasks()  # Layout jobs still queued run now, not on a closed window.
+        except tk.TclError:
+            pass
         self.root.destroy()
 
 
