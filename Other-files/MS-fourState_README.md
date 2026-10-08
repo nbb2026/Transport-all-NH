@@ -21,6 +21,62 @@ It uses the instrument code of `Transport_all_NH_dev.py`, which must sit in
 the same folder. Close the PPMS, 6221 and SR830 connections in `Transport_all_NH_dev.py`
 first. Two programs must never drive the same instruments.
 
+## Manual settings
+
+Between runs, the **Manual settings** box sets one thing at a time, as the
+PPMS settings rows of `Transport_all_NH_dev.py` do:
+
+| Row | Fields | Buttons |
+| --- | --- | --- |
+| Angle | Angle °, Decel 0–14 | **Move**, **Read** |
+| Field | H Oe, Oe/s | **Set H**, **Zero H** |
+| Current | I mA RMS, f Hz; Pulse mA | **Set I**, **I off**; **Pulse** |
+
+- **Move:** turns the rotator as a run step does. It is refused, with
+  nothing sent or turned off, unless the field is at 0 Oe (Zero H first) and
+  the rotator is at rest. A turn over 30° asks for confirmation, as on the
+  PPMS page, and the field is read again after the answer. Then the 6221 is
+  turned off and the rotator moves.
+- **Set H and Zero H:** go to the field and end **Persistent**, as on the
+  PPMS page.
+  - Done when the readback shows Persistent at the field, by that page's
+    rule, so a reading from before the command cannot pass. Nothing is resent.
+  - The Now line shows the field every 2 s while it waits.
+  - MagnetFailure or CurrentError ends it at once.
+- **Set I:** starts the read sine (I mA RMS at f Hz, phase marker on, as in a
+  read) and leaves it on. The SR830's lock to it is shown; nothing is written
+  to the SR830. **I off** turns the 6221 off, read back.
+- **Pulse:** sends one write of Pulse mA with the Write box's pulse width,
+  pulse count and compliance, after a confirmation, then turns the 6221 off.
+- **Read:** shows the angle, field, temperature and 6221 output. Each action
+  also updates this readout when it ends.
+
+Decel, Oe/s and f Hz are the Write and Read boxes' own fields: changing one
+changes both. They are checked for manual actions as for runs: the field
+rate below 150 Oe/s, and the compliance within the 6221's range. Every
+button except I off and Read needs the safety tick in the Run row.
+
+As on the PPMS page, nothing is sent while the rotator may be moving:
+- **Rotator not at rest:** Set H, Set I, Pulse and Move are refused unless it
+  reads AtTarget.
+- **Move stopped or failed:** those buttons and Start stay refused until a
+  Read shows the rotator at rest.
+- **Set H failed:** Move is refused until a Zero H succeeds, as the PPMS may
+  still be going to that field.
+
+Every manual action and its result is written to `manual_log.txt` in the
+data folder.
+
+**Stop** during a manual action does what it does in a run: 6221 off and
+0 Oe (Driven), read back. That includes a field set earlier with Set H.
+- **Stop just as the action ends:** still honoured.
+- **Instrument not connected:** left out of the check, not reported as a
+  problem.
+
+An error turns the 6221 off and leaves the angle. After a failed Set H, the
+PPMS may still be going to that field; the command is not resent, so use
+Zero H or MultiVu.
+
 ## States
 
 Defaults from the measurement table, editable in the window (1500 Oe = 0.15 T):
@@ -155,7 +211,12 @@ modes against simulated instruments:
 - a sample that takes the state written by the last pulse.
 
 They check the order of every action, the values read, each stop and the
-shutdown confirmation. Each safety rule was broken in a copy, and the tests
+shutdown confirmation. The manual settings are tested the same way:
+- Move only at zero field with the 6221 off, and large turns confirmed;
+- Set H ending Persistent, with a stale reading not taken for arrival;
+- Stop returning to 0 Oe, and an error leaving the field;
+- Set I writing nothing to the SR830;
+- the pulse using the Write settings. Each safety rule was broken in a copy, and the tests
 catch all of them. A cloud check, `Other-files/ci/ms_four_state_checks.py`,
 builds the window in each mode on GitHub's Linux and Windows machines and saves
 screenshots. Nothing has been run on the instruments yet.
