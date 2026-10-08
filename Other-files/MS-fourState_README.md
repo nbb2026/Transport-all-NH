@@ -47,9 +47,12 @@ It is read only:
   at most one a second, and each rotation. Nothing extra is asked of the
   instruments then.
 
-The Write box has two columns: the pulse on the left (width, count,
-compliance, wait), the field and rotator on the right. So the
-States/Write/Read row is no taller than the States table.
+The setup boxes sit side by side at their own widths: Connections, PPMS
+status, Manual settings, States, Write and Read. A box moves to a new line
+only when the window is too narrow, and the boxes on a line share its height
+and spare width. On the lab PC's 1720 px window they make two lines. The
+Write box has two columns: the pulse on the left (width, count, compliance,
+wait), the field and rotator on the right.
 
 ## Manual settings
 
@@ -209,9 +212,14 @@ program, for example `MS-fourState data/20261007_153000_cycle/`:
 - `MS-fourState_plot.eps`: the plot, saved at the end and by **Save plot**.
 
 The plot shows the write field in T, the pulse current in mA and SR830 X in
-µV against the time since the run started (`time_s` in the CSV). The axis is
-in s, then min after 10 min, then h after 3 h. Each point is coloured by its
-state, and state letters are drawn for up to 60 points.
+µV against the clock time of each point, its `timestamp` in the CSV. A state
+written at one time and read at later times therefore shows how long it is
+kept (non-volatile storage).
+- **Ticks:** at round clock times, labelled HH:MM, or HH:MM:SS for a short
+  run, with the month and day when the axis spans more than one date.
+- **Axis title:** "Local time" with the date.
+- **Points:** each is coloured by its state, and state letters are drawn for
+  up to 60 points.
 
 ## Before the first run
 

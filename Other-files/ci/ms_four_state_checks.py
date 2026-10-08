@@ -43,7 +43,8 @@ def main():
         root.geometry(f"{width}x{height}+0+0")
         for _ in range(6):
             root.update()
-        app.plot.set_rows([dict(step=i, time_s=95.0 * i, state=s, write_field_set_oe=h, pulse_current_ma=c, x_v=x)
+        app.plot.set_rows([dict(step=i, time_s=95.0 * i, timestamp=f"2026-10-08T09:{50 + 2 * i:02d}:13", state=s,
+                                write_field_set_oe=h, pulse_current_ma=c, x_v=x)
                            for i, (s, h, c, x) in enumerate(EXAMPLE, 1)])
         root.update()
         page = root.winfo_children()[0]

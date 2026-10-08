@@ -1,5 +1,25 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MS-fourState.py: clock time on the x-axis; compact setup boxes (2026-10-08)
+
+- **x-axis:** the clock time of each point, its CSV `timestamp`, so a
+  state's retention can be read off the plot (non-volatile storage). Ticks
+  fall at round times, as HH:MM or HH:MM:SS, with the date when the axis
+  spans days. The title reads "Local time (date)". This replaces the time
+  since start.
+- **Compact layout:** the six setup boxes are placed side by side at their
+  own widths (`FourStateApp._flow`) instead of each spanning the window with
+  blank space. They wrap to a new line only when the window is too narrow.
+  The boxes on a line share its height and spare width; on the lab PC's
+  1720 px window that is two lines.
+  - **Manual settings:** narrower, with Pulse on its own row and the note
+    under the rows.
+  - **Readings:** the "Now:" line is gone; the PPMS status box shows the
+    readings, and the log keeps each one.
+  - **Connections:** the DLL field is shorter.
+- **Tests:** `time_ticks` (round clock ticks, seconds on a short axis, the
+  date over days) and `flow_lines`.
+
 ## MS-fourState.py: PPMS status box, a thinner settings row, time on the x-axis (2026-10-08)
 
 - **PPMS status:** to the right of Connections, as the PPMS page's live

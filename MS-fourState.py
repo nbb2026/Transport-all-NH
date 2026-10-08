@@ -1019,18 +1019,45 @@ def nice_ticks(low, high, count=5):
     return ticks
 
 
-# The plot's time axis: seconds for a short run, then minutes, then hours.
-TIME_UNITS = ((600.0, "s", 1.0), (3 * 3600.0, "min", 60.0), (math.inf, "h", 3600.0))
+# The plot's time axis is the clock: a state written at one time and read at
+# later times shows how long it is kept (non-volatile storage).  Tick spacing
+# in seconds, the first that gives at most the asked number of ticks.
+TIME_STEPS_S = (1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800,
+                21600, 43200, 86400, 172800, 604800)
 
 
-def time_unit(span_s):
-    """(name, seconds per unit) for a time axis spanning ``span_s``."""
-    return next((name, factor) for limit, name, factor in TIME_UNITS if span_s < limit)
+def row_epoch(row):
+    """A point's local clock time (its CSV timestamp), as epoch seconds."""
+    try:
+        return datetime.fromisoformat(str(row["timestamp"])).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return float(row.get("time_s", row.get("step", 0.0)))
+
+
+def time_ticks(low, high, count=8):
+    """Ticks at round local clock times between epoch seconds ``low`` and
+    ``high``: ([(epoch, label), ...], axis title).  Labels are HH:MM:SS for
+    steps under a minute, HH:MM otherwise, with the month and day when the
+    axis spans more than one date."""
+    span = max(high - low, 1.0)
+    step = next((s for s in TIME_STEPS_S if span / s <= count), TIME_STEPS_S[-1])
+    start, end = datetime.fromtimestamp(low), datetime.fromtimestamp(high)
+    midnight = start.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    several_days = start.date() != end.date()
+    fmt = "%m-%d %H:%M" if several_days else ("%H:%M:%S" if step < 60 else "%H:%M")
+    ticks = []
+    value = midnight + math.ceil((low - midnight) / step) * step
+    while value <= high and len(ticks) < 60:
+        ticks.append((value, datetime.fromtimestamp(value).strftime(fmt)))
+        value += step
+    dates = f"{start:%Y-%m-%d}" + (f" to {end:%Y-%m-%d}" if several_days else "")
+    return ticks, f"Local time ({dates})"
 
 
 class StatePlot:
-    """H, I and SR830 X against the time since the run started (each point's
-    time_s, as in the CSV); panel A of the figure, with time for its steps."""
+    """H, I and SR830 X against the clock time of each point (its CSV
+    timestamp), so retention can be read off the axis; panel A of the
+    figure, with time for its steps."""
 
     PANELS = (
         ("H write (T)", lambda row: row["write_field_set_oe"] / OE_PER_T),
@@ -1056,13 +1083,13 @@ class StatePlot:
         left, right, top, bottom = 90, 20, 14, 40
         gap = 12
         panel_height = (height - top - bottom - 2 * gap) / 3
-        seconds = [float(row.get("time_s", row["step"])) for row in self.rows]
-        unit, per_unit = time_unit(max(seconds, default=0.0))
-        times = [value / per_unit for value in seconds]
-        # From the run's start to a little after the last point.
-        x_low = min(0.0, min(times, default=0.0))
-        x_high = max(times, default=0.0)
-        x_high += (x_high - x_low) * 0.04 or 60.0 / per_unit
+        times = [row_epoch(row) for row in self.rows]
+        if times:
+            pad = (max(times) - min(times)) * 0.04 or 30.0
+            x_low, x_high = min(times) - pad, max(times) + pad
+        else:
+            x_high = time.time()
+            x_low = x_high - 300.0
         labelled = len(self.rows) <= self.LABELLED_POINTS
         marker = 5 if len(self.rows) <= 200 else 3
 
@@ -1103,13 +1130,12 @@ class StatePlot:
                 canvas.create_text((left + width - right) / 2, (y0 + y1) / 2, text="Waiting for data",
                                    fill="#757575")
         axis_y = height - bottom
-        for tick in nice_ticks(x_low, x_high, 8):
-            if x_low <= tick <= x_high:
-                x = x_pixel(tick)
-                canvas.create_line(x, axis_y, x, axis_y + 4, fill="#555555")
-                canvas.create_text(x, axis_y + 6, text=f"{tick:g}", anchor="n", font=("TkDefaultFont", 10))
-        canvas.create_text((left + width - right) / 2, height - 12, text=f"Time since start ({unit})",
-                           font=("TkDefaultFont", 11))
+        ticks, title = time_ticks(x_low, x_high, max(2, min(10, int((width - left - right) / 110))))
+        for tick, label in ticks:
+            x = x_pixel(tick)
+            canvas.create_line(x, axis_y, x, axis_y + 4, fill="#555555")
+            canvas.create_text(x, axis_y + 6, text=label, anchor="n", font=("TkDefaultFont", 10))
+        canvas.create_text((left + width - right) / 2, height - 12, text=title, font=("TkDefaultFont", 11))
 
 
 class FourStateApp:
@@ -1159,14 +1185,15 @@ class FourStateApp:
         page = ttk.Frame(root, padding=8)
         page.grid(row=0, column=0, sticky="nsew")
         page.columnconfigure(0, weight=1)
-        page.rowconfigure(4, weight=1)
+        page.rowconfigure(2, weight=1)
         self.inputs = []
 
-        top = ttk.Frame(page)
-        top.grid(row=0, column=0, sticky="ew")
-        top.columnconfigure(0, weight=1)
-        connections = ttk.LabelFrame(top, text="Connections", padding=6)
-        connections.grid(row=0, column=0, sticky="nsew")
+        # The setup boxes side by side at their own widths, wrapping to a new
+        # line only when the window is too narrow (see _flow): a box as wide
+        # as the window held mostly blank.
+        flow = ttk.Frame(page)
+        flow.grid(row=0, column=0, sticky="ew")
+        connections = ttk.LabelFrame(flow, text="Connections", padding=6)
         connections.columnconfigure(9, weight=1)
         dll_default = next((str(p) for p in core.PPMSQDInstrumentReadbackController.candidate_dll_paths()
                             if p.is_file()), "")
@@ -1191,7 +1218,7 @@ class FourStateApp:
                 port = ttk.Entry(connections, textvariable=self.port_var, width=7)
                 port.grid(row=row, column=3, sticky="w")
                 ttk.Label(connections, text="DLL").grid(row=row, column=4, sticky="e", padx=(8, 2))
-                dll = ttk.Entry(connections, textvariable=self.dll_var, width=40)
+                dll = ttk.Entry(connections, textvariable=self.dll_var, width=26)
                 dll.grid(row=row, column=5, sticky="ew")
                 address = (host, port, dll)
             elif key == "6221":
@@ -1216,20 +1243,12 @@ class FourStateApp:
             # A long state (a failure) wraps rather than being cut.
             state.bind("<Configure>", lambda event: event.widget.configure(wraplength=max(120, event.width - 4)))
             self.connection_widgets[key] = (address, connect, disconnect, lamp)
-        status = self._build_status(top)
-        self._beside_or_under(top, connections, status)
+        status = self._build_status(flow)
 
         self.values = {key: tk.StringVar(value=value) for key, value in DEFAULTS.items()}
-        self._build_manual(page)
+        manual = self._build_manual(flow)
 
-        middle = ttk.Frame(page)
-        middle.grid(row=2, column=0, sticky="ew", pady=(6, 0))
-        # Each box as wide as it needs, the spare width shared.
-        for column in range(3):
-            middle.columnconfigure(column, weight=1)
-
-        states = ttk.LabelFrame(middle, text="States (H in Oe: 1500 Oe = 0.15 T)", padding=6)
-        states.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        states = ttk.LabelFrame(flow, text="States (1500 Oe = 0.15 T)", padding=6)
         for column, title in enumerate(("State", "φ PPMS (°)", "H write (Oe)", "I pulse (mA)")):
             ttk.Label(states, text=title).grid(row=0, column=column, padx=3, sticky="w")
         self.state_vars = {}
@@ -1245,8 +1264,7 @@ class FourStateApp:
 
         # Two columns of four, so the row is no taller than the States table:
         # the pulse on the left, the field and rotator on the right.
-        write = ttk.LabelFrame(middle, text="Write", padding=6)
-        write.grid(row=0, column=1, sticky="nsew", padx=4)
+        write = ttk.LabelFrame(flow, text="Write", padding=6)
         self._parameter_rows(write, (
             ("Pulse width (µs)", "pulse_width_us"),
             ("Pulses per write", "pulse_count"),
@@ -1257,8 +1275,7 @@ class FourStateApp:
             ("Field settle (s)", "field_settle_s"),
             ("Decel (0 fast–14 slow)", "decel"),
         ), columns=2)
-        read = ttk.LabelFrame(middle, text="Read (H = 0, SR830 1st harmonic)", padding=6)
-        read.grid(row=0, column=2, sticky="nsew", padx=(4, 0))
+        read = ttk.LabelFrame(flow, text="Read (H = 0, SR830 1st harmonic)", padding=6)
         self._parameter_rows(read, (
             ("Read current (mA RMS)", "read_current_ma"),
             ("Frequency (Hz)", "read_frequency_hz"),
@@ -1269,9 +1286,10 @@ class FourStateApp:
         autorange = ttk.Checkbutton(read, text="SR830 autorange before each read", variable=self.autorange_var)
         autorange.grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
         self.inputs.append((autorange, "normal"))
+        self._flow(flow, (connections, status, manual, states, write, read))
 
         run = ttk.LabelFrame(page, text="Run", padding=6)
-        run.grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        run.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         run.columnconfigure(12, weight=1)
         self.mode_var = tk.StringVar(value=MODES[self.initial_mode])
         ttk.Label(run, text="Mode").grid(row=0, column=0, sticky="w")
@@ -1317,7 +1335,7 @@ class FourStateApp:
         ).grid(row=1, column=0, columnspan=13, sticky="w", pady=(4, 0))
 
         lower = ttk.Frame(page)
-        lower.grid(row=4, column=0, sticky="nsew", pady=(6, 0))
+        lower.grid(row=2, column=0, sticky="nsew", pady=(6, 0))
         lower.columnconfigure(0, weight=1)
         lower.rowconfigure(0, weight=1)
         self.canvas = tk.Canvas(lower, background="#ffffff", highlightthickness=0)
@@ -1359,22 +1377,58 @@ class FourStateApp:
         return status
 
     @staticmethod
-    def _beside_or_under(container, left, right, gap=6):
-        """``right`` beside ``left`` when both fit, else under it."""
+    def flow_lines(widths, available, gap):
+        """Box indices per line: left to right, a new line when the next box
+        does not fit (a box wider than the window gets a line of its own)."""
+        lines, line, used = [], [], 0
+        for index, width in enumerate(widths):
+            need = width if not line else used + gap + width
+            if line and need > available:
+                lines.append(line)
+                line, used = [index], width
+            else:
+                line.append(index)
+                used = need
+        if line:
+            lines.append(line)
+        return lines
+
+    def _flow(self, container, boxes, gap=6):
+        """Place ``boxes`` in lines (flow_lines), each line's boxes as tall as
+        its tallest and its spare width shared out, so no line ends in a gap.
+        Redone on a resize, after a connection changes and on the status
+        timer, which catches a box asking for another size (a long state)."""
         def arrange(_event=None):
             try:
-                wide = container.winfo_width() >= left.winfo_reqwidth() + right.winfo_reqwidth() + gap
+                available = container.winfo_width()
+                widths = [box.winfo_reqwidth() for box in boxes]
+                heights = [box.winfo_reqheight() for box in boxes]
             except tk.TclError:
                 return
-            if container.winfo_width() <= 1 or getattr(container, "_beside", None) is wide:
+            if available <= 1:
                 return
-            container._beside = wide
-            if wide:
-                right.grid(row=0, column=1, sticky="nsew", padx=(gap, 0), pady=0)
-            else:
-                right.grid(row=1, column=0, sticky="ew", padx=0, pady=(gap, 0))
-        right.grid(row=0, column=1, sticky="nsew", padx=(gap, 0))
+            layout = (available, tuple(widths), tuple(heights))
+            if getattr(container, "_flow_layout", None) == layout:
+                return
+            container._flow_layout = layout
+            y = 0
+            for line in self.flow_lines(widths, available, gap):
+                natural = sum(widths[i] for i in line)
+                spare = max(0, available - natural - gap * (len(line) - 1))
+                height = max(heights[i] for i in line)
+                x = 0
+                for position, index in enumerate(line):
+                    width = widths[index] + spare * widths[index] // natural
+                    if position == len(line) - 1:
+                        width = max(widths[index], available - x)
+                    boxes[index].place(x=x, y=y, width=width, height=height)
+                    x += width + gap
+                y += height + gap
+            container.configure(height=max(1, y - gap))
+
+        self._arrange_flow = arrange
         container.bind("<Configure>", arrange, add="+")
+        container.after_idle(arrange)
 
     def _show_status(self, reading):
         """Fill the status box from what a reading holds; the rest stays."""
@@ -1390,10 +1444,14 @@ class FourStateApp:
             vars_["angle_status"].set(str(reading.get("angle_status", "")))
         elif "angle_error" in reading:
             vars_["angle_status"].set(f"not read: {reading['angle_error']}")
+        def short(text, size=18):
+            text = str(text)
+            return text if len(text) <= size else text[:size - 1] + "…"
+
         if "pressure_display" in reading:
-            vars_["pressure"].set(str(reading["pressure_display"]))
+            vars_["pressure"].set(short(reading["pressure_display"]))
         if "helium_display" in reading:
-            vars_["helium"].set(str(reading["helium_display"]))
+            vars_["helium"].set(short(reading["helium_display"]))
         if "source_on" in reading:
             vars_["source"].set("ON" if reading["source_on"] else "OFF")
         elif "source_error" in reading:
@@ -1411,6 +1469,7 @@ class FourStateApp:
                 self.status_polling = True
                 threading.Thread(target=self._status_worker, args=(cryogen,), daemon=True).start()
         finally:
+            self.__dict__.get("_arrange_flow", lambda: None)()
             try:
                 self.status_after = self.root.after(int(STATUS_POLL_S * 1000), self._poll_status)
             except tk.TclError:
@@ -1429,8 +1488,6 @@ class FourStateApp:
         boxes' own fields (the same values); the pulse uses the Write box's
         width, count and compliance."""
         manual = ttk.LabelFrame(page, text="Manual settings (as on the PPMS page)", padding=6)
-        manual.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-        manual.columnconfigure(9, weight=1)
         self.manual_vars = {key: tk.StringVar(value=value) for key, value in MANUAL_DEFAULTS.items()}
         self.manual_buttons = {}
 
@@ -1459,19 +1516,16 @@ class FourStateApp:
         field(2, 2, "f Hz", self.values["read_frequency_hz"])
         button(2, 4, "Set I", self.manual_set_current)
         button(2, 5, "I off", self.manual_current_off)
-        field(2, 6, "Pulse mA", self.manual_vars["pulse_ma"])
-        button(2, 8, "Pulse", self.manual_pulse)
-        self.manual_var = tk.StringVar(value="Now: not read yet (Read)")
-        ttk.Label(manual, textvariable=self.manual_var, justify="left").grid(
-            row=0, column=6, rowspan=2, columnspan=4, sticky="nw", padx=(16, 0))
+        field(3, 0, "Pulse mA", self.manual_vars["pulse_ma"])
+        button(3, 4, "Pulse", self.manual_pulse)
+        # Readings go to the PPMS status box.  The note wraps under the rows.
         note = ttk.Label(
-            manual, foreground="#8a4b00",
+            manual, foreground="#8a4b00", wraplength=420,
             text=("Set H and Zero H end Persistent; Move only at 0 Oe (6221 off first); "
                   "Pulse uses the Write box. Stop: 6221 off and 0 Oe."),
         )
-        note.grid(row=2, column=9, sticky="ew", padx=(16, 0))
-        # Wraps to the width left beside the Pulse row, rather than being cut.
-        note.bind("<Configure>", lambda event: event.widget.configure(wraplength=max(150, event.width - 4)))
+        note.grid(row=4, column=0, columnspan=6, sticky="w", pady=(4, 0))
+        return manual
 
     # -- manual settings ------------------------------------------------
     def _manual_check(self, *, ppms=False, source=False, safety=True, moves=False):
@@ -1656,9 +1710,9 @@ class FourStateApp:
     def _manual_finished(self, label, describe, result, outcome, problems, reading, kind="", target=None):
         self._set_busy(False)
         self.worker = None
-        self.manual_var.set(self.format_reading(reading))
         if "status_box_vars" in self.__dict__:
             self._show_status(reading)
+        self._append_log(self.format_reading(reading).replace("\n", "   "))
         state = outcome[0] if outcome is not None else "done"
         # Latches: a Move not completed may leave the rotator turning; a field
         # command not confirmed may still act.  Stop's shutdown confirms 0 Oe.
@@ -1812,9 +1866,7 @@ class FourStateApp:
             self._record_lockin(payload)
         elif kind == "call":
             payload()
-        elif kind == "manual-reading":
-            self.manual_var.set(self.format_reading(payload))
-        elif kind == "ppms-reading":
+        elif kind in ("manual-reading", "ppms-reading"):
             self._show_status(payload)
         elif kind == "status-box":
             self.status_polling = False
@@ -1860,6 +1912,8 @@ class FourStateApp:
                 widget.configure(state="disabled" if self.busy or connected else "normal")
             color = "on" if connected else "failed" if self.connection_failed[key] else "off"
             lamp.itemconfigure("lamp", fill=LAMP_COLORS[color])
+        if "_arrange_flow" in self.__dict__:
+            self.root.after_idle(self._arrange_flow)  # A new state may need more room.
 
     def _in_thread(self, label, work, done):
         self._set_busy(True)

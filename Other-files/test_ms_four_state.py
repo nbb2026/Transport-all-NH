@@ -404,11 +404,24 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(endless.large_rotations(), (3, True))
         self.assertEqual(world.settings("A B").large_rotations(), (0, False))
 
-    def test_the_time_axis_unit_follows_the_run_length(self):
-        self.assertEqual(ms.time_unit(0.0), ("s", 1.0))
-        self.assertEqual(ms.time_unit(599.0), ("s", 1.0))
-        self.assertEqual(ms.time_unit(600.0), ("min", 60.0))
-        self.assertEqual(ms.time_unit(3 * 3600.0), ("h", 3600.0))
+    def test_the_time_axis_is_the_clock(self):
+        from datetime import datetime
+        start = datetime(2026, 10, 8, 9, 52, 13).timestamp()
+        ticks, title = ms.time_ticks(start, start + 400, 8)
+        self.assertEqual(title, "Local time (2026-10-08)")
+        self.assertEqual([label for _, label in ticks], ["09:53", "09:54", "09:55", "09:56", "09:57", "09:58"])
+        ticks, _ = ms.time_ticks(start, start + 50, 8)
+        self.assertEqual(ticks[0][1], "09:52:20", "seconds on a short axis, at round times")
+        ticks, title = ms.time_ticks(start, start + 2 * 86400, 8)
+        self.assertEqual(title, "Local time (2026-10-08 to 2026-10-10)")
+        self.assertEqual(ticks[0][1], "10-08 12:00", "the date when the axis spans days")
+        self.assertEqual(ms.row_epoch({"timestamp": "2026-10-08T09:52:13"}), start)
+
+    def test_boxes_flow_side_by_side(self):
+        self.assertEqual(ms.FourStateApp.flow_lines([800, 470, 520, 300, 420, 290], 1700, 6),
+                         [[0, 1], [2, 3, 4, 5]])
+        self.assertEqual(ms.FourStateApp.flow_lines([800, 470, 520], 1000, 6), [[0], [1, 2]])
+        self.assertEqual(ms.FourStateApp.flow_lines([1200], 1000, 6), [[0]], "too wide: a line of its own")
 
     def test_tick_marks_end_for_equal_values(self):
         for low, high in ((1.0, 1.0 + 1e-15), (2.5e-5, 2.5e-5), (-1e-300, 1e-300)):
@@ -1233,13 +1246,14 @@ class WindowTests(unittest.TestCase):
             self.assertIn(part, text)
 
     def test_plot_draws_three_panels(self):
-        row = dict(step=1, time_s=95.0, state="A", write_field_set_oe=-1500.0, pulse_current_ma=22.0, x_v=11e-6)
-        self.app.plot.set_rows([row, dict(row, step=2, time_s=190.0, state="B", write_field_set_oe=1500.0,
-                                          x_v=-12e-6)])
+        row = dict(step=1, time_s=95.0, timestamp="2026-10-08T09:52:13", state="A",
+                   write_field_set_oe=-1500.0, pulse_current_ma=22.0, x_v=11e-6)
+        self.app.plot.set_rows([row, dict(row, step=2, time_s=190.0, timestamp="2026-10-08T09:55:13",
+                                          state="B", write_field_set_oe=1500.0, x_v=-12e-6)])
         self.root.update()
         texts = [self.app.canvas.itemcget(item, "text") for item in self.app.canvas.find_all()
                  if self.app.canvas.type(item) == "text"]
-        for label in ("H write (T)", "I pulse (mA)", "SR830 X (µV)", "A", "B", "Time since start (s)", "100"):
+        for label in ("H write (T)", "I pulse (mA)", "SR830 X (µV)", "A", "B", "Local time (2026-10-08)", "09:54"):
             self.assertIn(label, texts)
 
     def test_each_instrument_connects_on_its_own(self):
