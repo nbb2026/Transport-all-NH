@@ -71,14 +71,14 @@ HERE = Path(__file__).resolve().parent
 OE_PER_T = 10_000.0
 
 # name, PPMS angle (deg), write field (Oe), pulse current (mA).  0.15 T is
-# 1500 Oe.  D and E are at 360 deg rather than 0 (the same orientation): 90
-# deg from A and B at 270 instead of 270 deg.  A or B written the other way
-# (field and current both reversed) is entered in its row.
+# 1500 Oe.  Every state is written at +1500 Oe; the current's sign picks D or
+# E (at 360 deg) and A or B (at 270 deg).  D and E are at 360 deg rather than
+# 0 (the same orientation): 90 deg from A and B instead of 270 deg.
 DEFAULT_STATES = (
     ("D", 360.0, 1500.0, 22.0),
-    ("A", 270.0, -1500.0, 22.0),
+    ("A", 270.0, 1500.0, -22.0),
     ("B", 270.0, 1500.0, 22.0),
-    ("E", 360.0, -1500.0, 22.0),
+    ("E", 360.0, 1500.0, -22.0),
 )
 # The manual settings' own fields, the manual pulse width among them (a
 # manual pulse never changes the runs' width); decel, field rate, frequency
@@ -395,6 +395,8 @@ class FourStateRun:
         self.shutdown_problems = []
         self.lockin_settings = {}
         self.environment_shown = None
+        self.t0 = None             # The run's start: the timeline's zero (None: no timeline).
+        self.current_state = None  # The state being written or read, for the timeline.
 
     # -- helpers ---------------------------------------------------------
     def check(self):
@@ -405,11 +407,19 @@ class FourStateRun:
         if self.stop.wait(max(0.0, float(seconds))):
             raise core.PPMSScanCancelled("Stopped")
 
+    def trace(self, quantity, value, state=None):
+        """One timeline entry, at the time since the run started: H (Oe, each
+        PPMS reading), I (mA RMS, the 6221 level when it changes), pulse (mA,
+        each write pulse), X (V, each SR830 sample), read (V, a read's mean)."""
+        if self.t0 is not None:
+            self.emit("trace", (round(self.clock() - self.t0, 3), quantity, value, state))
+
     def source_off(self):
         """Output off, confirmed by OUTP? = 0."""
         self.source.output_off()
         if int(round(source_query(self.source, "OUTP?"))) != 0:
             raise RuntimeError("6221 output did not read back off")
+        self.trace("I", 0.0)
 
     def environment(self):
         """The PPMS reading; at most one a second goes to the status box."""
@@ -417,6 +427,10 @@ class FourStateRun:
         if self.environment_shown is None or self.clock() - self.environment_shown >= STATUS_EMIT_S:
             self.emit("ppms-reading", dict(data))
             self.environment_shown = self.clock()
+        try:
+            self.trace("H", float(data["field_oe"]), self.current_state)
+        except (KeyError, TypeError, ValueError):
+            pass
         return data
 
     def lockin_settle_s(self):
@@ -545,6 +559,7 @@ class FourStateRun:
             self.check()
             for command in ("SOUR:WAVE:ARM", "OUTP ON", "SOUR:WAVE:INIT"):
                 source._write_checked(command)
+        self.trace("pulse", pulse_ma, self.current_state)
         self.wait(2.0 * width_s * count + PULSE_DONE_MARGIN_S)  # On Stop, shutdown aborts the train.
         still_on = int(round(source_query(source, "OUTP?"))) == 1
         in_compliance = self.compliance_events()
@@ -595,6 +610,7 @@ class FourStateRun:
             source.output_enabled = True
             source.output_mode = "AC"
             source.current_a = s.read_current_rms_a
+        self.trace("I", s.read_current_rms_a * 1e3, self.current_state)
 
     def check_read_current(self):
         if int(round(source_query(self.source, "OUTP?"))) != 1:
@@ -691,6 +707,7 @@ class FourStateRun:
             if status & 7:
                 return samples, True
             samples.append((x, y, frequency))
+            self.trace("X", x, self.current_state)
             if self.clock() >= end and len(samples) >= 3:
                 return samples, False
             self.wait(READ_SAMPLE_INTERVAL_S)
@@ -733,6 +750,7 @@ class FourStateRun:
         s = self.settings
         total = s.total_steps
         started = self.clock()
+        self.t0 = started
         done = 0
         try:
             self.source_off()
@@ -740,6 +758,7 @@ class FourStateRun:
             self.configure_lockin()
             for index, (cycle, name) in enumerate(s.iter_steps(), 1):
                 angle, field, pulse_ma = s.states[name]
+                self.current_state = name
                 prefix = f"Step {index}{f'/{total}' if total else ''} (cycle {cycle}), state {name}"
                 self.source_off()
                 self.emit("status", f"{prefix}: field to 0 Oe before rotating")
@@ -755,6 +774,7 @@ class FourStateRun:
                 read_field = self.field_to(0.0)
                 self.emit("status", f"{prefix}: reading the SR830 at {s.read_current_rms_a * 1e3:g} mA RMS")
                 sample = self.read()
+                self.trace("read", sample["x_v"], name)
                 self.source_off()
                 row = {
                     "step": index, "cycle": cycle, "state": name,
@@ -1021,60 +1041,56 @@ def nice_ticks(low, high, count=5):
     return ticks
 
 
-# The plot's time axis is the clock: a state written at one time and read at
-# later times shows how long it is kept (non-volatile storage).  Tick spacing
-# in seconds, the first that gives at most the asked number of ticks.
-TIME_STEPS_S = (1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800,
-                21600, 43200, 86400, 172800, 604800)
+# The plot's time axis: seconds for a short run, then minutes, then hours.
+TIME_UNITS = ((600.0, "s", 1.0), (3 * 3600.0, "min", 60.0), (math.inf, "h", 3600.0))
+TRACE_COLUMNS = ("time_s", "quantity", "value", "unit", "state")
+TRACE_UNITS = {"H": "Oe", "I": "mA RMS", "pulse": "mA", "X": "V", "read": "V"}
 
 
-def row_epoch(row):
-    """A point's local clock time (its CSV timestamp), as epoch seconds."""
-    try:
-        return datetime.fromisoformat(str(row["timestamp"])).timestamp()
-    except (KeyError, TypeError, ValueError):
-        return float(row.get("time_s", row.get("step", 0.0)))
+def time_unit(span_s):
+    """(name, seconds per unit) for a time axis spanning ``span_s``."""
+    return next((name, factor) for limit, name, factor in TIME_UNITS if span_s < limit)
 
 
-def time_ticks(low, high, count=8):
-    """Ticks at round local clock times between epoch seconds ``low`` and
-    ``high``: ([(epoch, label), ...], axis title).  Labels are HH:MM:SS for
-    steps under a minute, HH:MM otherwise, with the month and day when the
-    axis spans more than one date."""
-    span = max(high - low, 1.0)
-    step = next((s for s in TIME_STEPS_S if span / s <= count), TIME_STEPS_S[-1])
-    start, end = datetime.fromtimestamp(low), datetime.fromtimestamp(high)
-    midnight = start.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-    several_days = start.date() != end.date()
-    fmt = "%m-%d %H:%M" if several_days else ("%H:%M:%S" if step < 60 else "%H:%M")
-    ticks = []
-    value = midnight + math.ceil((low - midnight) / step) * step
-    while value <= high and len(ticks) < 60:
-        ticks.append((value, datetime.fromtimestamp(value).strftime(fmt)))
-        value += step
-    dates = f"{start:%Y-%m-%d}" + (f" to {end:%Y-%m-%d}" if several_days else "")
-    return ticks, f"Local time ({dates})"
+def thin(points, most):
+    """Every n-th point, so at most about ``most`` are drawn (a long run)."""
+    step = max(1, len(points) // most)
+    return points[::step] if step > 1 else points
 
 
 class StatePlot:
-    """H, I and SR830 X against the clock time of each point (its CSV
-    timestamp), so retention can be read off the axis; panel A of the
-    figure, with time for its steps."""
+    """A timing diagram of the run against the time since it started: the
+    measured field H, the 6221 current I (each write pulse a spike, the read
+    sine its RMS level while on), and the SR830 X samples of each read,
+    coloured and lettered by state.  So each period, writing and reading,
+    shows at its real time and for its real length."""
 
-    PANELS = (
-        ("H write (T)", lambda row: row["write_field_set_oe"] / OE_PER_T),
-        ("I pulse (mA)", lambda row: row["pulse_current_ma"]),
-        ("SR830 X (µV)", lambda row: row["x_v"] * 1e6),
-    )
-    LABELLED_POINTS = 60
+    PANELS = ("H (T)", "I (mA)", "SR830 X (µV)")
+    LABELLED_READS = 60
+    MOST_DRAWN = 4000
+    REDRAW_DELAY_MS = 300  # Samples come fast; the plot is redrawn at most this often.
 
     def __init__(self, canvas):
         self.canvas = canvas
-        self.rows = []
+        self.traces = []
+        self.pending = None
         canvas.bind("<Configure>", lambda event: self.redraw())
 
-    def set_rows(self, rows):
-        self.rows = list(rows)
+    def clear(self):
+        self.traces = []
+        self.redraw()
+
+    def add(self, trace):
+        """One (time_s, quantity, value, state) from FourStateRun.trace."""
+        self.traces.append(trace)
+        if self.pending is None:
+            try:
+                self.pending = self.canvas.after(self.REDRAW_DELAY_MS, self._redraw_now)
+            except tk.TclError:
+                pass
+
+    def _redraw_now(self):
+        self.pending = None
         self.redraw()
 
     def redraw(self):
@@ -1085,30 +1101,38 @@ class StatePlot:
         left, right, top, bottom = 90, 20, 14, 40
         gap = 12
         panel_height = (height - top - bottom - 2 * gap) / 3
-        times = [row_epoch(row) for row in self.rows]
-        if times:
-            pad = (max(times) - min(times)) * 0.04 or 30.0
-            x_low, x_high = min(times) - pad, max(times) + pad
-        else:
-            x_high = time.time()
-            x_low = x_high - 300.0
-        labelled = len(self.rows) <= self.LABELLED_POINTS
-        marker = 5 if len(self.rows) <= 200 else 3
+        last = max((trace[0] for trace in self.traces), default=0.0)
+        unit, per_unit = time_unit(last)
+        x_low, x_high = 0.0, (last * 1.02 or 60.0) / per_unit
+        of = {quantity: [trace for trace in self.traces if trace[1] == quantity]
+              for quantity in ("H", "I", "pulse", "X", "read")}
 
-        def x_pixel(value):
-            return left + (value - x_low) / (x_high - x_low) * (width - left - right)
+        def x_pixel(seconds):
+            return left + (seconds / per_unit - x_low) / (x_high - x_low) * (width - left - right)
 
-        for index, (label, value_of) in enumerate(self.PANELS):
+        # Each panel's values: H in T, I in mA (levels and pulses, from 0), X in µV.
+        h_points = [(at, value / OE_PER_T) for at, _, value, _ in of["H"]]
+        levels = [(at, value) for at, _, value, _ in of["I"]]
+        pulses = [(at, value, state) for at, _, value, state in of["pulse"]]
+        samples = [(at, value * 1e6, state) for at, _, value, state in of["X"]]
+        reads = [(at, value * 1e6, state) for at, _, value, state in of["read"]]
+        ranges = (
+            [value for _, value in h_points] + [0.0],
+            [value for _, value in levels] + [value for _, value, _ in pulses] + [0.0],
+            [value for _, value, _ in samples],
+        )
+        labelled = len(reads) <= self.LABELLED_READS
+        for index, label in enumerate(self.PANELS):
             y0 = top + index * (panel_height + gap)
             y1 = y0 + panel_height
             canvas.create_rectangle(left, y0, width - right, y1, outline="#555555")
             canvas.create_text(16, (y0 + y1) / 2, text=label, angle=90, anchor="center", font=("TkDefaultFont", 11))
-            values = [value_of(row) for row in self.rows]
+            values = ranges[index]
             if values:
                 low, high = min(values), max(values)
                 pad = (high - low) * 0.12 or max(abs(high), 1.0) * 0.12
-                # Room above the highest X point for its state letter.
-                low, high = low - pad, high + pad * (2.0 if index == 2 and labelled else 1.0)
+                # Room above the highest X sample for the state letters.
+                low, high = low - pad, high + pad * (2.5 if index == 2 and labelled else 1.0)
             else:
                 low, high = -1.0, 1.0
 
@@ -1119,25 +1143,48 @@ class StatePlot:
                 y = y_pixel(tick)
                 canvas.create_line(left - 4, y, left, y, fill="#555555")
                 canvas.create_text(left - 6, y, text=f"{tick:g}", anchor="e", font=("TkDefaultFont", 10))
-            points = [(x_pixel(at), y_pixel(v), base_state(row["state"]), row["state"])
-                      for row, at, v in zip(self.rows, times, values)]
-            if index == 2 and len(points) > 1:
-                canvas.create_line(*[c for p in points for c in p[:2]], fill="#9e9e9e")
-            for x, y, base, name in points:
-                color = STATE_COLORS.get(base, "#6a1b9a")
-                canvas.create_rectangle(x - marker, y - marker, x + marker, y + marker, fill=color, outline=color)
-                if index == 2 and labelled:
-                    canvas.create_text(x, y - 14, text=name, fill=color, font=("TkDefaultFont", 11, "bold"))
-            if not points and index == 2:
-                canvas.create_text((left + width - right) / 2, (y0 + y1) / 2, text="Waiting for data",
-                                   fill="#757575")
+            if index == 0 and h_points:
+                line = [c for at, value in thin(h_points, self.MOST_DRAWN) for c in (x_pixel(at), y_pixel(value))]
+                if len(line) >= 4:
+                    canvas.create_line(*line, fill="#37474f", width=2)
+                else:
+                    canvas.create_oval(line[0] - 3, line[1] - 3, line[0] + 3, line[1] + 3, fill="#37474f")
+            elif index == 1:
+                # The level held until the next change: a step line from 0.
+                step, level = [x_pixel(0.0), y_pixel(0.0)], 0.0
+                for at, value in levels:
+                    step += [x_pixel(at), y_pixel(level), x_pixel(at), y_pixel(value)]
+                    level = value
+                if levels:
+                    step += [x_pixel(last), y_pixel(level)]
+                    canvas.create_line(*step, fill="#37474f", width=2)
+                for at, value, state in pulses:  # Microseconds long: drawn as a spike.
+                    color = STATE_COLORS.get(base_state(state or ""), "#6a1b9a")
+                    x = x_pixel(at)
+                    canvas.create_line(x, y_pixel(0.0), x, y_pixel(value), fill=color, width=3)
+                    canvas.create_oval(x - 4, y_pixel(value) - 4, x + 4, y_pixel(value) + 4, fill=color, outline=color)
+            elif index == 2:
+                marker = 2 if len(samples) > 400 else 3
+                for at, value, state in thin(samples, self.MOST_DRAWN):
+                    color = STATE_COLORS.get(base_state(state or ""), "#6a1b9a")
+                    x, y = x_pixel(at), y_pixel(value)
+                    canvas.create_oval(x - marker, y - marker, x + marker, y + marker, fill=color, outline=color)
+                if labelled:
+                    for at, value, state in reads:
+                        color = STATE_COLORS.get(base_state(state or ""), "#6a1b9a")
+                        canvas.create_text(x_pixel(at), y_pixel(value) - 16, text=state, fill=color,
+                                           font=("TkDefaultFont", 11, "bold"))
+                if not samples:
+                    canvas.create_text((left + width - right) / 2, (y0 + y1) / 2, text="Waiting for data",
+                                       fill="#757575")
         axis_y = height - bottom
-        ticks, title = time_ticks(x_low, x_high, max(2, min(10, int((width - left - right) / 110))))
-        for tick, label in ticks:
-            x = x_pixel(tick)
-            canvas.create_line(x, axis_y, x, axis_y + 4, fill="#555555")
-            canvas.create_text(x, axis_y + 6, text=label, anchor="n", font=("TkDefaultFont", 10))
-        canvas.create_text((left + width - right) / 2, height - 12, text=title, font=("TkDefaultFont", 11))
+        for tick in nice_ticks(x_low, x_high, max(2, min(10, int((width - left - right) / 90)))):
+            if x_low <= tick <= x_high:
+                x = left + (tick - x_low) / (x_high - x_low) * (width - left - right)
+                canvas.create_line(x, axis_y, x, axis_y + 4, fill="#555555")
+                canvas.create_text(x, axis_y + 6, text=f"{tick:g}", anchor="n", font=("TkDefaultFont", 10))
+        canvas.create_text((left + width - right) / 2, height - 12, text=f"Time since start ({unit})",
+                           font=("TkDefaultFont", 11))
 
 
 class FourStateApp:
@@ -1523,12 +1570,13 @@ class FourStateApp:
         button(3, 4, "Pulse", self.manual_pulse)
         # Readings go to the PPMS status box.  The note wraps under the rows.
         note = ttk.Label(
-            manual, foreground="#8a4b00", wraplength=400,
+            manual, foreground="#8a4b00", wraplength=300,
             text=("H ends Persistent · Move only at 0 Oe, 6221 off first · "
                   "Pulse: count and compliance from Write · Stop: 6221 off, 0 Oe"),
         )
-        # Across the box, so the wrapped lines always have their room.
+        # Across the box, wrapped to its width (300 px until it has one).
         note.grid(row=4, column=0, columnspan=6, sticky="ew", pady=(4, 0))
+        note.bind("<Configure>", lambda event: event.widget.configure(wraplength=max(150, event.width - 2)))
         return manual
 
     # -- manual settings ------------------------------------------------
@@ -1868,6 +1916,8 @@ class FourStateApp:
             self._append_log(payload)
         elif kind == "point":
             self._add_point(payload)
+        elif kind == "trace":
+            self._add_trace(payload)
         elif kind == "lockin":
             self._record_lockin(payload)
         elif kind == "call":
@@ -2065,7 +2115,14 @@ class FourStateApp:
         self.csv_writer = writer
         self.csv_failed = False
         self.rows = []
-        self.plot.set_rows([])
+        self.plot.clear()
+        try:
+            self.trace_file = open(folder / f"{self.title}_trace.csv", "w", newline="", encoding="utf-8")
+            self.trace_writer = csv.writer(self.trace_file)
+            self.trace_writer.writerow(TRACE_COLUMNS)
+        except OSError as error:
+            self.trace_file = self.trace_writer = None
+            self._append_log(f"Trace CSV not opened: {error}")
         self.steps_per_cycle = len(settings.sequence)
         self.progress.configure(maximum=settings.total_steps or self.steps_per_cycle, value=0)
         self.stop_event.clear()
@@ -2137,7 +2194,6 @@ class FourStateApp:
                                        "plot keeps every point; settings.json and the log are in the run folder.",
                                        parent=self.root)
         finally:
-            self.plot.set_rows(self.rows)
             done = len(self.rows)
             self.progress.configure(value=done if self.run is None or self.run.settings.total_steps
                                     else (done - 1) % self.steps_per_cycle + 1)
@@ -2147,7 +2203,26 @@ class FourStateApp:
                 f"θ = {row['theta_deg']:+.2f}°   R'xy = {row['rxy_ohm'] * 1e3:+.4g} mΩ\n"
                 f"H read {row['read_field_oe']:+.4g} Oe, T = {row['temperature_k']:.4g} K")
 
+    def _add_trace(self, trace):
+        """The timeline: to the plot, and to the run's trace CSV."""
+        self.plot.add(trace)
+        writer = self.__dict__.get("trace_writer")
+        if writer is not None:
+            at, quantity, value, state = trace
+            try:
+                writer.writerow((at, quantity, f"{value:.9g}", TRACE_UNITS.get(quantity, ""), state or ""))
+                self.trace_file.flush()
+            except OSError as error:
+                self.trace_writer = None
+                self._append_log(f"Trace CSV write failed: {error}; the plot keeps the timeline")
+
     def _run_finished(self, outcome, problems):
+        try:
+            if self.__dict__.get("trace_file") is not None:
+                self.trace_file.close()
+        except OSError:
+            pass
+        self.trace_file = self.trace_writer = None
         try:
             if self.csv_file is not None:
                 self.csv_file.close()

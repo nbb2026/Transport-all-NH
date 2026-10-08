@@ -1,6 +1,30 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
-## MS-fourState.py: clock time on the x-axis; compact setup boxes (2026-10-08)
+## MS-fourState.py: a timing diagram on elapsed time; A and E at +1500 Oe, −22 mA (2026-10-08)
+
+- **Plot:** a timing diagram against the time since the run started, which
+  replaces the clock-time axis of the entry below. Each period shows at its
+  real time and length:
+  - **H:** the measured field.
+  - **I:** each write pulse as a spike in its state's colour, and the read
+    sine as a block at its RMS level while on.
+  - **SR830 X:** every sample of each read, lettered by state.
+  - The run engine records the timeline (`FourStateRun.trace`). It is also
+    saved as `MS-fourState_trace.csv` (time_s, quantity, value, unit, state).
+  - The plot is redrawn at most every 0.3 s and thins very long runs for
+    drawing.
+- **States:** A is 270°, +1500 Oe, −22 mA and E is 360°, +1500 Oe, −22 mA.
+  Every state is now written at +1500 Oe, and the current's sign picks the
+  state. The tests' simulated sample follows that (sign of H × I).
+- **Fixes:**
+  - The Manual settings note wraps to its box (the layout check passes).
+  - The window tests close the window through the program, which ends its
+    timers first.
+- **Tests:** `TimelineTests` checks that each pulse comes in the write field,
+  that X is read only while the read current is on, and that the timeline is
+  in time order. They also check that a manual action makes no timeline.
+
+## MS-fourState.py: clock time on the x-axis (superseded above); compact setup boxes (2026-10-08)
 
 - **x-axis:** the clock time of each point, its CSV `timestamp`, so a
   state's retention can be read off the plot (non-volatile storage). Ticks

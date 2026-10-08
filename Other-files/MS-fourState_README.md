@@ -120,9 +120,9 @@ Defaults from the measurement table, editable in the window (1500 Oe = 0.15 T):
 | State | φ PPMS | H write | I pulse | |
 | --- | --- | --- | --- | --- |
 | D | 360° | +1500 Oe (Hz) | +22 mA | +H ⊥ +I |
-| A | 270° | −1500 Oe (Hx) | +22 mA | +H ∥ +I |
+| A | 270° | +1500 Oe (Hx) | −22 mA | +H ∥ −I |
 | B | 270° | +1500 Oe (Hx) | +22 mA | +H ∥ +I |
-| E | 360° | −1500 Oe (Hz) | +22 mA | −H ⊥ +I |
+| E | 360° | +1500 Oe (Hz) | −22 mA | +H ⊥ −I |
 
 Cycles and sequences are typed as state names separated by spaces, commas or
 dashes, for example `D A B E` or `D-A-B-E-B-A`. Switching between
@@ -214,15 +214,21 @@ program, for example `MS-fourState data/20261007_153000_cycle/`:
 - `log.txt`: the status and instrument log of that run.
 - `MS-fourState_plot.eps`: the plot, saved at the end and by **Save plot**.
 
-The plot shows the write field in T, the pulse current in mA and SR830 X in
-µV against the clock time of each point, its `timestamp` in the CSV. A state
-written at one time and read at later times therefore shows how long it is
-kept (non-volatile storage).
-- **Ticks:** at round clock times, labelled HH:MM, or HH:MM:SS for a short
-  run, with the month and day when the axis spans more than one date.
-- **Axis title:** "Local time" with the date.
-- **Points:** each is coloured by its state, and state letters are drawn for
-  up to 60 points.
+The plot is a timing diagram of the run against the time since it started,
+in s (min after 10 min, h after 3 h). Each period shows at its real time and
+for its real length:
+- **H (T):** the field as the PPMS reads it, ramping to the write field and
+  back to 0 Oe for the read.
+- **I (mA):** the 6221. Each write pulse is a spike in its state's colour (it
+  is microseconds long), and the read sine is a block at its RMS level while
+  it is on.
+- **SR830 X (µV):** every sample of each read, in its state's colour, with
+  the state's letter above it.
+
+The same timeline is saved as `MS-fourState_trace.csv` in the run folder,
+with columns time_s, quantity, value, unit and state. The quantities are H
+(Oe), I (mA RMS), pulse (mA), X (V) and read (V, the read's mean). A state
+read again after a time therefore shows how long it is kept.
 
 ## Before the first run
 

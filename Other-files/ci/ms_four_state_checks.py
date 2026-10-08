@@ -23,7 +23,27 @@ PROGRAM = Path(__file__).resolve().parents[2] / "MS-fourState.py"
 # (mode, width, height, must fit)
 WINDOWS = (("cycle", 1720, 1240, True), ("cycle", 1360, 960, True), ("cycle", 1100, 760, False),
            ("cycle", 2000, 1100, True), ("sequence", 1360, 960, True))
-EXAMPLE = (("D", 1500, 22, 30e-6), ("A", -1500, 22, 11e-6), ("B", 1500, 22, -12.5e-6), ("E", -1500, 22, -27e-6))
+EXAMPLE = (("D", 1500, 22, 30e-6), ("A", 1500, -22, 11e-6), ("B", 1500, 22, -12.5e-6), ("E", 1500, -22, -27e-6))
+
+
+def example_timeline():
+    """A run's timeline, as FourStateRun.trace sends it, for the four states:
+    the field up to the write field and back, the pulse, then the read."""
+    traces, t = [], 0.0
+    for state, field, pulse, x in EXAMPLE:
+        for step in range(30):  # 15 s up, 15 s down at 100 Oe/s, read every 0.5 s
+            level = field * min(1.0, step / 15) if step < 15 else field * (29 - step) / 14
+            traces.append((t, "H", level, state))
+            if step == 15:
+                traces.append((t, "pulse", pulse, state))
+            t += 0.5
+        traces.append((t, "I", 0.5, state))
+        for sample in range(30):
+            traces.append((t + 2.0 + 0.1 * sample, "X", x * (1 + 0.02 * ((sample % 5) - 2)), state))
+        t += 5.0
+        traces += [(t, "read", x, state), (t, "I", 0.0, None)]
+        t += 2.0
+    return traces
 
 
 def main():
@@ -43,9 +63,10 @@ def main():
         root.geometry(f"{width}x{height}+0+0")
         for _ in range(6):
             root.update()
-        app.plot.set_rows([dict(step=i, time_s=95.0 * i, timestamp=f"2026-10-08T09:{50 + 2 * i:02d}:13", state=s,
-                                write_field_set_oe=h, pulse_current_ma=c, x_v=x)
-                           for i, (s, h, c, x) in enumerate(EXAMPLE, 1)])
+        app.plot.clear()
+        for trace in example_timeline():
+            app.plot.add(trace)
+        app.plot.redraw()
         root.update()
         page = root.winfo_children()[0]
         clipped, cut, _pairs = inspect(page)

@@ -63,14 +63,15 @@ class StopEvent:
 
 
 class Sample:
-    """Takes D/E at 0 or 360 deg (by the field sign) and A/B at 270 deg (by H x I)."""
+    """Takes D/E at 0 or 360 deg and B/A at 270 deg by the sign of H x I
+    (every default state is written at +1500 Oe; the current picks)."""
 
     def __init__(self):
         self.state = "E"
 
     def pulse(self, current_a, field_oe, angle_deg):
         if abs(angle_deg) < 1 or abs(angle_deg - 360) < 1:
-            self.state = "D" if field_oe > 0 else "E"
+            self.state = "D" if field_oe * current_a > 0 else "E"
         elif abs(angle_deg - 270) < 1:
             self.state = "A" if field_oe * current_a < 0 else "B"
 
@@ -358,8 +359,8 @@ class FakeSR830:
 class SettingsTests(unittest.TestCase):
     def test_defaults_are_the_figure_table(self):
         self.assertEqual(ms.DEFAULT_STATES, (
-            ("D", 360.0, 1500.0, 22.0), ("A", 270.0, -1500.0, 22.0),
-            ("B", 270.0, 1500.0, 22.0), ("E", 360.0, -1500.0, 22.0)), "D, A, B and E only")
+            ("D", 360.0, 1500.0, 22.0), ("A", 270.0, 1500.0, -22.0),
+            ("B", 270.0, 1500.0, 22.0), ("E", 360.0, 1500.0, -22.0)), "D, A, B and E, all at +1500 Oe")
         settings = World().settings()
         self.assertEqual(settings.sequence, ("D", "A", "B", "E"))
         self.assertEqual(settings.pulse_width_s, 30e-6)
@@ -404,18 +405,13 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(endless.large_rotations(), (3, True))
         self.assertEqual(world.settings("A B").large_rotations(), (0, False))
 
-    def test_the_time_axis_is_the_clock(self):
-        from datetime import datetime
-        start = datetime(2026, 10, 8, 9, 52, 13).timestamp()
-        ticks, title = ms.time_ticks(start, start + 400, 8)
-        self.assertEqual(title, "Local time (2026-10-08)")
-        self.assertEqual([label for _, label in ticks], ["09:53", "09:54", "09:55", "09:56", "09:57", "09:58"])
-        ticks, _ = ms.time_ticks(start, start + 50, 8)
-        self.assertEqual(ticks[0][1], "09:52:20", "seconds on a short axis, at round times")
-        ticks, title = ms.time_ticks(start, start + 2 * 86400, 8)
-        self.assertEqual(title, "Local time (2026-10-08 to 2026-10-10)")
-        self.assertEqual(ticks[0][1], "10-08 12:00", "the date when the axis spans days")
-        self.assertEqual(ms.row_epoch({"timestamp": "2026-10-08T09:52:13"}), start)
+    def test_the_time_axis_unit_follows_the_run_length(self):
+        self.assertEqual(ms.time_unit(0.0), ("s", 1.0))
+        self.assertEqual(ms.time_unit(599.0), ("s", 1.0))
+        self.assertEqual(ms.time_unit(600.0), ("min", 60.0))
+        self.assertEqual(ms.time_unit(3 * 3600.0), ("h", 3600.0))
+        self.assertEqual(ms.thin(list(range(10)), 4), [0, 2, 4, 6, 8])
+        self.assertEqual(ms.thin([1, 2], 4), [1, 2])
 
     def test_boxes_flow_side_by_side(self):
         self.assertEqual(ms.FourStateApp.flow_lines([800, 470, 520, 300, 420, 290], 1700, 6),
@@ -464,7 +460,7 @@ class RunTests(unittest.TestCase):
             self.assertEqual(timeout, 900.0)
         pulses = [e for e in events if e[0] == "pulse"]
         self.assertEqual([(round(e[1] * 1e3, 6), e[2], e[4]) for e in pulses],
-                         [(22.0, 1500.0, 360.0), (22.0, -1500.0, 270.0), (22.0, 1500.0, 270.0), (22.0, -1500.0, 360.0)])
+                         [(22.0, 1500.0, 360.0), (-22.0, 1500.0, 270.0), (22.0, 1500.0, 270.0), (-22.0, 1500.0, 360.0)])
         for pulse in pulses:
             self.assertEqual(pulse[3], "StableDriven", "pulse only once the write field has settled")
             self.assertAlmostEqual(pulse[5], 30e-6, places=12, msg="30 us wide")
@@ -486,9 +482,9 @@ class RunTests(unittest.TestCase):
                  if e[0] in ("field", "pulse", "sine", "rotate")]
         self.assertEqual(order, [
             "rotate", "field +1500", "pulse", "field +0", "sine",  # 0 -> D at 360 deg first
-            "rotate", "field -1500", "pulse", "field +0", "sine",
+            "rotate", "field +1500", "pulse", "field +0", "sine",
             "field +1500", "pulse", "field +0", "sine",
-            "rotate", "field -1500", "pulse", "field +0", "sine"])
+            "rotate", "field +1500", "pulse", "field +0", "sine"])
 
     def test_pulse_starts_as_on_the_moke_6221_page(self):
         world = World()
@@ -568,10 +564,10 @@ class RunTests(unittest.TestCase):
         world = World()
         values = dict(ms.DEFAULTS)
         states = {name: (str(a), str(h), str(i)) for name, a, h, i in ms.DEFAULT_STATES}
-        states["A"], states["B"] = ("270", "1500", "-22"), ("270", "-1500", "-22")
+        states["A"], states["B"] = ("270", "-1500", "22"), ("270", "-1500", "-22")
         rows = world.run(ms.build_settings(states, "A B", values))
         pulses = [e for e in world.events if e[0] == "pulse"]
-        self.assertEqual([(round(e[1] * 1e3, 6), e[2]) for e in pulses], [(-22.0, 1500.0), (-22.0, -1500.0)])
+        self.assertEqual([(round(e[1] * 1e3, 6), e[2]) for e in pulses], [(22.0, -1500.0), (-22.0, -1500.0)])
         for row, state in zip(rows, ("A", "B")):
             self.assertAlmostEqual(row["x_v"], HALL_OHM[state] * 0.5e-3, places=12)
 
@@ -605,7 +601,7 @@ class RunTests(unittest.TestCase):
 
     def test_stop_turns_the_6221_off_and_returns_the_field_to_zero(self):
         world = World()
-        world.stop.stop_when = lambda: world.ppms.target == -1500.0
+        world.stop.stop_when = lambda: sum(e[0] == "field" and e[1] == 1500.0 for e in world.events) >= 2  # A's write
         with self.assertRaises(core.PPMSScanCancelled):
             world.run()
         self.assertFalse(world.source_device.output_on())
@@ -618,10 +614,10 @@ class RunTests(unittest.TestCase):
         # follow what was commanded, not the stale reading.
         world = World()
         world.ppms.lag_s = 2.0
-        world.stop.stop_when = lambda: world.ppms.target == -1500.0
+        world.stop.stop_when = lambda: sum(e[0] == "field" and e[1] == 1500.0 for e in world.events) >= 2  # A's write
         with self.assertRaises(core.PPMSScanCancelled):
             world.run()
-        self.assertEqual([e[1] for e in world.events if e[0] == "field"][-2:], [-1500.0, 0.0])
+        self.assertEqual([e[1] for e in world.events if e[0] == "field"][-2:], [1500.0, 0.0])
         reading = world.ppms.read_environment()
         self.assertEqual((reading["field_oe"], reading["field_status"]), (0.0, "StableDriven"))
         self.assertEqual(world.last_run.shutdown_problems, [])
@@ -956,6 +952,42 @@ class ManualTests(unittest.TestCase):
         self.assertEqual(ms.manual_settings(ms.DEFAULTS).sequence, ())
 
 
+class TimelineTests(unittest.TestCase):
+    """The run's timeline: H, I, pulses and X at their real times."""
+
+    def test_each_period_is_recorded_at_its_time(self):
+        world = World()
+        world.run(world.settings("D A"))
+        traces = [payload for kind, payload in world.emitted if kind == "trace"]
+        times = [trace[0] for trace in traces]
+        self.assertEqual(times, sorted(times), "in time order, from the run's start")
+        self.assertGreaterEqual(times[0], 0.0)
+        of = lambda quantity: [trace for trace in traces if trace[1] == quantity]
+        self.assertEqual([(value, state) for _, _, value, state in of("pulse")], [(22.0, "D"), (-22.0, "A")])
+        self.assertEqual([state for _, _, _, state in of("read")], ["D", "A"])
+        for at, _, _, state in of("pulse"):
+            field = max((t for t in of("H") if t[0] <= at), key=lambda t: t[0])[2]
+            self.assertEqual(field, 1500.0, f"{state} pulsed in the write field")
+        levels = [value for _, _, value, _ in of("I")]
+        self.assertIn(0.5, levels, "the read current, in mA RMS")
+        self.assertEqual(levels[-1], 0.0, "and off at the end")
+        level = 0.0
+        for _, quantity, value, state in traces:  # In the order they happened.
+            if quantity == "I":
+                level = value
+            elif quantity == "X":
+                self.assertEqual(level, 0.5, "X is read only while the read current is on")
+                self.assertAlmostEqual(value, HALL_OHM[state] * 0.5e-3, places=12)
+
+    def test_manual_actions_make_no_timeline(self):
+        world = World()
+        run = ms.FourStateRun(world.ppms, world.source, world.lockin, ms.manual_settings(ms.DEFAULTS),
+                              emit=lambda kind, payload: world.emitted.append((kind, payload)),
+                              stop=world.stop, motor=world.motor, clock=world.clock, sleep=world.advance)
+        run.manual_pulse(22.0)
+        self.assertEqual([kind for kind, _ in world.emitted if kind == "trace"], [])
+
+
 class StatusBoxTests(unittest.TestCase):
     """The PPMS status box: read only, polled while idle, fed by runs."""
 
@@ -1083,7 +1115,6 @@ class DisplayTests(unittest.TestCase):
             app._add_point(dict(row, step=2))
         warning.assert_called_once()
         self.assertEqual(len(app.rows), 2)
-        self.assertEqual(app.plot.set_rows.call_count, 2, "the plot keeps every point")
         self.assertTrue(any("CSV write failed at step 2" in text for text in app.logged))
 
     def manual_app(self, world):
@@ -1242,7 +1273,7 @@ class WindowTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.root.destroy()
+        cls.app.close()  # Cancels its timers, then destroys the window.
 
     def test_defaults_on_screen(self):
         app = self.app
@@ -1252,7 +1283,7 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(app.values["repeats"].get(), "1")
         self.assertEqual(app.values["pulse_width_us"].get(), "30")
         self.assertEqual(app.values["read_current_ma"].get(), "0.5")
-        self.assertEqual([variable.get() for variable in app.state_vars["A"]], ["270", "-1500", "22"])
+        self.assertEqual([variable.get() for variable in app.state_vars["A"]], ["270", "1500", "-22"])
         self.assertFalse(app.safety_var.get(), "the safety tick starts cleared")
         self.assertFalse(app.until_stop_var.get())
         self.assertEqual(app.mode_var.get(), "Cycle")
@@ -1265,18 +1296,22 @@ class WindowTests(unittest.TestCase):
 
     def test_confirmation_lists_every_setting(self):
         text = self.app.summary(self.app.current_settings())
-        for part in ("D", "φ 270°", "H -1500 Oe", "pulse +22 mA", "30 µs × 1", "0.5 mA RMS", "large rotation"):
+        for part in ("D", "φ 270°", "H +1500 Oe", "pulse -22 mA", "30 µs × 1", "0.5 mA RMS", "large rotation"):
             self.assertIn(part, text)
 
-    def test_plot_draws_three_panels(self):
-        row = dict(step=1, time_s=95.0, timestamp="2026-10-08T09:52:13", state="A",
-                   write_field_set_oe=-1500.0, pulse_current_ma=22.0, x_v=11e-6)
-        self.app.plot.set_rows([row, dict(row, step=2, time_s=190.0, timestamp="2026-10-08T09:55:13",
-                                          state="B", write_field_set_oe=1500.0, x_v=-12e-6)])
+    def test_plot_draws_the_timeline(self):
+        plot = self.app.plot
+        self.addCleanup(plot.clear)
+        plot.clear()
+        for trace in ((10.0, "H", 1500.0, "A"), (30.0, "pulse", -22.0, "A"), (31.0, "I", 0.0, None),
+                      (40.0, "H", 0.0, "A"), (50.0, "I", 0.5, "A"), (60.0, "X", 11e-6, "A"),
+                      (61.0, "read", 11e-6, "A"), (62.0, "I", 0.0, None)):
+            plot.add(trace)
+        plot.redraw()
         self.root.update()
         texts = [self.app.canvas.itemcget(item, "text") for item in self.app.canvas.find_all()
                  if self.app.canvas.type(item) == "text"]
-        for label in ("H write (T)", "I pulse (mA)", "SR830 X (µV)", "A", "B", "Local time (2026-10-08)", "09:54"):
+        for label in ("H (T)", "I (mA)", "SR830 X (µV)", "A", "Time since start (s)", "60"):
             self.assertIn(label, texts)
 
     def test_each_instrument_connects_on_its_own(self):
@@ -1353,7 +1388,7 @@ class WindowTests(unittest.TestCase):
         window = tk.Toplevel(self.root)
         window.withdraw()
         app = ms.FourStateApp(window, "sequence")
-        self.addCleanup(window.destroy)
+        self.addCleanup(app.close)
         self.assertEqual(window.title(), "MS-fourState")
         self.assertEqual(app.mode, "sequence")
         self.assertEqual(app.current_settings().sequence, ("D", "A", "B", "E"))
