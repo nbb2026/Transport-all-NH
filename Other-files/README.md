@@ -1,5 +1,53 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local page: Gate-VI, |R| vs time and an I–V sweep (2026-10-08)
+
+- **The page:** the Gate-VI tab is now **Non-local**. Its instrument rack, the
+  Trigger Link line and the red stop button stay at the top. Under them,
+  three sub-tabs (`nonlocal_measurements`) share the Keithley 2410/2400:
+  - **Gate-VI pulse scan:** the old Gate-VI settings, run box and plots,
+    unchanged.
+  - **|R| vs time:** moved from MOKE-24. It uses the same autorange, 20 s
+    window and plot as before, on the pulse Keithley
+    (`NonLocalVI2410Controller.start_resistance`, `set_resistance_current`,
+    `read_resistance`).
+  - **I–V sweep:** new, as in the user's 1 µm Pt-Pt figure.
+- **The sweep:**
+  - **Settings:** Sample, Start V, End V, Step V, Settle s and Current limit
+    A. Defaults are −6, 6, 0.25, 0.5 s and 1 mA.
+  - **Voltages:** stepped once from Start to End, both included
+    (`build_iv_sweep_voltages`). They are limited to ±20 V in the 20 V range.
+    `start_iv_sweep` checks that the 20 V OVP reads back before the output
+    goes on.
+  - **Each point:** the current is read at NPLC 1 after Settle s.
+  - **Plot:** I against V with black squares joined by a dotted line, and
+    the sample name in the corner. The unit is pA, nA, µA or mA. Points at
+    the current limit are red.
+  - **Save CSV + PNG:** a CSV (point, set and source voltage, current,
+    elapsed time, at the limit), the plot as a PNG and a parameter log.
+- **Safety:**
+  - **One at a time:** `nonlocal_keithley_task` holds the Keithley for |R| or
+    I–V. Meanwhile the pulse scan, the rack's Connect/Disconnect buttons and
+    the model list wait, and a Gate-VI scan or connect blocks |R| and I–V.
+  - **6221 first:** before either starts, the 6221 output is switched off
+    and checked off. The interlock holds its 2410 phase throughout.
+  - **Afterwards:** `restore_voltage_mode` zeroes the Keithley, switches it
+    off and returns it to the pulse setup (20 V, 1 mA, output off). This
+    happens whether the measurement completed, was stopped or failed. The
+    red button and Stop end either.
+- **MOKE-24:** keeps its connection, manual output and voltage scan. Its |R|
+  row and plot are gone, so the two plots share the row.
+- **Tests:** `test_nonlocal_keithley.py` (replacing
+  `test_keithley_resistance_plot.py`) covers:
+  - the sweep voltages and the current units;
+  - the I–V plot, and the |R| plot without numpy;
+  - the Keithley commands (*RST, OVP readback, limit, NPLC, output on at
+    0 V) and the switch-off afterwards;
+  - stop and errors mid-sweep, and |R| autoranging.
+
+  `test_panel_defaults.py` checks the sub-tabs, the defaults and the
+  turn-taking. `gui_checks.py` inspects and screenshots each sub-tab.
+
 ## MS-fourState.py: an instrument command console (2026-10-08)
 
 The log beside the plot is now a console like a command-line session. It

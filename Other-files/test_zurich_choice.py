@@ -77,7 +77,7 @@ class ZurichChoiceTests(unittest.TestCase):
         return (
             ("STFMR", self.a.stfmr_lockin_resource_widgets["mfli"],
              self.a.stfmr_lockin_resource_vars["mfli"], "DEV4435 (Normal)"),
-            ("Gate-VI", vi, self.a.nonlocal_vi_mfli_device_var, "DEV4435 (Normal)"),
+            ("Non-local", vi, self.a.nonlocal_vi_mfli_device_var, "DEV4435 (Normal)"),
             ("PPMS", self.a.ppms_panel.zurich_entries[0], self.a.ppms_panel.zurich_resource,
              "DEV4414 (Super)"),
             ("RT-E", self.a.rte_panel.zurich_entries[0], self.a.rte_panel.zurich_resource,
@@ -107,7 +107,7 @@ class ZurichChoiceTests(unittest.TestCase):
                     self.assertLessEqual(font.measure(label), room, f"{label} is cut")
 
     def test_gate_vi_list_is_as_wide_as_the_sr830_address_fields(self):
-        self.show("Gate-VI")
+        self.show("Non-local")
         chooser = self.choosers()[1][1]
         sr830 = next(w for w in self._descendants(self.root)
                      if w.winfo_class() == "TEntry"
@@ -126,7 +126,7 @@ class ZurichChoiceTests(unittest.TestCase):
         pages = (
             ("STFMR", self.a.stfmr_lockin_resource_vars["mfli"],
              lambda: self.a.connect_stfmr_lockin_device("mfli"), self.a.stfmr_lockin_mfli_controller),
-            ("Gate-VI", self.a.nonlocal_vi_mfli_device_var,
+            ("Non-local", self.a.nonlocal_vi_mfli_device_var,
              lambda: self.a.connect_nonlocal_vi_device("mfli"), self.a.nonlocal_vi_ac_controller),
         )
         for page, variable, connect, controller in pages:

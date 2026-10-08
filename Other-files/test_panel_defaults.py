@@ -98,18 +98,64 @@ class PanelDefaultTests(unittest.TestCase):
         # set), nothing that sources is offered until the connect finishes.
         self.addCleanup(setattr, moke.keithley_controller, "instrument", None)
         self.addCleanup(moke.keithley_safety_var.set, False)
-        self.addCleanup(moke.keithley_resistance_safety_var.set, False)
         moke.keithley_controller.instrument = object()
         moke.keithley_safety_var.set(True)
-        moke.keithley_resistance_safety_var.set(True)
         moke._update_keithley_controls()
-        for button in (moke.keithley_start_button, moke.keithley_resistance_button,
+        for button in (moke.keithley_start_button,
                        moke.keithley_disconnect_button, *moke.keithley_manual_buttons):
             self.assertEqual(str(button.cget("state")), "disabled", button.cget("text"))
         moke.keithley_controller.instrument = None
         moke.keithley_connecting = False
         moke._update_keithley_controls()
         self.assertEqual(str(moke.keithley_model_combo.cget("state")), "readonly")
+
+    def test_resistance_moved_from_moke_24_to_non_local(self):
+        """2026-10-08: MOKE-24 keeps the MOKE voltage scan; |R| vs time and
+        the new I-V sweep are on the Non-local page with Gate-VI."""
+        a = self.app
+        self.assertFalse(hasattr(a, "keithley_resistance_button"))
+        self.assertNotIn("resistance", a.keithley_hazard_var.get())
+        tabs = a.nonlocal_measurements
+        self.assertEqual([tabs.tab(i, "text") for i in range(tabs.index("end"))],
+                         ["Gate-VI pulse scan", "|R| vs time", "I–V sweep"])
+        self.assertEqual(
+            (a.nonlocal_iv_start_var.get(), a.nonlocal_iv_end_var.get(), a.nonlocal_iv_step_var.get(),
+             a.nonlocal_iv_settle_var.get(), a.nonlocal_iv_limit_var.get()),
+            ("-6", "6", "0.25", "0.5", "0.001"))
+
+    def test_non_local_measurements_take_turns_on_the_keithley(self):
+        a = self.app
+        controller = a.nonlocal_vi_2410_controller
+        buttons = (a.nonlocal_resistance_button, a.nonlocal_iv_start_button)
+
+        def states():
+            a._update_nonlocal_vi_controls()
+            return [str(button.cget("state")) for button in buttons]
+
+        self.addCleanup(lambda: (a.nonlocal_resistance_safety_var.set(False),
+                                 a.nonlocal_iv_safety_var.set(False), states(),
+                                 a._update_keithley_controls()))
+        a.nonlocal_resistance_safety_var.set(True)
+        a.nonlocal_iv_safety_var.set(True)
+        self.assertEqual(states(), ["disabled", "disabled"], "not connected")
+        self.addCleanup(setattr, controller, "instrument", None)
+        controller.instrument = object()
+        self.assertEqual(states(), ["normal", "normal"])
+        self.addCleanup(setattr, a, "nonlocal_keithley_task", None)
+        a.nonlocal_keithley_task = "iv"
+        self.assertEqual(states(), ["disabled", "disabled"])
+        self.assertEqual(str(a.nonlocal_iv_stop_button.cget("state")), "normal")
+        self.assertEqual(str(a.nonlocal_vi_start_button.cget("state")), "disabled")
+        self.assertEqual(str(a.nonlocal_vi_device_disconnect_buttons["2410"].cget("state")), "disabled")
+        self.assertEqual(str(a.nonlocal_vi_model_combo.cget("state")), "disabled")
+        a.nonlocal_keithley_task = None
+        self.addCleanup(setattr, a, "nonlocal_vi_running", False)
+        a.nonlocal_vi_running = True
+        self.assertEqual(states(), ["disabled", "disabled"], "a pulse scan holds the Keithley")
+        a.nonlocal_vi_running = False
+        a._update_keithley_controls()
+        self.assertEqual(str(a.keithley_connect_button.cget("state")), "disabled",
+                         "MOKE-24 waits while the Non-local page holds the Keithley")
 
     def test_gate_vi_chooses_a_2410_or_a_2400(self):
         vi = self.app
@@ -176,7 +222,7 @@ class NotebookTabTests(unittest.TestCase):
                       for index in range(notebook.index("end"))]
             self.assertEqual(titles, [
                 "MOKE light", "MOKE motor", "MOKE magnet", "MOKE-24",
-                "MOKE-6221", "Gate-VI", "PPMS", "RT-E", "FMR", "STFMR"])
+                "MOKE-6221", "Non-local", "PPMS", "RT-E", "FMR", "STFMR"])
         finally:
             built.closing = True
             built.safe_close_hardware()

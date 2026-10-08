@@ -28,7 +28,7 @@ from pathlib import Path
 
 PROGRAM = Path(__file__).resolve().parents[2] / "Transport_all_NH_dev.py"
 COMPACT = ("MOKE-6221", "STFMR", "FMR")
-REPORTED = ("MOKE light", "MOKE motor", "MOKE magnet", "MOKE-24", "Gate-VI", "PPMS", "RT-E")
+REPORTED = ("MOKE light", "MOKE motor", "MOKE magnet", "MOKE-24", "Non-local", "PPMS", "RT-E")
 SCREENS = (  # (screen width, height, window width or 0 for the program's own)
     (2560, 1440, 2000),  # the lab PC, window widened by hand
     (2560, 1440, 0),     # the lab PC, the program's default window
@@ -36,7 +36,9 @@ SCREENS = (  # (screen width, height, window width or 0 for the program's own)
     (1600, 1586, 0),
 )
 SHOT_PAGES = ("MOKE light", "MOKE motor", "MOKE magnet", "MOKE-24", "MOKE-6221",
-              "Gate-VI", "PPMS", "RT-E", "FMR", "STFMR")
+              "Non-local", "PPMS", "RT-E", "FMR", "STFMR")
+# The Non-local page's measurements are sub-tabs; each is checked and shot.
+SUB_TABS = {"Non-local": ("nonlocal_measurements", ("gate", "resistance", "iv"))}
 
 
 def load_program():
@@ -77,8 +79,7 @@ def build(module, screen_w, screen_h, window_w):
     width = window_w or app.window_layout["control"][0]
     root.geometry(f"{width}x1300+0+0")
     root.update()
-    notebook = next(v for v in app.__dict__.values() if isinstance(v, tk.ttk.Notebook))
-    return root, app, notebook
+    return root, app, app.notebook
 
 
 def show(root, notebook, name):
@@ -89,6 +90,22 @@ def show(root, notebook, name):
                 root.update()
             return notebook.nametowidget(notebook.tabs()[index])
     raise KeyError(name)
+
+
+def pages(root, app, notebook, names):
+    """(page, sub-tab key or "", the page shown) for every page and sub-tab."""
+    for name in names:
+        tab = show(root, notebook, name)
+        attribute, keys = SUB_TABS.get(name, (None, ()))
+        if attribute is None:
+            yield name, "", tab
+            continue
+        inner = getattr(app, attribute)
+        for index, key in enumerate(keys):
+            inner.select(index)
+            for _ in range(4):
+                root.update()
+            yield name, key, tab
 
 
 def text_fits(widget):
@@ -243,8 +260,7 @@ def main():
         try:
             print(f"screen {screen_w}x{screen_h}, window {root.winfo_width()} px, "
                   f"ui_scale {app.ui_scale:.2f}")
-            for name in COMPACT + REPORTED:
-                tab = show(root, notebook, name)
+            for name, sub, tab in pages(root, app, notebook, COMPACT + REPORTED):
                 clipped, cut, pairs = inspect(tab)
                 problem = bool(clipped or cut)
                 lab = screen_w == 2560
@@ -255,12 +271,14 @@ def main():
                 fatal = lab and name in COMPACT and problem
                 failed = failed or fatal
                 marker = "FAIL" if fatal else ("note" if problem else "ok  ")
-                print(f"  {marker} {name:9s} layouts {pairs} | clipped {clipped or 'none'} | "
+                label = f"{name} {sub}" if sub else name
+                print(f"  {marker} {label:9s} layouts {pairs} | clipped {clipped or 'none'} | "
                       f"text cut {cut or 'none'}")
                 if args.shots and screen_w == 2560 and name in SHOT_PAGES:
                     # The lab PC: the widened 2000 px window and the default one.
                     args.shots.mkdir(parents=True, exist_ok=True)
-                    shot = args.shots / f"{name}_{root.winfo_width()}px.png"
+                    page = f"{name}_{sub}" if sub else name
+                    shot = args.shots / f"{page}_{root.winfo_width()}px.png"
                     print(f"       screenshot: {screenshot(root, tab, shot)}")
         finally:
             app.closing = True

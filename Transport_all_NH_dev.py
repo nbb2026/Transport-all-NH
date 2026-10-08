@@ -1397,6 +1397,22 @@ NONLOCAL_VI_RES_NPLC = KEITHLEY_RES_NPLC
 NONLOCAL_VI_RESULTS_DIRECTORY = (
     Path(__file__).resolve().parent / f"{Path(__file__).stem}_NonLocal_VI_Results"
 )
+# The Non-local page also measures |R| vs time (moved from MOKE-24 on
+# 2026-10-08) and a one-way I-V sweep on the same Keithley: the voltage is
+# stepped from Start to End and the current read at each step, as in the
+# user's 1 um Pt-Pt figure (-6 to 6 V).  The sweep stays inside the page's
+# 20 V range and 20 V OVP.
+NONLOCAL_IV_SWEEP_START_V = -6.0
+NONLOCAL_IV_SWEEP_END_V = 6.0
+NONLOCAL_IV_SWEEP_STEP_V = 0.25
+NONLOCAL_IV_SWEEP_SETTLE_S = 0.5
+NONLOCAL_IV_SWEEP_COMPLIANCE_A = KEITHLEY_DEFAULT_COMPLIANCE_A
+NONLOCAL_IV_SWEEP_MAX_COMPLIANCE_A = 0.1
+NONLOCAL_IV_SWEEP_NPLC = KEITHLEY_RES_NPLC
+NONLOCAL_IV_SWEEP_MAX_POINTS = 10_000
+NONLOCAL_IV_SWEEP_RESULTS_DIRECTORY = (
+    Path(__file__).resolve().parent / f"{Path(__file__).stem}_NonLocal_IV_sweep_Results"
+)
 
 # PPMS sample-environment control can use either of Quantum Design's remote
 # bridges.  The laboratory topology already has QDInstrument_Server.exe next
@@ -4577,6 +4593,36 @@ def build_voltage_sequence(start_v: float, end_v: float, step_v: float,
     )
 
 
+def build_iv_sweep_voltages(start_v: float, end_v: float, step_v: float,
+                            max_abs_v: float = NONLOCAL_VI_MAX_ABS_PULSE_V):
+    """Start to End once, both included: the outward half of the round trip."""
+    cycle = build_voltage_sequence(start_v, end_v, step_v, max_abs_v)
+    voltages = cycle[: (len(cycle) + 1) // 2]
+    if len(voltages) > NONLOCAL_IV_SWEEP_MAX_POINTS:
+        raise ValueError(
+            f"The I–V sweep has {len(voltages)} points, more than "
+            f"{NONLOCAL_IV_SWEEP_MAX_POINTS}; please increase the step"
+        )
+    return voltages
+
+
+def current_unit(max_abs_current_a: float) -> tuple[float, str]:
+    """(scale, unit) that shows a current of this size in readable numbers."""
+    value = abs(float(max_abs_current_a))
+    if value < 1e-9:
+        return 1e-12, "pA"
+    if value < 1e-6:
+        return 1e-9, "nA"
+    if value < 1e-3:
+        return 1e-6, "µA"
+    return 1e-3, "mA"
+
+
+def format_current(current_a: float) -> str:
+    scale, unit = current_unit(current_a)
+    return f"{float(current_a) / scale:.4g} {unit}"
+
+
 def build_6221_current_sequence(start_ma: float, end_ma: float, step_ma: float):
     """Build an endpoint-inclusive outward-and-return 6221 current sequence."""
     values = (float(start_ma), float(end_ma), abs(float(step_ma)))
@@ -6189,6 +6235,98 @@ class NonLocalVI2410Controller:
             self.logger(f"Non-local VI Keithley {self.model} zeroed, output turned off and disconnected")
             if error is not None:
                 raise error
+
+    # |R| vs time and the I-V sweep of the Non-local page.  Each starts from
+    # *RST, and restore_voltage_mode() afterwards leaves the output off in the
+    # pulse setup, as measure_resistance() does after each scan point.
+    def start_resistance(self, source_current_a: float) -> None:
+        current = float(source_current_a)
+        if not 0.0 < current <= max(NONLOCAL_VI_RES_CURRENT_LEVELS_A):
+            raise ValueError("Resistance measurement source current is outside the 1 nA–1 mA safe range")
+        with self.lock:
+            self._setup_resistance_mode(current)
+
+    def set_resistance_current(self, source_current_a: float) -> None:
+        current = float(source_current_a)
+        if not 0.0 < current <= max(NONLOCAL_VI_RES_CURRENT_LEVELS_A):
+            raise ValueError("Resistance measurement source current is outside the 1 nA–1 mA safe range")
+        with self.lock:
+            if self.source_mode != "CURR":
+                raise RuntimeError(f"Keithley {self.model} is not in resistance-measurement current-source mode")
+            self._write_checked(f":SOUR:CURR {current:.12e}")
+
+    def read_resistance(self) -> tuple[float, float, float]:
+        with self.lock:
+            if self.source_mode != "CURR":
+                raise RuntimeError(f"Keithley {self.model} is not in resistance-measurement current-source mode")
+            return self._read_resistance_sample()
+
+    def start_iv_sweep(self, current_limit_a: float) -> None:
+        """Voltage source at 0 V, output on, the current measured."""
+        limit = float(current_limit_a)
+        if not (math.isfinite(limit) and 0.0 < limit <= NONLOCAL_IV_SWEEP_MAX_COMPLIANCE_A):
+            raise ValueError(
+                f"Current limit must be above 0 and at most {NONLOCAL_IV_SWEEP_MAX_COMPLIANCE_A:g} A"
+            )
+        with self.lock:
+            self.setup_voltage_mode(limit)
+            # setup_voltage_mode sets the OVP without reading it back.
+            ovp = self._query_float(":SOUR:VOLT:PROT?")
+            if not (
+                math.isfinite(ovp)
+                and abs(ovp - NONLOCAL_VI_2410_SOURCE_OVP_V) <= NONLOCAL_VI_2410_SOURCE_OVP_V * 0.01
+            ):
+                raise RuntimeError(
+                    f"Keithley {self.model} over-voltage protection reads {ovp:g} V, "
+                    f"not the {NONLOCAL_VI_2410_SOURCE_OVP_V:g} V asked for"
+                )
+            self._write_checked(f":SENS:CURR:NPLC {NONLOCAL_IV_SWEEP_NPLC:.12g}")
+            self._write_checked(":OUTP ON")
+            self.output_enabled = True
+            if int(self._query_float(":OUTP?")) != 1:
+                raise RuntimeError(f"Keithley {self.model} output did not turn on for the I–V sweep")
+
+    def set_iv_voltage(self, voltage_v: float) -> None:
+        voltage = float(voltage_v)
+        if not math.isfinite(voltage) or abs(voltage) > NONLOCAL_VI_MAX_ABS_PULSE_V:
+            raise ValueError(f"I–V voltage must be within ±{NONLOCAL_VI_MAX_ABS_PULSE_V:g} V")
+        with self.lock:
+            if self.source_mode != "VOLT" or not self.output_enabled:
+                raise RuntimeError(f"Keithley {self.model} is not set up for the I–V sweep")
+            self._write_checked(f":SOUR:VOLT {voltage:.12g}")
+
+    def read_iv_point(self) -> tuple[float, float]:
+        """(source voltage V, measured current A)."""
+        with self.lock:
+            if int(self._query_float(":OUTP?")) != 1:
+                raise RuntimeError(f"Keithley {self.model} output turned off during the I–V sweep")
+            response = self._require_instrument().query(":READ?").strip()
+        try:
+            values = [float(value) for value in response.split(",")]
+        except ValueError as error:
+            raise RuntimeError(f"Keithley {self.model} I–V reading cannot be parsed: {response!r}") from error
+        if len(values) < 2 or not all(math.isfinite(value) for value in values[:2]):
+            raise RuntimeError(f"Keithley {self.model} I–V reading is abnormal: {response!r}")
+        return values[0], values[1]
+
+    def restore_voltage_mode(self) -> None:
+        """Zero, output off, and back to the pulse setup (20 V, 1 mA)."""
+        with self.lock:
+            if self.instrument is None:
+                return
+            errors = []
+            try:
+                self.safe_shutdown(reset=False)
+            except BaseException as error:
+                errors.append(str(error))
+            try:
+                self.setup_voltage_mode(NONLOCAL_VI_2410_CURRENT_COMPLIANCE_A)
+            except BaseException as error:
+                errors.append(str(error))
+            if errors:
+                raise RuntimeError(
+                    f"Keithley {self.model}: switching back to the pulse setup failed: " + "; ".join(errors)
+                )
 
 
 _MFLI_BRIDGE_PREFIX = "MOKE_MFLI_JSON:"
@@ -12011,7 +12149,6 @@ class CombinedControlApp:
         self.keithley_stop_event = threading.Event()
         self.keithley_data_lock = threading.Lock()
         self.keithley_scan_running = False
-        self.keithley_resistance_busy = False
         self.keithley_manual_busy = False
         self.keithley_connecting = False
         self.keithley_closed = False
@@ -12053,13 +12190,6 @@ class CombinedControlApp:
         self.keithley_status_var = tk.StringVar(value="Ready")
         self.keithley_voltage_var = tk.StringVar(value="Output: 0 V")
         self.keithley_safety_var = tk.BooleanVar(value=False)
-        self.keithley_resistance_safety_var = tk.BooleanVar(value=False)
-        self.keithley_resistance_var = tk.StringVar(value="|R|：--")
-        self.keithley_resistance_voltage_var = tk.StringVar(value="V：--")
-        self.keithley_resistance_current_var = tk.StringVar(value="I：--")
-        self.keithley_resistance_source_var = tk.StringVar(value="Source current: --")
-        self.keithley_resistance_rows: list[tuple[float, float]] = []
-        self.keithley_resistance_canvas = None
         self.keithley_roi_edit_buttons = []
         self.keithley_manual_buttons: list[ttk.Button] = []
         self.keithley_manual_zero_button = None
@@ -12382,6 +12512,33 @@ class CombinedControlApp:
         self.nonlocal_vi_current_rows = []
         self.nonlocal_vi_resistance_rows = []
         self.nonlocal_vi_run_directory = None
+        # |R| vs time and the I-V sweep share the pulse Keithley.  While one
+        # runs ("resistance" or "iv") the pulse scan and the device buttons
+        # wait for it.
+        self.nonlocal_keithley_task = None
+        self.nonlocal_keithley_stop_event = threading.Event()
+        self.nonlocal_resistance_safety_var = tk.BooleanVar(value=False)
+        self.nonlocal_resistance_var = tk.StringVar(value="|R|: --")
+        self.nonlocal_resistance_voltage_var = tk.StringVar(value="V: --")
+        self.nonlocal_resistance_current_var = tk.StringVar(value="I: --")
+        self.nonlocal_resistance_source_var = tk.StringVar(value="Source current: --")
+        self.nonlocal_resistance_rows: list[tuple[float, float]] = []
+        self.nonlocal_resistance_canvas = None
+        self.nonlocal_iv_safety_var = tk.BooleanVar(value=False)
+        self.nonlocal_iv_sample_var = tk.StringVar(value="")
+        self.nonlocal_iv_start_var = tk.StringVar(value=f"{NONLOCAL_IV_SWEEP_START_V:g}")
+        self.nonlocal_iv_end_var = tk.StringVar(value=f"{NONLOCAL_IV_SWEEP_END_V:g}")
+        self.nonlocal_iv_step_var = tk.StringVar(value=f"{NONLOCAL_IV_SWEEP_STEP_V:g}")
+        self.nonlocal_iv_settle_var = tk.StringVar(value=f"{NONLOCAL_IV_SWEEP_SETTLE_S:g}")
+        self.nonlocal_iv_limit_var = tk.StringVar(value=f"{NONLOCAL_IV_SWEEP_COMPLIANCE_A:g}")
+        self.nonlocal_iv_point_var = tk.StringVar(value="Last point: --")
+        self.nonlocal_iv_eta_var = tk.StringVar(value="Remaining: --")
+        # (point, set V, source V, current A, elapsed s, at the current limit)
+        self.nonlocal_iv_rows: list[tuple] = []
+        self.nonlocal_iv_settings: dict[str, object] = {}
+        self.nonlocal_iv_total_points = 0
+        self.nonlocal_iv_canvas = None
+        self.nonlocal_iv_directory = NONLOCAL_IV_SWEEP_RESULTS_DIRECTORY
 
         self._initialize_ppms_state()
 
@@ -12750,7 +12907,8 @@ class CombinedControlApp:
         self.notebook.add(self.difference_tab, text="MOKE magnet")
         self.notebook.add(self.keithley_tab, text="MOKE-24")
         self.notebook.add(self.k6221_tab, text="MOKE-6221")
-        self.notebook.add(self.nonlocal_vi_tab, text="Gate-VI")
+        # Gate-VI, |R| vs time (from MOKE-24) and the I-V sweep, one rack.
+        self.notebook.add(self.nonlocal_vi_tab, text="Non-local")
         # The PPMS page is an independent PPMSPanel instance (own controllers,
         # scan state and Zurich MFLI); the main app keeps only inert PPMS
         # defaults so shared modules can still inspect them.
@@ -19608,9 +19766,9 @@ class CombinedControlApp:
         outer = ttk.Frame(self.keithley_tab, padding=7)
         outer.grid(row=0, column=0, sticky="nsew")
         outer.columnconfigure(0, weight=1)
-        # Spare window height goes to the plots (row 5), so they fill the
+        # Spare window height goes to the plots (row 4), so they fill the
         # page down to the status line.
-        outer.rowconfigure(5, weight=1)
+        outer.rowconfigure(4, weight=1)
 
         # As on the STFMR and PPMS pages: the instrument connection on the
         # left and the source output on the right, side by side when both
@@ -19764,53 +19922,10 @@ class CombinedControlApp:
             ),
         )
 
-        # The controls only; the |R| plot sits with the others at the bottom.
-        resistance_row = ttk.LabelFrame(
-            outer,
-            text="Resistance · continuous |R| (plotted below, rolling last 20 s)",
-            padding=6,
-        )
-        resistance_row.grid(row=2, column=0, sticky="ew", pady=(0, 5))
-        resistance_row.columnconfigure(4, weight=1)
-        ttk.Checkbutton(
-            resistance_row,
-            text="Resistance wiring and sample confirmed safe for the test current",
-            variable=self.keithley_resistance_safety_var,
-            command=self._update_keithley_controls,
-        ).grid(row=0, column=0, columnspan=2, sticky="w")
-        self.keithley_resistance_button = ttk.Button(
-            resistance_row,
-            text="Start continuous measurement",
-            command=self.measure_keithley_resistance,
-        )
-        self.keithley_resistance_button.grid(
-            row=0, column=2, sticky="w", padx=(10, 4)
-        )
-        self.keithley_resistance_stop_button = ttk.Button(
-            resistance_row,
-            text="Stop measurement",
-            command=self.stop_keithley_resistance,
-            state="disabled",
-        )
-        self.keithley_resistance_stop_button.grid(
-            row=0, column=3, sticky="w", padx=(0, 4)
-        )
-        for column, variable in enumerate((
-            self.keithley_resistance_var,
-            self.keithley_resistance_voltage_var,
-            self.keithley_resistance_current_var,
-            self.keithley_resistance_source_var,
-        )):
-            ttk.Label(
-                resistance_row,
-                textvariable=variable,
-                style="Metric.TLabel",
-            ).grid(row=1, column=column, sticky="w", padx=(0, 16), pady=(5, 0))
-
         # As on the MOKE-6221 page: the voltage scan beside ROI editing in a
         # wide window, stacked in the default one.
         acquisition = ttk.Frame(outer)
-        acquisition.grid(row=3, column=0, sticky="ew", pady=(0, 7))
+        acquisition.grid(row=2, column=0, sticky="ew", pady=(0, 7))
         acquisition.columnconfigure(1, weight=1)
         scan = ttk.LabelFrame(
             acquisition, text="Voltage scan and ROI acquisition", padding=8
@@ -20006,24 +20121,25 @@ class CombinedControlApp:
             outer,
             text="Hold Shift and left-drag in the camera window to select an ROI; scans require difference mode.",
             foreground="#9a4d00",
-        ).grid(row=4, column=0, sticky="w", pady=(0, 7))
+        ).grid(row=3, column=0, sticky="w", pady=(0, 7))
 
-        # The three plots in one row, equally wide, as on the Gate-VI page.
+        # The two plots in one row, equally wide.  |R| vs time moved to the
+        # Non-local page.
         data_frame = ttk.Frame(outer)
-        data_frame.grid(row=5, column=0, sticky="nsew")
+        data_frame.grid(row=4, column=0, sticky="nsew")
         data_frame.rowconfigure(0, weight=1)
-        for column in range(3):
+        for column in range(2):
             data_frame.columnconfigure(column, weight=1, uniform="moke24_plots")
 
         def plot_box(column: int, title: str, redraw) -> tk.Canvas:
             frame = ttk.LabelFrame(data_frame, text=title, padding=6)
             frame.grid(
                 row=0, column=column, sticky="nsew",
-                padx=(0 if column == 0 else 3, 0 if column == 2 else 3),
+                padx=(0 if column == 0 else 3, 0 if column == 1 else 3),
             )
             frame.rowconfigure(0, weight=1)
             frame.columnconfigure(0, weight=1)
-            # A small requested width: Tk's default (about 380 px) is wider
+            # A small requested width: Tk's default (about 380 px) was wider
             # than a third of the lab's 1101 px window, and the canvas was cut.
             canvas = tk.Canvas(
                 frame,
@@ -20047,16 +20163,13 @@ class CombinedControlApp:
         self.keithley_plot_canvas = plot_box(
             1, "Voltage vs ROI mean (voltage scan)", self._redraw_keithley_plot
         )
-        self.keithley_resistance_canvas = plot_box(
-            2, "|R| vs time (last 20 s)", self._redraw_keithley_resistance_plot
-        )
 
         ttk.Label(
             outer,
             textvariable=self.keithley_status_var,
             style="Status.TLabel",
             anchor="w",
-        ).grid(row=6, column=0, sticky="ew", pady=(8, 0))
+        ).grid(row=5, column=0, sticky="ew", pady=(8, 0))
         self._update_keithley_controls()
 
     def build_k6221_ui(self) -> None:
@@ -20445,15 +20558,17 @@ class CombinedControlApp:
         self._update_k6221_controls()
 
     def build_nonlocal_vi_ui(self) -> None:
-        """Build the integrated Keithley 2410/2400 pulse -> 6221/SR830 VI page."""
+        """Build the Non-local page: one instrument rack, then the Gate-VI
+        pulse scan (Keithley 2410/2400 pulse -> 6221/SR830 VI), |R| vs time
+        and the I-V sweep on sub-tabs, all on the same Keithley."""
         outer = ttk.Frame(self.nonlocal_vi_tab, padding=7)
         outer.grid(row=0, column=0, sticky="nsew")
         outer.columnconfigure(0, weight=1)
-        outer.rowconfigure(4, weight=1)
+        outer.rowconfigure(2, weight=1)
 
         connection = ttk.LabelFrame(
             outer,
-            text="Gate-VI instrument connections",
+            text="Non-local instrument connections",
             padding=7,
         )
         connection.grid(row=0, column=0, sticky="ew")
@@ -20873,8 +20988,31 @@ class CombinedControlApp:
             row=0, column=3, padx=(8, 0), sticky="e"
         )
 
-        settings = ttk.LabelFrame(outer, text="Non-local VI voltage-pulse scan parameters", padding=7)
-        settings.grid(row=2, column=0, sticky="ew", pady=(0, 5))
+        # The measurements share the rack above.  Gate-VI keeps its layout on
+        # the first sub-tab; |R| vs time (from MOKE-24) and the I-V sweep use
+        # the Keithley alone.
+        self.nonlocal_measurements = ttk.Notebook(outer)
+        self.nonlocal_measurements.grid(row=2, column=0, sticky="nsew")
+        gate_tab = ttk.Frame(self.nonlocal_measurements, padding=(0, 5, 0, 0))
+        resistance_tab = ttk.Frame(self.nonlocal_measurements, padding=(0, 5, 0, 0))
+        iv_tab = ttk.Frame(self.nonlocal_measurements, padding=(0, 5, 0, 0))
+        self.nonlocal_measurements.add(gate_tab, text="Gate-VI pulse scan")
+        self.nonlocal_measurements.add(resistance_tab, text="|R| vs time")
+        self.nonlocal_measurements.add(iv_tab, text="I–V sweep")
+        self.nonlocal_measurements.bind(
+            "<<NotebookTabChanged>>",
+            lambda _event: (
+                self._redraw_nonlocal_vi_plots(),
+                self._redraw_nonlocal_resistance_plot(),
+                self._redraw_nonlocal_iv_plot(),
+            ),
+            add="+",
+        )
+        gate_tab.columnconfigure(0, weight=1)
+        gate_tab.rowconfigure(2, weight=1)
+
+        settings = ttk.LabelFrame(gate_tab, text="Non-local VI voltage-pulse scan parameters", padding=7)
+        settings.grid(row=0, column=0, sticky="ew", pady=(0, 5))
         entries = (
             ("Start V", self.nonlocal_vi_start_voltage_var),
             ("Stop V", self.nonlocal_vi_stop_voltage_var),
@@ -20944,8 +21082,8 @@ class CombinedControlApp:
         # the second, each a fixed-width box so a new value never moves the
         # others.  The lock-in reference text, which lists every locked
         # meter, comes last and wraps rather than pushing anything off.
-        actions = ttk.LabelFrame(outer, text="Run and data", padding=7)
-        actions.grid(row=3, column=0, sticky="ew", pady=(0, 5))
+        actions = ttk.LabelFrame(gate_tab, text="Run and data", padding=7)
+        actions.grid(row=1, column=0, sticky="ew", pady=(0, 5))
         actions.columnconfigure(2, weight=1)
         self.nonlocal_vi_start_button = ttk.Button(
             actions,
@@ -21020,9 +21158,9 @@ class CombinedControlApp:
             anchor="w",
         ).grid(row=0, column=3, sticky="e")
 
-        plots = ttk.Frame(outer)
+        plots = ttk.Frame(gate_tab)
         self.nonlocal_vi_plot_container = plots
-        plots.grid(row=4, column=0, sticky="nsew")
+        plots.grid(row=2, column=0, sticky="nsew")
         for column in range(3):
             plots.columnconfigure(column, weight=1)
         for row in range(5):
@@ -21142,14 +21280,164 @@ class CombinedControlApp:
                 "<Configure>", lambda _event: self._redraw_nonlocal_vi_plots()
             )
 
+        self._build_nonlocal_resistance_tab(resistance_tab)
+        self._build_nonlocal_iv_tab(iv_tab)
+
         ttk.Label(
             outer,
             textvariable=self.nonlocal_vi_status_var,
             style="Status.TLabel",
             anchor="w",
-        ).grid(row=5, column=0, sticky="ew", pady=(5, 0))
+        ).grid(row=3, column=0, sticky="ew", pady=(5, 0))
         self._redraw_nonlocal_vi_plots()
         self._update_nonlocal_vi_controls()
+
+    def _nonlocal_plot_canvas(self, frame, redraw) -> tk.Canvas:
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+        canvas = tk.Canvas(
+            frame,
+            bg="#fbfcfd",
+            highlightthickness=1,
+            highlightbackground="#cfd6dd",
+            width=self._ui_px(160, 100, canvas=True),
+            height=self._ui_px(200, 120, canvas=True),
+        )
+        canvas.grid(row=0, column=0, sticky="nsew")
+        # Also on <Map>: a <Configure> while the sub-tab is hidden is skipped
+        # by the visibility check, which left a plot blank until new data.
+        for sequence in ("<Configure>", "<Map>"):
+            canvas.bind(sequence, lambda _event: redraw(), add="+")
+        return canvas
+
+    def _build_nonlocal_resistance_tab(self, tab) -> None:
+        """|R| vs time on the pulse Keithley, as it was on MOKE-24."""
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(1, weight=1)
+        controls = ttk.LabelFrame(
+            tab,
+            text="Continuous |R|: current source autoranged 1 nA–1 mA with 5 V protection",
+            padding=7,
+        )
+        controls.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+        ttk.Checkbutton(
+            controls,
+            text="Resistance wiring and sample confirmed safe for the test current",
+            variable=self.nonlocal_resistance_safety_var,
+            command=self._update_nonlocal_keithley_controls,
+        ).grid(row=0, column=0, sticky="w")
+        # A negative width is a minimum: wide enough for both texts, so the
+        # Stop button does not move when the text changes.
+        self.nonlocal_resistance_button = ttk.Button(
+            controls,
+            text="Start continuous measurement",
+            command=self.start_nonlocal_resistance,
+            width=-27,
+        )
+        self.nonlocal_resistance_button.grid(row=0, column=1, padx=(12, 4))
+        self.nonlocal_resistance_stop_button = ttk.Button(
+            controls,
+            text="Stop measurement",
+            command=self.stop_nonlocal_keithley_task,
+            state="disabled",
+        )
+        self.nonlocal_resistance_stop_button.grid(row=0, column=2)
+        readouts = ttk.Frame(controls)
+        readouts.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        for variable in (
+            self.nonlocal_resistance_var,
+            self.nonlocal_resistance_voltage_var,
+            self.nonlocal_resistance_current_var,
+            self.nonlocal_resistance_source_var,
+        ):
+            ttk.Label(
+                readouts, textvariable=variable, style="Metric.TLabel"
+            ).pack(side="left", padx=(0, 16))
+        frame = ttk.LabelFrame(tab, text="|R| vs time (last 20 s)", padding=6)
+        frame.grid(row=1, column=0, sticky="nsew")
+        self.nonlocal_resistance_canvas = self._nonlocal_plot_canvas(
+            frame, self._redraw_nonlocal_resistance_plot
+        )
+
+    def _build_nonlocal_iv_tab(self, tab) -> None:
+        """The I-V sweep: settings on the left, the curve on the right."""
+        tab.columnconfigure(1, weight=1)
+        tab.rowconfigure(0, weight=1)
+        controls = ttk.LabelFrame(tab, text="I–V sweep", padding=7)
+        controls.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        fields = (
+            ("Sample:", self.nonlocal_iv_sample_var, 18),
+            ("Start V:", self.nonlocal_iv_start_var, 9),
+            ("End V:", self.nonlocal_iv_end_var, 9),
+            ("Step V:", self.nonlocal_iv_step_var, 9),
+            ("Settle s:", self.nonlocal_iv_settle_var, 9),
+            ("Current limit A:", self.nonlocal_iv_limit_var, 9),
+        )
+        for row, (label, variable, width) in enumerate(fields):
+            ttk.Label(controls, text=label).grid(row=row, column=0, sticky="e", pady=2)
+            ttk.Entry(controls, textvariable=variable, width=width).grid(
+                row=row, column=1, sticky="w", padx=(4, 0), pady=2
+            )
+        note = ttk.Label(
+            controls,
+            text=(
+                "The voltage steps from Start to End and the current is read "
+                f"after Settle s at each step (±{NONLOCAL_VI_MAX_ABS_PULSE_V:g} V, "
+                f"{NONLOCAL_VI_2410_SOURCE_OVP_V:g} V OVP). The 6221 is switched "
+                "off first; the Keithley is zeroed and off at the end."
+            ),
+            style="Muted.TLabel",
+            wraplength=self._ui_px(300),
+            justify="left",
+        )
+        note.grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(
+            controls,
+            text="Wiring, current limit and voltages confirmed safe",
+            variable=self.nonlocal_iv_safety_var,
+            command=self._update_nonlocal_keithley_controls,
+        ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        buttons = ttk.Frame(controls)
+        buttons.grid(row=8, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.nonlocal_iv_start_button = ttk.Button(
+            buttons, text="Start I–V sweep", command=self.start_nonlocal_iv_sweep
+        )
+        self.nonlocal_iv_start_button.pack(side="left", padx=(0, 4))
+        self.nonlocal_iv_stop_button = ttk.Button(
+            buttons,
+            text="Stop sweep",
+            command=self.stop_nonlocal_keithley_task,
+            state="disabled",
+        )
+        self.nonlocal_iv_stop_button.pack(side="left", padx=(0, 4))
+        self.nonlocal_iv_save_button = ttk.Button(
+            buttons,
+            text="Save CSV + PNG",
+            command=self.save_nonlocal_iv_sweep,
+            state="disabled",
+        )
+        self.nonlocal_iv_save_button.pack(side="left")
+        self.nonlocal_iv_progress = ttk.Progressbar(
+            controls, mode="determinate", maximum=1, value=0, length=180
+        )
+        self.nonlocal_iv_progress.grid(
+            row=9, column=0, columnspan=2, sticky="ew", pady=(8, 0)
+        )
+        ttk.Label(
+            controls, textvariable=self.nonlocal_iv_eta_var, style="Success.TLabel"
+        ).grid(row=10, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Label(
+            controls,
+            textvariable=self.nonlocal_iv_point_var,
+            style="Metric.TLabel",
+            wraplength=self._ui_px(300),
+            justify="left",
+        ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        frame = ttk.LabelFrame(tab, text="Current vs voltage", padding=6)
+        frame.grid(row=0, column=1, sticky="nsew")
+        self.nonlocal_iv_canvas = self._nonlocal_plot_canvas(
+            frame, self._redraw_nonlocal_iv_plot
+        )
 
     def _populate_roi_nudge_toolbar(
         self,
@@ -21466,12 +21754,13 @@ class CombinedControlApp:
         if selected is self.difference_tab:
             self._redraw_moke_plot()
         elif selected is self.keithley_tab:
-            self._redraw_keithley_resistance_plot()
             self._redraw_keithley_plot()
         elif selected is self.k6221_tab:
             self._redraw_k6221_plot()
         elif selected is self.nonlocal_vi_tab:
             self._redraw_nonlocal_vi_plots()
+            self._redraw_nonlocal_resistance_plot()
+            self._redraw_nonlocal_iv_plot()
 
     @contextmanager
     def camera_render_paused(self, reason: str):
@@ -21763,6 +22052,7 @@ class CombinedControlApp:
             "_update_magnet_scan_controls",
             "_update_keithley_controls",
             "_update_k6221_controls",
+            "_update_nonlocal_keithley_controls",
         ):
             method = getattr(self, method_name, None)
             if method is not None:
@@ -22951,7 +23241,6 @@ class CombinedControlApp:
                 and not running
                 and not self.magnet_busy
                 and not self.keithley_scan_running
-                and not self.keithley_resistance_busy
                 and not self.k6221_scan_running
                 and "moke-csv" not in self.active_file_exports
                 else "disabled"
@@ -24175,11 +24464,6 @@ class CombinedControlApp:
                 "MOKE current scan", "A MOKE-24 or MOKE-6221 scan is running", parent=self.root
             )
             return
-        if self.keithley_resistance_busy:
-            messagebox.showwarning(
-                "MOKE current scan", "MOKE-24 is measuring resistance", parent=self.root
-            )
-            return
         if not self.magnet_safety_var.get():
             messagebox.showwarning(
                 "MOKE current scan", "Tick the magnet safety confirmation first", parent=self.root
@@ -25078,7 +25362,6 @@ class CombinedControlApp:
         connected = self.keithley_controller.connected and not connecting
         self._set_connection_indicator("keithley2410", connected)
         running = self.keithley_scan_running
-        resistance_busy = self.keithley_resistance_busy
         manual_busy = self.keithley_manual_busy
         magnet_running = self.magnet_scan_running
         k6221_running = self.k6221_scan_running
@@ -25093,7 +25376,6 @@ class CombinedControlApp:
                 if connected
                 or connecting
                 or running
-                or resistance_busy
                 or manual_busy
                 or nonlocal_vi_owns_2410
                 else "normal"
@@ -25101,20 +25383,19 @@ class CombinedControlApp:
         )
         if "keithley_model_combo" in self.__dict__ and "keithley_off_button" in self.__dict__:
             self.keithley_model_combo.configure(
-                state="disabled" if connected or connecting or running or resistance_busy or manual_busy
+                state="disabled" if connected or connecting or running or manual_busy
                 else "readonly")
             model = self._keithley_page_model()
             self.keithley_off_button.configure(text=f"{model} zero / output off")
             self.keithley_hazard_var.set(
                 f"High-voltage hazard: {model} scans are software-limited to "
                 f"±{KEITHLEY_MODELS[model]['max_abs_voltage_v']:g} V (hardware OVP "
-                f"{KEITHLEY_MODELS[model]['source_ovp_v']:g} V); resistance measurement "
-                "auto-sources 1 nA–1 mA with 5 V protection; the output is switched off on stop."
+                f"{KEITHLEY_MODELS[model]['source_ovp_v']:g} V); the output is switched off on stop."
             )
         self.keithley_disconnect_button.configure(
             state=(
                 "normal"
-                if connected and not running and not resistance_busy and not manual_busy
+                if connected and not running and not manual_busy
                 else "disabled"
             )
         )
@@ -25123,7 +25404,6 @@ class CombinedControlApp:
                 "normal"
                 if connected
                 and not running
-                and not resistance_busy
                 and not manual_busy
                 and not magnet_running
                 and not k6221_running
@@ -25132,33 +25412,10 @@ class CombinedControlApp:
                 else "disabled"
             )
         )
-        self.keithley_resistance_button.configure(
-            text=(
-                "Measuring continuously…"
-                if resistance_busy
-                else "Start continuous measurement"
-            ),
-            state=(
-                "normal"
-                if connected
-                and not running
-                and not resistance_busy
-                and not manual_busy
-                and not magnet_running
-                and not k6221_running
-                and not nonlocal_vi_owns_2410
-                and self.keithley_resistance_safety_var.get()
-                else "disabled"
-            )
-        )
-        self.keithley_resistance_stop_button.configure(
-            state="normal" if connected and resistance_busy else "disabled"
-        )
         manual_state = (
             "normal"
             if connected
             and not running
-            and not resistance_busy
             and not manual_busy
             and not magnet_running
             and not k6221_running
@@ -25172,7 +25429,6 @@ class CombinedControlApp:
             "normal"
             if connected
             and not running
-            and not resistance_busy
             and not manual_busy
             and not magnet_running
             and not k6221_running
@@ -25200,7 +25456,6 @@ class CombinedControlApp:
             state=(
                 "disabled"
                 if running
-                or resistance_busy
                 or magnet_running
                 or k6221_running
                 or nonlocal_vi_owns_2410
@@ -25246,7 +25501,7 @@ class CombinedControlApp:
         ):
             messagebox.showwarning(
                 "MOKE-24",
-                "The Gate-VI page is using this Keithley; disconnect it there first.",
+                "The Non-local page is using this Keithley; disconnect it there first.",
                 parent=self.root,
             )
             return
@@ -25301,7 +25556,6 @@ class CombinedControlApp:
                 self.keithley_current_voltage = 0.0
             self.keithley_manual_voltage_var.set("0")
             self.keithley_safety_var.set(False)
-            self.keithley_resistance_safety_var.set(False)
         self._update_keithley_controls()
         self._update_nonlocal_vi_controls()
 
@@ -25357,7 +25611,6 @@ class CombinedControlApp:
             return
         if (
             self.keithley_scan_running
-            or self.keithley_resistance_busy
             or self.keithley_manual_busy
             or self.magnet_scan_running
             or self.k6221_scan_running
@@ -25424,7 +25677,6 @@ class CombinedControlApp:
     def _finish_keithley_disconnect(self, error) -> None:
         self.keithley_scan_running = False
         self.keithley_collecting = False
-        self.keithley_resistance_busy = False
         self.keithley_manual_busy = False
         self.keithley_connection_var.set("Not connected")
         self.keithley_voltage_var.set("Output: 0 V")
@@ -25432,7 +25684,6 @@ class CombinedControlApp:
             self.keithley_current_voltage = 0.0
         self.keithley_manual_voltage_var.set("0")
         self.keithley_safety_var.set(False)
-        self.keithley_resistance_safety_var.set(False)
         if error is None:
             self.keithley_status_var.set("Zeroed and disconnected")
         else:
@@ -25571,356 +25822,6 @@ class CombinedControlApp:
             return
         self.camera_window.edit_roi(action, steps)
 
-    def _append_keithley_resistance_sample(
-        self,
-        elapsed_s: float,
-        voltage_v: float,
-        current_a: float,
-        resistance_ohm: float,
-        source_current_a: float,
-    ) -> None:
-        """Publish one worker-thread resistance sample on the Tk thread."""
-        if not math.isfinite(resistance_ohm):
-            return
-        elapsed = max(float(elapsed_s), 0.0)
-        resistance_magnitude = abs(float(resistance_ohm))
-        self.keithley_resistance_rows.append((elapsed, resistance_magnitude))
-        cutoff = max(0.0, elapsed - KEITHLEY_RES_WINDOW_S)
-        # This list is the retained dataset, not only a plotting slice: an
-        # indefinitely running measurement therefore keeps bounded memory.
-        self.keithley_resistance_rows = [
-            row for row in self.keithley_resistance_rows if row[0] >= cutoff
-        ]
-        self.keithley_resistance_var.set(
-            f"|R|：{format_resistance(resistance_magnitude)}"
-        )
-        self.keithley_resistance_voltage_var.set(f"V：{voltage_v:.6e} V")
-        self.keithley_resistance_current_var.set(f"I：{current_a:.6e} A")
-        self.keithley_resistance_source_var.set(
-            f"Source current: {source_current_a:.3e} A"
-        )
-        self.keithley_status_var.set(
-            f"|R| vs time measuring continuously: {elapsed:.1f} s elapsed; "
-            f"plot keeps the last {min(elapsed, KEITHLEY_RES_WINDOW_S):.1f} s"
-        )
-        self._redraw_keithley_resistance_plot()
-
-    def _redraw_keithley_resistance_plot(self) -> None:
-        canvas = getattr(self, "keithley_resistance_canvas", None)
-        if not self._canvas_is_visible(canvas):
-            return
-        canvas.delete("all")
-        # At most a third of the page wide now; a larger floor drew past the
-        # canvas edge in the lab's 1101 px window.
-        width = max(canvas.winfo_width(), 280)
-        height = max(canvas.winfo_height(), 125)
-        left, right, top, bottom = 88, 22, 25, 46
-        plot_width = max(1, width - left - right)
-        plot_height = max(1, height - top - bottom)
-        self._draw_plot_grid(canvas, left, top, plot_width, plot_height)
-        canvas.create_rectangle(
-            left,
-            top,
-            left + plot_width,
-            top + plot_height,
-            outline="#444444",
-        )
-        canvas.create_text(
-            left + plot_width / 2,
-            height - 10,
-            text="Time (s) · rolling latest 20 s",
-            fill="#222222",
-        )
-
-        rows = [
-            row
-            for row in self.keithley_resistance_rows
-            if math.isfinite(row[0]) and math.isfinite(row[1])
-        ]
-        resistance_values = [row[1] for row in rows]
-        # One plot must use one unit.  Choose it from the latest resistance,
-        # matching the live R readout, instead of letting an older large value
-        # in the 20 s window force the axis to MΩ while Current R says kΩ.
-        reference = abs(resistance_values[-1]) if resistance_values else 0.0
-        if reference >= 1e9:
-            scale, unit = 1e9, "GΩ"
-        elif reference >= 1e6:
-            scale, unit = 1e6, "MΩ"
-        elif reference >= 1e3:
-            scale, unit = 1e3, "kΩ"
-        else:
-            scale, unit = 1.0, "Ω"
-        canvas.create_text(
-            15,
-            top + plot_height / 2,
-            text=f"|R| ({unit})",
-            angle=90,
-            fill="#222222",
-        )
-
-        latest_elapsed = rows[-1][0] if rows else 0.0
-        window_end = max(KEITHLEY_RES_WINDOW_S, latest_elapsed)
-        window_start = window_end - KEITHLEY_RES_WINDOW_S
-        # Before 20 seconds this reads 0–20; afterwards it scrolls continuously
-        # while always spanning exactly the latest 20 seconds.
-        _x_min, _x_max, x_ticks, x_tick_step = nice_linear_ticks(
-            window_start,
-            window_end,
-            expand_limits=False,
-        )
-        for tick_index, elapsed in enumerate(x_ticks):
-            x = (
-                left
-                + (elapsed - window_start)
-                / KEITHLEY_RES_WINDOW_S
-                * plot_width
-            )
-            canvas.create_line(x, top + plot_height, x, top + plot_height + 4)
-            canvas.create_text(
-                x,
-                top + plot_height + 14,
-                text=format_nice_tick(elapsed, x_tick_step),
-                fill="#333333",
-                anchor=(
-                    "w"
-                    if tick_index == 0 and abs(x - left) < 1.0
-                    else "e"
-                    if tick_index == len(x_ticks) - 1
-                    and abs(x - (left + plot_width)) < 1.0
-                    else "center"
-                ),
-            )
-
-        if not rows:
-            canvas.create_text(
-                left + plot_width / 2,
-                top + plot_height / 2,
-                text="The last 20 s of |R|–time data are shown once continuous measurement starts",
-                fill="#666666",
-                width=max(60, plot_width - 16),
-                justify="center",
-            )
-            return
-
-        # Plain Python, not numpy: np is None wherever the camera libraries
-        # (pco, Pillow) do not import, and this plot is purely electrical.
-        # With np, the plot stopped after the time axis on such a PC.
-        scaled = [value / scale for value in resistance_values]
-        y_min, y_max, y_ticks, y_tick_step = nice_linear_ticks(min(scaled), max(scaled))
-        for value in reversed(y_ticks):
-            y = top + (y_max - value) / (y_max - y_min) * plot_height
-            canvas.create_line(left - 4, y, left, y)
-            canvas.create_text(
-                left - 7,
-                y,
-                text=format_nice_tick(value, y_tick_step),
-                anchor="e",
-                fill="#333333",
-            )
-
-        points = []
-        for (elapsed, _resistance), value in zip(rows, scaled):
-            x = (
-                left
-                + (elapsed - window_start) / KEITHLEY_RES_WINDOW_S * plot_width
-            )
-            y = top + plot_height - (value - y_min) / (y_max - y_min) * plot_height
-            points.append((x, y))
-        if len(points) >= 2:
-            canvas.create_line(
-                *[coordinate for point in points for coordinate in point],
-                fill="#7a3db8",
-                width=2,
-            )
-        elif points:
-            x, y = points[0]
-            canvas.create_oval(
-                x - 2,
-                y - 2,
-                x + 2,
-                y + 2,
-                fill="#7a3db8",
-                outline="",
-            )
-        canvas.create_text(
-            left + 4,
-            12,
-            text=f"Current |R| = {scaled[-1]:.6g} {unit}",
-            anchor="w",
-            fill="#5b2a86",
-            font=(self.ui_font_family, self.ui_small_font_size, "bold"),
-        )
-
-    def measure_keithley_resistance(self) -> None:
-        if self.keithley_connecting:
-            return  # its buttons are disabled; a stray event does nothing
-        if not self.keithley_controller.connected:
-            messagebox.showwarning("MOKE-24", "Connect the instrument first", parent=self.root)
-            return
-        if (
-            self.keithley_scan_running
-            or self.keithley_manual_busy
-            or self.magnet_scan_running
-            or self.k6221_scan_running
-        ):
-            messagebox.showwarning(
-                "MOKE-24", "A scan is running; resistance cannot be measured", parent=self.root
-            )
-            return
-        if self.keithley_resistance_busy:
-            return
-        if not self.keithley_resistance_safety_var.get():
-            messagebox.showwarning(
-                "Resistance measurement safety confirmation",
-                "Confirm the resistance wiring first and that the sample tolerates a 1 nA–1 mA test current.",
-                parent=self.root,
-            )
-            return
-        self.keithley_stop_event.clear()
-        self.keithley_resistance_busy = True
-        self.keithley_resistance_rows = []
-        self._redraw_keithley_resistance_plot()
-        self.keithley_status_var.set(
-            "Autoranging, then measuring |R| vs time continuously (rolling last 20 s)…"
-        )
-        self.keithley_voltage_var.set("Output: current-source measurement")
-        self._update_keithley_controls()
-        future = self.keithley_executor.submit(self._keithley_resistance_worker)
-        future.add_done_callback(
-            lambda completed: self.post_ui(
-                lambda: self._finish_keithley_resistance(completed)
-            )
-        )
-
-    def stop_keithley_resistance(self) -> None:
-        if not self.keithley_resistance_busy:
-            return
-        self.keithley_stop_event.set()
-        self.keithley_resistance_stop_button.configure(state="disabled")
-        self.keithley_status_var.set(
-            "Stopping the continuous resistance measurement; zeroing and switching the output off next…"
-        )
-
-    def _keithley_resistance_worker(self) -> None:
-        levels = list(KEITHLEY_RES_CURRENT_LEVELS_A)
-        current_index = 0
-        source_current = levels[current_index]
-        controller = self.keithley_controller
-        try:
-            controller.initialize_resistance(source_current)
-            voltage_v = math.nan
-            current_a = math.nan
-            resistance_ohm = math.nan
-            for _attempt in range(len(levels) * 2):
-                if self.keithley_stop_event.wait(KEITHLEY_RES_SETTLE_S):
-                    raise InterruptedError("Resistance measurement stopped")
-                voltage_v, current_a, resistance_ohm = (
-                    controller.read_voltage_current_resistance()
-                )
-                absolute_voltage = abs(voltage_v)
-                if (
-                    absolute_voltage > KEITHLEY_RES_VOLTAGE_LIMIT_V * 0.9
-                    and current_index > 0
-                ):
-                    current_index -= 1
-                elif (
-                    absolute_voltage > KEITHLEY_RES_TARGET_VOLTAGE_HIGH_V
-                    and current_index > 0
-                ):
-                    current_index -= 1
-                elif (
-                    absolute_voltage < KEITHLEY_RES_TARGET_VOLTAGE_LOW_V
-                    and current_index < len(levels) - 1
-                ):
-                    current_index += 1
-                else:
-                    break
-                source_current = levels[current_index]
-                controller.set_source_current(source_current)
-                self.post_ui(
-                    lambda value=source_current: self.keithley_status_var.set(
-                        f"Resistance autorange: test current {value:.3e} A"
-                    )
-                )
-
-            measurement_start = time.monotonic()
-            next_sample = measurement_start
-            while True:
-                now = time.monotonic()
-                wait_s = max(0.0, next_sample - now)
-                if self.keithley_stop_event.wait(wait_s):
-                    raise InterruptedError("Resistance measurement stopped")
-                voltage_v, current_a, resistance_ohm = (
-                    controller.read_voltage_current_resistance()
-                )
-                elapsed = time.monotonic() - measurement_start
-                if all(
-                    math.isfinite(value)
-                    for value in (voltage_v, current_a, resistance_ohm)
-                ):
-                    self.post_ui(
-                        lambda t=elapsed, v=voltage_v, i=current_a,
-                        r=resistance_ohm, source=source_current:
-                        self._append_keithley_resistance_sample(
-                            t, v, i, r, source
-                        )
-                    )
-
-                # Keep autoranging active throughout the continuous trace so a
-                # changing sample cannot remain close to the 5 V protection
-                # threshold or below the useful voltage range.
-                new_index = current_index
-                absolute_voltage = abs(voltage_v)
-                if (
-                    absolute_voltage > KEITHLEY_RES_TARGET_VOLTAGE_HIGH_V
-                    and current_index > 0
-                ):
-                    new_index = current_index - 1
-                elif (
-                    absolute_voltage < KEITHLEY_RES_TARGET_VOLTAGE_LOW_V
-                    and current_index < len(levels) - 1
-                ):
-                    new_index = current_index + 1
-                if new_index != current_index:
-                    current_index = new_index
-                    source_current = levels[current_index]
-                    controller.set_source_current(source_current)
-                    if self.keithley_stop_event.wait(KEITHLEY_RES_SETTLE_S):
-                        raise InterruptedError("Resistance measurement stopped")
-
-                next_sample += KEITHLEY_RES_SAMPLE_INTERVAL_S
-                if next_sample <= time.monotonic():
-                    next_sample = time.monotonic()
-        finally:
-            controller.output_off()
-
-    def _finish_keithley_resistance(self, future) -> None:
-        self.keithley_resistance_busy = False
-        self.keithley_voltage_var.set("Output: 0 V / OFF")
-        with self.keithley_data_lock:
-            self.keithley_current_voltage = 0.0
-        self.keithley_manual_voltage_var.set("0")
-        try:
-            future.result()
-        except InterruptedError:
-            self.keithley_status_var.set(
-                "Continuous resistance measurement finished; last 20 s kept, source current zeroed and output off"
-            )
-        except BaseException as error:
-            self.keithley_status_var.set(f"Resistance measurement failed; output off: {error}")
-            if not self.closing:
-                messagebox.showerror("Resistance measurement failed", str(error), parent=self.root)
-        else:
-            self.keithley_status_var.set(
-                "Continuous resistance measurement finished; source current zeroed and output off"
-            )
-        try:
-            self._redraw_keithley_resistance_plot()
-        finally:
-            # The buttons follow the finished measurement whatever the plot
-            # does: a failing redraw here used to leave Start greyed out.
-            self._update_keithley_controls()
-
     def ingest_2410_roi_sample(self, mean_value: float) -> None:
         with self.keithley_data_lock:
             if not self.keithley_scan_running or self.keithley_scan_start_time is None:
@@ -25981,11 +25882,6 @@ class CombinedControlApp:
         if self.keithley_manual_busy:
             messagebox.showwarning(
                 "MOKE-24", "The manual voltage operation has not finished", parent=self.root
-            )
-            return
-        if self.keithley_resistance_busy:
-            messagebox.showwarning(
-                "MOKE-24", "The resistance measurement has not finished", parent=self.root
             )
             return
         if self.magnet_scan_running or self.k6221_scan_running:
@@ -26388,9 +26284,7 @@ class CombinedControlApp:
                 f"{self.keithley_scan_total_points} points done"
             )
         self.keithley_status_var.set(
-            "Stopping the resistance measurement and switching the output off…"
-            if self.keithley_resistance_busy
-            else "Stopping; zeroing the voltage and switching the output off…"
+            "Stopping; zeroing the voltage and switching the output off…"
         )
         if not self.keithley_scan_running:
             future = self.keithley_executor.submit(self.keithley_controller.output_off)
@@ -28487,7 +28381,6 @@ class CombinedControlApp:
                 and (
                     self.keithley_controller.connected
                     or self.keithley_scan_running
-                    or self.keithley_resistance_busy
                     or self.keithley_manual_busy
                 )
             )
@@ -28536,7 +28429,6 @@ class CombinedControlApp:
             return bool(
                 self.keithley_controller.connected
                 or self.keithley_scan_running
-                or self.keithley_resistance_busy
                 or self.keithley_manual_busy
             )
         if key == "mfli":
@@ -28584,7 +28476,11 @@ class CombinedControlApp:
         meter_connected = states["2410"]
         connected = ac_connected and meter_connected
         partially_connected = any(states.values())
-        idle = not self.nonlocal_vi_running and not self.nonlocal_vi_busy
+        idle = (
+            not self.nonlocal_vi_running
+            and not self.nonlocal_vi_busy
+            and self.nonlocal_keithley_task is None
+        )
         self.nonlocal_vi_output_mode_combo.configure(
             state="readonly" if idle else "disabled"
         )
@@ -28638,13 +28534,18 @@ class CombinedControlApp:
             )
         )
         self._refresh_nonlocal_vi_connection_summary()
+        self._update_nonlocal_keithley_controls()
 
     def _on_nonlocal_vi_output_mode_changed(self) -> None:
         """Keep the VI frequency control consistent with the 6221 source mode."""
         mode = self.nonlocal_vi_output_mode_var.get().strip().upper()
         entry = getattr(self, "nonlocal_vi_frequency_entry", None)
         if entry is not None:
-            idle = not self.nonlocal_vi_running and not self.nonlocal_vi_busy
+            idle = (
+                not self.nonlocal_vi_running
+                and not self.nonlocal_vi_busy
+                and self.nonlocal_keithley_task is None
+            )
             entry.configure(
                 state="normal" if mode == "AC" and idle else "disabled"
             )
@@ -28656,6 +28557,7 @@ class CombinedControlApp:
         if (
             self.nonlocal_vi_running
             or self.nonlocal_vi_busy
+            or self.nonlocal_keithley_task is not None
             or self._nonlocal_vi_device_conflict(key)
         ):
             if self._nonlocal_vi_device_conflict(key):
@@ -28725,6 +28627,9 @@ class CombinedControlApp:
                 self.nonlocal_vi_measurement_enabled_vars[key].set(True)
             self.nonlocal_vi_status_var.set(f"{label} connected: {identity}")
             self.nonlocal_vi_safety_var.set(False)
+            if key == "2410":
+                self.nonlocal_resistance_safety_var.set(False)
+                self.nonlocal_iv_safety_var.set(False)
         else:
             if (
                 key == "mfli"
@@ -28752,7 +28657,11 @@ class CombinedControlApp:
 
     def disconnect_nonlocal_vi_device(self, key: str) -> None:
         key = str(key)
-        if self.nonlocal_vi_running or self.nonlocal_vi_busy:
+        if (
+            self.nonlocal_vi_running
+            or self.nonlocal_vi_busy
+            or self.nonlocal_keithley_task is not None
+        ):
             return
         if key == "2410":
             disconnect = self.nonlocal_vi_2410_controller.disconnect
@@ -28798,6 +28707,9 @@ class CombinedControlApp:
             self.nonlocal_vi_output_var.set(
                 f"Keithley {self.nonlocal_vi_2410_controller.model} and 6221 outputs: OFF"
             )
+        if key == "2410":
+            self.nonlocal_resistance_safety_var.set(False)
+            self.nonlocal_iv_safety_var.set(False)
         self.nonlocal_vi_safety_var.set(False)
         self.nonlocal_vi_status_var.set(
             f"{label} safely disconnected"
@@ -29280,6 +29192,13 @@ class CombinedControlApp:
         return settings
 
     def start_nonlocal_vi_scan(self) -> None:
+        if self.nonlocal_keithley_task is not None:
+            messagebox.showwarning(
+                "Non-local VI",
+                "The |R| or I–V measurement is using the Keithley; stop it first.",
+                parent=self.root,
+            )
+            return
         if not (
             self.nonlocal_vi_ac_controller.source_connected
             and (
@@ -29994,6 +29913,11 @@ class CombinedControlApp:
         self._update_keithley_controls()
 
     def stop_nonlocal_vi(self) -> None:
+        if self.nonlocal_keithley_task is not None:
+            # |R| or I-V: its worker zeroes the Keithley and switches it off.
+            # The 6221 was switched off before it started.
+            self.stop_nonlocal_keithley_task()
+            return
         if not (
             self.nonlocal_vi_ac_controller.any_connected
             or self.nonlocal_vi_2410_controller.connected
@@ -30167,11 +30091,751 @@ class CombinedControlApp:
                 auto_voltage_unit=True,
             )
 
+    # ---- Non-local page: |R| vs time and the I-V sweep on the pulse Keithley
+
+    def _update_nonlocal_keithley_controls(self) -> None:
+        if "nonlocal_iv_save_button" not in self.__dict__:
+            return
+        task = self.nonlocal_keithley_task
+        stopping = self.nonlocal_keithley_stop_event.is_set()
+        free = (
+            self.nonlocal_vi_2410_controller.connected
+            and task is None
+            and not self.nonlocal_vi_running
+            and not self.nonlocal_vi_busy
+        )
+        self.nonlocal_resistance_button.configure(
+            text=(
+                "Measuring continuously…"
+                if task == "resistance"
+                else "Start continuous measurement"
+            ),
+            state=(
+                "normal"
+                if free and self.nonlocal_resistance_safety_var.get()
+                else "disabled"
+            ),
+        )
+        self.nonlocal_resistance_stop_button.configure(
+            state="normal" if task == "resistance" and not stopping else "disabled"
+        )
+        self.nonlocal_iv_start_button.configure(
+            state="normal" if free and self.nonlocal_iv_safety_var.get() else "disabled"
+        )
+        self.nonlocal_iv_stop_button.configure(
+            state="normal" if task == "iv" and not stopping else "disabled"
+        )
+        self.nonlocal_iv_save_button.configure(
+            state=(
+                "normal"
+                if task != "iv"
+                and self.nonlocal_iv_rows
+                and "nonlocal-iv-csv" not in self.active_file_exports
+                else "disabled"
+            )
+        )
+
+    def _nonlocal_keithley_free(self, what: str) -> bool:
+        controller = self.nonlocal_vi_2410_controller
+        if not controller.connected:
+            messagebox.showwarning(
+                "Non-local", f"Connect the Keithley {controller.model} first", parent=self.root
+            )
+            return False
+        if (
+            self.nonlocal_keithley_task is not None
+            or self.nonlocal_vi_running
+            or self.nonlocal_vi_busy
+        ):
+            messagebox.showwarning(
+                "Non-local",
+                f"The Keithley is busy; {what} can start when the running scan or measurement ends",
+                parent=self.root,
+            )
+            return False
+        return True
+
+    def _begin_nonlocal_keithley_task(self, kind: str, worker, finish) -> None:
+        self.nonlocal_keithley_stop_event.clear()
+        self.nonlocal_keithley_output_off = False
+        self.nonlocal_keithley_task = kind
+        self._update_nonlocal_vi_controls()
+        try:
+            future = self.nonlocal_vi_executor.submit(worker)
+        except BaseException:
+            self.nonlocal_keithley_task = None
+            self._update_nonlocal_vi_controls()
+            raise
+        future.add_done_callback(
+            lambda completed: self.post_ui(lambda: finish(completed))
+        )
+
+    def stop_nonlocal_keithley_task(self) -> None:
+        task = self.nonlocal_keithley_task
+        if task is None:
+            return
+        self.nonlocal_keithley_stop_event.set()
+        self.nonlocal_vi_status_var.set(
+            "Stopping the |R| measurement; zeroing and switching the output off next…"
+            if task == "resistance"
+            else "Stopping the I–V sweep; zeroing and switching the output off next…"
+        )
+        self._update_nonlocal_keithley_controls()
+
+    def _run_on_nonlocal_keithley(self, phase: str, body) -> None:
+        """The 6221 off first and the interlock held; afterwards the Keithley
+        is zeroed, off and back in its pulse setup, whatever happened."""
+        controller = self.nonlocal_vi_2410_controller
+        source = self.nonlocal_vi_ac_controller
+        if source.source_connected:
+            source.output_off()
+            source.confirm_output_off(
+                f"before the Keithley {controller.model} measurement"
+            )
+        self.nonlocal_vi_interlock.begin(phase)
+        try:
+            body(controller)
+        finally:
+            try:
+                controller.restore_voltage_mode()
+                self.nonlocal_keithley_output_off = True
+            finally:
+                self.nonlocal_vi_interlock.end(phase)
+
+    def _nonlocal_output_text(self) -> str:
+        model = self.nonlocal_vi_2410_controller.model
+        if self.__dict__.get("nonlocal_keithley_output_off", True):
+            return f"Keithley {model} and 6221 outputs: OFF"
+        return f"Keithley {model} output: check it"
+
+    # |R| vs time ---------------------------------------------------------
+
+    def start_nonlocal_resistance(self) -> None:
+        if self.nonlocal_keithley_task is not None:
+            return
+        if not self._nonlocal_keithley_free("the |R| measurement"):
+            return
+        if not self.nonlocal_resistance_safety_var.get():
+            messagebox.showwarning(
+                "Resistance measurement safety confirmation",
+                "Confirm the resistance wiring first and that the sample tolerates a 1 nA–1 mA test current.",
+                parent=self.root,
+            )
+            return
+        self.nonlocal_resistance_rows = []
+        self._redraw_nonlocal_resistance_plot()
+        self.nonlocal_vi_status_var.set(
+            "Autoranging, then measuring |R| vs time continuously (rolling last 20 s)…"
+        )
+        self.nonlocal_vi_output_var.set(
+            f"Keithley {self.nonlocal_vi_2410_controller.model} ON: |R| current source"
+        )
+        self._begin_nonlocal_keithley_task(
+            "resistance",
+            self._nonlocal_resistance_worker,
+            self._finish_nonlocal_resistance,
+        )
+
+    def _nonlocal_resistance_worker(self) -> None:
+        stop = self.nonlocal_keithley_stop_event
+        levels = list(NONLOCAL_VI_RES_CURRENT_LEVELS_A)
+
+        def measure(controller) -> None:
+            current_index = 0
+            source_current = levels[current_index]
+            controller.start_resistance(source_current)
+            for _attempt in range(len(levels) * 2):
+                if stop.wait(KEITHLEY_RES_SETTLE_S):
+                    raise InterruptedError("Resistance measurement stopped")
+                voltage_v, _current_a, _resistance_ohm = controller.read_resistance()
+                absolute_voltage = abs(voltage_v)
+                if (
+                    absolute_voltage > KEITHLEY_RES_TARGET_VOLTAGE_HIGH_V
+                    and current_index > 0
+                ):
+                    current_index -= 1
+                elif (
+                    absolute_voltage < KEITHLEY_RES_TARGET_VOLTAGE_LOW_V
+                    and current_index < len(levels) - 1
+                ):
+                    current_index += 1
+                else:
+                    break
+                source_current = levels[current_index]
+                controller.set_resistance_current(source_current)
+                self.post_ui(
+                    lambda value=source_current: self.nonlocal_vi_status_var.set(
+                        f"Resistance autorange: test current {value:.3e} A"
+                    )
+                )
+
+            measurement_start = time.monotonic()
+            next_sample = measurement_start
+            while True:
+                wait_s = max(0.0, next_sample - time.monotonic())
+                if stop.wait(wait_s):
+                    raise InterruptedError("Resistance measurement stopped")
+                voltage_v, current_a, resistance_ohm = controller.read_resistance()
+                elapsed = time.monotonic() - measurement_start
+                if all(
+                    math.isfinite(value)
+                    for value in (voltage_v, current_a, resistance_ohm)
+                ):
+                    self.post_ui(
+                        lambda t=elapsed, v=voltage_v, i=current_a,
+                        r=resistance_ohm, source=source_current:
+                        self._append_nonlocal_resistance_sample(t, v, i, r, source)
+                    )
+                # Autoranging stays on, so a changing sample cannot sit near
+                # the 5 V protection or below the useful voltage range.
+                new_index = current_index
+                absolute_voltage = abs(voltage_v)
+                if (
+                    absolute_voltage > KEITHLEY_RES_TARGET_VOLTAGE_HIGH_V
+                    and current_index > 0
+                ):
+                    new_index = current_index - 1
+                elif (
+                    absolute_voltage < KEITHLEY_RES_TARGET_VOLTAGE_LOW_V
+                    and current_index < len(levels) - 1
+                ):
+                    new_index = current_index + 1
+                if new_index != current_index:
+                    current_index = new_index
+                    source_current = levels[current_index]
+                    controller.set_resistance_current(source_current)
+                    if stop.wait(KEITHLEY_RES_SETTLE_S):
+                        raise InterruptedError("Resistance measurement stopped")
+                next_sample += KEITHLEY_RES_SAMPLE_INTERVAL_S
+                if next_sample <= time.monotonic():
+                    next_sample = time.monotonic()
+
+        self._run_on_nonlocal_keithley(NonLocalVIInterlock.RESISTANCE, measure)
+
+    def _append_nonlocal_resistance_sample(
+        self,
+        elapsed_s: float,
+        voltage_v: float,
+        current_a: float,
+        resistance_ohm: float,
+        source_current_a: float,
+    ) -> None:
+        """Publish one worker-thread resistance sample on the Tk thread."""
+        if not math.isfinite(resistance_ohm):
+            return
+        elapsed = max(float(elapsed_s), 0.0)
+        resistance_magnitude = abs(float(resistance_ohm))
+        self.nonlocal_resistance_rows.append((elapsed, resistance_magnitude))
+        cutoff = max(0.0, elapsed - KEITHLEY_RES_WINDOW_S)
+        # The retained dataset, not only a plotting slice: an indefinitely
+        # running measurement keeps bounded memory.
+        self.nonlocal_resistance_rows = [
+            row for row in self.nonlocal_resistance_rows if row[0] >= cutoff
+        ]
+        self.nonlocal_resistance_var.set(f"|R|: {format_resistance(resistance_magnitude)}")
+        self.nonlocal_resistance_voltage_var.set(f"V: {voltage_v:.6e} V")
+        self.nonlocal_resistance_current_var.set(f"I: {current_a:.6e} A")
+        self.nonlocal_resistance_source_var.set(
+            f"Source current: {source_current_a:.3e} A"
+        )
+        self.nonlocal_vi_status_var.set(
+            f"|R| vs time measuring continuously: {elapsed:.1f} s elapsed; "
+            f"plot keeps the last {min(elapsed, KEITHLEY_RES_WINDOW_S):.1f} s"
+        )
+        self._redraw_nonlocal_resistance_plot()
+
+    def _redraw_nonlocal_resistance_plot(self) -> None:
+        canvas = getattr(self, "nonlocal_resistance_canvas", None)
+        if not self._canvas_is_visible(canvas):
+            return
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 280)
+        height = max(canvas.winfo_height(), 125)
+        left, right, top, bottom = 88, 22, 25, 46
+        plot_width = max(1, width - left - right)
+        plot_height = max(1, height - top - bottom)
+        self._draw_plot_grid(canvas, left, top, plot_width, plot_height)
+        canvas.create_rectangle(
+            left, top, left + plot_width, top + plot_height, outline="#444444"
+        )
+        canvas.create_text(
+            left + plot_width / 2,
+            height - 10,
+            text="Time (s) · rolling latest 20 s",
+            fill="#222222",
+        )
+
+        rows = [
+            row
+            for row in self.nonlocal_resistance_rows
+            if math.isfinite(row[0]) and math.isfinite(row[1])
+        ]
+        resistance_values = [row[1] for row in rows]
+        # One plot uses one unit, chosen from the latest resistance to match
+        # the live |R| readout, so an older large value in the window does
+        # not force the axis to MΩ while the readout says kΩ.
+        reference = abs(resistance_values[-1]) if resistance_values else 0.0
+        if reference >= 1e9:
+            scale, unit = 1e9, "GΩ"
+        elif reference >= 1e6:
+            scale, unit = 1e6, "MΩ"
+        elif reference >= 1e3:
+            scale, unit = 1e3, "kΩ"
+        else:
+            scale, unit = 1.0, "Ω"
+        canvas.create_text(
+            15, top + plot_height / 2, text=f"|R| ({unit})", angle=90, fill="#222222"
+        )
+
+        latest_elapsed = rows[-1][0] if rows else 0.0
+        window_end = max(KEITHLEY_RES_WINDOW_S, latest_elapsed)
+        window_start = window_end - KEITHLEY_RES_WINDOW_S
+        # 0-20 s at first, then it scrolls, always spanning the latest 20 s.
+        _x_min, _x_max, x_ticks, x_tick_step = nice_linear_ticks(
+            window_start, window_end, expand_limits=False
+        )
+        for tick_index, elapsed in enumerate(x_ticks):
+            x = left + (elapsed - window_start) / KEITHLEY_RES_WINDOW_S * plot_width
+            canvas.create_line(x, top + plot_height, x, top + plot_height + 4)
+            canvas.create_text(
+                x,
+                top + plot_height + 14,
+                text=format_nice_tick(elapsed, x_tick_step),
+                fill="#333333",
+                anchor=(
+                    "w"
+                    if tick_index == 0 and abs(x - left) < 1.0
+                    else "e"
+                    if tick_index == len(x_ticks) - 1
+                    and abs(x - (left + plot_width)) < 1.0
+                    else "center"
+                ),
+            )
+
+        if not rows:
+            canvas.create_text(
+                left + plot_width / 2,
+                top + plot_height / 2,
+                text="The last 20 s of |R|–time data are shown once continuous measurement starts",
+                fill="#666666",
+                width=max(60, plot_width - 16),
+                justify="center",
+            )
+            return
+
+        # Plain Python, not numpy: np is None wherever the camera libraries
+        # (pco, Pillow) do not import, and this plot is purely electrical.
+        scaled = [value / scale for value in resistance_values]
+        y_min, y_max, y_ticks, y_tick_step = nice_linear_ticks(min(scaled), max(scaled))
+        for value in reversed(y_ticks):
+            y = top + (y_max - value) / (y_max - y_min) * plot_height
+            canvas.create_line(left - 4, y, left, y)
+            canvas.create_text(
+                left - 7, y, text=format_nice_tick(value, y_tick_step),
+                anchor="e", fill="#333333",
+            )
+
+        points = []
+        for (elapsed, _resistance), value in zip(rows, scaled):
+            x = left + (elapsed - window_start) / KEITHLEY_RES_WINDOW_S * plot_width
+            y = top + plot_height - (value - y_min) / (y_max - y_min) * plot_height
+            points.append((x, y))
+        if len(points) >= 2:
+            canvas.create_line(
+                *[coordinate for point in points for coordinate in point],
+                fill="#7a3db8",
+                width=2,
+            )
+        elif points:
+            x, y = points[0]
+            canvas.create_oval(x - 2, y - 2, x + 2, y + 2, fill="#7a3db8", outline="")
+        canvas.create_text(
+            left + 4,
+            12,
+            text=f"Current |R| = {scaled[-1]:.6g} {unit}",
+            anchor="w",
+            fill="#5b2a86",
+            font=(self.ui_font_family, self.ui_small_font_size, "bold"),
+        )
+
+    def _finish_nonlocal_resistance(self, future) -> None:
+        self.nonlocal_keithley_task = None
+        self.nonlocal_vi_output_var.set(self._nonlocal_output_text())
+        try:
+            future.result()
+        except InterruptedError:
+            self.nonlocal_vi_status_var.set(
+                "Continuous resistance measurement finished; last 20 s kept, source current zeroed and output off"
+            )
+        except BaseException as error:
+            self.nonlocal_vi_status_var.set(
+                f"Resistance measurement stopped by an error: {short_status_error(error)}"
+            )
+            if not self.closing:
+                messagebox.showerror("Resistance measurement failed", str(error), parent=self.root)
+        else:
+            self.nonlocal_vi_status_var.set(
+                "Continuous resistance measurement finished; source current zeroed and output off"
+            )
+        try:
+            self._redraw_nonlocal_resistance_plot()
+        finally:
+            # The buttons follow the finished measurement whatever the plot
+            # does: a failing redraw once left Start greyed out on MOKE-24.
+            self._update_nonlocal_vi_controls()
+
+    # I-V sweep -------------------------------------------------------------
+
+    def _parse_nonlocal_iv_settings(self) -> dict[str, object]:
+        try:
+            start_v = float(self.nonlocal_iv_start_var.get())
+            end_v = float(self.nonlocal_iv_end_var.get())
+            step_v = abs(float(self.nonlocal_iv_step_var.get()))
+            settle_s = float(self.nonlocal_iv_settle_var.get())
+            limit_a = float(self.nonlocal_iv_limit_var.get())
+        except (ValueError, TypeError, tk.TclError) as exc:
+            raise ValueError(
+                "Start V, End V, Step V, Settle s and Current limit A must be numbers"
+            ) from exc
+        if not all(
+            math.isfinite(value) for value in (start_v, end_v, step_v, settle_s, limit_a)
+        ):
+            raise ValueError(
+                "Start V, End V, Step V, Settle s and Current limit A must be finite values"
+            )
+        if not 0.0 <= settle_s <= 3600.0:
+            raise ValueError("Settle time must be within 0–3600 s")
+        if not 0.0 < limit_a <= NONLOCAL_IV_SWEEP_MAX_COMPLIANCE_A:
+            raise ValueError(
+                f"Current limit must be above 0 and at most {NONLOCAL_IV_SWEEP_MAX_COMPLIANCE_A:g} A"
+            )
+        voltages = build_iv_sweep_voltages(start_v, end_v, step_v)
+        controller = self.nonlocal_vi_2410_controller
+        return {
+            "sample": self.nonlocal_iv_sample_var.get().strip(),
+            "start_v": start_v,
+            "end_v": end_v,
+            "step_v": step_v,
+            "settle_s": settle_s,
+            "current_limit_a": limit_a,
+            "voltages": voltages,
+            "model": controller.model,
+            "resource": controller.resource_name,
+            "identity": controller.identity,
+            "started": datetime_module.datetime.now().isoformat(timespec="seconds"),
+        }
+
+    def start_nonlocal_iv_sweep(self) -> None:
+        if self.nonlocal_keithley_task is not None:
+            return
+        if not self._nonlocal_keithley_free("the I–V sweep"):
+            return
+        if not self.nonlocal_iv_safety_var.get():
+            messagebox.showwarning(
+                "I–V sweep",
+                "Tick the wiring, current limit and voltages confirmation first.",
+                parent=self.root,
+            )
+            return
+        try:
+            settings = self._parse_nonlocal_iv_settings()
+        except ValueError as error:
+            messagebox.showwarning("I–V sweep", str(error), parent=self.root)
+            return
+        total = len(settings["voltages"])
+        self.nonlocal_iv_settings = settings
+        self.nonlocal_iv_rows = []
+        self.nonlocal_iv_total_points = total
+        self.nonlocal_iv_progress.configure(maximum=max(1, total), value=0)
+        self.nonlocal_iv_eta_var.set(
+            "Remaining: about "
+            + self._format_scan_duration(total * (float(settings["settle_s"]) + 0.15))
+        )
+        self.nonlocal_iv_point_var.set("Last point: --")
+        self._redraw_nonlocal_iv_plot()
+        self.nonlocal_vi_status_var.set(
+            f"I–V sweep: {settings['start_v']:g} → {settings['end_v']:g} V, {total} points…"
+        )
+        self.nonlocal_vi_output_var.set(
+            f"Keithley {self.nonlocal_vi_2410_controller.model} ON: I–V voltage source"
+        )
+        self._begin_nonlocal_keithley_task(
+            "iv",
+            lambda: self._nonlocal_iv_worker(settings),
+            self._finish_nonlocal_iv_sweep,
+        )
+
+    def _nonlocal_iv_worker(self, settings: dict) -> None:
+        stop = self.nonlocal_keithley_stop_event
+        limit = float(settings["current_limit_a"])
+        settle_s = float(settings["settle_s"])
+
+        def sweep(controller) -> None:
+            controller.start_iv_sweep(limit)
+            started = time.monotonic()
+            for index, target in enumerate(settings["voltages"], start=1):
+                if stop.is_set():
+                    raise InterruptedError("I–V sweep stopped")
+                controller.set_iv_voltage(target)
+                if stop.wait(settle_s):
+                    raise InterruptedError("I–V sweep stopped")
+                voltage_v, current_a = controller.read_iv_point()
+                row = (
+                    index,
+                    float(target),
+                    voltage_v,
+                    current_a,
+                    time.monotonic() - started,
+                    abs(current_a) >= limit * 0.99,
+                )
+                self.post_ui(lambda row=row: self._append_nonlocal_iv_point(row))
+
+        self._run_on_nonlocal_keithley(NonLocalVIInterlock.VOLTAGE, sweep)
+
+    def _append_nonlocal_iv_point(self, row) -> None:
+        self.nonlocal_iv_rows.append(row)
+        index, _target, voltage_v, current_a, elapsed_s, limited = row
+        total = max(1, int(self.nonlocal_iv_total_points))
+        try:
+            self.nonlocal_iv_progress.configure(value=index)
+        except (AttributeError, tk.TclError):
+            pass
+        remaining = max(0.0, float(elapsed_s) / max(1, index) * (total - index))
+        self.nonlocal_iv_eta_var.set(f"Remaining: {self._format_scan_duration(remaining)}")
+        self.nonlocal_iv_point_var.set(
+            f"Point {index}/{total}: V = {voltage_v:+.4g} V, I = {format_current(current_a)}"
+            + (" (at the current limit)" if limited else "")
+        )
+        self._redraw_nonlocal_iv_plot()
+
+    def _finish_nonlocal_iv_sweep(self, future) -> None:
+        self.nonlocal_keithley_task = None
+        done, total = len(self.nonlocal_iv_rows), self.nonlocal_iv_total_points
+        self.nonlocal_vi_output_var.set(self._nonlocal_output_text())
+        self.nonlocal_iv_eta_var.set("Remaining: --")
+        try:
+            future.result()
+        except InterruptedError:
+            self.nonlocal_vi_status_var.set(
+                f"I–V sweep stopped after {done}/{total} points; voltage zeroed and output off"
+            )
+        except BaseException as error:
+            self.nonlocal_vi_status_var.set(
+                f"I–V sweep stopped by an error after {done}/{total} points: {short_status_error(error)}"
+            )
+            if not self.closing:
+                messagebox.showerror("I–V sweep failed", str(error), parent=self.root)
+        else:
+            self.nonlocal_vi_status_var.set(
+                f"I–V sweep complete: {done} points; voltage zeroed and output off. "
+                "Save CSV + PNG to keep it"
+            )
+        try:
+            self._redraw_nonlocal_iv_plot()
+        finally:
+            self._update_nonlocal_vi_controls()
+
+    def _redraw_nonlocal_iv_plot(self) -> None:
+        canvas = getattr(self, "nonlocal_iv_canvas", None)
+        if not self._canvas_is_visible(canvas):
+            return
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 260)
+        height = max(canvas.winfo_height(), 180)
+        margin_left, margin_right, top, bottom = 84, 24, 18, 50
+        plot_height = max(1, height - top - bottom)
+        room = max(1, width - margin_left - margin_right)
+        # As in the user's figure: a frame at most 1.4 times as wide as it is
+        # tall, centred, rather than a strip across a wide window.
+        plot_width = max(1, min(room, int(plot_height * 1.4)))
+        left = margin_left + (room - plot_width) // 2
+        bottom_y = top + plot_height
+        ink = "#222222"
+        label_font = (self.ui_font_family, self.ui_font_size + 2)
+        canvas.create_rectangle(left, top, left + plot_width, bottom_y, outline=ink)
+
+        rows = [
+            row for row in self.nonlocal_iv_rows
+            if math.isfinite(row[2]) and math.isfinite(row[3])
+        ]
+        settings = self.nonlocal_iv_settings
+        if settings:
+            low, high = sorted((float(settings["start_v"]), float(settings["end_v"])))
+        elif rows:
+            low, high = min(row[2] for row in rows), max(row[2] for row in rows)
+        else:
+            low, high = sorted((NONLOCAL_IV_SWEEP_START_V, NONLOCAL_IV_SWEEP_END_V))
+        if high - low < 1e-9:
+            low, high = low - 1.0, high + 1.0
+        _low, _high, x_ticks, x_step = nice_linear_ticks(low, high, target_intervals=6)
+        # Half a tick step either side, so the end points sit inside the frame.
+        x_min, x_max = low - x_step / 2, high + x_step / 2
+        x_ticks = [tick for tick in x_ticks if x_min <= tick <= x_max]
+
+        def x_of(value: float) -> float:
+            return left + (value - x_min) / (x_max - x_min) * plot_width
+
+        for tick in x_ticks:
+            x = x_of(tick)
+            canvas.create_line(x, bottom_y, x, bottom_y - 5, fill=ink)
+            canvas.create_text(
+                x, bottom_y + 13, text=format_nice_tick(tick, x_step), fill=ink
+            )
+        canvas.create_text(
+            left + plot_width / 2, height - 14, text="Voltage (V)", fill=ink, font=label_font
+        )
+
+        max_abs = max((abs(row[3]) for row in rows), default=0.0)
+        scale, unit = current_unit(max_abs if max_abs > 0.0 else 1e-9)
+        scaled = [row[3] / scale for row in rows]
+        # Some room above the largest current, as in the figure.
+        y_min, y_max, y_ticks, y_step = nice_symmetric_ticks(
+            [value * 1.15 for value in scaled], target_half_intervals=2
+        )
+
+        def y_of(value: float) -> float:
+            return top + (y_max - value) / (y_max - y_min) * plot_height
+
+        for tick in y_ticks:
+            y = y_of(tick)
+            canvas.create_line(left, y, left + 5, y, fill=ink)
+            canvas.create_text(
+                left - 6, y, text=format_nice_tick(tick, y_step), anchor="e", fill=ink
+            )
+        canvas.create_text(
+            max(12, left - 58), top + plot_height / 2,
+            text=f"Current ({unit})", angle=90, fill=ink, font=label_font,
+        )
+
+        sample = str(settings.get("sample", "")) if settings else ""
+        if sample:
+            canvas.create_text(
+                left + 10, top + 8, text=sample, anchor="nw", fill="#111111",
+                font=(self.ui_font_family, self.ui_font_size + 5),
+            )
+        if not rows:
+            canvas.create_text(
+                left + plot_width / 2,
+                top + plot_height / 2,
+                text="The I–V curve is drawn point by point once a sweep starts",
+                fill="#666666",
+                width=max(60, plot_width - 16),
+                justify="center",
+            )
+            return
+
+        points = [(x_of(row[2]), y_of(value)) for row, value in zip(rows, scaled)]
+        if len(points) >= 2:
+            canvas.create_line(
+                *[coordinate for point in points for coordinate in point],
+                fill="#555555",
+                dash=(1, 3),
+            )
+        half = 3
+        for (x, y), row in zip(points, rows):
+            canvas.create_rectangle(
+                x - half, y - half, x + half, y + half,
+                fill="#c62828" if row[5] else "#111111", outline="",
+            )
+        if any(row[5] for row in rows):
+            canvas.create_text(
+                left + plot_width - 6, top + 8, anchor="ne",
+                text="red: at the current limit", fill="#c62828",
+            )
+
+    def save_nonlocal_iv_sweep(self) -> None:
+        export_key = "nonlocal-iv-csv"
+        if export_key in self.active_file_exports:
+            self.nonlocal_vi_status_var.set("The I–V data are being saved in the background")
+            return
+        rows = list(self.nonlocal_iv_rows)
+        settings = dict(self.nonlocal_iv_settings)
+        if not rows:
+            self.nonlocal_vi_status_var.set("No I–V data to save")
+            return
+        camera = self.pause_camera_rendering("Saving the I–V CSV and plot snapshot")
+        directory = self.select_csv_save_directory(
+            "Select the folder for the I–V CSV and PNG", self.nonlocal_iv_directory
+        )
+        if directory is None:
+            self.resume_camera_rendering(camera)
+            self.nonlocal_vi_status_var.set("Saving the I–V data cancelled")
+            return
+        self.nonlocal_iv_directory = directory
+        timestamp = datetime_module.datetime.now().strftime("%Y%m%d_%H%M%S")
+        sample = re.sub(r"[^\w.-]+", "_", str(settings.get("sample", ""))).strip("._")[:40]
+        stem = f"IV_{sample}_{timestamp}" if sample else f"IV_{timestamp}"
+        csv_path = directory / f"{stem}.csv"
+        png_path = directory / f"{stem}.png"
+        log_path = directory / f"{stem}_parameters.log"
+        header = [
+            "point", "set_voltage_V", "source_voltage_V", "current_A",
+            "elapsed_s", "at_current_limit",
+        ]
+        csv_rows = [
+            (index, f"{target:.10g}", f"{voltage:.10g}", f"{current:.10g}",
+             f"{elapsed:.3f}", int(bool(limited)))
+            for index, target, voltage, current, elapsed, limited in rows
+        ]
+        parameters = {
+            "sample": settings.get("sample", ""),
+            "instrument.model": f"Keithley {settings.get('model', '')}",
+            "instrument.resource": settings.get("resource", ""),
+            "instrument.identity": settings.get("identity", ""),
+            "sweep.started": settings.get("started", ""),
+            "sweep.start_V": settings.get("start_v"),
+            "sweep.end_V": settings.get("end_v"),
+            "sweep.step_V": settings.get("step_v"),
+            "sweep.settle_s": settings.get("settle_s"),
+            "sweep.current_limit_A": settings.get("current_limit_a"),
+            "sweep.nplc": NONLOCAL_IV_SWEEP_NPLC,
+            "sweep.source_range_V": KEITHLEY_LOW_SOURCE_RANGE_V,
+            "sweep.ovp_V": NONLOCAL_VI_2410_SOURCE_OVP_V,
+            "sweep.completed_points": len(rows),
+            "sweep.expected_points": len(settings.get("voltages", ())),
+            "output.csv": csv_path.name,
+            "output.png": png_path.name,
+            "output.log": log_path.name,
+        }
+        log_text = self.format_parameter_log("Non-local I–V sweep parameter log", parameters)
+        self.nonlocal_vi_status_var.set("Saving the I–V CSV and parameter log in the background…")
+
+        def work():
+            self.write_csv_exports(((csv_path, header, csv_rows),))
+            self.write_parameter_log(log_path, log_text)
+
+        def failed(error: BaseException) -> None:
+            self.nonlocal_vi_status_var.set(f"I–V CSV/parameter log save failed: {error}")
+            messagebox.showerror("I–V sweep", str(error), parent=self.root)
+
+        def saved(_result) -> None:
+            try:
+                self._redraw_nonlocal_iv_plot()
+                self.save_plot_canvas_snapshot(self.nonlocal_iv_canvas, png_path)
+            except BaseException as error:
+                self.nonlocal_vi_status_var.set(f"I–V CSV saved; plot snapshot failed: {error}")
+                messagebox.showwarning(
+                    "I–V sweep",
+                    f"CSV and parameter log saved:\n{csv_path.name}\n{log_path.name}\n\n"
+                    f"Plot snapshot save failed:\n{error}",
+                    parent=self.root,
+                )
+                return
+            self.nonlocal_vi_status_var.set(f"I–V CSV, PNG and parameter log saved: {directory}")
+            messagebox.showinfo(
+                "I–V sweep",
+                f"Saved:\n{csv_path.name}\n{png_path.name}\n{log_path.name}\n\nFolder:\n{directory}",
+                parent=self.root,
+            )
+
+        self.submit_file_export(export_key, camera, work, saved, failed)
+
     def safe_close_nonlocal_vi(self) -> None:
         if self.nonlocal_vi_closed:
             return
         self.nonlocal_vi_closed = True
         self.nonlocal_vi_stop_event.set()
+        self.nonlocal_keithley_stop_event.set()
         try:
             self._disconnect_nonlocal_vi_worker()
         except BaseException as error:
@@ -33619,7 +34283,7 @@ class CombinedControlApp:
             ("Analyser rotation stage", self.safe_close_stage),
             ("Magnets and gaussmeters", self.safe_close_magnets),
             ("MOKE-24 Keithley", self.safe_close_keithley),
-            ("Gate-VI", self.safe_close_nonlocal_vi),
+            ("Non-local", self.safe_close_nonlocal_vi),
             ("Keithley 6221", self.safe_close_k6221),
             ("FMR", self.safe_close_stfmr),
             ("STFMR", self.safe_close_stfmr_lockin),
