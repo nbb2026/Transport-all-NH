@@ -1400,6 +1400,10 @@ NONLOCAL_VI_ZURICH_HARMONIC_CHOICES = tuple(PPMS_ZURICH_MODE_ORDERS)
 # After an SR830 switches to its next order its filter settles this many
 # time constants (Gate-VI sets 1 s), or the Settle s if that is longer.
 NONLOCAL_VI_HARMONIC_SETTLE_TAUS = 10.0
+# The lock-in channel each order's voltage-vs-pulse plot shows (user,
+# 2026-10-09: X for the 1st harmonic, Y for the 2nd; the 3rd, odd as the
+# 1st, X).  The CSV keeps the mean X, Y and R of every order.
+NONLOCAL_VI_SUMMARY_CHANNELS = {1: "X", 2: "Y", 3: "X"}
 NONLOCAL_VI_6221_COMPLIANCE_V = 50.0
 # Pulse gate MΩ default (user, 2026-10-09): a pulse needs |R| above it.
 NONLOCAL_VI_MIN_RESISTANCE_FOR_PULSE_OHM = 100e6
@@ -21344,7 +21348,8 @@ class CombinedControlApp:
         for key, title in (
             ("pulse", f"Keithley {NONLOCAL_DEFAULT_KEITHLEY_MODEL} command voltage"),
             ("resistance", f"Keithley {NONLOCAL_DEFAULT_KEITHLEY_MODEL} resistance"),
-            *((("summary", order), f"{PPMS_HARMONIC_LABELS[order]} voltage vs pulse voltage")
+            *((("summary", order),
+               f"{PPMS_HARMONIC_LABELS[order]} {NONLOCAL_VI_SUMMARY_CHANNELS[order]} vs pulse voltage")
               for order in PPMS_HARMONIC_ORDERS),
         ):
             add_plot(ttk.LabelFrame(bottom, text=title, padding=2), key)
@@ -30678,7 +30683,8 @@ class CombinedControlApp:
                         (order, "x"): f"{label}_X_vs_time",
                         (order, "y"): f"{label}_Y_vs_time",
                         (order, "theta"): f"{label}_theta_vs_time",
-                        ("summary", order): f"{label}_voltage_vs_pulse_voltage",
+                        ("summary", order):
+                            f"{label}_{NONLOCAL_VI_SUMMARY_CHANNELS[order]}_vs_pulse_voltage",
                     })
                 snapshot_targets["pulse"] = f"Keithley{model}_command_voltage"
                 snapshot_targets["resistance"] = f"Keithley{model}_resistance"
@@ -30891,7 +30897,8 @@ class CombinedControlApp:
                 ((order, "x"), f"{label} X vs time", on(order, True)),
                 ((order, "y"), f"{label} Y vs time", on(order, False)),
                 ((order, "theta"), f"{label} θ vs time", on(order, False)),
-                (("summary", order), f"{label} voltage vs pulse voltage", on(order, True)),
+                (("summary", order), f"{label} {NONLOCAL_VI_SUMMARY_CHANNELS[order]} vs pulse voltage",
+                 on(order, True)),
             ):
                 text = title + (" — " + ", ".join(names[name] for name in keys) if keys else "")
                 frame = frames.get(key)
@@ -30948,9 +30955,14 @@ class CombinedControlApp:
             show_legend=False,
         )
         for order in shown:
+            # The lock-ins' mean X or Y (NONLOCAL_VI_SUMMARY_CHANNELS); the
+            # 2182A, with neither, its mean DC voltage.
+            channel = NONLOCAL_VI_SUMMARY_CHANNELS[order]
+            field = "mean_x" if channel == "X" else "mean_y"
             summary = {
                 key: [
-                    (row["pulse_voltage_v"], row["mean"]) for row in summaries
+                    (row["pulse_voltage_v"], row["mean"] if key == "2182" else row[field])
+                    for row in summaries
                     if row["key"] == key and (
                         row.get("order") if row.get("order") is not None else shown[0]
                     ) == order
@@ -30961,7 +30973,7 @@ class CombinedControlApp:
                 canvases[("summary", order)],
                 summary,
                 f"Keithley {model} pulse voltage (V)",
-                "Mean voltage (lock-in R)",
+                f"Mean {channel}",
                 "Shown after the first voltage point" if meters else waiting,
                 markers=True,
                 auto_voltage_unit=True,

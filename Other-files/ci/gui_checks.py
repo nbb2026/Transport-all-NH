@@ -148,7 +148,8 @@ def example_data(app):
                     r = means[(key, order)] * (1 + 0.003 * ((sample * 5 + point) % 7 - 3))
                     time_rows.append((elapsed, key, r, 10.0 * order, "formal", r, 0.05 * r, order))
         for (key, order), mean in means.items():
-            summary_rows.append({"key": key, "order": order, "pulse_voltage_v": float(voltage), "mean": mean})
+            summary_rows.append({"key": key, "order": order, "pulse_voltage_v": float(voltage),
+                                 "mean": mean, "mean_x": mean, "mean_y": 0.05 * mean})
         resistance_rows.append((float(voltage), 3.7e8 * (1 + 0.01 * point), elapsed, "post_point"))
     with app.nonlocal_vi_data_lock:
         app.nonlocal_vi_time_rows = time_rows
