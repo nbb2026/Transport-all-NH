@@ -21283,22 +21283,26 @@ class CombinedControlApp:
         self.nonlocal_vi_plot_container = plots
         plots.grid(row=2, column=0, sticky="nsew")
         for column in range(3):
-            plots.columnconfigure(column, weight=1)
-        for row in range(5):
+            plots.columnconfigure(column, weight=1, uniform="nonlocal_vi_plots")
+        for row in range(2):
             plots.rowconfigure(row, weight=1)
-        definitions = (
-            ("pulse", f"Keithley {NONLOCAL_DEFAULT_KEITHLEY_MODEL} command voltage"),
-            ("current", "6221 current readback"),
-            ("resistance", f"Keithley {NONLOCAL_DEFAULT_KEITHLEY_MODEL} resistance"),
-        )
-        for column, (key, title) in enumerate(definitions):
+        # User, 2026-10-09: first the lock-ins' X, Y and θ against time
+        # (every meter ticked Measure overlaid, the 2182A's voltage with X);
+        # then the Keithley's pulses and resistance, and each meter's voltage
+        # against the pulse voltage.
+        for row, column, key, title in (
+            (0, 0, "x", "X vs time"),
+            (0, 1, "y", "Y vs time"),
+            (0, 2, "theta", "θ vs time"),
+            (1, 0, "pulse", f"Keithley {NONLOCAL_DEFAULT_KEITHLEY_MODEL} command voltage"),
+            (1, 1, "resistance", f"Keithley {NONLOCAL_DEFAULT_KEITHLEY_MODEL} resistance"),
+            (1, 2, "summary", "Lock-in voltage vs pulse voltage"),
+        ):
             frame = ttk.LabelFrame(plots, text=title, padding=5)
             frame.grid(
-                row=0,
-                column=column,
-                sticky="nsew",
+                row=row, column=column, sticky="nsew",
                 padx=(0 if column == 0 else 3, 0 if column == 2 else 3),
-                pady=(0, 3),
+                pady=(0, 3) if row == 0 else (3, 0),
             )
             frame.rowconfigure(0, weight=1)
             frame.columnconfigure(0, weight=1)
@@ -21312,94 +21316,7 @@ class CombinedControlApp:
             )
             canvas.grid(row=0, column=0, sticky="nsew")
             self.nonlocal_vi_plot_canvases[key] = canvas
-            canvas.bind(
-                "<Configure>", lambda _event: self._redraw_nonlocal_vi_plots()
-            )
-        for row, lockin_key in enumerate(("8", "9"), start=1):
-            self.nonlocal_vi_plot_canvases[lockin_key] = {}
-            self.nonlocal_vi_plot_frames[lockin_key] = {}
-            for column, (plot_key, title) in enumerate(
-                (("r", "R vs time"), ("theta", "theta vs time"),
-                 ("summary", "mean voltage vs pulse voltage"))
-            ):
-                frame = ttk.LabelFrame(
-                    plots, text=f"SR830 #{lockin_key} · {title}", padding=5
-                )
-                frame.grid(
-                    row=row,
-                    column=column,
-                    sticky="nsew",
-                    padx=(0 if column == 0 else 3, 0 if column == 2 else 3),
-                    pady=(3, 0 if row == 2 else 3),
-                )
-                frame.rowconfigure(0, weight=1)
-                frame.columnconfigure(0, weight=1)
-                self.nonlocal_vi_plot_frames[lockin_key][plot_key] = frame
-                canvas = tk.Canvas(
-                    frame,
-                    bg="#fbfcfd",
-                    highlightthickness=1,
-                    highlightbackground="#cfd6dd",
-                    height=self._ui_px(145, 88, canvas=True),
-                )
-                canvas.grid(row=0, column=0, sticky="nsew")
-                self.nonlocal_vi_plot_canvases[lockin_key][plot_key] = canvas
-                canvas.bind(
-                    "<Configure>",
-                    lambda _event: self._redraw_nonlocal_vi_plots(),
-                )
-        self.nonlocal_vi_plot_canvases["mfli"] = {}
-        self.nonlocal_vi_plot_frames["mfli"] = {}
-        for column, (plot_key, title) in enumerate(
-            (("r", "R vs time"), ("theta", "theta vs time"),
-             ("summary", "mean voltage vs pulse voltage"))
-        ):
-            frame = ttk.LabelFrame(
-                plots, text=f"Zurich MFLI · {title}", padding=5
-            )
-            frame.grid(
-                row=3, column=column, sticky="nsew",
-                padx=(0 if column == 0 else 3, 0 if column == 2 else 3),
-                pady=(3, 0),
-            )
-            frame.rowconfigure(0, weight=1)
-            frame.columnconfigure(0, weight=1)
-            canvas = tk.Canvas(
-                frame, bg="#fbfcfd", highlightthickness=1,
-                highlightbackground="#cfd6dd",
-                height=self._ui_px(145, 88, canvas=True),
-            )
-            canvas.grid(row=0, column=0, sticky="nsew")
-            self.nonlocal_vi_plot_frames["mfli"][plot_key] = frame
-            self.nonlocal_vi_plot_canvases["mfli"][plot_key] = canvas
             canvas.bind("<Configure>", lambda _event: self._redraw_nonlocal_vi_plots())
-        self.nonlocal_vi_plot_canvases["2182"] = {}
-        self.nonlocal_vi_plot_frames["2182"] = {}
-        for column, (plot_key, title) in enumerate(
-            (("r", "Voltage vs time"),
-             ("summary", "mean voltage vs pulse voltage"))
-        ):
-            frame = ttk.LabelFrame(
-                plots, text=f"Keithley 2182A · {title}", padding=5
-            )
-            frame.grid(
-                row=4, column=column, sticky="nsew",
-                padx=(0 if column == 0 else 3, 3),
-                pady=(3, 0),
-            )
-            frame.rowconfigure(0, weight=1)
-            frame.columnconfigure(0, weight=1)
-            canvas = tk.Canvas(
-                frame, bg="#fbfcfd", highlightthickness=1,
-                highlightbackground="#cfd6dd",
-                height=self._ui_px(145, 88, canvas=True),
-            )
-            canvas.grid(row=0, column=0, sticky="nsew")
-            self.nonlocal_vi_plot_frames["2182"][plot_key] = frame
-            self.nonlocal_vi_plot_canvases["2182"][plot_key] = canvas
-            canvas.bind(
-                "<Configure>", lambda _event: self._redraw_nonlocal_vi_plots()
-            )
 
         self._build_nonlocal_resistance_tab(resistance_tab)
         self._build_nonlocal_iv_tab(iv_tab)
@@ -21417,9 +21334,10 @@ class CombinedControlApp:
     def _build_nonlocal_vi_read_settings(self, parent) -> ttk.Frame:
         """The pulse scan's settings, laid out as "6221-IV settings" (user,
         2026-10-09): the safety tick and the 6221 on the left; on the right
-        one row per voltmeter (harmonic, read channel, coupling, Measure,
-        autorange), then the Zurich input and the 2182A.  Side by side when
-        both fit, else stacked."""
+        one row per lock-in (harmonic, Measure, autorange), then the Zurich
+        input and the 2182A.  Every lock-in reads AC-coupled; the voltage
+        against the pulse voltage is its R (user, 2026-10-09: no Read or
+        Coupling choice).  Side by side when both fit, else stacked."""
         body = ttk.Frame(parent)
         params = ttk.Frame(body)
         params.grid(row=0, column=0, sticky="nsw")
@@ -21459,18 +21377,15 @@ class CombinedControlApp:
             "write", lambda *_args: self._on_nonlocal_vi_output_mode_changed()
         )
 
-        # One row per lock-in, as on 6221-IV: harmonic, then the Gate-VI
-        # choices (read channel, input coupling), Measure and the autorange.
-        for row, (key, harmonic, top, channel, coupling, measure) in enumerate((
+        # One row per lock-in, as on 6221-IV: harmonic, Measure and the
+        # autorange.  The input is AC-coupled and the voltage read is R
+        # (the coupling and channel variables keep those defaults).
+        for row, (key, harmonic, top, measure) in enumerate((
             ("8", self.nonlocal_vi_lockin_harmonic_vars["8"], 19999,
-             self.nonlocal_vi_lockin_channel_vars["8"], self.nonlocal_vi_lockin_coupling_vars["8"],
              self.nonlocal_vi_measurement_enabled_vars["8"]),
             ("9", self.nonlocal_vi_lockin_harmonic_vars["9"], 19999,
-             self.nonlocal_vi_lockin_channel_vars["9"], self.nonlocal_vi_lockin_coupling_vars["9"],
              self.nonlocal_vi_measurement_enabled_vars["9"]),
-            ("mfli", self.nonlocal_vi_mfli_harmonic_var, 1024,
-             self.nonlocal_vi_mfli_channel_var, self.nonlocal_vi_mfli_coupling_var,
-             self.nonlocal_vi_use_mfli_var),
+            ("mfli", self.nonlocal_vi_mfli_harmonic_var, 1024, self.nonlocal_vi_use_mfli_var),
         )):
             ttk.Label(meters, text=f"{NONLOCAL_METER_NAMES[key]} harmonic").grid(
                 row=row, column=0, sticky="e", padx=(12, 3), pady=2
@@ -21478,14 +21393,6 @@ class CombinedControlApp:
             ttk.Spinbox(meters, from_=1, to=top, textvariable=harmonic, width=4).grid(
                 row=row, column=1, sticky="ew", pady=2
             )
-            ttk.Label(meters, text="Read").grid(row=row, column=2, sticky="e", padx=(6, 3), pady=2)
-            ttk.Combobox(
-                meters, textvariable=channel, values=("X", "Y", "R"), state="readonly", width=3,
-            ).grid(row=row, column=3, sticky="ew", pady=2)
-            ttk.Label(meters, text="Coupling").grid(row=row, column=4, sticky="e", padx=(6, 3), pady=2)
-            ttk.Combobox(
-                meters, textvariable=coupling, values=("AC", "DC"), state="readonly", width=3,
-            ).grid(row=row, column=5, sticky="ew", pady=2)
             ttk.Checkbutton(
                 meters, text="Measure", variable=measure, command=self._redraw_nonlocal_vi_plots,
             ).grid(row=row, column=6, padx=(6, 3))
@@ -30346,10 +30253,13 @@ class CombinedControlApp:
                         raw_file.flush()
                         with self.nonlocal_vi_data_lock:
                             for key, sample in current_samples.items():
+                                # (elapsed, meter, R, θ, kind, X, Y): X, Y and θ
+                                # are plotted against time.
                                 self.nonlocal_vi_time_rows.append(
                                     (
                                         elapsed, key, sample["R"],
                                         sample["phase_deg"], "formal",
+                                        sample["X"], sample["Y"],
                                     )
                                 )
                         remaining = max(
@@ -30567,41 +30477,20 @@ class CombinedControlApp:
         self._redraw_nonlocal_vi_plots()
         if self.nonlocal_vi_run_directory is not None:
             try:
+                model = self.nonlocal_vi_2410_controller.model
                 snapshot_targets = {
-                    "pulse": f"Keithley{self.nonlocal_vi_2410_controller.model}_command_voltage",
-                    "current": "6221_current_readback",
-                    "resistance": f"Keithley{self.nonlocal_vi_2410_controller.model}_resistance",
+                    "x": "X_vs_time",
+                    "y": "Y_vs_time",
+                    "theta": "theta_vs_time",
+                    "pulse": f"Keithley{model}_command_voltage",
+                    "resistance": f"Keithley{model}_resistance",
+                    "summary": "voltage_vs_pulse_voltage",
                 }
                 for key, name in snapshot_targets.items():
                     self.save_plot_canvas_snapshot(
                         self.nonlocal_vi_plot_canvases[key],
                         self.nonlocal_vi_run_directory / f"{name}_snapshot.png",
                     )
-                measurement_keys = list(
-                    self.nonlocal_vi_ac_controller.connected_lockin_keys
-                )
-                if self.nonlocal_vi_ac_controller.mfli_connected:
-                    measurement_keys.append("mfli")
-                if self.nonlocal_vi_ac_controller.nanovoltmeter_connected:
-                    measurement_keys.append("2182")
-                for lockin_key in measurement_keys:
-                    for plot_key, name in (
-                        ("r", "R_vs_time"),
-                        ("theta", "theta_vs_time"),
-                        ("summary", "voltage_vs_pulse_voltage"),
-                    ):
-                        if (
-                            plot_key
-                            not in self.nonlocal_vi_plot_canvases[lockin_key]
-                        ):
-                            continue
-                        self.save_plot_canvas_snapshot(
-                            self.nonlocal_vi_plot_canvases[lockin_key][plot_key],
-                            self.nonlocal_vi_run_directory
-                            / (
-                                f"{'Zurich_MFLI' if lockin_key == 'mfli' else 'Keithley_2182A' if lockin_key == '2182' else 'SR830_' + lockin_key}_{name}_snapshot.png"
-                            ),
-                        )
             except BaseException as snapshot_error:
                 # Kept for the final status, which would otherwise replace it.
                 snapshot_note = f"; plot snapshot save failed: {short_status_error(snapshot_error)}"
@@ -30716,13 +30605,15 @@ class CombinedControlApp:
         self._update_nonlocal_vi_controls()
 
     def _redraw_nonlocal_vi_plots(self) -> None:
+        """X, Y and θ against time (meters overlaid, as on 6221-IV), then the
+        Keithley's pulses and resistance and each meter's voltage against
+        the pulse voltage."""
         if not self.nonlocal_vi_plot_canvases:
             return
         with self.nonlocal_vi_data_lock:
             time_rows = list(self.nonlocal_vi_time_rows[-1500:])
             summaries = list(self.nonlocal_vi_summary_rows)
             pulses = list(self.nonlocal_vi_pulse_rows)
-            currents = list(self.nonlocal_vi_current_rows)
             resistances = list(self.nonlocal_vi_resistance_rows)
         connected = set(self.nonlocal_vi_ac_controller.connected_lockin_keys)
         if self.nonlocal_vi_ac_controller.mfli_connected:
@@ -30734,124 +30625,82 @@ class CombinedControlApp:
             selected.add("mfli")
         if self.nonlocal_vi_use_2182_var.get():
             selected.add("2182")
-        if selected != self.nonlocal_vi_visible_plot_keys:
-            self.nonlocal_vi_visible_plot_keys = frozenset(selected)
-            self.root.after_idle(
-                lambda: (
-                    self.nonlocal_vi_plot_container.update_idletasks(),
-                    self._redraw_nonlocal_vi_plots(),
-                )
-            )
-        for key in ("8", "9", "mfli", "2182"):
-            for frame in self.nonlocal_vi_plot_frames.get(key, {}).values():
-                if key in selected:
-                    frame.grid()
-                else:
-                    frame.grid_remove()
-        visible_rows = [0]
-        visible_rows.extend(
-            row
-            for row, key in ((1, "8"), (2, "9"), (3, "mfli"), (4, "2182"))
-            if key in selected
-        )
-        for row in range(5):
-            self.nonlocal_vi_plot_container.rowconfigure(
-                row, weight=(1 if row in visible_rows else 0)
+        meters = [key for key in ("8", "9", "mfli", "2182") if key in selected]
+        lockins = [key for key in meters if key != "2182"]
+        names = {key: NONLOCAL_METER_NAMES[key] for key in ("8", "9", "mfli", "2182")}
+        frames = self.nonlocal_vi_plot_frames
+        model = self.nonlocal_vi_2410_controller.model
+        for key, title, shown in (
+            ("x", "X vs time", meters),
+            ("y", "Y vs time", lockins),
+            ("theta", "θ vs time", lockins),
+            ("summary", "Lock-in voltage vs pulse voltage", meters),
+        ):
+            text = title + (" — " + ", ".join(names[name] for name in shown) if shown else "")
+            frame = frames.get(key)
+            if frame is not None and frame.cget("text") != text:
+                frame.configure(text=text)
+        if not meters:
+            waiting = "Tick Measure for a lock-in or the 2182A"
+        elif any(key in connected for key in meters):
+            waiting = "Waiting for data"
+        else:
+            waiting = "The meters ticked Measure are not connected"
+
+        def over_time(index, keys):
+            return {
+                key: [(row[0], row[index]) for row in time_rows if row[1] == key and len(row) > index]
+                for key in keys
+            }
+
+        # The 2182A has no X or Y: its DC voltage goes with X.
+        x_series = over_time(5, lockins)
+        if "2182" in meters:
+            x_series["2182"] = [(row[0], row[2]) for row in time_rows if row[1] == "2182"]
+        canvases = self.nonlocal_vi_plot_canvases
+        for key, series, label, voltage in (
+            ("x", x_series, "X", True),
+            ("y", over_time(6, lockins), "Y", True),
+            ("theta", over_time(3, lockins), "θ (°)", False),
+        ):
+            self._draw_nonlocal_series(
+                canvases[key], series, "Elapsed time (s)", label, waiting,
+                markers=True, auto_voltage_unit=voltage, series_labels=names,
+                show_legend=len(series) > 1,
             )
         self._draw_nonlocal_series(
-            self.nonlocal_vi_plot_canvases["pulse"],
+            canvases["pulse"],
             {"8": [(row[0], row[1]) for row in pulses]},
             "Elapsed time (s)",
             "Voltage (V)",
-            f"Waiting for Keithley {self.nonlocal_vi_2410_controller.model} pulses",
+            f"Waiting for Keithley {model} pulses",
             markers=True,
             show_legend=False,
         )
         self._draw_nonlocal_series(
-            self.nonlocal_vi_plot_canvases["current"],
-            {"8": [(row[0], row[1]) for row in currents]},
-            "Elapsed time (s)",
-            (
-                "Current (mA DC)"
-                if self.nonlocal_vi_output_mode_var.get().strip().upper() == "DC"
-                else "Current (mA RMS)"
-            ),
-            "Waiting for 6221 read current",
-            markers=True,
-            show_legend=False,
-        )
-        self._draw_nonlocal_series(
-            self.nonlocal_vi_plot_canvases["resistance"],
+            canvases["resistance"],
             {"8": [(row[0], row[1]) for row in resistances]},
             "Pulse voltage (V)",
             "|R| (Ω)",
-            f"Waiting for Keithley {self.nonlocal_vi_2410_controller.model} resistance data",
+            f"Waiting for Keithley {model} resistance data",
             markers=True,
             show_legend=False,
         )
-        for key in ("8", "9", "mfli", "2182"):
-            canvases = self.nonlocal_vi_plot_canvases[key]
-            key_time = [row for row in time_rows if row[1] == key]
-            key_summary = [row for row in summaries if row["key"] == key]
-            waiting = "waiting for data" if key in connected else "not connected"
-            self._draw_nonlocal_series(
-                canvases["r"],
-                {key: [(row[0], row[2]) for row in key_time]},
-                "Elapsed time (s)",
-                (
-                    "Keithley 2182A voltage"
-                    if key == "2182"
-                    else "Zurich MFLI R" if key == "mfli"
-                    else f"SR830 #{key} R"
-                ),
-                (
-                    f"Keithley 2182A {waiting}"
-                    if key == "2182"
-                    else f"Zurich MFLI {waiting}" if key == "mfli"
-                    else f"SR830 #{key} {waiting}"
-                ),
-                auto_voltage_unit=True,
-            )
-            if "theta" in canvases:
-                self._draw_nonlocal_series(
-                    canvases["theta"],
-                    {key: [(row[0], row[3]) for row in key_time]},
-                    "Elapsed time (s)",
-                    "Theta (deg)",
-                    (
-                        f"Zurich MFLI {waiting}"
-                        if key == "mfli" else f"SR830 #{key} {waiting}"
-                    ),
-                )
-            self._draw_nonlocal_series(
-                canvases["summary"],
-                {
-                    key: [
-                        (row["pulse_voltage_v"], row["mean"])
-                        for row in key_summary
-                    ]
-                },
-                f"Keithley {self.nonlocal_vi_2410_controller.model} pulse voltage (V)",
-                "Mean selected voltage",
-                (
-                    (
-                        "Shown after the Keithley 2182A completes the first voltage point"
-                        if key == "2182"
-                        else "Shown after the Zurich MFLI completes the first voltage point"
-                        if key == "mfli"
-                        else f"Shown after SR830 #{key} completes the first voltage point"
-                    )
-                    if key in connected
-                    else (
-                        "Keithley 2182A not connected"
-                        if key == "2182"
-                        else "Zurich MFLI not connected" if key == "mfli"
-                        else f"SR830 #{key} not connected"
-                    )
-                ),
-                markers=True,
-                auto_voltage_unit=True,
-            )
+        summary = {
+            key: [(row["pulse_voltage_v"], row["mean"]) for row in summaries if row["key"] == key]
+            for key in meters
+        }
+        self._draw_nonlocal_series(
+            canvases["summary"],
+            summary,
+            f"Keithley {model} pulse voltage (V)",
+            "Mean voltage (lock-in R)",
+            "Shown after the first voltage point" if meters else waiting,
+            markers=True,
+            auto_voltage_unit=True,
+            series_labels=names,
+            show_legend=len(summary) > 1,
+        )
 
     # ---- Non-local page: |R| vs time and the I-V sweep on the pulse Keithley
 

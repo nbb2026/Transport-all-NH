@@ -1,5 +1,27 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local Gate-VI: no Read/Coupling choice; plots X, Y, θ then 2400 and V vs pulse (2026-10-09)
+
+- **Settings (user request):** the Read and Coupling lists are gone.
+  - **Coupling:** every lock-in reads AC-coupled.
+  - **Voltage against the pulse voltage:** each lock-in's R. These are the
+    variables' defaults, kept.
+  - **Each row** is now harmonic, Measure and autorange.
+- **Plots, first row:** X, Y and θ against time.
+  - **Meters:** every meter ticked Measure is overlaid in its own colour, with
+    a legend when there are two or more, and named in the title, as on
+    6221-IV.
+  - **2182A:** its DC voltage goes with X, since it has no Y or θ.
+- **Plots, second row:**
+  - the Keithley 2400 command voltage;
+  - the 2400 resistance against the pulse voltage;
+  - each meter's mean voltage against the pulse voltage.
+- **Gone:** the separate 6221 current-readback plot and the per-meter rows.
+  The 6221 current stays in the CSVs.
+- **Time rows** now carry X and Y: (elapsed, meter, R, θ, kind, X, Y).
+- **Snapshots:** each scan's run folder holds a snapshot of all six plots.
+- **Tests:** `GateVIPlotTests` in `test_nonlocal_review.py`.
+
 ## Non-local Gate-VI: settings laid out as 6221-IV (2026-10-09)
 
 - **Request:** the user asked for the "Gate-VI settings" box to look like

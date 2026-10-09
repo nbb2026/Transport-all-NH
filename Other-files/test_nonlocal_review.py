@@ -357,6 +357,43 @@ class BridgeTests(unittest.TestCase):
         self.assertTrue(any("request 4" in line for line in bridge.diagnostics))
 
 
+class GateVIPlotTests(unittest.TestCase):
+    """User, 2026-10-09: X, Y and θ against time first, then the Keithley's
+    pulses and resistance and the lock-in voltage against the pulse voltage."""
+
+    def test_the_two_rows_of_plots(self):
+        a = bare_app()
+        a.nonlocal_vi_data_lock = threading.Lock()
+        # (elapsed, meter, R, θ, kind, X, Y)
+        a.nonlocal_vi_time_rows = [(1.0, "9", 2e-6, 30.0, "formal", 1.7e-6, 1.0e-6),
+                                   (1.0, "mfli", 5e-6, -10.0, "formal", 4.9e-6, -0.9e-6),
+                                   (1.0, "2182", 3e-6, float("nan"), "formal", float("nan"), float("nan"))]
+        a.nonlocal_vi_summary_rows = [{"key": "9", "pulse_voltage_v": 4.0, "mean": 2e-6},
+                                      {"key": "mfli", "pulse_voltage_v": 4.0, "mean": 5e-6}]
+        a.nonlocal_vi_pulse_rows = [(0.5, 4.0)]
+        a.nonlocal_vi_resistance_rows = [(4.0, 1e9)]
+        a.nonlocal_vi_current_rows = [(1.0, 1.0)]
+        a.nonlocal_vi_ac_controller = mock.Mock(connected_lockin_keys=("9",), mfli_connected=True,
+                                                nanovoltmeter_connected=True)
+        a.nonlocal_vi_2410_controller = mock.Mock(model="2400")
+        a._selected_nonlocal_vi_lockin_keys = lambda: ("9",)
+        a.nonlocal_vi_use_mfli_var, a.nonlocal_vi_use_2182_var = Var(True), Var(True)
+        keys = ("x", "y", "theta", "pulse", "resistance", "summary")
+        a.nonlocal_vi_plot_canvases = {key: key for key in keys}
+        a.nonlocal_vi_plot_frames = {key: mock.Mock() for key in keys}
+        a._draw_nonlocal_series = mock.Mock()
+        a._redraw_nonlocal_vi_plots()
+        drawn = {call.args[0]: call.args[1] for call in a._draw_nonlocal_series.call_args_list}
+        self.assertEqual(set(drawn), set(keys), "no 6221 current plot")
+        self.assertEqual(drawn["x"], {"9": [(1.0, 1.7e-6)], "mfli": [(1.0, 4.9e-6)], "2182": [(1.0, 3e-6)]},
+                         "X of each lock-in, the 2182A's voltage with it")
+        self.assertEqual(drawn["y"], {"9": [(1.0, 1.0e-6)], "mfli": [(1.0, -0.9e-6)]})
+        self.assertEqual(drawn["theta"], {"9": [(1.0, 30.0)], "mfli": [(1.0, -10.0)]})
+        self.assertEqual(drawn["summary"], {"9": [(4.0, 2e-6)], "mfli": [(4.0, 5e-6)], "2182": []})
+        a.nonlocal_vi_plot_frames["x"].configure.assert_called_with(
+            text="X vs time — SR830 #9, Zurich, 2182A")
+
+
 class ZurichRowTests(unittest.TestCase):
     def test_the_ref_follows_another_zurich_only_while_none_is_connected(self):
         a = bare_app()
