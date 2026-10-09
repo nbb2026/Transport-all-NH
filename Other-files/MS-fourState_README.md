@@ -45,6 +45,10 @@ the others as they are. The 6221 turns its output off when it disconnects;
 disconnecting the PPMS leaves the field and angle. An address is fixed while
 its instrument is connected.
 
+The PPMS address starts at `192.168.137.137` (since 2026-10-09). The main
+program's addresses, `192.168.137.5` and `192.168.137.163`, are still in its
+list.
+
 The window opens maximised and fills the screen (since 2026-10-09). If it is
 un-maximised it goes to 1720 × 1240 where the screen allows (the lab PC's
 2560 × 1440 does), or smaller on a smaller screen.

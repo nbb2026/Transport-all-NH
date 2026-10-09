@@ -2254,6 +2254,10 @@ MANUAL_DEFAULTS = {"angle": "360", "field": "0", "current_ma": "0.5", "pulse_ma"
 DEFAULT_SEQUENCE = "D A B E"
 DEFAULT_CYCLE = "D A B E B A"
 APP_TITLE = "MS-fourState"
+# This program's PPMS address (user, 2026-10-09); the main program's
+# addresses stay in the list below it.
+PPMS_HOST = "192.168.137.137"
+PPMS_HOSTS = (PPMS_HOST, *(host for host in PPMS_HOST_CHOICES if host != PPMS_HOST))
 # The window opens maximised, filling the screen (user, 2026-10-09).  This is
 # its size when un-maximised, where the screen allows (the lab PC's 2560 x
 # 1440 does), else smaller; minimum 1100 x 760.
@@ -3618,7 +3622,7 @@ class FourStateApp:
         connections.columnconfigure(9, weight=1)
         dll_default = next((str(p) for p in core.PPMSQDInstrumentReadbackController.candidate_dll_paths()
                             if p.is_file()), "")
-        self.host_var = tk.StringVar(value=core.PPMS_DEFAULT_HOST)
+        self.host_var = tk.StringVar(value=PPMS_HOST)
         self.port_var = tk.StringVar(value=str(core.PPMS_QDINSTRUMENT_DEFAULT_PORT))
         self.dll_var = tk.StringVar(value=dll_default)
         self.source_resource_var = tk.StringVar(value=core.K6221_DEFAULT_RESOURCE)
@@ -3633,7 +3637,7 @@ class FourStateApp:
             ttk.Label(connections, text=f"{label}:").grid(
                 row=row, column=0, sticky="e", padx=(0, 4), pady=1)
             if key == "ppms":
-                host = ttk.Combobox(connections, textvariable=self.host_var, values=core.PPMS_HOST_CHOICES, width=16)
+                host = ttk.Combobox(connections, textvariable=self.host_var, values=PPMS_HOSTS, width=16)
                 host.grid(row=row, column=1, sticky="w")
                 ttk.Label(connections, text="Port").grid(row=row, column=2, sticky="e", padx=(8, 2))
                 port = ttk.Entry(connections, textvariable=self.port_var, width=7)

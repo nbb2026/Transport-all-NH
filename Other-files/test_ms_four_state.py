@@ -1342,6 +1342,13 @@ class DisplayTests(unittest.TestCase):
         app.root.destroy.assert_not_called()
 
 
+class PPMSAddressTests(unittest.TestCase):
+    def test_the_ppms_address_starts_at_192_168_137_137(self):
+        """User, 2026-10-09; the main program's addresses stay in the list."""
+        self.assertEqual(ms.PPMS_HOST, "192.168.137.137")
+        self.assertEqual(ms.PPMS_HOSTS, ("192.168.137.137", *core.PPMS_HOST_CHOICES))
+
+
 class FillScreenTests(unittest.TestCase):
     """The window opens maximised, filling the screen (user, 2026-10-09)."""
 
@@ -1443,6 +1450,7 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(app.mode, "cycle", "Cycle is the default mode")
         self.assertEqual(app.cycle_var.get(), "D A B E B A")
         self.assertEqual(app.sequence_var.get(), "D A B E")
+        self.assertEqual(app.host_var.get(), "192.168.137.137")
         self.assertEqual(app.values["repeats"].get(), "1")
         self.assertEqual(app.values["pulse_width_us"].get(), "30")
         self.assertEqual(app.values["read_current_ma"].get(), "0.5")

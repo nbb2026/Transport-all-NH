@@ -1,5 +1,13 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MS-fourState.py: PPMS address 192.168.137.137 by default (2026-10-09)
+
+- **Default address:** `PPMS_HOST = "192.168.137.137"` (user request).
+- **The list:** the main program's two addresses follow it (`PPMS_HOSTS`).
+- **Not affected:** the main program's own default (`PPMS_DEFAULT_HOST`,
+  used by the PPMS and RT-E pages) and the copied instrument code are
+  unchanged.
+
 ## MS-fourState.py opens maximised (2026-10-09)
 
 - **What changed:** the window fills the screen when the script starts (user
