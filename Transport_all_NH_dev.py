@@ -12870,8 +12870,8 @@ class CombinedControlApp:
         }
         self.nonlocal_vi_device_connect_buttons = {}
         self.nonlocal_vi_device_disconnect_buttons = {}
-        # Keyed (order, "x" / "y" / "theta"), ("summary", order), "pulse"
-        # and "resistance".
+        # Keyed (order, "x" / "y" / "theta"), ("summary", order) and
+        # "resistance".
         self.nonlocal_vi_plot_canvases: dict[object, object] = {}
         self.nonlocal_vi_harmonic_combos = []
         self.nonlocal_vi_plot_orders = None
@@ -21316,9 +21316,9 @@ class CombinedControlApp:
         # User, 2026-10-09: first the lock-ins' X, Y and θ against time, a
         # row per harmonic order measured, as on 6221-IV (every meter ticked
         # Measure overlaid, the 2182A's voltage with X in the top row); then
-        # the Keithley's pulses and resistance, and the voltage against the
-        # pulse voltage, one plot per order.  _layout_nonlocal_vi_plots shows
-        # the orders measured.
+        # the Keithley's resistance and the voltage against the pulse
+        # voltage, one plot per order (user, 2026-10-09: no command-voltage
+        # plot).  _layout_nonlocal_vi_plots shows the orders measured.
 
         def add_plot(frame, key):
             canvas = self._nonlocal_plot_canvas(frame, self._redraw_nonlocal_vi_plots)
@@ -21346,7 +21346,6 @@ class CombinedControlApp:
         bottom.rowconfigure(0, weight=1)
         self.nonlocal_vi_bottom_plots = bottom
         for key, title in (
-            ("pulse", f"Keithley {NONLOCAL_DEFAULT_KEITHLEY_MODEL} command voltage"),
             ("resistance", f"Keithley {NONLOCAL_DEFAULT_KEITHLEY_MODEL} resistance"),
             *((("summary", order),
                f"{PPMS_HARMONIC_LABELS[order]} {NONLOCAL_VI_SUMMARY_CHANNELS[order]} vs pulse voltage")
@@ -29045,10 +29044,9 @@ class CombinedControlApp:
             f"the {model} must be OFF while the voltmeters read; SR830 external reference on the falling edge; "
             "the MFLI locks to the 6221 via the reference input chosen in the GUI."
         )
-        for key, title in (("pulse", "command voltage"), ("resistance", "resistance")):
-            frame = self.nonlocal_vi_plot_frames.get(key)
-            if frame is not None:
-                frame.configure(text=f"Keithley {model} {title}")
+        frame = self.nonlocal_vi_plot_frames.get("resistance")
+        if frame is not None:
+            frame.configure(text=f"Keithley {model} resistance")
 
     def _update_nonlocal_vi_controls(self) -> None:
         if not self.nonlocal_vi_device_connect_buttons:
@@ -30077,7 +30075,6 @@ class CombinedControlApp:
         elapsed = time.monotonic() - run_start
         with self.nonlocal_vi_data_lock:
             self.nonlocal_vi_pulse_rows.append((elapsed, voltage_v))
-        self.post_ui(self._redraw_nonlocal_vi_plots)
 
     def _nonlocal_vi_measure_resistance(
         self,
@@ -30686,7 +30683,6 @@ class CombinedControlApp:
                         ("summary", order):
                             f"{label}_{NONLOCAL_VI_SUMMARY_CHANNELS[order]}_vs_pulse_voltage",
                     })
-                snapshot_targets["pulse"] = f"Keithley{model}_command_voltage"
                 snapshot_targets["resistance"] = f"Keithley{model}_resistance"
                 for key, name in snapshot_targets.items():
                     self.save_plot_canvas_snapshot(
@@ -30808,7 +30804,7 @@ class CombinedControlApp:
 
     def _layout_nonlocal_vi_plots(self, shown) -> None:
         """A row of X, Y and θ per harmonic order shown (the time axis
-        labelled on the last); below them the pulses, the resistance and a
+        labelled on the last); below them the resistance and a
         voltage-vs-pulse plot per order."""
         shown = tuple(shown)
         if self.nonlocal_vi_plot_orders == shown:
@@ -30828,13 +30824,13 @@ class CombinedControlApp:
                 self.nonlocal_vi_plot_canvases[(order, channel)].ppms_hide_x_labels = (
                     order != shown[-1]
                 )
-        keys = ["pulse", "resistance", *(("summary", order) for order in shown)]
-        for column in range(2 + len(PPMS_HARMONIC_ORDERS)):
+        keys = ["resistance", *(("summary", order) for order in shown)]
+        for column in range(1 + len(PPMS_HARMONIC_ORDERS)):
             used = column < len(keys)
             bottom.columnconfigure(
                 column, weight=1 if used else 0, uniform="nonlocal_vi_bottom" if used else ""
             )
-        for key in ("pulse", "resistance", *(("summary", order) for order in PPMS_HARMONIC_ORDERS)):
+        for key in ("resistance", *(("summary", order) for order in PPMS_HARMONIC_ORDERS)):
             if key in keys:
                 column = keys.index(key)
                 frames[key].grid(
@@ -30846,14 +30842,13 @@ class CombinedControlApp:
 
     def _redraw_nonlocal_vi_plots(self) -> None:
         """X, Y and θ against time, a row per harmonic order (meters
-        overlaid, as on 6221-IV), then the Keithley's pulses and resistance
-        and the voltage against the pulse voltage, a plot per order."""
+        overlaid, as on 6221-IV), then the Keithley's resistance and the
+        voltage against the pulse voltage, a plot per order."""
         if not self.nonlocal_vi_plot_canvases:
             return
         with self.nonlocal_vi_data_lock:
             time_rows = list(self.nonlocal_vi_time_rows[-3000:])
             summaries = list(self.nonlocal_vi_summary_rows)
-            pulses = list(self.nonlocal_vi_pulse_rows)
             resistances = list(self.nonlocal_vi_resistance_rows)
         connected = set(self.nonlocal_vi_ac_controller.connected_lockin_keys)
         if self.nonlocal_vi_ac_controller.mfli_connected:
@@ -30936,15 +30931,6 @@ class CombinedControlApp:
                     markers=True, auto_voltage_unit=voltage, series_labels=names,
                     show_legend=len(series) > 1,
                 )
-        self._draw_nonlocal_series(
-            canvases["pulse"],
-            {"8": [(row[0], row[1]) for row in pulses]},
-            "Elapsed time (s)",
-            "Voltage (V)",
-            f"Waiting for Keithley {model} pulses",
-            markers=True,
-            show_legend=False,
-        )
         self._draw_nonlocal_series(
             canvases["resistance"],
             {"8": [(row[0], row[1]) for row in resistances]},

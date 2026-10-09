@@ -20,8 +20,9 @@ Gate-VI, and a Pulse gate default of 100 MΩ.
 - **CSV:** `VI_raw.csv` and `VI_summary.csv` have one row per meter and
   order; the `harmonic` column is the order.
 - **Plots:** one X / Y / θ row per order measured. Below them: the 2400
-  pulses, |R| and one plot per order against the pulse voltage. Snapshots
-  are named by order (e.g. `2nd_harmonic_X_vs_time_snapshot.png`).
+  |R| and one plot per order against the pulse voltage. The 2400
+  command-voltage plot was removed (user, 2026-10-09). Snapshots are named
+  by order (e.g. `2nd_harmonic_X_vs_time_snapshot.png`).
 - **Against the pulse voltage** (user, 2026-10-09): the 1st harmonic plots
   the mean X, the 2nd the mean Y, and the 3rd the mean X (odd, as the 1st);
   `NONLOCAL_VI_SUMMARY_CHANNELS`. The 2182A plots its DC voltage. The CSV

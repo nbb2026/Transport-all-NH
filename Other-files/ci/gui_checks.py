@@ -128,7 +128,7 @@ def example_data(app):
             },
         })
     # Gate-VI with SR830 #8 at 1+2 and the Zurich at 1+2+3: a row of X, Y,
-    # θ per order, then the pulses, |R| and the voltage vs pulse per order.
+    # θ per order, then |R| and the X or Y vs pulse voltage per order.
     app.nonlocal_vi_lockin_harmonic_vars["8"].set("1+2")
     app.nonlocal_vi_mfli_harmonic_var.set("1+2+3")
     app.nonlocal_vi_measurement_enabled_vars["8"].set(True)

@@ -359,8 +359,8 @@ class BridgeTests(unittest.TestCase):
 
 class GateVIPlotTests(unittest.TestCase):
     """User, 2026-10-09: X, Y and θ against time first, a row per harmonic
-    order, then the Keithley's pulses and resistance and the lock-in voltage
-    against the pulse voltage, a plot per order."""
+    order, then the Keithley's resistance and the lock-in voltage against
+    the pulse voltage, a plot per order."""
 
     def redraw(self, harmonics, time_rows, summary_rows):
         a = bare_app()
@@ -377,7 +377,7 @@ class GateVIPlotTests(unittest.TestCase):
         a.nonlocal_vi_use_mfli_var, a.nonlocal_vi_use_2182_var = Var(True), Var(True)
         a.nonlocal_vi_lockin_harmonic_vars = {"8": Var("1"), "9": Var(harmonics["9"])}
         a.nonlocal_vi_mfli_harmonic_var = Var(harmonics["mfli"])
-        keys = ["pulse", "resistance"] + [(order, channel) for order in (1, 2, 3)
+        keys = ["resistance"] + [(order, channel) for order in (1, 2, 3)
                                           for channel in ("x", "y", "theta")]
         keys += [("summary", order) for order in (1, 2, 3)]
         a.nonlocal_vi_plot_canvases = {key: key for key in keys}
@@ -401,8 +401,8 @@ class GateVIPlotTests(unittest.TestCase):
              {"key": "2182", "order": None, "pulse_voltage_v": 4.0, "mean": 3e-6,
               "mean_x": float("nan"), "mean_y": float("nan")}])
         a._layout_nonlocal_vi_plots.assert_called_with([1])
-        self.assertEqual(set(drawn), {(1, "x"), (1, "y"), (1, "theta"), "pulse", "resistance",
-                                      ("summary", 1)}, "only the order measured; no 6221 current plot")
+        self.assertEqual(set(drawn), {(1, "x"), (1, "y"), (1, "theta"), "resistance", ("summary", 1)},
+                         "only the order measured; no 6221 current or 2400 command-voltage plot")
         self.assertEqual(drawn[(1, "x")], {"9": [(1.0, 1.7e-6)], "mfli": [(1.0, 4.9e-6)], "2182": [(1.0, 3e-6)]},
                          "X of each lock-in, the 2182A's voltage with it")
         self.assertEqual(drawn[(1, "y")], {"9": [(1.0, 1.0e-6)], "mfli": [(1.0, -0.9e-6)]})
