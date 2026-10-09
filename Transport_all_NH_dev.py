@@ -13008,7 +13008,8 @@ class CombinedControlApp:
         self.nonlocal_mfli_device_seen = zurich_mfli_choice(
             self.nonlocal_vi_mfli_device_var.get()
         )[0]
-        self.nonlocal_vi_mfli_harmonic_var = tk.StringVar(value=str(NONLOCAL_HARMONIC))
+        # Gate-VI's Zurich default 1+2, read at once (user, 2026-10-09).
+        self.nonlocal_vi_mfli_harmonic_var = tk.StringVar(value="1+2")
         self.nonlocal_vi_mfli_channel_var = tk.StringVar(value="R")
         self.nonlocal_vi_measurement_enabled_vars = {
             "8": tk.BooleanVar(value=False),

@@ -91,6 +91,7 @@ The user asked for SR830 1+2 and Zurich 1+2 / 1+2+3 harmonic choices on
 Gate-VI, and a Pulse gate default of 100 MΩ.
 
 - **Choices:** the harmonic boxes are lists, held while a scan runs.
+  The Zurich defaults to 1+2 (user, 2026-10-09).
   - SR830: 1, 2, 3, 1+2.
   - Zurich: 1, 2, 3, 1+2, 1+2+3.
 - **SR830 1+2:** an SR830 reads one harmonic at a time. At each point it

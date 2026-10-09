@@ -208,6 +208,7 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertEqual(tuple(str(v) for v in sr830.cget("values")), ("1", "2", "3", "1+2"))
         zurich = self.widgets("TCombobox", a.nonlocal_vi_mfli_harmonic_var)[0]
         self.assertEqual(tuple(str(v) for v in zurich.cget("values")), ("1", "2", "3", "1+2", "1+2+3"))
+        self.assertEqual(a.nonlocal_vi_mfli_harmonic_var.get(), "1+2", "the Zurich default (user, 2026-10-09)")
         self.assertEqual(a.nonlocal_vi_gate_resistance_var.get(), "100")
         # Laid out as "6221-IV settings" (user, 2026-10-09): a Measure tick
         # per meter, the 2182A's too, and the safety tick on top.
