@@ -358,18 +358,15 @@ class BridgeTests(unittest.TestCase):
 
 
 class GateVIPlotTests(unittest.TestCase):
-    """User, 2026-10-09: X, Y and θ against time first, then the Keithley's
-    pulses and resistance and the lock-in voltage against the pulse voltage."""
+    """User, 2026-10-09: X, Y and θ against time first, a row per harmonic
+    order, then the Keithley's pulses and resistance and the lock-in voltage
+    against the pulse voltage, a plot per order."""
 
-    def test_the_two_rows_of_plots(self):
+    def redraw(self, harmonics, time_rows, summary_rows):
         a = bare_app()
         a.nonlocal_vi_data_lock = threading.Lock()
-        # (elapsed, meter, R, θ, kind, X, Y)
-        a.nonlocal_vi_time_rows = [(1.0, "9", 2e-6, 30.0, "formal", 1.7e-6, 1.0e-6),
-                                   (1.0, "mfli", 5e-6, -10.0, "formal", 4.9e-6, -0.9e-6),
-                                   (1.0, "2182", 3e-6, float("nan"), "formal", float("nan"), float("nan"))]
-        a.nonlocal_vi_summary_rows = [{"key": "9", "pulse_voltage_v": 4.0, "mean": 2e-6},
-                                      {"key": "mfli", "pulse_voltage_v": 4.0, "mean": 5e-6}]
+        a.nonlocal_vi_time_rows = time_rows
+        a.nonlocal_vi_summary_rows = summary_rows
         a.nonlocal_vi_pulse_rows = [(0.5, 4.0)]
         a.nonlocal_vi_resistance_rows = [(4.0, 1e9)]
         a.nonlocal_vi_current_rows = [(1.0, 1.0)]
@@ -378,20 +375,57 @@ class GateVIPlotTests(unittest.TestCase):
         a.nonlocal_vi_2410_controller = mock.Mock(model="2400")
         a._selected_nonlocal_vi_lockin_keys = lambda: ("9",)
         a.nonlocal_vi_use_mfli_var, a.nonlocal_vi_use_2182_var = Var(True), Var(True)
-        keys = ("x", "y", "theta", "pulse", "resistance", "summary")
+        a.nonlocal_vi_lockin_harmonic_vars = {"8": Var("1"), "9": Var(harmonics["9"])}
+        a.nonlocal_vi_mfli_harmonic_var = Var(harmonics["mfli"])
+        keys = ["pulse", "resistance"] + [(order, channel) for order in (1, 2, 3)
+                                          for channel in ("x", "y", "theta")]
+        keys += [("summary", order) for order in (1, 2, 3)]
         a.nonlocal_vi_plot_canvases = {key: key for key in keys}
         a.nonlocal_vi_plot_frames = {key: mock.Mock() for key in keys}
+        a._layout_nonlocal_vi_plots = mock.Mock()
         a._draw_nonlocal_series = mock.Mock()
         a._redraw_nonlocal_vi_plots()
         drawn = {call.args[0]: call.args[1] for call in a._draw_nonlocal_series.call_args_list}
-        self.assertEqual(set(drawn), set(keys), "no 6221 current plot")
-        self.assertEqual(drawn["x"], {"9": [(1.0, 1.7e-6)], "mfli": [(1.0, 4.9e-6)], "2182": [(1.0, 3e-6)]},
+        return a, drawn
+
+    def test_one_order(self):
+        # (elapsed, meter, R, θ, kind, X, Y, order)
+        a, drawn = self.redraw(
+            {"9": "1", "mfli": "1"},
+            [(1.0, "9", 2e-6, 30.0, "formal", 1.7e-6, 1.0e-6, 1),
+             (1.0, "mfli", 5e-6, -10.0, "formal", 4.9e-6, -0.9e-6, 1),
+             (1.0, "2182", 3e-6, float("nan"), "formal", float("nan"), float("nan"), None)],
+            [{"key": "9", "order": 1, "pulse_voltage_v": 4.0, "mean": 2e-6},
+             {"key": "mfli", "order": 1, "pulse_voltage_v": 4.0, "mean": 5e-6}])
+        a._layout_nonlocal_vi_plots.assert_called_with([1])
+        self.assertEqual(set(drawn), {(1, "x"), (1, "y"), (1, "theta"), "pulse", "resistance",
+                                      ("summary", 1)}, "only the order measured; no 6221 current plot")
+        self.assertEqual(drawn[(1, "x")], {"9": [(1.0, 1.7e-6)], "mfli": [(1.0, 4.9e-6)], "2182": [(1.0, 3e-6)]},
                          "X of each lock-in, the 2182A's voltage with it")
-        self.assertEqual(drawn["y"], {"9": [(1.0, 1.0e-6)], "mfli": [(1.0, -0.9e-6)]})
-        self.assertEqual(drawn["theta"], {"9": [(1.0, 30.0)], "mfli": [(1.0, -10.0)]})
-        self.assertEqual(drawn["summary"], {"9": [(4.0, 2e-6)], "mfli": [(4.0, 5e-6)], "2182": []})
-        a.nonlocal_vi_plot_frames["x"].configure.assert_called_with(
-            text="X vs time — SR830 #9, Zurich, 2182A")
+        self.assertEqual(drawn[(1, "y")], {"9": [(1.0, 1.0e-6)], "mfli": [(1.0, -0.9e-6)]})
+        self.assertEqual(drawn[(1, "theta")], {"9": [(1.0, 30.0)], "mfli": [(1.0, -10.0)]})
+        self.assertEqual(drawn[("summary", 1)], {"9": [(4.0, 2e-6)], "mfli": [(4.0, 5e-6)], "2182": []})
+        a.nonlocal_vi_plot_frames[(1, "x")].configure.assert_called_with(
+            text="1st harmonic X vs time — SR830 #9, Zurich, 2182A")
+
+    def test_a_row_and_a_voltage_plot_per_order(self):
+        a, drawn = self.redraw(
+            {"9": "1+2", "mfli": "1+2+3"},
+            [(1.0, "9", 2e-6, 30.0, "formal", 1.7e-6, 1.0e-6, 1),
+             (1.0, "mfli", 5e-6, 0.0, "formal", 5e-6, 0.0, 1),
+             (1.0, "mfli", 3e-7, 0.0, "formal", 3e-7, 0.0, 2),
+             (1.0, "mfli", 4e-9, 0.0, "formal", 4e-9, 0.0, 3),
+             (2.0, "9", 1e-8, 5.0, "formal", 1e-8, 0.0, 2)],
+            [{"key": "9", "order": 1, "pulse_voltage_v": 4.0, "mean": 2e-6},
+             {"key": "9", "order": 2, "pulse_voltage_v": 4.0, "mean": 1e-8},
+             {"key": "mfli", "order": 3, "pulse_voltage_v": 4.0, "mean": 4e-9}])
+        a._layout_nonlocal_vi_plots.assert_called_with([1, 2, 3])
+        self.assertEqual(drawn[(2, "x")], {"9": [(2.0, 1e-8)], "mfli": [(1.0, 3e-7)]})
+        self.assertEqual(drawn[(3, "x")], {"mfli": [(1.0, 4e-9)]}, "SR830 #9 reads no 3rd order")
+        self.assertEqual(drawn[("summary", 2)], {"9": [(4.0, 1e-8)], "mfli": []})
+        self.assertEqual(drawn[("summary", 3)], {"mfli": [(4.0, 4e-9)]})
+        a.nonlocal_vi_plot_frames[(2, "x")].configure.assert_called_with(
+            text="2nd harmonic X vs time — SR830 #9, Zurich")
 
 
 class ZurichRowTests(unittest.TestCase):

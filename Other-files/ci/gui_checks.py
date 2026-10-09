@@ -127,6 +127,34 @@ def example_data(app):
                               "R": 4.0e-9 * current ** 3, "theta": 12.0},
             },
         })
+    # Gate-VI with SR830 #8 at 1+2 and the Zurich at 1+2+3: a row of X, Y,
+    # θ per order, then the pulses, |R| and the voltage vs pulse per order.
+    app.nonlocal_vi_lockin_harmonic_vars["8"].set("1+2")
+    app.nonlocal_vi_mfli_harmonic_var.set("1+2+3")
+    app.nonlocal_vi_measurement_enabled_vars["8"].set(True)
+    app.nonlocal_vi_use_mfli_var.set(True)
+    time_rows, summary_rows, pulse_rows, resistance_rows = [], [], [], []
+    elapsed = 0.0
+    for point, voltage in enumerate((0, 4, 8, 12, 16, 20, 16, 12, 8, 4, 0), 1):
+        pulse_rows.append((elapsed, float(voltage)))
+        state = 1.0 + 0.04 * voltage / 20
+        means = {("8", 1): 1.0e-3 * state, ("mfli", 1): 2.0e-4 * state,
+                 ("mfli", 2): 3.0e-7 * state ** 2, ("mfli", 3): 4.0e-9 * state ** 3,
+                 ("8", 2): 2.0e-6 * state ** 2}
+        for passes in ((("8", 1), ("mfli", 1), ("mfli", 2), ("mfli", 3)), (("8", 2),)):
+            for sample in range(8):
+                elapsed += 1.0
+                for key, order in passes:
+                    r = means[(key, order)] * (1 + 0.003 * ((sample * 5 + point) % 7 - 3))
+                    time_rows.append((elapsed, key, r, 10.0 * order, "formal", r, 0.05 * r, order))
+        for (key, order), mean in means.items():
+            summary_rows.append({"key": key, "order": order, "pulse_voltage_v": float(voltage), "mean": mean})
+        resistance_rows.append((float(voltage), 3.7e8 * (1 + 0.01 * point), elapsed, "post_point"))
+    with app.nonlocal_vi_data_lock:
+        app.nonlocal_vi_time_rows = time_rows
+        app.nonlocal_vi_summary_rows = summary_rows
+        app.nonlocal_vi_pulse_rows = pulse_rows
+        app.nonlocal_vi_resistance_rows = resistance_rows
 
 
 def pages(root, app, notebook, names):

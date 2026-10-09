@@ -1,5 +1,33 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local Gate-VI: SR830 1+2, Zurich 1+2 and 1+2+3; Pulse gate 100 MΩ (2026-10-09)
+
+The user asked for SR830 1+2 and Zurich 1+2 / 1+2+3 harmonic choices on
+Gate-VI, and a Pulse gate default of 100 MΩ.
+
+- **Choices:** the harmonic boxes are lists, held while a scan runs.
+  - SR830: 1, 2, 3, 1+2.
+  - Zurich: 1, 2, 3, 1+2, 1+2+3.
+- **SR830 1+2:** an SR830 reads one harmonic at a time. At each point it
+  reads 1ω for Measure s, switches to 2ω (read back) and waits
+  max(Settle s, 10 τ; τ is 1 s on Gate-VI), then reads 2ω for Measure s.
+  It then goes back to 1ω for the next point. Each order starts on the
+  sensitivity it last ended on, not SENS 9. This adds about
+  10 s + Measure s per point.
+- **Zurich 1+2 / 1+2+3:** all orders at once, as on PPMS and 6221-IV. The
+  reference is on Demod 4, the orders on Demods 1-3, and unused demods are
+  off. This needs MF-MD; without it the scan stops at configure.
+- **CSV:** `VI_raw.csv` and `VI_summary.csv` have one row per meter and
+  order; the `harmonic` column is the order.
+- **Plots:** one X / Y / θ row per order measured. Below them: the 2400
+  pulses, |R| and one voltage-vs-pulse plot per order. Snapshots are named
+  by order (e.g. `2nd_harmonic_X_vs_time_snapshot.png`).
+- **Pulse gate MΩ** defaults to 100 (was 20).
+- **Also fixed:** "SR830 #n is selected for the scan but is not connected"
+  was shown as "parameters must be valid numbers".
+- Tests: `Other-files/test_nonlocal_gate_vi_harmonics.py` and
+  `GateVIPlotTests`.
+
 ## Non-local Zurich set up as the PPMS module's (2026-10-09)
 
 The user asked whether the Zurich should use 10 MΩ or 50 Ω, and for it to

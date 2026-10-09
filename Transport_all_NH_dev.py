@@ -1392,8 +1392,17 @@ NONLOCAL_VI_FREQUENCY_HZ = 13.7
 NONLOCAL_VI_SAMPLE_HZ = 1.0
 NONLOCAL_VI_6221_SETTLE_S = 10.0
 NONLOCAL_VI_MEASURE_S = 100.0
+# Gate-VI harmonics (user, 2026-10-09): an SR830 reads 1+2 one order after
+# the other at each point; the Zurich reads 1+2 or 1+2+3 at once, on its own
+# demodulators (MF-MD), as on PPMS and 6221-IV.
+NONLOCAL_VI_SR830_HARMONIC_CHOICES = ("1", "2", "3", "1+2")
+NONLOCAL_VI_ZURICH_HARMONIC_CHOICES = tuple(PPMS_ZURICH_MODE_ORDERS)
+# After an SR830 switches to its next order its filter settles this many
+# time constants (Gate-VI sets 1 s), or the Settle s if that is longer.
+NONLOCAL_VI_HARMONIC_SETTLE_TAUS = 10.0
 NONLOCAL_VI_6221_COMPLIANCE_V = 50.0
-NONLOCAL_VI_MIN_RESISTANCE_FOR_PULSE_OHM = 20e6
+# Pulse gate MΩ default (user, 2026-10-09): a pulse needs |R| above it.
+NONLOCAL_VI_MIN_RESISTANCE_FOR_PULSE_OHM = 100e6
 NONLOCAL_VI_MAX_POINTS = 10_000
 NONLOCAL_VI_RES_CURRENT_LEVELS_A = KEITHLEY_RES_CURRENT_LEVELS_A
 NONLOCAL_VI_RES_TARGET_LOW_V = KEITHLEY_RES_TARGET_VOLTAGE_LOW_V
@@ -9233,12 +9242,19 @@ class NonLocalACController:
                 raise RuntimeError("6221 output stopped during the amplitude update")
             return actual / math.sqrt(2.0) * 1e3
 
-    def set_lockin_harmonic(self, key: str, harmonic: int) -> None:
+    def set_lockin_harmonic(
+        self, key: str, harmonic: int, sensitivity_index: int | None = None
+    ) -> None:
         """The next order of an RT-E-style multi-harmonic pass, read back;
-        autorange starts counting afresh for the new signal."""
+        autorange starts counting afresh for the new signal.  It starts at
+        ``sensitivity_index`` (Gate-VI: the range this order last ended on),
+        else at the range configure() starts at."""
         harmonic = int(harmonic)
         if not 1 <= harmonic <= 19999:
             raise ValueError(f"SR830 #{key} harmonic must be within 1–19999")
+        sensitivity = 9 if sensitivity_index is None else int(sensitivity_index)
+        if not 0 <= sensitivity <= 26:
+            raise ValueError(f"SR830 #{key} sensitivity index must be within 0–26")
         with self.lock:
             if key not in self.lockins:
                 raise RuntimeError(f"SR830 #{key} is not connected")
@@ -9250,7 +9266,7 @@ class NonLocalACController:
                 )
             # The range configure() starts at: the last pass ended at End
             # current, the next order starts at Start, often far smaller.
-            self._write_sr830(key, "SENS 9")
+            self._write_sr830(key, f"SENS {sensitivity}")
             self.sensitivity_indices[key] = int(self._query_sr830_numbers(key, "SENS?", 1)[0])
             self.lias_clear_pending[key] = True
             self.low_range_counts[key] = 0
@@ -12756,9 +12772,10 @@ class CombinedControlApp:
             "8": tk.StringVar(value="AC"),
             "9": tk.StringVar(value="AC"),
         }
+        # A harmonic or several ("1+2"), NONLOCAL_VI_*_HARMONIC_CHOICES.
         self.nonlocal_vi_lockin_harmonic_vars = {
-            "8": tk.IntVar(value=1),
-            "9": tk.IntVar(value=2),
+            "8": tk.StringVar(value="1"),
+            "9": tk.StringVar(value="2"),
         }
         self.nonlocal_vi_lockin_channel_vars = {
             "8": tk.StringVar(value="R"),
@@ -12788,7 +12805,7 @@ class CombinedControlApp:
         self.nonlocal_mfli_device_seen = zurich_mfli_choice(
             self.nonlocal_vi_mfli_device_var.get()
         )[0]
-        self.nonlocal_vi_mfli_harmonic_var = tk.IntVar(value=NONLOCAL_HARMONIC)
+        self.nonlocal_vi_mfli_harmonic_var = tk.StringVar(value=str(NONLOCAL_HARMONIC))
         self.nonlocal_vi_mfli_channel_var = tk.StringVar(value="R")
         self.nonlocal_vi_measurement_enabled_vars = {
             "8": tk.BooleanVar(value=False),
@@ -12849,7 +12866,11 @@ class CombinedControlApp:
         }
         self.nonlocal_vi_device_connect_buttons = {}
         self.nonlocal_vi_device_disconnect_buttons = {}
-        self.nonlocal_vi_plot_canvases: dict[str, object] = {}
+        # Keyed (order, "x" / "y" / "theta"), ("summary", order), "pulse"
+        # and "resistance".
+        self.nonlocal_vi_plot_canvases: dict[object, object] = {}
+        self.nonlocal_vi_harmonic_combos = []
+        self.nonlocal_vi_plot_orders = None
         self.nonlocal_vi_plot_frames: dict[str, object] = {}
         self.nonlocal_vi_visible_plot_keys: frozenset[str] = frozenset()
         self.nonlocal_vi_output_var = tk.StringVar(
@@ -21288,39 +21309,46 @@ class CombinedControlApp:
         plots.grid(row=2, column=0, sticky="nsew")
         for column in range(3):
             plots.columnconfigure(column, weight=1, uniform="nonlocal_vi_plots")
-        for row in range(2):
-            plots.rowconfigure(row, weight=1)
-        # User, 2026-10-09: first the lock-ins' X, Y and θ against time
-        # (every meter ticked Measure overlaid, the 2182A's voltage with X);
-        # then the Keithley's pulses and resistance, and each meter's voltage
-        # against the pulse voltage.
-        for row, column, key, title in (
-            (0, 0, "x", "X vs time"),
-            (0, 1, "y", "Y vs time"),
-            (0, 2, "theta", "θ vs time"),
-            (1, 0, "pulse", f"Keithley {NONLOCAL_DEFAULT_KEITHLEY_MODEL} command voltage"),
-            (1, 1, "resistance", f"Keithley {NONLOCAL_DEFAULT_KEITHLEY_MODEL} resistance"),
-            (1, 2, "summary", "Lock-in voltage vs pulse voltage"),
-        ):
-            frame = ttk.LabelFrame(plots, text=title, padding=5)
-            frame.grid(
-                row=row, column=column, sticky="nsew",
-                padx=(0 if column == 0 else 3, 0 if column == 2 else 3),
-                pady=(0, 3) if row == 0 else (3, 0),
-            )
-            frame.rowconfigure(0, weight=1)
-            frame.columnconfigure(0, weight=1)
+        # User, 2026-10-09: first the lock-ins' X, Y and θ against time, a
+        # row per harmonic order measured, as on 6221-IV (every meter ticked
+        # Measure overlaid, the 2182A's voltage with X in the top row); then
+        # the Keithley's pulses and resistance, and the voltage against the
+        # pulse voltage, one plot per order.  _layout_nonlocal_vi_plots shows
+        # the orders measured.
+
+        def add_plot(frame, key):
+            canvas = self._nonlocal_plot_canvas(frame, self._redraw_nonlocal_vi_plots)
+            canvas.configure(height=PPMS_PLOT_ROW_MIN_HEIGHT_PX)
+            # The legend above the plot, clear of the curves.
+            canvas.ppms_compact_plot = True
             self.nonlocal_vi_plot_frames[key] = frame
-            canvas = tk.Canvas(
-                frame,
-                bg="#fbfcfd",
-                highlightthickness=1,
-                highlightbackground="#cfd6dd",
-                height=self._ui_px(145, 88, canvas=True),
-            )
-            canvas.grid(row=0, column=0, sticky="nsew")
             self.nonlocal_vi_plot_canvases[key] = canvas
-            canvas.bind("<Configure>", lambda _event: self._redraw_nonlocal_vi_plots())
+
+        for order in PPMS_HARMONIC_ORDERS:
+            for column, (channel, title) in enumerate((("x", "X"), ("y", "Y"), ("theta", "θ"))):
+                frame = ttk.LabelFrame(
+                    plots, text=f"{PPMS_HARMONIC_LABELS[order]} {title} vs time", padding=2
+                )
+                frame.grid(
+                    row=order - 1, column=column, sticky="nsew",
+                    padx=(0 if column == 0 else 3, 0 if column == 2 else 3), pady=(0, 3),
+                )
+                add_plot(frame, (order, channel))
+        bottom = ttk.Frame(plots)
+        bottom.grid(
+            row=len(PPMS_HARMONIC_ORDERS), column=0, columnspan=3, sticky="nsew", pady=(3, 0)
+        )
+        plots.rowconfigure(len(PPMS_HARMONIC_ORDERS), weight=1)
+        bottom.rowconfigure(0, weight=1)
+        self.nonlocal_vi_bottom_plots = bottom
+        for key, title in (
+            ("pulse", f"Keithley {NONLOCAL_DEFAULT_KEITHLEY_MODEL} command voltage"),
+            ("resistance", f"Keithley {NONLOCAL_DEFAULT_KEITHLEY_MODEL} resistance"),
+            *((("summary", order), f"{PPMS_HARMONIC_LABELS[order]} voltage vs pulse voltage")
+              for order in PPMS_HARMONIC_ORDERS),
+        ):
+            add_plot(ttk.LabelFrame(bottom, text=title, padding=2), key)
+        self.nonlocal_vi_plot_orders = None
 
         self._build_nonlocal_resistance_tab(resistance_tab)
         self._build_nonlocal_iv_tab(iv_tab)
@@ -21383,20 +21411,29 @@ class CombinedControlApp:
 
         # One row per lock-in, as on 6221-IV: harmonic, Measure and the
         # autorange.  The input is AC-coupled and the voltage read is R
-        # (the coupling and channel variables keep those defaults).
-        for row, (key, harmonic, top, measure) in enumerate((
-            ("8", self.nonlocal_vi_lockin_harmonic_vars["8"], 19999,
+        # (the coupling and channel variables keep those defaults).  An
+        # SR830 offers 1+2 (read one after the other), the Zurich 1+2 and
+        # 1+2+3 (read at once), user 2026-10-09.
+        self.nonlocal_vi_harmonic_combos = []
+        for row, (key, harmonic, choices, measure) in enumerate((
+            ("8", self.nonlocal_vi_lockin_harmonic_vars["8"], NONLOCAL_VI_SR830_HARMONIC_CHOICES,
              self.nonlocal_vi_measurement_enabled_vars["8"]),
-            ("9", self.nonlocal_vi_lockin_harmonic_vars["9"], 19999,
+            ("9", self.nonlocal_vi_lockin_harmonic_vars["9"], NONLOCAL_VI_SR830_HARMONIC_CHOICES,
              self.nonlocal_vi_measurement_enabled_vars["9"]),
-            ("mfli", self.nonlocal_vi_mfli_harmonic_var, 1024, self.nonlocal_vi_use_mfli_var),
+            ("mfli", self.nonlocal_vi_mfli_harmonic_var, NONLOCAL_VI_ZURICH_HARMONIC_CHOICES,
+             self.nonlocal_vi_use_mfli_var),
         )):
             ttk.Label(meters, text=f"{NONLOCAL_METER_NAMES[key]} harmonic").grid(
                 row=row, column=0, sticky="e", padx=(12, 3), pady=2
             )
-            ttk.Spinbox(meters, from_=1, to=top, textvariable=harmonic, width=4).grid(
-                row=row, column=1, sticky="ew", pady=2
+            combo = ttk.Combobox(
+                meters, textvariable=harmonic, values=choices, width=6, state="readonly",
             )
+            combo.grid(row=row, column=1, sticky="ew", pady=2)
+            combo.bind(
+                "<<ComboboxSelected>>", lambda _event: self._redraw_nonlocal_vi_plots(), add="+",
+            )
+            self.nonlocal_vi_harmonic_combos.append(combo)
             ttk.Checkbutton(
                 meters, text="Measure", variable=measure, command=self._redraw_nonlocal_vi_plots,
             ).grid(row=row, column=6, padx=(6, 3))
@@ -29024,6 +29061,9 @@ class CombinedControlApp:
         self.nonlocal_vi_output_mode_combo.configure(
             state="readonly" if idle else "disabled"
         )
+        # The harmonics too: the plots and CSV follow those the scan started with.
+        for combo in self.__dict__.get("nonlocal_vi_harmonic_combos", ()):
+            combo.configure(state="readonly" if idle else "disabled")
         self.nonlocal_vi_model_combo.configure(
             state="readonly" if idle and not states["2410"] else "disabled"
         )
@@ -29579,25 +29619,15 @@ class CombinedControlApp:
                 )
                 * 1e6,
             }
-            connected_lockins = set(
-                self.nonlocal_vi_ac_controller.connected_lockin_keys
-            )
-            for key in ("8", "9"):
-                if (
-                    self.nonlocal_vi_measurement_enabled_vars[key].get()
-                    and key not in connected_lockins
-                ):
-                    raise ValueError(
-                        f"SR830 #{key} is selected for the scan but is not connected"
-                    )
             lockin_configs = {
                 key: {
                     "coupling": self.nonlocal_vi_lockin_coupling_vars[
                         key
                     ].get().strip().upper(),
-                    "harmonic": int(
+                    # The choice ("1+2"), made the first order below.
+                    "harmonic": str(
                         self.nonlocal_vi_lockin_harmonic_vars[key].get()
-                    ),
+                    ).strip(),
                     "channel": self.nonlocal_vi_lockin_channel_vars[
                         key
                     ].get().strip().upper(),
@@ -29614,7 +29644,8 @@ class CombinedControlApp:
                 mfli_config = {
                     "coupling": self.nonlocal_vi_mfli_coupling_var.get().strip().upper(),
                     "reference_source": self.nonlocal_vi_mfli_reference_source_var.get().strip(),
-                    "harmonic": int(self.nonlocal_vi_mfli_harmonic_var.get()),
+                    # The choice ("1+2+3"), made the Demod 1 order below.
+                    "harmonic": str(self.nonlocal_vi_mfli_harmonic_var.get()).strip(),
                     "channel": self.nonlocal_vi_mfli_channel_var.get().strip().upper(),
                     # The device actually connected, which the list may no
                     # longer show if it was changed afterwards.
@@ -29631,6 +29662,41 @@ class CombinedControlApp:
             use_nanovoltmeter = bool(self.nonlocal_vi_use_2182_var.get())
         except (TypeError, ValueError, tk.TclError) as error:
             raise ValueError("Non-local VI parameters must be valid numbers") from error
+        connected_lockins = set(self.nonlocal_vi_ac_controller.connected_lockin_keys)
+        for key in ("8", "9"):
+            if (
+                self.nonlocal_vi_measurement_enabled_vars[key].get()
+                and key not in connected_lockins
+            ):
+                raise ValueError(
+                    f"SR830 #{key} is selected for the scan but is not connected"
+                )
+        # The harmonic orders: an SR830 reads its orders one after the other
+        # at each point (from the first), the Zurich all at once.
+        lockin_orders = {}
+        for key, config in lockin_configs.items():
+            if config["harmonic"] not in NONLOCAL_VI_SR830_HARMONIC_CHOICES:
+                raise ValueError(
+                    f"SR830 #{key} harmonic must be one of "
+                    + ", ".join(NONLOCAL_VI_SR830_HARMONIC_CHOICES)
+                )
+            lockin_orders[key] = PPMS_ZURICH_MODE_ORDERS[config["harmonic"]]
+            config["harmonic"] = lockin_orders[key][0]
+        zurich_mode = ""
+        if mfli_config:
+            zurich_mode = mfli_config["harmonic"]
+            if zurich_mode not in NONLOCAL_VI_ZURICH_HARMONIC_CHOICES:
+                raise ValueError(
+                    "Zurich MFLI harmonic must be one of "
+                    + ", ".join(NONLOCAL_VI_ZURICH_HARMONIC_CHOICES)
+                )
+            lockin_orders["mfli"] = PPMS_ZURICH_MODE_ORDERS[zurich_mode]
+            multi = len(lockin_orders["mfli"]) > 1
+            # Several orders, as on PPMS and 6221-IV: the 1st on Demod 1, the
+            # others added after configuring, the reference on Demod 4
+            # (needs MF-MD).
+            mfli_config["harmonic"] = 1 if multi else lockin_orders["mfli"][0]
+            mfli_config["external_reference_demodulator"] = 3 if multi else None
         if mfli_config and not (
             math.isfinite(mfli_config["timeconstant_s"])
             and 0 < mfli_config["timeconstant_s"] <= 100
@@ -29714,7 +29780,7 @@ class CombinedControlApp:
                 raise ValueError(f"SR830 #{key} harmonic must be 1–19999")
             if (
                 settings["output_mode"] == "AC"
-                and config["harmonic"] * settings["frequency_hz"] > 102000
+                and max(lockin_orders[key]) * settings["frequency_hz"] > 102000
             ):
                 raise ValueError(f"SR830 #{key} demodulation frequency exceeds 102 kHz")
             if config["channel"] not in {"X", "Y", "R"}:
@@ -29728,7 +29794,7 @@ class CombinedControlApp:
                 raise ValueError("Zurich MFLI harmonic must be 1–1024")
             if (
                 settings["output_mode"] == "AC"
-                and settings["frequency_hz"] * mfli_config["harmonic"] > 500000
+                and settings["frequency_hz"] * max(lockin_orders["mfli"]) > 500000
             ):
                 raise ValueError("Zurich MFLI demodulation frequency exceeds the base model's 500 kHz")
             if mfli_config["channel"] not in {"X", "Y", "R"}:
@@ -29764,6 +29830,20 @@ class CombinedControlApp:
             + (["mfli"] if mfli_config else [])
             + (["2182"] if use_nanovoltmeter else [])
         )
+        settings["lockin_orders"] = lockin_orders
+        settings["zurich_mode"] = zurich_mode
+        settings["zurich_orders"] = lockin_orders.get("mfli", ())
+        # Each point reads every meter (SR830s at their first order), then
+        # once more per further SR830 order, with only those SR830s.
+        settings["read_passes"] = [settings["measurement_keys"]] + [
+            tuple(
+                key for key in sorted(lockin_configs, key=int)
+                if len(lockin_orders[key]) > index
+            )
+            for index in range(1, max((len(lockin_orders[key]) for key in lockin_configs), default=1))
+        ]
+        # Gate-VI sets the SR830s' time constant to 1 s (configure).
+        harmonic_settle_s = max(settings["settle_s"], NONLOCAL_VI_HARMONIC_SETTLE_TAUS * 1.0)
         settings["sample_interval_s"] = 1.0 / settings["sample_hz"]
         resistance_estimate_s = NONLOCAL_VI_RES_SETTLE_S * (
             len(NONLOCAL_VI_RES_CURRENT_LEVELS_A) * 2
@@ -29775,6 +29855,7 @@ class CombinedControlApp:
             + settings["settle_s"]
             + settings["measure_s"]
             + resistance_estimate_s
+            + (len(settings["read_passes"]) - 1) * (harmonic_settle_s + settings["measure_s"])
         )
         return settings
 
@@ -29834,9 +29915,16 @@ class CombinedControlApp:
                 "Non-local VI", f"Cannot create the result folder: {error}", parent=self.root
             )
             return
+        orders = settings["lockin_orders"]
         lockin_description = "；".join(
             f"SR830 #{key}: {config['coupling']} coupling, "
-            f"{config['harmonic']}ω, reading {config['channel']}"
+            + (
+                f"{'ω, then '.join(map(str, orders[key]))}ω at each point "
+                f"(each order settles {NONLOCAL_VI_HARMONIC_SETTLE_TAUS:g} τ or Settle s, "
+                "then reads Measure s)"
+                if len(orders[key]) > 1 else f"{orders[key][0]}ω"
+            )
+            + f", reading {config['channel']}"
             for key, config in settings["lockin_configs"].items()
         )
         if settings["mfli_config"]:
@@ -29846,7 +29934,11 @@ class CombinedControlApp:
             ) + (
                 f"Zurich MFLI ({config['reference_source']} ext. ref): "
                 f"{config['coupling']} coupling, "
-                f"{config['harmonic']}ω, reading {config['channel']}, autorange, "
+                + (
+                    f"{settings['zurich_mode']}ω at once (Demods 1–3, reference on Demod 4, needs MF-MD)"
+                    if len(orders["mfli"]) > 1 else f"{config['harmonic']}ω"
+                )
+                + f", reading {config['channel']}, autorange, "
                 f"Signal Input 1：{config['input_impedance']}、"
                 f"Scaling {config['input_scaling']:g}，"
                 f"τ={config['timeconstant_s']:g} s (rack TC)，"
@@ -30053,6 +30145,40 @@ class CombinedControlApp:
                     output_mode=settings["output_mode"],
                 )
             )
+            source = self.nonlocal_vi_ac_controller
+            # The harmonic orders of each meter (the 2182A has none).
+            orders = {
+                key: tuple(settings.get("lockin_orders", {}).get(key) or (
+                    (None,) if key == "2182" else (lockin_readbacks[key].get("harmonic"),)
+                ))
+                for key in settings["measurement_keys"]
+            }
+            read_passes = settings.get("read_passes") or [settings["measurement_keys"]]
+            if len(orders.get("mfli", ())) > 1:
+                # As on PPMS and 6221-IV: the 2nd (and 3rd) order on their own
+                # demodulators, at Demod 1's rate and the rack's TC, and the
+                # demodulators not measuring off.
+                tc_s = float(settings["mfli_config"]["timeconstant_s"])
+                rate = float(lockin_readbacks["mfli"].get("sample_rate_hz", settings["sample_hz"]))
+                source.configure_second_harmonic(tc_s, rate=rate)
+                if 3 in orders["mfli"]:
+                    source.configure_third_harmonic(tc_s, rate=rate)
+                source.disable_unused_ppms_demods("+".join(map(str, orders["mfli"])))
+            # Each SR830's order now, and the range each order last ended on
+            # (its next read starts there rather than at the configure range).
+            current_orders = {key: orders[key][0] for key in settings["lockin_configs"]}
+            zurich_now = {"mfli": orders["mfli"][0]} if "mfli" in orders else {}
+            sensitivity_memory = {}
+
+            def switch_harmonic(key, order):
+                sensitivity_memory[(key, current_orders[key])] = getattr(
+                    source, "sensitivity_indices", {}
+                ).get(key)
+                source.set_lockin_harmonic(
+                    key, order, sensitivity_index=sensitivity_memory.get((key, order))
+                )
+                current_orders[key] = order
+
             self.nonlocal_vi_ac_controller.output_off()
             self.nonlocal_vi_ac_controller.confirm_output_off("after VI configuration")
             self.nonlocal_vi_2410_controller.setup_voltage_mode(
@@ -30186,92 +30312,124 @@ class CombinedControlApp:
                         lambda info=sync, mode=settings["output_mode"]:
                         self._publish_reference_sync(info, mode, vi=True)
                     )
+                    # One list per meter and harmonic order.
                     samples = {
-                        key: [] for key in settings["measurement_keys"]
+                        (key, order): []
+                        for key in settings["measurement_keys"]
+                        for order in orders[key]
                     }
-                    read_start = time.monotonic()
-                    next_sample = read_start
-                    while (
-                        time.monotonic() - read_start < settings["measure_s"]
-                    ):
-                        if self.nonlocal_vi_stop_event.is_set():
-                            raise NonLocalVIStopped()
-                        if self.nonlocal_vi_stop_event.wait(
-                            max(0.0, next_sample - time.monotonic())
-                        ):
-                            raise NonLocalVIStopped()
-                        self.nonlocal_vi_interlock.require(
-                            NonLocalVIInterlock.SR830_READ
-                        )
-                        self.nonlocal_vi_2410_controller.confirm_output_off(
-                            "voltmeter acquiring"
-                        )
-                        current_samples = (
-                            self.nonlocal_vi_ac_controller.read_samples(
-                                frequency, settings["measurement_keys"]
+                    for pass_index, pass_keys in enumerate(read_passes):
+                        if pass_index:
+                            # The SR830s' next order (user, 2026-10-09: an
+                            # SR830 reads 1+2 one after the other): switched,
+                            # read back, its filter settled, then read.
+                            for key in pass_keys:
+                                switch_harmonic(key, orders[key][pass_index])
+                            taus = [
+                                float(lockin_readbacks[key].get("time_constant_s", math.nan))
+                                for key in pass_keys
+                            ]
+                            tau_s = max((tau for tau in taus if math.isfinite(tau)), default=1.0)
+                            if self.nonlocal_vi_stop_event.wait(
+                                max(settings["settle_s"], NONLOCAL_VI_HARMONIC_SETTLE_TAUS * tau_s)
+                            ):
+                                raise NonLocalVIStopped()
+                            self.nonlocal_vi_2410_controller.confirm_output_off(
+                                "before the next harmonic read"
                             )
-                        )
-                        elapsed = time.monotonic() - run_start
-                        read_elapsed = time.monotonic() - read_start
-                        stamp = datetime_module.datetime.now().isoformat(
-                            timespec="milliseconds"
-                        )
-                        for key, sample in current_samples.items():
-                            config = lockin_readbacks[key]
-                            raw_writer.writerow(
-                                (
-                                    stamp, "formal", point_index,
-                                    pulse_voltage_v, gate_resistance,
-                                    key, config["meter_type"],
-                                    config["resource"],
-                                    config.get("coupling", ""),
-                                    config.get("harmonic", ""),
-                                    config.get("channel", "VOLT"),
-                                    current_readback_ma, frequency, read_elapsed,
-                                    sample["X"], sample["Y"], sample["R"],
-                                    sample["phase_deg"],
-                                    sample["reference_frequency_hz"],
-                                    sample.get("demodulation_frequency_hz", ""),
-                                    sample["lia_status"], sample["status_text"],
-                                    sample["reference_valid"],
-                                    sample["output_on"],
-                                    sample["measurement_condition"],
-                                    sample["in_compliance"],
-                                    sample["sensitivity_index"],
-                                    sample.get("input_range_v", ""),
-                                    sample.get("input_utilization", ""),
-                                    sample["auto_range"], 0,
-                                    settings["marker_line"],
+                        read_start = time.monotonic()
+                        next_sample = read_start
+                        while (
+                            time.monotonic() - read_start < settings["measure_s"]
+                        ):
+                            if self.nonlocal_vi_stop_event.is_set():
+                                raise NonLocalVIStopped()
+                            if self.nonlocal_vi_stop_event.wait(
+                                max(0.0, next_sample - time.monotonic())
+                            ):
+                                raise NonLocalVIStopped()
+                            self.nonlocal_vi_interlock.require(
+                                NonLocalVIInterlock.SR830_READ
+                            )
+                            self.nonlocal_vi_2410_controller.confirm_output_off(
+                                "voltmeter acquiring"
+                            )
+                            current_samples = (
+                                self.nonlocal_vi_ac_controller.read_samples(
+                                    frequency, pass_keys
                                 )
                             )
-                            samples[key].append(sample)
-                        raw_file.flush()
-                        with self.nonlocal_vi_data_lock:
-                            for key, sample in current_samples.items():
-                                # (elapsed, meter, R, θ, kind, X, Y): X, Y and θ
-                                # are plotted against time.
-                                self.nonlocal_vi_time_rows.append(
+                            elapsed = time.monotonic() - run_start
+                            read_elapsed = time.monotonic() - read_start
+                            stamp = datetime_module.datetime.now().isoformat(
+                                timespec="milliseconds"
+                            )
+                            readings = self._nonlocal_vi_order_readings(
+                                current_samples, orders, current_orders,
+                            )
+                            for key, order, sample in readings:
+                                config = lockin_readbacks[key]
+                                raw_writer.writerow(
                                     (
-                                        elapsed, key, sample["R"],
-                                        sample["phase_deg"], "formal",
-                                        sample["X"], sample["Y"],
+                                        stamp, "formal", point_index,
+                                        pulse_voltage_v, gate_resistance,
+                                        key, config["meter_type"],
+                                        config["resource"],
+                                        config.get("coupling", ""),
+                                        order if order is not None else config.get("harmonic", ""),
+                                        config.get("channel", "VOLT"),
+                                        current_readback_ma, frequency, read_elapsed,
+                                        sample["X"], sample["Y"], sample["R"],
+                                        sample["phase_deg"],
+                                        sample["reference_frequency_hz"],
+                                        sample.get("demodulation_frequency_hz", ""),
+                                        sample["lia_status"], sample["status_text"],
+                                        sample["reference_valid"],
+                                        sample["output_on"],
+                                        sample["measurement_condition"],
+                                        sample["in_compliance"],
+                                        sample["sensitivity_index"],
+                                        sample.get("input_range_v", ""),
+                                        sample.get("input_utilization", ""),
+                                        sample["auto_range"], 0,
+                                        settings["marker_line"],
                                     )
                                 )
-                        remaining = max(
-                            0.0, settings["estimated_s"] - elapsed
-                        )
-                        self.post_ui(
-                            lambda values=current_samples, e=elapsed,
-                            remain=remaining, index=point_index:
-                            self._publish_nonlocal_vi_samples(
-                                values,
-                                e,
-                                remain,
-                                index,
-                                len(settings["voltage_scan"]),
+                                samples[(key, order)].append(sample)
+                            raw_file.flush()
+                            with self.nonlocal_vi_data_lock:
+                                for key, order, sample in readings:
+                                    # (elapsed, meter, R, θ, kind, X, Y, order):
+                                    # X, Y and θ are plotted against time, a
+                                    # row per order.
+                                    self.nonlocal_vi_time_rows.append(
+                                        (
+                                            elapsed, key, sample["R"],
+                                            sample["phase_deg"], "formal",
+                                            sample["X"], sample["Y"], order,
+                                        )
+                                    )
+                            remaining = max(
+                                0.0, settings["estimated_s"] - elapsed
                             )
-                        )
-                        next_sample += settings["sample_interval_s"]
+                            self.post_ui(
+                                lambda values=current_samples, e=elapsed,
+                                remain=remaining, index=point_index,
+                                now={**current_orders, **zurich_now}:
+                                self._publish_nonlocal_vi_samples(
+                                    values,
+                                    e,
+                                    remain,
+                                    index,
+                                    len(settings["voltage_scan"]),
+                                    now,
+                                )
+                            )
+                            next_sample += settings["sample_interval_s"]
+                    # Back to the first order for the next point.
+                    for key in settings["lockin_configs"]:
+                        if current_orders[key] != orders[key][0]:
+                            switch_harmonic(key, orders[key][0])
                 finally:
                     self.nonlocal_vi_interlock.end(
                         NonLocalVIInterlock.SR830_READ
@@ -30289,10 +30447,13 @@ class CombinedControlApp:
                     resistance_writer,
                     resistance_file,
                 )
-                for key, lockin_samples in samples.items():
+                for (key, order), lockin_samples in samples.items():
+                    harmonic_text = (
+                        "" if order is None else f" ({order}ω)"
+                    )
                     if not lockin_samples:
                         raise RuntimeError(
-                            f"Meter {key} returned no data for the {pulse_voltage_v:g} V pulse"
+                            f"Meter {key}{harmonic_text} returned no data for the {pulse_voltage_v:g} V pulse"
                         )
                     valid = [
                         item for item in lockin_samples
@@ -30309,14 +30470,16 @@ class CombinedControlApp:
                     ]
                     mean = statistics.fmean(values)
                     std = statistics.pstdev(values) if len(values) > 1 else 0.0
+                    harmonic = order if order is not None else config.get("harmonic", "")
                     summary = {
                         "point_index": point_index,
                         "pulse_voltage_v": pulse_voltage_v,
                         "key": key,
+                        "order": order,
                         "meter_type": config["meter_type"],
                         "resource": config["resource"],
                         "coupling": config.get("coupling", ""),
-                        "harmonic": config.get("harmonic", ""),
+                        "harmonic": harmonic,
                         "channel": channel,
                         "current_rms_ma": current_readback_ma,
                         "frequency_hz": frequency,
@@ -30362,7 +30525,7 @@ class CombinedControlApp:
                             point_index, pulse_voltage_v, key,
                             config["meter_type"], config["resource"],
                             config.get("coupling", ""),
-                            config.get("harmonic", ""), channel,
+                            harmonic, channel,
                             current_readback_ma, frequency,
                             len(used), mean, std, summary["sem"],
                             summary["mean_x"], summary["mean_y"],
@@ -30401,8 +30564,37 @@ class CombinedControlApp:
                     if file is not None:
                         file.close()
 
+    def _nonlocal_vi_order_readings(
+        self, samples: dict, orders: dict, current_orders: dict
+    ) -> list:
+        """(meter, order, reading) for one read: an SR830 at its order now,
+        the Zurich at each of its orders (several: X and Y of each from its
+        demodulators, read at once, as on 6221-IV), the 2182A with none."""
+        readings = []
+        for key, sample in samples.items():
+            if key == "2182":
+                readings.append((key, None, sample))
+            elif key != "mfli":
+                readings.append((key, current_orders[key], sample))
+            elif len(orders["mfli"]) > 1:
+                reference = float(sample.get("reference_frequency_hz", math.nan))
+                demods = self._zurich_order_readings(
+                    self.nonlocal_vi_ac_controller.read_mfli_four_demods(), orders["mfli"]
+                )
+                for order, (x, y) in demods.items():
+                    readings.append((key, order, dict(
+                        sample, X=x, Y=y, R=math.hypot(x, y),
+                        phase_deg=math.degrees(math.atan2(y, x)),
+                        demodulation_frequency_hz=(
+                            order * reference if math.isfinite(reference) else ""
+                        ),
+                    )))
+            else:
+                readings.append((key, orders["mfli"][0], sample))
+        return readings
+
     def _publish_nonlocal_vi_samples(
-        self, samples, elapsed, remaining, point_index, total
+        self, samples, elapsed, remaining, point_index, total, orders_now=None
     ) -> None:
         representative = next(iter(samples.values()))
         self.nonlocal_vi_output_var.set(
@@ -30425,17 +30617,22 @@ class CombinedControlApp:
         self._publish_reference_sync(
             sync, self.nonlocal_vi_output_mode_var.get(), vi=True
         )
+
+        def order_text(key):
+            order = (orders_now or {}).get(key)
+            return f" {order}ω" if order is not None else ""
+
         sample_text = " | ".join(
             (
                 f"2182A V={sample['voltage']:+.3e} V"
                 if key == "2182"
                 else (
-                    f"MFLI R={sample['R']:+.3e}V "
+                    f"MFLI{order_text(key)} R={sample['R']:+.3e}V "
                     f"θ={sample['phase_deg']:+.2f}° "
                     f"range={sample['input_range_v']:.3g}V"
                     f"{' ' + sample['auto_range'] if sample['auto_range'] else ''}"
                     if key == "mfli"
-                    else f"#{key} R={sample['R']:+.3e}V "
+                    else f"#{key}{order_text(key)} R={sample['R']:+.3e}V "
                     f"θ={sample['phase_deg']:+.2f}°"
                 )
             )
@@ -30473,14 +30670,18 @@ class CombinedControlApp:
         if self.nonlocal_vi_run_directory is not None:
             try:
                 model = self.nonlocal_vi_2410_controller.model
-                snapshot_targets = {
-                    "x": "X_vs_time",
-                    "y": "Y_vs_time",
-                    "theta": "theta_vs_time",
-                    "pulse": f"Keithley{model}_command_voltage",
-                    "resistance": f"Keithley{model}_resistance",
-                    "summary": "voltage_vs_pulse_voltage",
-                }
+                # The plots shown: those of the orders measured.
+                snapshot_targets = {}
+                for order in self.nonlocal_vi_plot_orders or (1,):
+                    label = PPMS_HARMONIC_LABELS[order].replace(" ", "_")
+                    snapshot_targets.update({
+                        (order, "x"): f"{label}_X_vs_time",
+                        (order, "y"): f"{label}_Y_vs_time",
+                        (order, "theta"): f"{label}_theta_vs_time",
+                        ("summary", order): f"{label}_voltage_vs_pulse_voltage",
+                    })
+                snapshot_targets["pulse"] = f"Keithley{model}_command_voltage"
+                snapshot_targets["resistance"] = f"Keithley{model}_resistance"
                 for key, name in snapshot_targets.items():
                     self.save_plot_canvas_snapshot(
                         self.nonlocal_vi_plot_canvases[key],
@@ -30599,14 +30800,52 @@ class CombinedControlApp:
             messagebox.showerror("Non-local VI", str(error), parent=self.root)
         self._update_nonlocal_vi_controls()
 
+    def _layout_nonlocal_vi_plots(self, shown) -> None:
+        """A row of X, Y and θ per harmonic order shown (the time axis
+        labelled on the last); below them the pulses, the resistance and a
+        voltage-vs-pulse plot per order."""
+        shown = tuple(shown)
+        if self.nonlocal_vi_plot_orders == shown:
+            return
+        self.nonlocal_vi_plot_orders = shown
+        plots = self.nonlocal_vi_plot_container
+        bottom = self.nonlocal_vi_bottom_plots
+        frames = self.nonlocal_vi_plot_frames
+        for order in PPMS_HARMONIC_ORDERS:
+            visible = order in shown
+            plots.rowconfigure(order - 1, weight=1 if visible else 0)
+            for channel in ("x", "y", "theta"):
+                if visible:
+                    frames[(order, channel)].grid()
+                else:
+                    frames[(order, channel)].grid_remove()
+                self.nonlocal_vi_plot_canvases[(order, channel)].ppms_hide_x_labels = (
+                    order != shown[-1]
+                )
+        keys = ["pulse", "resistance", *(("summary", order) for order in shown)]
+        for column in range(2 + len(PPMS_HARMONIC_ORDERS)):
+            used = column < len(keys)
+            bottom.columnconfigure(
+                column, weight=1 if used else 0, uniform="nonlocal_vi_bottom" if used else ""
+            )
+        for key in ("pulse", "resistance", *(("summary", order) for order in PPMS_HARMONIC_ORDERS)):
+            if key in keys:
+                column = keys.index(key)
+                frames[key].grid(
+                    row=0, column=column, sticky="nsew",
+                    padx=(0 if column == 0 else 3, 0 if column == len(keys) - 1 else 3),
+                )
+            else:
+                frames[key].grid_remove()
+
     def _redraw_nonlocal_vi_plots(self) -> None:
-        """X, Y and θ against time (meters overlaid, as on 6221-IV), then the
-        Keithley's pulses and resistance and each meter's voltage against
-        the pulse voltage."""
+        """X, Y and θ against time, a row per harmonic order (meters
+        overlaid, as on 6221-IV), then the Keithley's pulses and resistance
+        and the voltage against the pulse voltage, a plot per order."""
         if not self.nonlocal_vi_plot_canvases:
             return
         with self.nonlocal_vi_data_lock:
-            time_rows = list(self.nonlocal_vi_time_rows[-1500:])
+            time_rows = list(self.nonlocal_vi_time_rows[-3000:])
             summaries = list(self.nonlocal_vi_summary_rows)
             pulses = list(self.nonlocal_vi_pulse_rows)
             resistances = list(self.nonlocal_vi_resistance_rows)
@@ -30623,18 +30862,41 @@ class CombinedControlApp:
         meters = [key for key in ("8", "9", "mfli", "2182") if key in selected]
         lockins = [key for key in meters if key != "2182"]
         names = {key: NONLOCAL_METER_NAMES[key] for key in ("8", "9", "mfli", "2182")}
+        # The orders each lock-in reads, from its harmonic box (held while a
+        # scan runs); the 2182A, with no harmonic, goes with the first.
+        meter_orders = {
+            key: PPMS_ZURICH_MODE_ORDERS.get(str((
+                self.nonlocal_vi_mfli_harmonic_var if key == "mfli"
+                else self.nonlocal_vi_lockin_harmonic_vars[key]
+            ).get()).strip(), ())
+            for key in lockins
+        }
+        shown = sorted({order for value in meter_orders.values() for order in value}) or [1]
+        self._layout_nonlocal_vi_plots(shown)
+
+        def on(order, with_2182):
+            keys = [key for key in lockins if order in meter_orders[key]]
+            if with_2182 and "2182" in meters and order == shown[0]:
+                keys.append("2182")
+            return keys
+
+        def order_of(row):
+            return row[7] if len(row) > 7 and row[7] is not None else shown[0]
+
         frames = self.nonlocal_vi_plot_frames
         model = self.nonlocal_vi_2410_controller.model
-        for key, title, shown in (
-            ("x", "X vs time", meters),
-            ("y", "Y vs time", lockins),
-            ("theta", "θ vs time", lockins),
-            ("summary", "Lock-in voltage vs pulse voltage", meters),
-        ):
-            text = title + (" — " + ", ".join(names[name] for name in shown) if shown else "")
-            frame = frames.get(key)
-            if frame is not None and frame.cget("text") != text:
-                frame.configure(text=text)
+        for order in shown:
+            label = PPMS_HARMONIC_LABELS[order]
+            for key, title, keys in (
+                ((order, "x"), f"{label} X vs time", on(order, True)),
+                ((order, "y"), f"{label} Y vs time", on(order, False)),
+                ((order, "theta"), f"{label} θ vs time", on(order, False)),
+                (("summary", order), f"{label} voltage vs pulse voltage", on(order, True)),
+            ):
+                text = title + (" — " + ", ".join(names[name] for name in keys) if keys else "")
+                frame = frames.get(key)
+                if frame is not None and frame.cget("text") != text:
+                    frame.configure(text=text)
         if not meters:
             waiting = "Tick Measure for a lock-in or the 2182A"
         elif any(key in connected for key in meters):
@@ -30642,27 +30904,31 @@ class CombinedControlApp:
         else:
             waiting = "The meters ticked Measure are not connected"
 
-        def over_time(index, keys):
-            return {
-                key: [(row[0], row[index]) for row in time_rows if row[1] == key and len(row) > index]
-                for key in keys
-            }
-
-        # The 2182A has no X or Y: its DC voltage goes with X.
-        x_series = over_time(5, lockins)
-        if "2182" in meters:
-            x_series["2182"] = [(row[0], row[2]) for row in time_rows if row[1] == "2182"]
         canvases = self.nonlocal_vi_plot_canvases
-        for key, series, label, voltage in (
-            ("x", x_series, "X", True),
-            ("y", over_time(6, lockins), "Y", True),
-            ("theta", over_time(3, lockins), "θ (°)", False),
-        ):
-            self._draw_nonlocal_series(
-                canvases[key], series, "Elapsed time (s)", label, waiting,
-                markers=True, auto_voltage_unit=voltage, series_labels=names,
-                show_legend=len(series) > 1,
-            )
+        for order in shown:
+            def over_time(index, order=order):
+                return {
+                    key: [
+                        (row[0], row[index]) for row in time_rows
+                        if row[1] == key and order_of(row) == order
+                    ]
+                    for key in on(order, False)
+                }
+
+            # The 2182A has no X or Y: its DC voltage goes with X.
+            x_series = over_time(5)
+            if "2182" in on(order, True):
+                x_series["2182"] = [(row[0], row[2]) for row in time_rows if row[1] == "2182"]
+            for channel, series, label, voltage in (
+                ("x", x_series, "X", True),
+                ("y", over_time(6), "Y", True),
+                ("theta", over_time(3), "θ (°)", False),
+            ):
+                self._draw_nonlocal_series(
+                    canvases[(order, channel)], series, "Elapsed time (s)", label, waiting,
+                    markers=True, auto_voltage_unit=voltage, series_labels=names,
+                    show_legend=len(series) > 1,
+                )
         self._draw_nonlocal_series(
             canvases["pulse"],
             {"8": [(row[0], row[1]) for row in pulses]},
@@ -30681,21 +30947,27 @@ class CombinedControlApp:
             markers=True,
             show_legend=False,
         )
-        summary = {
-            key: [(row["pulse_voltage_v"], row["mean"]) for row in summaries if row["key"] == key]
-            for key in meters
-        }
-        self._draw_nonlocal_series(
-            canvases["summary"],
-            summary,
-            f"Keithley {model} pulse voltage (V)",
-            "Mean voltage (lock-in R)",
-            "Shown after the first voltage point" if meters else waiting,
-            markers=True,
-            auto_voltage_unit=True,
-            series_labels=names,
-            show_legend=len(summary) > 1,
-        )
+        for order in shown:
+            summary = {
+                key: [
+                    (row["pulse_voltage_v"], row["mean"]) for row in summaries
+                    if row["key"] == key and (
+                        row.get("order") if row.get("order") is not None else shown[0]
+                    ) == order
+                ]
+                for key in on(order, True)
+            }
+            self._draw_nonlocal_series(
+                canvases[("summary", order)],
+                summary,
+                f"Keithley {model} pulse voltage (V)",
+                "Mean voltage (lock-in R)",
+                "Shown after the first voltage point" if meters else waiting,
+                markers=True,
+                auto_voltage_unit=True,
+                series_labels=names,
+                show_legend=len(summary) > 1,
+            )
 
     # ---- Non-local page: |R| vs time and the I-V sweep on the pulse Keithley
 
@@ -31544,6 +31816,24 @@ class CombinedControlApp:
     # 6221-IV ----------------------------------------------------------------
 
     @staticmethod
+    def _zurich_order_readings(demods: dict, orders) -> dict:
+        """X and Y of each order from read_mfli_four_demods: the demodulator
+        on Signal Input 1 (input 0) with that harmonic."""
+        readings = {}
+        for order in orders:
+            for index in range(1, 5):
+                prefix = f"zurich_demod{index}_"
+                if (str(demods.get(prefix + "harmonic")) == str(order)
+                        and str(demods.get(prefix + "input")) == "0"):
+                    readings[order] = (
+                        float(demods[prefix + "x_v"]), float(demods[prefix + "y_v"])
+                    )
+                    break
+            else:
+                raise RuntimeError(f"No Zurich demodulator reads harmonic {order}")
+        return readings
+
+    @staticmethod
     def _nonlocal_iv6221_orders(mode) -> tuple[int, ...]:
         orders = PPMS_ZURICH_MODE_ORDERS.get(str(mode).strip())
         if orders is None:
@@ -31990,19 +32280,9 @@ class CombinedControlApp:
             if "mfli" in reading:
                 sample = reading["mfli"]
                 if len(zurich_orders) > 1:
-                    demods = source.read_mfli_four_demods()
-                    sample["orders"] = {}
-                    for order in zurich_orders:
-                        for index in range(1, 5):
-                            prefix = f"zurich_demod{index}_"
-                            if (str(demods.get(prefix + "harmonic")) == str(order)
-                                    and str(demods.get(prefix + "input")) == "0"):
-                                sample["orders"][order] = (
-                                    float(demods[prefix + "x_v"]), float(demods[prefix + "y_v"])
-                                )
-                                break
-                        else:
-                            raise RuntimeError(f"No Zurich demodulator reads harmonic {order}")
+                    sample["orders"] = self._zurich_order_readings(
+                        source.read_mfli_four_demods(), zurich_orders
+                    )
                 else:
                     sample["orders"] = {zurich_orders[0]: (sample["X"], sample["Y"])}
             next_sample += NONLOCAL_IV6221_SAMPLE_INTERVAL_S

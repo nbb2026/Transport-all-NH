@@ -201,8 +201,14 @@ class PanelDefaultTests(unittest.TestCase):
         a.nonlocal_vi_mfli_device_var.set("DEV4414 (Super)")
         self.assertEqual(a.nonlocal_vi_mfli_reference_source_var.get(), "Trigger In 1")
         self.assertEqual(a.nonlocal_iv6221_zurich_range_var.get(), "Autorange ON")
-        # The Gate-VI read settings keep their own harmonic fields.
-        self.assertEqual(len(self.widgets("TSpinbox", a.nonlocal_vi_lockin_harmonic_vars["8"])), 1)
+        # The Gate-VI read settings keep their own harmonic choices: an SR830
+        # up to 1+2, the Zurich up to 1+2+3 (user, 2026-10-09).
+        self.assertEqual(len(self.widgets("TCombobox", a.nonlocal_vi_lockin_harmonic_vars["8"])), 1)
+        sr830 = self.widgets("TCombobox", a.nonlocal_vi_lockin_harmonic_vars["8"])[0]
+        self.assertEqual(tuple(str(v) for v in sr830.cget("values")), ("1", "2", "3", "1+2"))
+        zurich = self.widgets("TCombobox", a.nonlocal_vi_mfli_harmonic_var)[0]
+        self.assertEqual(tuple(str(v) for v in zurich.cget("values")), ("1", "2", "3", "1+2", "1+2+3"))
+        self.assertEqual(a.nonlocal_vi_gate_resistance_var.get(), "100")
         # Laid out as "6221-IV settings" (user, 2026-10-09): a Measure tick
         # per meter, the 2182A's too, and the safety tick on top.
         measure = [w for w in self.widgets("TCheckbutton") if str(w.cget("text")).startswith("Measure")]
