@@ -6297,8 +6297,19 @@ class NonLocalVI2410Controller:
             if reset:
                 commands.extend(("*RST", "*CLS"))
             # After high voltage: 0 V with the output still on until the
-            # sample and cable are drained, not left charged.
+            # sample and cable are drained, not left charged.  Only with the
+            # output read back on: a Keithley refuses readings with it off,
+            # and an output already off has nothing to drain (review,
+            # 2026-10-09: the drain then failed and its flag stuck).
             drain = self.source_mode != "CURR" and bool(self.__dict__.get("high_voltage_active"))
+            if drain:
+                try:
+                    drain = int(round(float(instrument.query(":OUTP?").strip()))) == 1
+                except BaseException as error:
+                    errors.append(f":OUTP?: {error}")
+                    drain = False
+                if not drain:
+                    self.high_voltage_active = False
             for command in commands:
                 try:
                     instrument.write(command)
@@ -6364,15 +6375,16 @@ class NonLocalVI2410Controller:
                 # This pulse's range and OVP (above ±20 V the high range),
                 # read back while the output is still off.
                 self._set_source_range_locked(abs(voltage_v))
-                # Every pulse ends drained at 0 V before the output goes off
-                # (user, 2026-10-09), whatever its voltage, so the sample
-                # sees the same end on either side of ±20 V.
-                self.high_voltage_active = True
                 # A Stop pressed since the last wait: no output at all.
                 if stop_event.is_set():
                     raise NonLocalVIStopped()
                 self._write_checked(":OUTP ON")
                 self.output_enabled = True
+                # Every pulse ends drained at 0 V before the output goes off
+                # (user, 2026-10-09), whatever its voltage, so the sample
+                # sees the same end on either side of ±20 V.  Set once the
+                # output is on (review: a drain with it off cannot read).
+                self.high_voltage_active = True
                 # The level's error check (30 ms and SYST:ERR?) comes after
                 # the pulse: inside it, it made every pulse about 80 ms long.
                 # A rejected level leaves 0 V on, switched off just the same.
@@ -6532,6 +6544,8 @@ class NonLocalVI2410Controller:
                 self.safe_shutdown(reset=True)
             except BaseException as caught:
                 error = caught
+            # Whatever the next connection finds is checked afresh.
+            self.high_voltage_active = False
             if instrument is not None:
                 try:
                     instrument.close()
@@ -9055,7 +9069,9 @@ class NonLocalACController:
                     "harmonic": actual_harmonic,
                     "coupling": "AC" if actual_coupling == 0 else "DC",
                     "channel": requested["channel"],
-                    "resource": f"GPIB {key}",
+                    # The address it was connected on (review, 2026-10-09:
+                    # was always "GPIB 8"/"GPIB 9").
+                    "resource": self.lockin_resources.get(key, f"GPIB {key}"),
                 }
             self.mfli_in_scan = False
             if mfli_config:
@@ -21734,6 +21750,7 @@ class CombinedControlApp:
         # SR830 offers 1+2 (read one after the other), the Zurich 1+2 and
         # 1+2+3 (read at once), user 2026-10-09.
         self.nonlocal_vi_harmonic_combos = []
+        self.nonlocal_vi_measure_ticks = []
         for row, (key, harmonic, choices, measure) in enumerate((
             ("8", self.nonlocal_vi_lockin_harmonic_vars["8"], NONLOCAL_VI_SR830_HARMONIC_CHOICES,
              self.nonlocal_vi_measurement_enabled_vars["8"]),
@@ -21753,9 +21770,13 @@ class CombinedControlApp:
                 "<<ComboboxSelected>>", lambda _event: self._redraw_nonlocal_vi_plots(), add="+",
             )
             self.nonlocal_vi_harmonic_combos.append(combo)
-            ttk.Checkbutton(
+            tick = ttk.Checkbutton(
                 meters, text="Measure", variable=measure, command=self._redraw_nonlocal_vi_plots,
-            ).grid(row=row, column=6, padx=(6, 3))
+            )
+            tick.grid(row=row, column=6, padx=(6, 3))
+            # Held while a scan runs: its plots and CSV follow the meters it
+            # started with (review, 2026-10-09).
+            self.nonlocal_vi_measure_ticks.append(tick)
             # Narrow enough for this box to sit beside "Gate-VI scan" at 2000 px.
             ttk.Label(
                 meters, width=12,
@@ -21766,11 +21787,13 @@ class CombinedControlApp:
         # 2026-10-09: no Zurich input row); its reference input and TC are on
         # the rack's Zurich row.  Then the 2182A.
         ttk.Label(meters, text="2182A").grid(row=3, column=0, sticky="e", padx=(12, 3), pady=2)
-        ttk.Checkbutton(
+        tick = ttk.Checkbutton(
             meters, text="Measure (channel 1, NPLC 1, autorange)",
             variable=self.nonlocal_vi_use_2182_var,
             command=self._redraw_nonlocal_vi_plots,
-        ).grid(row=3, column=1, columnspan=7, sticky="w", pady=2)
+        )
+        tick.grid(row=3, column=1, columnspan=7, sticky="w", pady=2)
+        self.nonlocal_vi_measure_ticks.append(tick)
         self._arrange_pair_by_width(body, params, meters, gap=0, stack_gap=4)
         return body
 
@@ -29488,6 +29511,8 @@ class CombinedControlApp:
         # The harmonics too: the plots and CSV follow those the scan started with.
         for combo in self.__dict__.get("nonlocal_vi_harmonic_combos", ()):
             combo.configure(state="readonly" if idle else "disabled")
+        for tick in self.__dict__.get("nonlocal_vi_measure_ticks", ()):
+            tick.configure(state="normal" if idle else "disabled")
         self.nonlocal_vi_model_combo.configure(
             state="readonly" if idle and not states["2410"] else "disabled"
         )
@@ -30577,7 +30602,7 @@ class CombinedControlApp:
         run_start = time.monotonic()
         try:
             # A voltage left on by Set: drained and off before the 6221.
-            self._nonlocal_keithley_off_first("before the Gate-VI scan")
+            self._nonlocal_keithley_off_first("before the Gate-VI scan", in_use="in use by the Gate-VI scan")
             frequency, lockin_readbacks = (
                 self.nonlocal_vi_ac_controller.configure(
                     settings["current_rms_ma"],
@@ -30942,10 +30967,13 @@ class CombinedControlApp:
                             if key != "2182" else math.nan
                         ),
                         "mean_r": statistics.fmean(item["R"] for item in used),
+                        # From the mean X and Y, as 6221-IV: a mean of phases
+                        # near ±180° came out near 0° (review, 2026-10-09).
                         "mean_phase": (
-                            statistics.fmean(
-                                item["phase_deg"] for item in used
-                            )
+                            math.degrees(math.atan2(
+                                statistics.fmean(item["Y"] for item in used),
+                                statistics.fmean(item["X"] for item in used),
+                            ))
                             if key != "2182" else math.nan
                         ),
                         "mean_reference": (
@@ -31128,11 +31156,19 @@ class CombinedControlApp:
                             f"{label}_{NONLOCAL_VI_SUMMARY_CHANNELS[order]}_vs_pulse_voltage",
                     })
                 snapshot_targets["resistance"] = f"Keithley{model}_resistance"
+                failed = []
                 for key, name in snapshot_targets.items():
-                    self.save_plot_canvas_snapshot(
-                        self.nonlocal_vi_plot_canvases[key],
-                        self.nonlocal_vi_run_directory / f"{name}_snapshot.png",
-                    )
+                    # Each on its own: one failing (e.g. the sub-tab not
+                    # on screen) does not skip the rest (review, 2026-10-09).
+                    try:
+                        self.save_plot_canvas_snapshot(
+                            self.nonlocal_vi_plot_canvases[key],
+                            self.nonlocal_vi_run_directory / f"{name}_snapshot.png",
+                        )
+                    except BaseException as error:
+                        failed.append(f"{name}: {short_status_error(error)}")
+                if failed:
+                    raise RuntimeError("; ".join(failed))
             except BaseException as snapshot_error:
                 # Kept for the final status, which would otherwise replace it.
                 snapshot_note = f"; plot snapshot save failed: {short_status_error(snapshot_error)}"
@@ -31456,6 +31492,16 @@ class CombinedControlApp:
                 state.set(f"Keithley {model}: not connected")
             elif state.get().endswith("not connected"):
                 state.set(f"Keithley {model}: OFF")
+            elif (
+                ": in use" in state.get()
+                and task is None
+                and not self.nonlocal_vi_running
+            ):
+                # The measurement has ended: what the page found.
+                state.set(
+                    f"Keithley {model}: "
+                    + ("check the output" if "check" in self.nonlocal_vi_output_var.get() else "OFF")
+                )
         self.nonlocal_resistance_button.configure(
             text=(
                 "Measuring continuously…"
@@ -31548,7 +31594,7 @@ class CombinedControlApp:
                 "ON, switching off for the next measurement…"
             )
 
-    def _nonlocal_keithley_off_first(self, context: str) -> None:
+    def _nonlocal_keithley_off_first(self, context: str, in_use: str = "") -> None:
         """First in every measurement worker, before a Stop check or the
         6221: a Keithley output left on (Set) is drained, switched off and
         read back off.  If that fails the page says "check the output"."""
@@ -31563,7 +31609,9 @@ class CombinedControlApp:
             self.nonlocal_keithley_off_unconfirmed = True
             self.post_ui(lambda: self._show_nonlocal_keithley_state("check the output"))
             raise
-        self.post_ui(lambda: self._show_nonlocal_keithley_state("OFF"))
+        # A measurement that drives the Keithley shows it in use until its
+        # finish (review, 2026-10-09: it said OFF during a ±200 V sweep).
+        self.post_ui(lambda: self._show_nonlocal_keithley_state(in_use or "OFF"))
 
     def _show_nonlocal_keithley_state(self, text: str) -> None:
         state = self.__dict__.get("nonlocal_iv_keithley_var")
@@ -31621,7 +31669,14 @@ class CombinedControlApp:
         controller = self.nonlocal_vi_2410_controller
         source = self.nonlocal_vi_ac_controller
         stop = self.nonlocal_keithley_stop_event
-        self._nonlocal_keithley_off_first(f"before the Keithley {controller.model} measurement")
+        self._nonlocal_keithley_off_first(
+            f"before the Keithley {controller.model} measurement",
+            in_use={
+                "resistance": "in use by |R| vs time",
+                "iv": "in use by the 2400-IV sweep",
+                "2400pulse": "pulsing…",
+            }.get(self.__dict__.get("nonlocal_keithley_task"), "in use"),
+        )
         if stop.is_set():
             raise InterruptedError("Stopped before the Keithley was switched on")
         self.nonlocal_keithley_untouched = False
@@ -31661,6 +31716,8 @@ class CombinedControlApp:
                 self.nonlocal_vi_interlock.end(phase)
 
     def _nonlocal_output_warning(self) -> str:
+        if self.__dict__.get("nonlocal_keithley_off_unconfirmed"):
+            return f"; check the Keithley {self.nonlocal_vi_2410_controller.model} output"
         if self.__dict__.get("nonlocal_6221_off_unconfirmed"):
             return "; check the 6221 output"
         if self.__dict__.get("nonlocal_keithley_output_off", True):
@@ -32104,7 +32161,7 @@ class CombinedControlApp:
         controller = self.nonlocal_vi_2410_controller
         source = self.nonlocal_vi_ac_controller
         stop = self.nonlocal_keithley_stop_event
-        self._nonlocal_keithley_off_first(f"before Set {controller.model}")
+        self._nonlocal_keithley_off_first(f"before Set {controller.model}", in_use="switching on…")
         if stop.is_set():
             raise InterruptedError("Stopped before the Keithley was switched on")
         if source.source_connected:
@@ -32876,10 +32933,15 @@ class CombinedControlApp:
             actual, frequency = future.result()
         except BaseException as error:
             off = bool(self.__dict__.get("nonlocal_keithley_output_off"))
-            self.nonlocal_iv6221_source_var.set("6221: OFF" if off else "6221: check the output")
-            self.nonlocal_vi_output_var.set(
-                self._nonlocal_output_text() if off else "6221 output: check it"
-            )
+            if self.__dict__.get("nonlocal_keithley_off_unconfirmed"):
+                # It stopped at the Keithley, before the 6221 was touched.
+                self.nonlocal_iv6221_source_var.set("6221: not switched on")
+                self.nonlocal_vi_output_var.set(self._nonlocal_output_text())
+            else:
+                self.nonlocal_iv6221_source_var.set("6221: OFF" if off else "6221: check the output")
+                self.nonlocal_vi_output_var.set(
+                    self._nonlocal_output_text() if off else "6221 output: check it"
+                )
             if isinstance(error, InterruptedError):
                 self.nonlocal_vi_status_var.set(
                     "Set 6221 stopped; 6221 output off (read back)" if off
@@ -33401,9 +33463,14 @@ class CombinedControlApp:
             else " No CSV was written."
         )
         off = bool(self.__dict__.get("nonlocal_keithley_output_off", True))
-        self.nonlocal_vi_output_var.set(
-            self._nonlocal_output_text() if off else "6221 output: check it"
-        )
+        if self.__dict__.get("nonlocal_keithley_off_unconfirmed"):
+            # It stopped at the Keithley, before the 6221 was touched.
+            off = True
+            self.nonlocal_vi_output_var.set(self._nonlocal_output_text())
+        else:
+            self.nonlocal_vi_output_var.set(
+                self._nonlocal_output_text() if off else "6221 output: check it"
+            )
         self.nonlocal_iv6221_source_var.set("6221: OFF" if off else "6221: check the output")
         self.nonlocal_iv6221_point_var.set(
             "Transport acquisition: done; 6221 output OFF" if off

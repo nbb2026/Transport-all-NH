@@ -114,6 +114,9 @@ class FakeSourceMeter:
         if upper == ":SENS:CURR:PROT?":
             return str(self.limit)
         if upper == ":READ?":
+            if self.output == 0:
+                # A 2400/2410 refuses a reading with the output off.
+                raise RuntimeError('-803,"Not permitted with OUTPUT off"')
             if self.mode == "CURR":
                 if self.resistance_ohm == float("inf"):  # open: at the 5 V limit, no current
                     return "5.000000e+00,0.000000e+00"
@@ -459,6 +462,26 @@ class SweepControllerTests(unittest.TestCase):
         self.assertEqual(end[1:5], [":SOUR:VOLT 0", "sleep 1", "sleep 0.2", ":OUTP OFF"])
         self.assertEqual(meter.output, 0)
         self.assertFalse(controller.high_voltage_active, "drained: no second drain")
+
+    def test_no_drain_with_the_output_already_off(self):
+        # Review, 2026-10-09: a Stop before the pulse's output went on, or a
+        # drain that timed out, must not leave the drain flag stuck.
+        meter = FakeSourceMeter()
+        controller = connected_controller(meter)
+        controller.model = "2400"
+        controller.setup_voltage_mode(1e-3)
+        stop = threading.Event()
+        stop.set()
+        with mock.patch.object(app.time, "sleep", lambda s: meter.commands.append(f"sleep {s:g}")):
+            with self.assertRaises(app.NonLocalVIStopped):
+                controller.apply_voltage_pulse(100, 0.0, stop)
+            self.assertNotIn("sleep 1", meter.commands, "nothing to drain: never on")
+            self.assertFalse(controller.high_voltage_active)
+            controller.high_voltage_active = True   # e.g. after a drain timeout
+            controller.safe_shutdown(reset=False)
+            self.assertNotIn("sleep 1", meter.commands)
+            self.assertFalse(controller.high_voltage_active, "cleared: the output reads off")
+            controller.setup_voltage_mode(1e-3)    # usable again at once
 
     def test_a_failed_set_leaves_the_output_off(self):
         meter = FakeSourceMeter()
