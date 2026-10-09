@@ -1,5 +1,17 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MS-fourState.py: the plot leaves out each read's first 5 s (2026-10-09)
+
+- **Why:** on the lab PC each read's SR830 X settled for a few seconds after
+  its first sample (the hooks at the start of each read). The user asked for
+  the first 5 s not to be shown.
+- **What changed:** `StatePlot.shown_samples` draws each read period's X
+  samples from `HIDDEN_READ_START_S` = 5 s after its first sample on. The
+  axis scales to the samples drawn.
+- **What did not change:** the trace CSV keeps every sample, and the run
+  CSV's X, Y means are unchanged.
+- **CI screenshots:** the example reads are now 15 s with a settling start.
+
 ## MS-fourState.py: state E and the read time from the user's figures (2026-10-09)
 
 - **States (`DEFAULT_STATES`):** D 360°/+1500 Oe/+22 mA, A 270°/+1500 Oe/−22 mA

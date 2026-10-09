@@ -12,6 +12,7 @@ Windows, the lab PC's system; on Linux the results are reported only.
 """
 import argparse
 import importlib.util
+import math
 import sys
 import tkinter as tk
 from pathlib import Path
@@ -52,9 +53,11 @@ def example_timeline():
                 traces.append((t, "pulse", pulse, state))
             t += 0.5
         traces.append((t, "I", 0.5, state))
+        # A 15 s read every 0.5 s, settling at first: its first 5 s are not drawn.
         for sample in range(30):
-            traces.append((t + 2.0 + 0.1 * sample, "X", x * (1 + 0.02 * ((sample % 5) - 2)), state))
-        t += 5.0
+            settling = 0.15 * math.exp(-sample / 3.0)
+            traces.append((t + 2.0 + 0.5 * sample, "X", x * (1 + settling + 0.01 * ((sample % 5) - 2)), state))
+        t += 17.0
         traces += [(t, "read", x, state), (t, "I", 0.0, None)]
         t += 2.0
     return traces

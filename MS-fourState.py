@@ -3418,6 +3418,9 @@ class StatePlot:
     shows at its real time and for its real length."""
 
     PANELS = ("H (T)", "I (mA)", "SR830 X (µV)")
+    # The first seconds of each read's SR830 samples, still settling, are not
+    # drawn (user, 2026-10-09); the trace CSV keeps every sample.
+    HIDDEN_READ_START_S = 5.0
     LABELLED_READS = 60
     MOST_DRAWN = 4000
     REDRAW_DELAY_MS = 300  # Samples come fast; the plot is redrawn at most this often.
@@ -3445,6 +3448,21 @@ class StatePlot:
         self.pending = None
         self.redraw()
 
+    @classmethod
+    def shown_samples(cls, x_traces, periods):
+        """The X samples drawn, in µV: each read period's from
+        HIDDEN_READ_START_S after its first sample on."""
+        first = {}
+        shown = []
+        for at, _, value, state in x_traces:
+            period = next((index for index, (start, end) in enumerate(periods) if start <= at <= end), None)
+            if period is not None:
+                first.setdefault(period, at)
+                if at < first[period] + cls.HIDDEN_READ_START_S:
+                    continue
+            shown.append((at, value * 1e6, state))
+        return shown
+
     def redraw(self):
         canvas = self.canvas
         canvas.delete("all")
@@ -3466,14 +3484,7 @@ class StatePlot:
         h_points = [(at, value / OE_PER_T) for at, _, value, _ in of["H"]]
         levels = [(at, value) for at, _, value, _ in of["I"]]
         pulses = [(at, value, state) for at, _, value, state in of["pulse"]]
-        samples = [(at, value * 1e6, state) for at, _, value, state in of["X"]]
         reads = [(at, value * 1e6, state) for at, _, value, state in of["read"]]
-        ranges = (
-            [value for _, value in h_points] + [0.0],
-            [value for _, value in levels] + [value for _, value, _ in pulses] + [0.0],
-            [value for _, value, _ in samples],
-        )
-        labelled = len(reads) <= self.LABELLED_READS
         # The read periods (read current on), shaded in every panel: 0.5 mA
         # hardly shows beside the pulses, but its period is the readback's.
         periods, since = [], None
@@ -3485,6 +3496,13 @@ class StatePlot:
                 since = None
         if since is not None:
             periods.append((since, last))
+        samples = self.shown_samples(of["X"], periods)
+        ranges = (
+            [value for _, value in h_points] + [0.0],
+            [value for _, value in levels] + [value for _, value, _ in pulses] + [0.0],
+            [value for _, value, _ in samples] or [value for _, value, _ in reads],
+        )
+        labelled = len(reads) <= self.LABELLED_READS
         for index, label in enumerate(self.PANELS):
             y0 = top + index * (panel_height + gap)
             y1 = y0 + panel_height
@@ -3544,7 +3562,7 @@ class StatePlot:
                         color = STATE_COLORS.get(base_state(state or ""), "#6a1b9a")
                         canvas.create_text(x_pixel(at), y_pixel(value) - 16, text=state, fill=color,
                                            font=("TkDefaultFont", 11, "bold"))
-                if not samples:
+                if not samples and not reads:
                     canvas.create_text((left + width - right) / 2, (y0 + y1) / 2, text="Waiting for data",
                                        fill="#757575")
         axis_y = height - bottom

@@ -1351,6 +1351,20 @@ class PPMSAddressTests(unittest.TestCase):
         self.assertEqual(ms.PPMS_HOSTS, ("192.168.137.137", *core.PPMS_HOST_CHOICES))
 
 
+class PlotHiddenStartTests(unittest.TestCase):
+    def test_the_first_5_s_of_each_read_are_not_drawn(self):
+        """User, 2026-10-09: the settling start of each read is hidden."""
+        periods = [(100.0, 120.0), (200.0, 220.0)]
+        traces = [(100.0 + 2.0 + k, "X", -280e-6 + k * 1e-6, "A") for k in range(12)]
+        traces += [(200.0 + 4.0 + k, "X", -275e-6, "E") for k in range(10)]
+        shown = ms.StatePlot.shown_samples(traces, periods)
+        self.assertEqual([at for at, _, state in shown if state == "A"], [107.0 + k for k in range(7)],
+                         "from 5 s after the read's first sample (102 s) on")
+        self.assertEqual([at for at, _, state in shown if state == "E"], [209.0 + k for k in range(5)])
+        self.assertAlmostEqual(shown[0][1], -275.0, places=6, msg="in µV")
+        self.assertEqual(ms.StatePlot.HIDDEN_READ_START_S, 5.0)
+
+
 class FillScreenTests(unittest.TestCase):
     """The window opens maximised, filling the screen (user, 2026-10-09)."""
 

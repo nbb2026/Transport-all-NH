@@ -279,8 +279,10 @@ for its real length:
 - **I (mA):** the 6221. Each write pulse is a spike in its state's colour (it
   is microseconds long), and the read sine is a block at its RMS level while
   it is on.
-- **SR830 X (µV):** every sample of each read, in its state's colour, with
-  the state's letter above it.
+- **SR830 X (µV):** the samples of each read, in its state's colour, with
+  the state's letter above it. A read's first 5 s of samples, from its first
+  sample on, are still settling and are not drawn (since 2026-10-09). The
+  trace CSV keeps every sample.
 - **Read periods:** each period with the read current on is shaded in all
   three panels. 0.5 mA hardly shows beside the pulses, but the shading marks
   when the readback was taken.
