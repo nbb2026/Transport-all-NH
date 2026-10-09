@@ -541,6 +541,31 @@ class WorkerTests(unittest.TestCase):
         import tempfile
         return Path(tempfile.mkdtemp()) / "2400-IV_test.csv"
 
+    def test_the_ramp_levels(self):
+        self.assertEqual(app.ramp_levels(-50), [-5.0 * k for k in range(1, 10)])
+        self.assertEqual(app.ramp_levels(-12), [-4.0, -8.0], "equal steps of at most 5 V")
+        self.assertEqual(app.ramp_levels(1000)[:2], [5.0, 10.0])
+        self.assertEqual(len(app.ramp_levels(1000)), 199)
+        for target in (0, 3, -5):
+            self.assertEqual(app.ramp_levels(target), [], "one step or none: no ramp")
+
+    def test_the_sweep_ramps_to_start_v_first(self):
+        # User, 2026-10-09: from 0 V to Start V in steps, not in one jump.
+        self.app.nonlocal_vi_2410_controller.model = "2400"
+        self.app.nonlocal_iv_point_var = Var()
+        path = self.csv_path()
+        settings = dict(self.settings((-50.0, -45.0)), max_abs_v=50.0)
+        with mock.patch.object(app, "NONLOCAL_IV_SWEEP_RAMP_DWELL_S", 0.0):
+            self.app._nonlocal_iv_worker(settings, path)
+        levels = [float(c.split()[1]) for c in self.meter.commands
+                  if c.startswith(":SOUR:VOLT ") and not c.startswith(":SOUR:VOLT:")]
+        first = levels.index(-50.0)
+        self.assertEqual(levels[first - 9:first], [-5.0 * k for k in range(1, 10)])
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+        self.assertEqual([line.split(",")[1] for line in lines[1:]], ["-50", "-45"],
+                         "the ramp levels are not measured")
+        self.assertEqual(self.meter.output, 0)
+
     def test_a_sweep_reads_every_point_then_switches_off(self):
         path = self.csv_path()
         self.app._nonlocal_iv_worker(self.settings(), path)

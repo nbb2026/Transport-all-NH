@@ -63,6 +63,13 @@ The user asked to raise the 2400-IV voltage limit from ±20 V to ±200 V on a
   - Both use the Current limit A and the safety tick, switch the 6221 off
     first, and ask a HIGH VOLTAGE question above ±20 V. A line under them
     shows the Keithley's state.
+- **Ramp to Start V** (user, 2026-10-09): the sweep goes from 0 V to Start V
+  in equal steps of at most `NONLOCAL_IV_SWEEP_RAMP_STEP_V` = 5 V,
+  `NONLOCAL_IV_SWEEP_RAMP_DWELL_S` = 0.2 s apart (`ramp_levels`), before the
+  first point. That is 25 V/s, so −1000 V takes 40 s. The ramp levels are
+  not measured. The confirmation and the time estimate include it, and Stop
+  works during it. At the end the output goes to 0 V and is drained, as
+  before.
 - **Defaults** (user, 2026-10-09): Start −50 V, End 50 V, Step 5 V,
   Settle 0.5 s (21 points; the 200 V range on a 2400).
 - **No Sample box** any more (user, 2026-10-09); run folders are

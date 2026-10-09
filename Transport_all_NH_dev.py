@@ -1463,6 +1463,10 @@ NONLOCAL_IV_SWEEP_START_V = -50.0
 NONLOCAL_IV_SWEEP_END_V = 50.0
 NONLOCAL_IV_SWEEP_STEP_V = 5.0
 NONLOCAL_IV_SWEEP_SETTLE_S = 0.5
+# The ramp from 0 V to Start V before the first point (user, 2026-10-09):
+# steps of at most this size, this long apart (25 V/s; -1000 V in 40 s).
+NONLOCAL_IV_SWEEP_RAMP_STEP_V = 5.0
+NONLOCAL_IV_SWEEP_RAMP_DWELL_S = 0.2
 NONLOCAL_IV_SWEEP_COMPLIANCE_A = KEITHLEY_DEFAULT_COMPLIANCE_A
 NONLOCAL_IV_SWEEP_MAX_COMPLIANCE_A = 0.1
 # The Non-local Keithley's voltage limits, for the 2400-IV sweep and the
@@ -4755,6 +4759,15 @@ def nonlocal_keithley_source(model: str, max_abs_v: float) -> dict:
             if high else NONLOCAL_IV_SWEEP_MAX_COMPLIANCE_A
         ),
     }
+
+
+def ramp_levels(target_v: float, step_v: float = NONLOCAL_IV_SWEEP_RAMP_STEP_V) -> list[float]:
+    """The levels from 0 V towards ``target_v`` in steps of at most
+    ``step_v``, without 0 V and without the target itself (the sweep's first
+    point sets it)."""
+    target_v = float(target_v)
+    count = math.ceil(abs(target_v) / step_v - 1e-9)
+    return [round(target_v * index / count, 10) for index in range(1, count)] if count > 1 else []
 
 
 def current_unit(max_abs_current_a: float) -> tuple[float, str]:
@@ -32150,7 +32163,10 @@ class CombinedControlApp:
             messagebox.showwarning("2400-IV", str(error), parent=self.root)
             return
         total = len(settings["voltages"])
-        estimate = self._format_scan_duration(total * (float(settings["settle_s"]) + 0.15))
+        ramp = ramp_levels(settings["voltages"][0])
+        estimate = self._format_scan_duration(
+            total * (float(settings["settle_s"]) + 0.15) + len(ramp) * NONLOCAL_IV_SWEEP_RAMP_DWELL_S
+        )
         source = settings["source"]
         model = self.nonlocal_vi_2410_controller.model
         high_voltage = source["range_v"] > KEITHLEY_LOW_SOURCE_RANGE_V
@@ -32159,7 +32175,12 @@ class CombinedControlApp:
             f"Keithley {model}: "
             f"{settings['start_v']:g} V → {settings['end_v']:g} V in {settings['step_v']:g} V steps, "
             f"{total} points, {settings['settle_s']:g} s settle\n"
-            f"Current limit: {settings['current_limit_a']:g} A\n"
+            + (
+                f"Ramp first: 0 → {settings['start_v']:g} V in steps of at most "
+                f"{NONLOCAL_IV_SWEEP_RAMP_STEP_V:g} V, {NONLOCAL_IV_SWEEP_RAMP_DWELL_S:g} s apart\n"
+                if ramp else ""
+            )
+            + f"Current limit: {settings['current_limit_a']:g} A\n"
             f"Estimated time: about {estimate}"
             + (
                 f"\n\nHIGH VOLTAGE: up to {source['max_abs_v']:g} V on the {source['range_v']:g} V range; "
@@ -32266,6 +32287,20 @@ class CombinedControlApp:
                 limit_read = controller.start_iv_sweep(
                     limit, settings.get("max_abs_v", KEITHLEY_LOW_SOURCE_RANGE_V)
                 )
+                # From 0 V to Start V in steps, not in one jump (user,
+                # 2026-10-09); these levels are not measured.
+                start_v = float(settings["voltages"][0])
+                for level in ramp_levels(start_v):
+                    if stop.is_set():
+                        raise InterruptedError("2400-IV sweep stopped")
+                    controller.set_iv_voltage(level)
+                    self.post_ui(
+                        lambda value=level: self.nonlocal_iv_point_var.set(
+                            f"Ramping to Start V: {value:+g} V of {start_v:+g} V"
+                        )
+                    )
+                    if stop.wait(NONLOCAL_IV_SWEEP_RAMP_DWELL_S):
+                        raise InterruptedError("2400-IV sweep stopped")
                 started = time.monotonic()
                 for index, target in enumerate(settings["voltages"], start=1):
                     if stop.is_set():
