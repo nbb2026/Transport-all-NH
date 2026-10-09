@@ -58,7 +58,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 # The instrument code MS-fourState shares with the main program, copied so
 # this file runs on its own.  Do not edit here: fix the main program and run
 # Other-files/tools/ms_fourstate_copy_core.py.
-# Copied from Transport_all_NH_dev.py, SHA-256 4d138bd8a4e9…
+# Copied from Transport_all_NH_dev.py, SHA-256 d09734a93ba3…
 import importlib
 
 
@@ -302,7 +302,8 @@ def instrument_lease_key(resource: str) -> str:
     still goes to VISA unchanged; this does not resolve vendor-defined aliases.
     """
     key = str(resource).strip().upper()
-    match = re.fullmatch(r"GPIB(\d*)::(\d+)(?:::(\d+))?::INSTR", key)
+    # ::INSTR is optional in VISA: GPIB0::30 is the same 6221 (review, 2026-10-09).
+    match = re.fullmatch(r"GPIB(\d*)::(\d+)(?:::(\d+))?(?:::INSTR)?", key)
     if match:
         board, primary, secondary = match.groups()
         key = f"GPIB{int(board or '0')}::{int(primary)}"
