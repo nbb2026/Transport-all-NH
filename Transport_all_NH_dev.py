@@ -28785,9 +28785,15 @@ class CombinedControlApp:
                         else "center"
                     ),
                 )
-        for y_value in reversed(y_ticks):
+        # A short plot (e.g. Gate-VI with three harmonic rows) labels every
+        # second or third tick, so the labels stay at least 16 px apart.
+        spacing = plot_height / max(1, len(y_ticks) - 1)
+        label_every = max(1, math.ceil(16.0 / spacing)) if spacing > 0 else 1
+        for index, y_value in enumerate(reversed(y_ticks)):
             y = top + (y_max - y_value) / (y_max - y_min) * plot_height
             canvas.create_line(left - 4, y, left, y)
+            if index % label_every:
+                continue
             canvas.create_text(
                 left - 7,
                 y,

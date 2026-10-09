@@ -206,5 +206,42 @@ class WorkerTests(unittest.TestCase):
                          [("8", "1"), ("mfli", "2")])
 
 
+
+class Canvas:
+    """Records the text a plot draws; sized as a short Gate-VI row."""
+    ppms_compact_plot, ppms_hide_x_labels = True, False
+
+    def __init__(self, height):
+        self.height, self.texts = height, []
+
+    def winfo_width(self):
+        return 600
+
+    def winfo_height(self):
+        return self.height
+
+    def create_text(self, x, y, **options):
+        self.texts.append((y, options.get("text")))
+
+    def __getattr__(self, name):
+        return lambda *args, **options: None
+
+
+class TickLabelTests(unittest.TestCase):
+    def y_labels(self, height):
+        a = bare_app()
+        canvas = Canvas(height)
+        # 3.9 to 4.6 nV: eight ticks of 0.1, as the 3rd harmonic row in CI.
+        a._draw_nonlocal_series(canvas, {"mfli": [(0.0, 3.9e-9), (1.0, 4.6e-9)]},
+                                "Elapsed time (s)", "X", "waiting", auto_voltage_unit=True)
+        return sorted(y for y, text in canvas.texts if text and text[0].isdigit() and y < height - 30)
+
+    def test_labels_stay_16_px_apart_on_a_short_plot(self):
+        short = self.y_labels(110)
+        self.assertGreater(len(short), 1)
+        self.assertGreaterEqual(min(b - a for a, b in zip(short, short[1:])), 16.0)
+        self.assertGreater(len(self.y_labels(400)), len(short), "a tall plot labels every tick")
+
+
 if __name__ == "__main__":
     unittest.main()
