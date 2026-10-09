@@ -446,6 +446,20 @@ class SweepControllerTests(unittest.TestCase):
         self.assertEqual(meter.commands[:3], [":SOUR:VOLT 0", "sleep 1", "sleep 0.2"])
         self.assertLess(meter.commands.index(":OUTP OFF"), meter.commands.index("*RST"))
 
+    def test_every_pulse_ends_drained(self):
+        # User, 2026-10-09: drain every pulse, ±20 V and below included.
+        meter = FakeSourceMeter()
+        controller = connected_controller(meter)
+        controller.model = "2400"
+        controller.setup_voltage_mode(1e-3)
+        with mock.patch.object(app.time, "sleep", lambda s: meter.commands.append(f"sleep {s:g}")):
+            meter.commands.clear()
+            controller.apply_voltage_pulse(5, 0.0, threading.Event())
+        end = meter.commands[meter.commands.index(":SOUR:VOLT 5"):]
+        self.assertEqual(end[1:5], [":SOUR:VOLT 0", "sleep 1", "sleep 0.2", ":OUTP OFF"])
+        self.assertEqual(meter.output, 0)
+        self.assertFalse(controller.high_voltage_active, "drained: no second drain")
+
     def test_a_failed_set_leaves_the_output_off(self):
         meter = FakeSourceMeter()
         meter.query = (lambda original: lambda command: (

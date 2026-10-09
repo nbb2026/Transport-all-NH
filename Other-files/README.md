@@ -31,6 +31,10 @@ The user asked to raise the 2400-IV voltage limit from ±20 V to ±200 V on a
   - It applies to every switch-off (Stop, OFF, end of sweep, failure) and
     before the `*RST` that starts the next measurement.
   - An output found on at a setup, e.g. after a reconnect, is drained too.
+- **Every pulse drained** (user, 2026-10-09): Gate-VI pulses and Apply
+  pulse end at 0 V with the output on until drained, at any voltage. Before,
+  only pulses above ±20 V did. This adds about 1.2 s per point; the
+  estimate includes it.
 - **Set left on, then another measurement** (review round 2): every
   measurement worker first drains and switches off a live Keithley output
   and reads it back off (`_nonlocal_keithley_off_first`). This happens

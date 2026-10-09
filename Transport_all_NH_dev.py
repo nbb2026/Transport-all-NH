@@ -6076,8 +6076,8 @@ class NonLocalVI2410Controller:
         # The largest |V| set_iv_voltage takes: the running 2400-IV sweep's,
         # else the pulse setup's.
         self.iv_sweep_max_abs_v = NONLOCAL_VI_MAX_ABS_PULSE_V
-        # On the high range (above ±20 V): the output is drained at 0 V
-        # before it goes off (safe_shutdown).
+        # Drain at 0 V before the output goes off (safe_shutdown): on the
+        # high range (above ±20 V), and after every pulse.
         self.high_voltage_active = False
         self.lock = threading.RLock()
         self.set_model(model)
@@ -6337,6 +6337,10 @@ class NonLocalVI2410Controller:
                 # This pulse's range and OVP (above ±20 V the high range),
                 # read back while the output is still off.
                 self._set_source_range_locked(abs(voltage_v))
+                # Every pulse ends drained at 0 V before the output goes off
+                # (user, 2026-10-09), whatever its voltage, so the sample
+                # sees the same end on either side of ±20 V.
+                self.high_voltage_active = True
                 # A Stop pressed since the last wait: no output at all.
                 if stop_event.is_set():
                     raise NonLocalVIStopped()
@@ -30159,7 +30163,9 @@ class CombinedControlApp:
         # The hold and a couple of reads while the current is chosen.
         resistance_estimate_s = NONLOCAL_VI_RES_HOLD_S + 2 * NONLOCAL_VI_RES_SAMPLE_INTERVAL_S
         settings["estimated_s"] = resistance_estimate_s + len(voltage_scan) * (
-            settings["pulse_width_s"]
+            # The drain after each pulse (at least 1 s, then two readings).
+            NONLOCAL_KEITHLEY_DISCHARGE_S + 2 * NONLOCAL_KEITHLEY_SAMPLE_INTERVAL_S
+            + settings["pulse_width_s"]
             + settings["post_pulse_s"]
             + settings["settle_s"]
             + settings["measure_s"]
