@@ -12782,10 +12782,6 @@ class CombinedControlApp:
         )[0]
         self.nonlocal_vi_mfli_harmonic_var = tk.IntVar(value=NONLOCAL_HARMONIC)
         self.nonlocal_vi_mfli_channel_var = tk.StringVar(value="R")
-        self.nonlocal_vi_mfli_input_impedance_var = tk.StringVar(
-            value="10 MΩ"
-        )
-        self.nonlocal_vi_mfli_input_scaling_var = tk.StringVar(value="1")
         self.nonlocal_vi_measurement_enabled_vars = {
             "8": tk.BooleanVar(value=False),
             "9": tk.BooleanVar(value=False),
@@ -21402,27 +21398,15 @@ class CombinedControlApp:
                 **({"textvariable": self.nonlocal_iv6221_zurich_range_var} if key == "mfli"
                    else {"text": "Autorange ON"}),
             ).grid(row=row, column=7, sticky="w", padx=(6, 0))
-        # The Zurich's Signal Input 1 (its reference input and TC are on the
-        # rack's Zurich row), then the 2182A.
-        ttk.Label(meters, text="Zurich input").grid(row=3, column=0, sticky="e", padx=(12, 3), pady=2)
-        zurich_input = ttk.Frame(meters)
-        zurich_input.grid(row=3, column=1, columnspan=7, sticky="w", pady=2)
-        ttk.Label(zurich_input, text="Impedance").pack(side="left", padx=(0, 3))
-        ttk.Combobox(
-            zurich_input,
-            textvariable=self.nonlocal_vi_mfli_input_impedance_var,
-            values=("10 MΩ", "50 Ω"),
-            state="readonly",
-            width=7,
-        ).pack(side="left", padx=(0, 8))
-        ttk.Label(zurich_input, text="Scaling").pack(side="left", padx=(0, 3))
-        ttk.Entry(zurich_input, textvariable=self.nonlocal_vi_mfli_input_scaling_var, width=6).pack(side="left")
-        ttk.Label(meters, text="2182A").grid(row=4, column=0, sticky="e", padx=(12, 3), pady=2)
+        # The Zurich's Signal Input 1 is 10 MΩ, scaling 1, as on 6221-IV (user,
+        # 2026-10-09: no Zurich input row); its reference input and TC are on
+        # the rack's Zurich row.  Then the 2182A.
+        ttk.Label(meters, text="2182A").grid(row=3, column=0, sticky="e", padx=(12, 3), pady=2)
         ttk.Checkbutton(
             meters, text="Measure (channel 1, NPLC 1, autorange)",
             variable=self.nonlocal_vi_use_2182_var,
             command=self._redraw_nonlocal_vi_plots,
-        ).grid(row=4, column=1, columnspan=7, sticky="w", pady=2)
+        ).grid(row=3, column=1, columnspan=7, sticky="w", pady=2)
         self._arrange_pair_by_width(body, params, meters, gap=0, stack_gap=4)
         return body
 
@@ -29626,10 +29610,9 @@ class CombinedControlApp:
                         getattr(self.nonlocal_vi_ac_controller, "mfli_device", "")
                         or zurich_mfli_choice(self.nonlocal_vi_mfli_device_var.get())[0]
                     ),
-                    "input_impedance": self.nonlocal_vi_mfli_input_impedance_var.get().strip(),
-                    "input_scaling": float(
-                        self.nonlocal_vi_mfli_input_scaling_var.get()
-                    ),
+                    # Signal Input 1 as on 6221-IV (no choice on the page).
+                    "input_impedance": "10 MΩ",
+                    "input_scaling": 1.0,
                     "timeconstant_s": float(self.nonlocal_mfli_tc_var.get()),
                     "auto_range": True,
                 }

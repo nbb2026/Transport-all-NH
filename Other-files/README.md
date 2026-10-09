@@ -7,6 +7,8 @@
   - **Voltage against the pulse voltage:** each lock-in's R. These are the
     variables' defaults, kept.
   - **Each row** is now harmonic, Measure and autorange.
+  - **Zurich input row:** removed (user request). Signal Input 1 is 10 MΩ,
+    scaling 1, as on 6221-IV.
 - **Plots, first row:** X, Y and θ against time.
   - **Meters:** every meter ticked Measure is overlaid in its own colour, with
     a legend when there are two or more, and named in the title, as on
