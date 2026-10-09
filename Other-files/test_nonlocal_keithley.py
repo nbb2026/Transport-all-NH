@@ -397,18 +397,54 @@ class SweepControllerTests(unittest.TestCase):
         with mock.patch.object(app.time, "sleep", lambda s: meter.commands.append(f"sleep {s:g}")):
             meter.commands.clear()
             controller.safe_shutdown(reset=False)
-            self.assertEqual(meter.commands, [":SOUR:VOLT 0", "sleep 1", ":OUTP OFF"])
+            # 1 s, then until two readings are off the current limit.
+            self.assertEqual(meter.commands, [":SOUR:VOLT 0", "sleep 1", "sleep 0.2", ":OUTP OFF"])
             # The next setup (*RST switches off at once) drains first too.
             controller.set_dc_voltage(500, 1e-3)
             meter.commands.clear()
             controller.setup_voltage_mode(1e-3)
-            self.assertEqual(meter.commands[:4], [":SOUR:VOLT 0", "sleep 1", ":OUTP OFF", "*RST"])
+            self.assertEqual(meter.commands[:5], [":SOUR:VOLT 0", "sleep 1", "sleep 0.2", ":OUTP OFF", "*RST"])
             self.assertFalse(controller.high_voltage_active)
             # Up to ±20 V nothing waits.
             controller.set_dc_voltage(5, 1e-3)
             meter.commands.clear()
             controller.safe_shutdown(reset=False)
             self.assertEqual(meter.commands, [":SOUR:VOLT 0", ":OUTP OFF"])
+
+    def test_the_drain_waits_while_the_current_is_at_the_limit(self):
+        # Review, 2026-10-09: a low Current limit A drains slowly; the output
+        # stays at 0 V until the current is off the limit (the terminals at
+        # 0 V), and a sample still charged after 30 s is reported.
+        clock = [0.0]
+        meter = FakeSourceMeter()
+        controller = connected_controller(meter)
+        controller.model = "2400"
+        controller.set_dc_voltage(100, 1e-6)
+        readings = iter(["0,-1.0e-06"] * 5 + ["0,-2.0e-07"] * 2)
+        original = meter.query
+        meter.query = lambda command: next(readings) if command.upper() == ":READ?" else original(command)
+        fake_time = mock.Mock(monotonic=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+        with mock.patch.object(app, "time", fake_time):
+            controller.safe_shutdown(reset=False)
+        # 1 s, five readings at the limit, then two off it (0.2 s apart).
+        self.assertAlmostEqual(clock[0], 1.0 + 6 * 0.2, places=6, msg="1 s, then until off the limit")
+        self.assertEqual(meter.output, 0)
+        meter.query = original
+        controller.set_dc_voltage(100, 1e-6)
+        meter.query = lambda command: "0,-1.0e-06" if command.upper() == ":READ?" else original(command)
+        with mock.patch.object(app, "time", fake_time), \
+                self.assertRaisesRegex(RuntimeError, "may still be charged"):
+            controller.safe_shutdown(reset=False)
+        self.assertEqual(meter.output, 0, "switched off all the same")
+
+    def test_an_output_found_on_is_drained_before_the_reset(self):
+        meter = FakeSourceMeter()
+        controller = connected_controller(meter)
+        meter.output, meter.voltage = 1, 150.0   # e.g. left on before a reconnect
+        with mock.patch.object(app.time, "sleep", lambda s: meter.commands.append(f"sleep {s:g}")):
+            controller.setup_voltage_mode(1e-3)
+        self.assertEqual(meter.commands[:3], [":SOUR:VOLT 0", "sleep 1", "sleep 0.2"])
+        self.assertLess(meter.commands.index(":OUTP OFF"), meter.commands.index("*RST"))
 
     def test_a_failed_set_leaves_the_output_off(self):
         meter = FakeSourceMeter()

@@ -131,7 +131,7 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertEqual(
             (a.nonlocal_iv_start_var.get(), a.nonlocal_iv_end_var.get(), a.nonlocal_iv_step_var.get(),
              a.nonlocal_iv_settle_var.get(), a.nonlocal_iv_limit_var.get()),
-            ("-6", "6", "0.25", "0.5", "0.001"))
+            ("-50", "50", "5", "0.5", "0.001"))
 
     def widgets(self, cls, variable=None, text=None):
         found, pending = [], [self.app.nonlocal_vi_tab]

@@ -1389,6 +1389,12 @@ NONLOCAL_VI_2410_SOURCE_OVP_V = 20.0
 # current limit (1 mA empties 1 µF from 1000 V in 1 s) instead of leaving
 # them charged (review, 2026-10-09).
 NONLOCAL_KEITHLEY_DISCHARGE_S = 1.0
+# The drain then goes on until the current is off the limit (the source then
+# holds the terminals at 0 V: drained), at most this long; a sample still
+# charged after it is reported (review, 2026-10-09: a low Current limit A
+# drains slowly).
+NONLOCAL_KEITHLEY_DRAIN_MAX_S = 30.0
+NONLOCAL_KEITHLEY_SAMPLE_INTERVAL_S = 0.2
 NONLOCAL_VI_START_PULSE_V = 20.0
 NONLOCAL_VI_STOP_PULSE_V = -20.0
 NONLOCAL_VI_STEP_PULSE_V = 4.0
@@ -6176,13 +6182,22 @@ class NonLocalVI2410Controller:
                 release_instrument_lease(resource, self)
                 raise
 
+    def _drain_before_reset_locked(self) -> None:
+        """Before a *RST: an output still on is drained at 0 V and switched
+        off (safe_shutdown), as one after high voltage is."""
+        if not self.__dict__.get("high_voltage_active") and int(self._query_float(":OUTP?")) == 1:
+            # Its voltage is unknown here: drain as after high voltage.
+            self.high_voltage_active = self.source_mode != "CURR"
+        if self.__dict__.get("high_voltage_active"):
+            self.safe_shutdown(reset=False)
+
     def setup_voltage_mode(self, current_compliance_a: float) -> None:
         with self.lock:
             instrument = self._require_instrument()
-            # *RST switches the output off at once: after high voltage, drain
-            # at 0 V first.
-            if self.__dict__.get("high_voltage_active"):
-                self.safe_shutdown(reset=False)
+            # *RST switches the output off at once: after high voltage, or
+            # with the output found on (e.g. left on before a reconnect),
+            # drain at 0 V first.
+            self._drain_before_reset_locked()
             self.iv_sweep_max_abs_v = NONLOCAL_VI_MAX_ABS_PULSE_V
             instrument.write("*RST")
             instrument.write("*CLS")
@@ -6245,16 +6260,23 @@ class NonLocalVI2410Controller:
             commands = [zero_command, ":OUTP OFF"]
             if reset:
                 commands.extend(("*RST", "*CLS"))
-            # After high voltage: 0 V with the output still on for a moment,
-            # so the sample and cable are drained, not left charged.
-            drain = self.source_mode == "VOLT" and bool(self.__dict__.get("high_voltage_active"))
+            # After high voltage: 0 V with the output still on until the
+            # sample and cable are drained, not left charged.
+            drain = self.source_mode != "CURR" and bool(self.__dict__.get("high_voltage_active"))
             for command in commands:
                 try:
                     instrument.write(command)
                 except BaseException as error:
                     errors.append(f"{command}: {error}")
                 if command == zero_command and drain:
-                    time.sleep(NONLOCAL_KEITHLEY_DISCHARGE_S)
+                    try:
+                        self._drain_locked(instrument)
+                    except BaseException as error:
+                        errors.append(str(error))
+            if drain and not errors:
+                # Drained and off: no further drain is needed (each later
+                # output sets its own range, or starts from *RST).
+                self.high_voltage_active = False
             self.output_enabled = False
             self.iv_sweep_max_abs_v = NONLOCAL_VI_MAX_ABS_PULSE_V
             if reset:
@@ -6263,6 +6285,28 @@ class NonLocalVI2410Controller:
                 raise RuntimeError(
                     f"Keithley {self.model} safe shutdown failed: " + "; ".join(errors)
                 )
+
+    def _drain_locked(self, instrument) -> None:
+        """At 0 V with the output on: at least NONLOCAL_KEITHLEY_DISCHARGE_S,
+        then until two readings in a row are off the current limit (the
+        source then holds the terminals at 0 V), at most
+        NONLOCAL_KEITHLEY_DRAIN_MAX_S.  Raises if the sample may still be
+        charged."""
+        started = time.monotonic()
+        time.sleep(NONLOCAL_KEITHLEY_DISCHARGE_S)
+        limit_a = abs(float(instrument.query(":SENS:CURR:PROT?").strip()))
+        calm = 0
+        while True:
+            values = [float(value) for value in instrument.query(":READ?").strip().split(",")]
+            calm = calm + 1 if abs(values[1]) < 0.9 * limit_a else 0
+            if calm >= 2:
+                return
+            if time.monotonic() - started >= NONLOCAL_KEITHLEY_DRAIN_MAX_S:
+                raise RuntimeError(
+                    f"Keithley {self.model} still at its {limit_a:g} A current limit after "
+                    f"{NONLOCAL_KEITHLEY_DRAIN_MAX_S:g} s at 0 V: the sample may still be charged"
+                )
+            time.sleep(NONLOCAL_KEITHLEY_SAMPLE_INTERVAL_S)
 
     def apply_voltage_pulse(
         self,
@@ -6298,9 +6342,9 @@ class NonLocalVI2410Controller:
                     status_callback(voltage_v)
                 self._wait(width_s, stop_event)
             finally:
-                self.safe_shutdown(reset=False)
                 if status_callback is not None:
                     status_callback(0.0)
+                self.safe_shutdown(reset=False)
             self._check_error(
                 command, after=f"the {voltage_v:g} V pulse (its level or the switch-off)"
             )
@@ -6308,10 +6352,9 @@ class NonLocalVI2410Controller:
 
     def _setup_resistance_mode(self, source_current_a: float) -> None:
         instrument = self._require_instrument()
-        # *RST switches the output off at once: after high voltage, drain
-        # at 0 V first.
-        if self.__dict__.get("high_voltage_active"):
-            self.safe_shutdown(reset=False)
+        # *RST switches the output off at once: drain first (as
+        # setup_voltage_mode).
+        self._drain_before_reset_locked()
         self.high_voltage_active = False
         instrument.write("*RST")
         instrument.write("*CLS")
@@ -30407,6 +30450,8 @@ class CombinedControlApp:
         raw_file = summary_file = resistance_file = None
         run_start = time.monotonic()
         try:
+            # A voltage left on by Set: drained and off before the 6221.
+            self._nonlocal_keithley_off_first("before the Gate-VI scan")
             frequency, lockin_readbacks = (
                 self.nonlocal_vi_ac_controller.configure(
                     settings["current_rms_ma"],
@@ -31363,19 +31408,43 @@ class CombinedControlApp:
 
     def _note_nonlocal_keithley_taken(self) -> None:
         """A voltage left on by Set ends when another measurement takes the
-        Keithley (each starts from off), or the 6221 is switched on."""
+        Keithley: it says "switching off" until _nonlocal_keithley_off_first
+        has read it back off (review, 2026-10-09: never OFF before that)."""
         state = self.__dict__.get("nonlocal_iv_keithley_var")
         if state is not None and " ON:" in state.get():
             state.set(
                 f"Keithley {self.nonlocal_vi_2410_controller.model}: "
-                "OFF (switched off by the next measurement)"
+                "ON, switching off for the next measurement…"
             )
+
+    def _nonlocal_keithley_off_first(self, context: str) -> None:
+        """First in every measurement worker, before a Stop check or the
+        6221: a Keithley output left on (Set) is drained, switched off and
+        read back off.  If that fails the page says "check the output"."""
+        controller = self.nonlocal_vi_2410_controller
+        if not controller.connected:
+            return
+        try:
+            controller.confirm_output_off(context)
+        except BaseException:
+            self.nonlocal_keithley_untouched = False
+            self.nonlocal_keithley_output_off = False
+            self.nonlocal_keithley_off_unconfirmed = True
+            self.post_ui(lambda: self._show_nonlocal_keithley_state("check the output"))
+            raise
+        self.post_ui(lambda: self._show_nonlocal_keithley_state("OFF"))
+
+    def _show_nonlocal_keithley_state(self, text: str) -> None:
+        state = self.__dict__.get("nonlocal_iv_keithley_var")
+        if state is not None and self.nonlocal_vi_2410_controller.connected:
+            state.set(f"Keithley {self.nonlocal_vi_2410_controller.model}: {text}")
 
     def _begin_nonlocal_keithley_task(self, kind: str, worker, finish) -> None:
         if kind != "2400set":
             self._note_nonlocal_keithley_taken()
         self.nonlocal_keithley_stop_event.clear()
         self.nonlocal_keithley_output_off = False
+        self.nonlocal_keithley_off_unconfirmed = False
         self.nonlocal_keithley_task = kind
         self.nonlocal_last_task = kind
         self.nonlocal_6221_off_unconfirmed = False
@@ -31421,6 +31490,7 @@ class CombinedControlApp:
         controller = self.nonlocal_vi_2410_controller
         source = self.nonlocal_vi_ac_controller
         stop = self.nonlocal_keithley_stop_event
+        self._nonlocal_keithley_off_first(f"before the Keithley {controller.model} measurement")
         if stop.is_set():
             raise InterruptedError("Stopped before the Keithley was switched on")
         self.nonlocal_keithley_untouched = False
@@ -31449,7 +31519,9 @@ class CombinedControlApp:
                 except BaseException as restore_error:
                     # Name the measurement's own failure too, not only this one.
                     original = restore_error.__context__
-                    if original is not None and not isinstance(original, InterruptedError):
+                    if original is not None and not isinstance(
+                        original, (InterruptedError, NonLocalVIStopped)
+                    ):
                         raise RuntimeError(
                             f"{original}; then switching back to the pulse setup failed: {restore_error}"
                         ) from restore_error
@@ -31471,6 +31543,8 @@ class CombinedControlApp:
         model = self.nonlocal_vi_2410_controller.model
         if self.__dict__.get("nonlocal_6221_off_unconfirmed"):
             return "6221 output: check it"
+        if self.__dict__.get("nonlocal_keithley_off_unconfirmed"):
+            return f"Keithley {model} output: check it"
         if self.__dict__.get("nonlocal_keithley_output_off", True):
             return f"Keithley {model} and 6221 outputs: OFF"
         return f"Keithley {model} output: check it"
@@ -31899,6 +31973,7 @@ class CombinedControlApp:
         controller = self.nonlocal_vi_2410_controller
         source = self.nonlocal_vi_ac_controller
         stop = self.nonlocal_keithley_stop_event
+        self._nonlocal_keithley_off_first(f"before Set {controller.model}")
         if stop.is_set():
             raise InterruptedError("Stopped before the Keithley was switched on")
         if source.source_connected:
@@ -31935,8 +32010,9 @@ class CombinedControlApp:
         try:
             voltage_v, current_a = future.result()
         except BaseException as error:
-            off = bool(self.__dict__.get("nonlocal_keithley_output_off")) or bool(
-                self.__dict__.get("nonlocal_keithley_untouched")
+            off = not self.__dict__.get("nonlocal_keithley_off_unconfirmed") and (
+                bool(self.__dict__.get("nonlocal_keithley_output_off"))
+                or bool(self.__dict__.get("nonlocal_keithley_untouched"))
             )
             self.nonlocal_iv_keithley_var.set(
                 f"Keithley {model}: OFF" if off else f"Keithley {model}: check the output"
@@ -32006,7 +32082,9 @@ class CombinedControlApp:
         self.nonlocal_keithley_task = None
         model = self.nonlocal_vi_2410_controller.model
         untouched = bool(self.__dict__.get("nonlocal_keithley_untouched"))
-        off = untouched or bool(self.__dict__.get("nonlocal_keithley_output_off"))
+        off = not self.__dict__.get("nonlocal_keithley_off_unconfirmed") and (
+            untouched or bool(self.__dict__.get("nonlocal_keithley_output_off"))
+        )
         self.nonlocal_iv_keithley_var.set(
             f"Keithley {model}: OFF" if off else f"Keithley {model}: check the output"
         )
@@ -32616,10 +32694,10 @@ class CombinedControlApp:
     def _nonlocal_iv6221_set_worker(self, settings: dict):
         source = self.nonlocal_vi_ac_controller
         keithley = self.nonlocal_vi_2410_controller
+        # The Keithley drained and read back off first (also after a Set).
+        self._nonlocal_keithley_off_first("before switching the 6221 on")
         if self.nonlocal_keithley_stop_event.is_set():
             raise InterruptedError("Stopped before the 6221 was switched on")
-        if keithley.connected:
-            keithley.confirm_output_off("before switching the 6221 on")
         try:
             frequency, _readbacks = self._nonlocal_iv6221_configure(
                 source, settings, settings["current_ma"]
@@ -32962,12 +33040,12 @@ class CombinedControlApp:
         keithley = self.nonlocal_vi_2410_controller
         plan = settings["plan"]
         passes = settings["passes"]
+        # The Keithley must be off while the voltmeters read: drained and
+        # read back off first (also after a Set).
+        self._nonlocal_keithley_off_first("before the 6221-IV scan")
         try:
             if stop.is_set():
                 raise InterruptedError("Stopped before the 6221 was switched on")
-            if keithley.connected:
-                # The Keithley must be off while the voltmeters read.
-                keithley.confirm_output_off("before the 6221-IV scan")
             self.nonlocal_vi_interlock.begin(NonLocalVIInterlock.SR830_READ)
             # As the RT-E Current scan: one fixed range for the largest
             # current, the sine started once, then only its amplitude changed

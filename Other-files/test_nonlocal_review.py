@@ -246,10 +246,36 @@ class ManualKeithleyTests(unittest.TestCase):
         self.assertEqual(a.nonlocal_iv_keithley_var.get(), "Keithley 2400 ON: 50 V, I = 50 nA")
         self.assertEqual(a.nonlocal_iv6221_source_var.get(), "6221: OFF")
         self.assertIsNone(a.nonlocal_keithley_task)
-        # Another measurement takes the Keithley (each starts from off).
+        # Another measurement takes the Keithley: never OFF before it is read
+        # back off (review, 2026-10-09).
         a._note_nonlocal_keithley_taken()
         self.assertEqual(a.nonlocal_iv_keithley_var.get(),
-                         "Keithley 2400: OFF (switched off by the next measurement)")
+                         "Keithley 2400: ON, switching off for the next measurement…")
+        a._nonlocal_keithley_off_first("before the next measurement")
+        self.assertEqual((self.meter.output, self.meter.voltage), (0, 0.0), "drained and off")
+        self.assertEqual(a.nonlocal_iv_keithley_var.get(), "Keithley 2400: OFF")
+
+    def test_a_stop_or_6221_error_never_shows_off_while_the_keithley_is_on(self):
+        a = self.a
+        self.run_action(a.set_nonlocal_keithley_voltage)
+        self.assertEqual(self.meter.output, 1)
+        # The next measurement fails on the 6221 before it reaches the
+        # Keithley: the Keithley is switched off first all the same.
+        a.nonlocal_vi_ac_controller.output_off.side_effect = RuntimeError("6221 GPIB timeout")
+        a.nonlocal_iv_set_voltage_var.set("40")
+        self.run_action(a.set_nonlocal_keithley_voltage)
+        self.assertEqual(self.meter.output, 0, "the 1st Set's voltage is off before the 6221 step")
+        self.assertEqual(a.nonlocal_iv_keithley_var.get(), "Keithley 2400: OFF")
+        # A Keithley that cannot be read back off: "check the output", not OFF.
+        a.nonlocal_vi_ac_controller.output_off.side_effect = None
+        a.nonlocal_iv_set_voltage_var.set("50")
+        self.run_action(a.set_nonlocal_keithley_voltage)
+        a.nonlocal_vi_2410_controller.confirm_output_off = mock.Mock(side_effect=RuntimeError("still ON"))
+        a.nonlocal_keithley_stop_event.set()
+        a.nonlocal_iv_set_voltage_var.set("5")
+        a._nonlocal_keithley_free = lambda what: True
+        self.run_action(a.set_nonlocal_keithley_voltage)
+        self.assertEqual(a.nonlocal_iv_keithley_var.get(), "Keithley 2400: check the output")
 
     def test_no_question_up_to_20_v_and_no_answer_switches_nothing(self):
         a = self.a

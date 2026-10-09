@@ -595,6 +595,7 @@ class SetCurrentTests(unittest.TestCase):
         a = page(source)
         a.nonlocal_vi_2410_controller = mock.Mock(connected=True)
         a.nonlocal_keithley_stop_event = threading.Event()
+        a.post_ui = lambda callback: callback()
         settings = a._parse_nonlocal_iv6221_lockins()
         actual, frequency = a._nonlocal_iv6221_set_worker(settings)
         self.assertEqual((actual, frequency), (0.1, 17.3))

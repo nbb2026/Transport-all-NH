@@ -19,11 +19,27 @@ The user asked to raise the 2400-IV voltage limit from ±20 V to ±200 V on a
   maximum). The software limit still stops at the user's ±200 V / ±1000 V,
   and the confirmation says so.
 - **Drained before off** (review, 2026-10-09): after high voltage the
-  Keithley holds 0 V with the output on for `NONLOCAL_KEITHLEY_DISCHARGE_S`
-  = 1 s before switching off, so a capacitive sample or cable is drained
-  through the current limit. Before, it went straight from the set voltage
-  to output off. This applies to every switch-off (Stop, OFF, end of
-  sweep, failure) and before the `*RST` that starts the next measurement.
+  Keithley holds 0 V with the output on before switching it off, so a
+  capacitive sample or cable is drained through the current limit. Before,
+  it went straight from the set voltage to output off.
+  - It holds at least `NONLOCAL_KEITHLEY_DISCHARGE_S` = 1 s, then until two
+    readings in a row are off the current limit (the terminals are then at
+    0 V).
+  - After at most `NONLOCAL_KEITHLEY_DRAIN_MAX_S` = 30 s it switches off
+    and reports that the sample may still be charged. A low Current limit A
+    drains slowly.
+  - It applies to every switch-off (Stop, OFF, end of sweep, failure) and
+    before the `*RST` that starts the next measurement.
+  - An output found on at a setup, e.g. after a reconnect, is drained too.
+- **Set left on, then another measurement** (review round 2): every
+  measurement worker first drains and switches off a live Keithley output
+  and reads it back off (`_nonlocal_keithley_off_first`). This happens
+  before its Stop check and before the 6221.
+  - The state line says "ON, switching off…" until then, and OFF only
+    after the read-back.
+  - If the read-back fails it says "check the output".
+  - Before, it said OFF as soon as the next measurement was queued, even if
+    that measurement stopped before reaching the Keithley.
 - **Pulse setup read back:** `setup_voltage_mode` now reads back the 20 V
   OVP and 20 V range, so a Keithley left on the high range is caught.
 - **Current limit:** at most 0.1 A, and at most 0.021 A on the 2410's 1000 V
