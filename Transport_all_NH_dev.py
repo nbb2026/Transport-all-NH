@@ -21437,7 +21437,7 @@ class CombinedControlApp:
             ttk.Label(params, text=label).grid(
                 row=row, column=column, sticky="e", padx=(0 if column == 0 else 8, 3), pady=2
             )
-            entry = ttk.Entry(params, textvariable=variable, width=6)
+            entry = ttk.Entry(params, textvariable=variable, width=5)
             entry.grid(row=row, column=column + 1, sticky="ew", pady=2)
             return entry
 
@@ -21475,22 +21475,23 @@ class CombinedControlApp:
             ttk.Label(meters, text=f"{NONLOCAL_METER_NAMES[key]} harmonic").grid(
                 row=row, column=0, sticky="e", padx=(12, 3), pady=2
             )
-            ttk.Spinbox(meters, from_=1, to=top, textvariable=harmonic, width=5).grid(
+            ttk.Spinbox(meters, from_=1, to=top, textvariable=harmonic, width=4).grid(
                 row=row, column=1, sticky="ew", pady=2
             )
-            ttk.Label(meters, text="Read").grid(row=row, column=2, sticky="e", padx=(8, 3), pady=2)
+            ttk.Label(meters, text="Read").grid(row=row, column=2, sticky="e", padx=(6, 3), pady=2)
             ttk.Combobox(
                 meters, textvariable=channel, values=("X", "Y", "R"), state="readonly", width=3,
             ).grid(row=row, column=3, sticky="ew", pady=2)
-            ttk.Label(meters, text="Coupling").grid(row=row, column=4, sticky="e", padx=(8, 3), pady=2)
+            ttk.Label(meters, text="Coupling").grid(row=row, column=4, sticky="e", padx=(6, 3), pady=2)
             ttk.Combobox(
-                meters, textvariable=coupling, values=("AC", "DC"), state="readonly", width=4,
+                meters, textvariable=coupling, values=("AC", "DC"), state="readonly", width=3,
             ).grid(row=row, column=5, sticky="ew", pady=2)
             ttk.Checkbutton(
                 meters, text="Measure", variable=measure, command=self._redraw_nonlocal_vi_plots,
-            ).grid(row=row, column=6, padx=(8, 3))
+            ).grid(row=row, column=6, padx=(6, 3))
+            # Narrow enough for this box to sit beside "Gate-VI scan" at 2000 px.
             ttk.Label(
-                meters, width=14,
+                meters, width=12,
                 **({"textvariable": self.nonlocal_iv6221_zurich_range_var} if key == "mfli"
                    else {"text": "Autorange ON"}),
             ).grid(row=row, column=7, sticky="w", padx=(6, 0))
