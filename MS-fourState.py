@@ -41,7 +41,9 @@ never drive the same instruments.
 import csv
 import json
 import math
+import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -50,7 +52,7 @@ import types
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 # ===== BEGIN copied from Transport_all_NH_dev.py (Other-files/tools/ms_fourstate_copy_core.py) =====
 # The instrument code MS-fourState shares with the main program, copied so
@@ -3339,6 +3341,38 @@ def nice_ticks(low, high, count=5):
 # The plot's time axis: seconds for a short run, then minutes, then hours.
 TIME_UNITS = ((600.0, "s", 1.0), (3 * 3600.0, "min", 60.0), (math.inf, "h", 3600.0))
 TRACE_COLUMNS = ("time_s", "quantity", "value", "unit", "state")
+# Names Windows refuses, as the PPMS page checks a typed file name.
+WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
+                          *(f"LPT{i}" for i in range(1, 10))}
+
+
+def valid_file_stem(stem):
+    """A file name without a path or characters Windows forbids (the PPMS page's rule)."""
+    return bool(stem) and not stem.endswith((".", " ")) and not re.search(r'[<>:"/\\|?*\x00-\x1f]', stem) \
+        and stem.split(".")[0].upper() not in WINDOWS_RESERVED_NAMES
+
+
+def run_file_paths(folder, stem):
+    """A run's files, all named after its live CSV, side by side in the chosen
+    folder: the CSV as on the PPMS page, and the files only this program
+    writes (its settings, the timeline, the log and the plot)."""
+    folder = Path(folder)
+    return {
+        "csv": folder / f"{stem}.csv",
+        "settings": folder / f"{stem}_settings.json",
+        "trace": folder / f"{stem}_trace.csv",
+        "log": folder / f"{stem}_log.txt",
+        "plot": folder / f"{stem}_plot.eps",
+    }
+
+
+def append_live_csv(path, row):
+    """One row to the live CSV, as the PPMS page writes it: opened, appended,
+    flushed and synced to disk each time, so a crash keeps every row."""
+    with Path(path).open("a", newline="", encoding="utf-8-sig") as handle:
+        csv.DictWriter(handle, fieldnames=CSV_COLUMNS, extrasaction="ignore").writerow(row)
+        handle.flush()
+        os.fsync(handle.fileno())
 TRACE_UNITS = {"H": "Oe", "I": "mA RMS", "pulse": "mA", "X": "V", "read": "V"}
 
 
@@ -3526,10 +3560,11 @@ class FourStateApp:
         self.run = None
         self.busy = False
         self.rows = []
-        self.csv_file = None
-        self.csv_writer = None
-        self.run_folder = None   # The running run's folder: logs go there.
-        self.last_folder = None  # The latest run's folder: Save plot goes there.
+        # The running run's files (run_file_paths), and the latest run's:
+        # the log goes to the first, Save plot and the folder dialogs start
+        # from the second.
+        self.run_paths = None
+        self.last_paths = None
         self.record = None
         # Set after a Move that was stopped or failed (the rotator may still
         # be turning; cleared by a reading at rest), and after a field
@@ -3656,7 +3691,7 @@ class FourStateApp:
 
         run = ttk.LabelFrame(page, text="Run", padding=6)
         run.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-        run.columnconfigure(12, weight=1)
+        run.columnconfigure(13, weight=1)
         self.mode_var = tk.StringVar(value=MODES[self.initial_mode])
         ttk.Label(run, text="Mode").grid(row=0, column=0, sticky="w")
         mode = ttk.Combobox(run, textvariable=self.mode_var, values=tuple(MODES.values()),
@@ -3678,6 +3713,12 @@ class FourStateApp:
         self.count_label.grid(row=0, column=4, sticky="w")
         self.count_entry = ttk.Entry(run, textvariable=self.values["repeats"], width=6)
         self.count_entry.grid(row=0, column=5, sticky="w", padx=(4, 6))
+        # Sequence mode's own number of cycles (user, 2026-10-09): the typed
+        # states run that many times, e.g. A B A B twice is A B A B A B A B.
+        self.sequence_repeats_var = tk.StringVar(value="1")
+        self.sequence_count_entry = ttk.Entry(run, textvariable=self.sequence_repeats_var, width=6)
+        self.sequence_count_entry.grid(row=0, column=5, sticky="w", padx=(4, 6))
+        self.inputs.append((self.sequence_count_entry, "normal"))
         self.until_stop_var = tk.BooleanVar(value=False)
         self.until_stop_box = ttk.Checkbutton(run, text="Until Stop", variable=self.until_stop_var)
         self.until_stop_box.grid(row=0, column=6, sticky="w", padx=(0, 10))
@@ -3686,19 +3727,23 @@ class FourStateApp:
         self.start_button.grid(row=0, column=7, padx=2)
         self.stop_button = ttk.Button(run, text="Stop", command=self.stop, width=8, state="disabled")
         self.stop_button.grid(row=0, column=8, padx=2)
+        # As the PPMS page: the run's rows saved again under a name of choice.
+        self.save_csv_button = ttk.Button(run, text="Save CSV as", command=self.save_csv_as, width=12,
+                                          state="disabled")
+        self.save_csv_button.grid(row=0, column=9, padx=2)
         self.save_plot_button = ttk.Button(run, text="Save plot", command=self.save_plot, width=10)
-        self.save_plot_button.grid(row=0, column=9, padx=2)
+        self.save_plot_button.grid(row=0, column=10, padx=2)
         self.progress = ttk.Progressbar(run, length=100)
-        self.progress.grid(row=0, column=10, padx=(10, 6))
+        self.progress.grid(row=0, column=11, padx=(10, 6))
         self.status_var = tk.StringVar(value="Connect, check the settings, then Start")
-        ttk.Label(run, textvariable=self.status_var).grid(row=0, column=11, columnspan=2, sticky="ew")
+        ttk.Label(run, textvariable=self.status_var).grid(row=0, column=12, columnspan=2, sticky="ew")
         self._apply_mode(initial=True)
         self.safety_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             run, variable=self.safety_var,
             text=("Sample, wiring, pulse current, compliance, field and rotator clearance confirmed safe; "
                   "no other program is driving the PPMS, 6221 or SR830"),
-        ).grid(row=1, column=0, columnspan=13, sticky="w", pady=(4, 0))
+        ).grid(row=1, column=0, columnspan=14, sticky="w", pady=(4, 0))
 
         lower = ttk.Frame(page)
         lower.grid(row=2, column=0, sticky="nsew", pady=(6, 0))
@@ -4202,18 +4247,19 @@ class FourStateApp:
 
     def _apply_mode(self, initial=False):
         """Cycle: its states, the number of cycles and Until Stop.
-        Sequence: its states only, run once."""
+        Sequence: its states and its own number of cycles (default 1)."""
         cycle = self.mode == "cycle"
         self.sequence_label.configure(text="Cycle" if cycle else "Sequence")
-        for widget in (self.cycle_entry, self.count_label, self.count_entry, self.until_stop_box):
+        for widget in (self.cycle_entry, self.count_entry, self.until_stop_box):
             if cycle:
                 widget.grid()
             else:
                 widget.grid_remove()
-        if cycle:
-            self.sequence_entry.grid_remove()
-        else:
-            self.sequence_entry.grid()
+        for widget in (self.sequence_entry, self.sequence_count_entry):
+            if cycle:
+                widget.grid_remove()
+            else:
+                widget.grid()
 
     # -- events from threads --------------------------------------------
     def post(self, kind, payload=None):
@@ -4323,9 +4369,9 @@ class FourStateApp:
         self.last_command = None
 
     def _file_log(self, stamp, text):
-        if self.run_folder is not None:
+        if self.run_paths is not None:
             try:
-                with open(self.run_folder / "log.txt", "a", encoding="utf-8") as handle:
+                with open(self.run_paths["log"], "a", encoding="utf-8") as handle:
                     handle.write(f"{stamp} {text}\n")
             except OSError:
                 pass
@@ -4338,6 +4384,8 @@ class FourStateApp:
         self._update_connection_controls()
         self.start_button.configure(state=state)
         self.stop_button.configure(state="normal" if running else "disabled")
+        if "save_csv_button" in self.__dict__:
+            self.save_csv_button.configure(state="normal" if self.rows and not busy else "disabled")
 
     def _controller(self, key):
         return {"ppms": self.ppms, "6221": self.source, "sr830": self.lockin}[key]
@@ -4453,7 +4501,7 @@ class FourStateApp:
             text, until_stop = self.cycle_var.get(), self.until_stop_var.get()
         else:
             text, until_stop = self.sequence_var.get(), False
-            values["repeats"] = "1"  # A sequence runs once, as typed.
+            values["repeats"] = self.sequence_repeats_var.get()  # Its own Cycles box.
         return build_settings(states, text, values, self.autorange_var.get(), until_stop=until_stop)
 
     def start(self):
@@ -4473,11 +4521,19 @@ class FourStateApp:
         except ValueError as error:
             messagebox.showerror(self.title, str(error), parent=self.root)
             return
-        if not messagebox.askyesno(self.title, self.summary(settings), parent=self.root, default="no"):
+        if not messagebox.askyesno(
+                self.title, self.summary(settings) + "\n\nContinue to choose the save folder and start?",
+                parent=self.root, default="no"):
+            return
+        # As the PPMS page: a folder, then a file name for the live CSV.
+        try:
+            paths = self._choose_run_files()
+        except OSError as error:
+            messagebox.showerror(self.title, f"Could not create the live CSV: {error}", parent=self.root)
+            return
+        if paths is None:
             return
         try:
-            folder = self.data_directory / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self.mode}"
-            folder.mkdir(parents=True, exist_ok=False)
             record = asdict(settings)
             record["mode"] = self.mode
             record["until_stop"] = settings.repeats is None
@@ -4485,27 +4541,19 @@ class FourStateApp:
                                 for name, (a, h, i) in settings.states.items()}
             record["instruments"] = {"ppms_host": self.host_var.get(), "6221": self.source.identity,
                                      "sr830": self.lockin.identity}
-            (folder / "settings.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
-            csv_file = open(folder / f"{self.title}.csv", "w", newline="", encoding="utf-8")
-            try:
-                writer = csv.DictWriter(csv_file, fieldnames=CSV_COLUMNS, extrasaction="ignore")
-                writer.writeheader()
-                csv_file.flush()
-            except OSError:
-                csv_file.close()
-                raise
+            record["files"] = {key: path.name for key, path in paths.items()}
+            paths["settings"].write_text(json.dumps(record, indent=2), encoding="utf-8")
         except OSError as error:
             messagebox.showerror(self.title, f"Could not create the data files: {error}", parent=self.root)
             return
-        self.run_folder = self.last_folder = folder
+        self.run_paths = self.last_paths = paths
         self.record = record
-        self.csv_file = csv_file
-        self.csv_writer = writer
         self.csv_failed = False
         self.rows = []
+        self.save_csv_button.configure(state="disabled")
         self.plot.clear()
         try:
-            self.trace_file = open(folder / f"{self.title}_trace.csv", "w", newline="", encoding="utf-8")
+            self.trace_file = open(paths["trace"], "x", newline="", encoding="utf-8-sig")
             self.trace_writer = csv.writer(self.trace_file)
             self.trace_writer.writerow(TRACE_COLUMNS)
         except OSError as error:
@@ -4515,7 +4563,7 @@ class FourStateApp:
         self.progress.configure(maximum=settings.total_steps or self.steps_per_cycle, value=0)
         self.stop_event.clear()
         self._set_busy(True, running=True)
-        self._append_log(f"Run folder: {folder}")
+        self._append_log(f"Live CSV: {paths['csv']}")
         self.run = FourStateRun(self.ppms, self.source, self.lockin, settings, emit=self.post, stop=self.stop_event)
         run = self.run
 
@@ -4532,13 +4580,59 @@ class FourStateApp:
         self.worker = threading.Thread(target=target, daemon=True)
         self.worker.start()
 
+    def _choose_run_files(self):
+        """The PPMS page's way: a folder, then a file name (default
+        MS-fourState_<mode>_<time>); a name already there gets _01, _02, …,
+        so nothing is overwritten.  The live CSV is created with its header.
+        Returns the run's files (run_file_paths), or None if cancelled."""
+        start = self.last_paths["csv"].parent if self.last_paths else HERE
+        folder = filedialog.askdirectory(
+            parent=self.root, title=f"Select the folder for the {self.title} live CSV",
+            initialdir=str(start))
+        if not folder:
+            return None
+        default_stem = f"{APP_TITLE}_{MODES[self.mode]}_{time.strftime('%Y%m%d_%H%M%S')}"
+        while True:
+            requested = simpledialog.askstring(
+                f"{self.title} file name",
+                f"Folder: {folder}\nEnter a file name (.csv may be omitted):\n"
+                f"Leave empty for the default name: {default_stem}.csv\n"
+                "An existing name gets a number appended, nothing is overwritten.",
+                parent=self.root)
+            if requested is None:
+                return None
+            stem = requested.strip()
+            if not stem:
+                stem = default_stem
+                break
+            if stem.lower().endswith(".csv"):
+                stem = stem[:-4]
+            if valid_file_stem(stem):
+                break
+            messagebox.showerror("Invalid file name", "Enter a valid file name without a path or "
+                                 "characters forbidden in Windows file names.", parent=self.root)
+        suffix = 0
+        while True:
+            name = f"{stem}_{suffix:02d}" if suffix else stem
+            paths = run_file_paths(folder, name)
+            suffix += 1
+            if any(path.exists() for path in paths.values()):
+                continue
+            try:
+                with paths["csv"].open("x", newline="", encoding="utf-8-sig") as handle:
+                    csv.DictWriter(handle, fieldnames=CSV_COLUMNS).writeheader()
+            except FileExistsError:
+                continue
+            return paths
+
     def summary(self, s):
+        what = "cycle" if self.mode == "cycle" else "sequence"
         if s.repeats is None:
-            lines = ["Run this cycle until Stop?", ""]
+            lines = [f"Run this {what} until Stop?", ""]
         elif s.repeats == 1:
             lines = ["Run this once?", ""]
         else:
-            lines = [f"Run this cycle {s.repeats} times?", ""]
+            lines = [f"Run this {what} {s.repeats} times?", ""]
         for index, name in enumerate(s.sequence[:12], 1):
             angle, field, pulse = s.states[name]
             lines.append(f"{index:>2}. {name:<2}  φ {angle:g}°,  H {field:+g} Oe,  pulse {pulse:+g} mA")
@@ -4563,23 +4657,22 @@ class FourStateApp:
         return "\n".join(lines)
 
     def _record_lockin(self, settings):
-        if self.record is None or self.run_folder is None:
+        if self.record is None or self.run_paths is None:
             return
         self.record["sr830_settings"] = settings
-        (self.run_folder / "settings.json").write_text(json.dumps(self.record, indent=2), encoding="utf-8")
+        self.run_paths["settings"].write_text(json.dumps(self.record, indent=2), encoding="utf-8")
 
     def _add_point(self, row):
         self.rows.append(row)
         try:
-            if self.csv_writer is not None:
-                self.csv_writer.writerow(row)
-                self.csv_file.flush()
+            if self.run_paths is not None:
+                append_live_csv(self.run_paths["csv"], row)
         except OSError as error:
             self._append_log(f"CSV write failed at step {row['step']}: {error}")
             if not self.__dict__.get("csv_failed"):
                 self.csv_failed = True
                 messagebox.showwarning(self.title, f"Writing the CSV failed: {error}\n\nThe run continues and the "
-                                       "plot keeps every point; settings.json and the log are in the run folder.",
+                                       "plot keeps every point; Save CSV as saves them all at the end.",
                                        parent=self.root)
         finally:
             done = len(self.rows)
@@ -4612,14 +4705,6 @@ class FourStateApp:
             pass
         self.trace_file = self.trace_writer = None
         try:
-            if self.csv_file is not None:
-                self.csv_file.close()
-        except OSError as error:
-            problems = problems + [f"CSV not closed cleanly: {error}"]
-        finally:
-            self.csv_file = None
-            self.csv_writer = None
-        try:
             if self.rows:
                 self.save_plot(quiet=True)
         finally:
@@ -4639,7 +4724,7 @@ class FourStateApp:
             text = f"Failed after {count} points: {core.short_status_error(outcome[1], 100)}; {off}"
         self.status_var.set(text)
         self._append_log(text)
-        self.run_folder = None
+        self.run_paths = None
         if outcome is not None and outcome[0] == "failed" or problems:
             detail = str(outcome[1]) if outcome is not None and outcome[0] == "failed" else "Run ended."
             if problems:
@@ -4651,11 +4736,43 @@ class FourStateApp:
             self.stop_event.set()
             self.status_var.set("Stopping: 6221 off and field to 0 Oe after the current action…")
 
-    def save_plot(self, quiet=False):
-        folder = self.last_folder or self.data_directory
+    def save_csv_as(self):
+        """As the PPMS page's Save CSV as: every row of the last run, to a file of choice."""
+        if not self.rows:
+            return
+        start = self.last_paths["csv"].parent if self.last_paths else HERE
+        selected = filedialog.asksaveasfilename(
+            parent=self.root, title=f"Save {self.title} CSV as", defaultextension=".csv",
+            filetypes=(("CSV", "*.csv"),), initialdir=str(start),
+            initialfile=time.strftime(f"{APP_TITLE}_{MODES[self.mode]}_%Y%m%d_%H%M%S.csv"))
+        if not selected:
+            return
         try:
-            folder.mkdir(parents=True, exist_ok=True)
-            path = folder / f"{self.title}_plot.eps"
+            with open(selected, "w", newline="", encoding="utf-8-sig") as handle:
+                writer = csv.DictWriter(handle, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(self.rows)
+        except OSError as error:
+            messagebox.showerror(f"Save {self.title} CSV", str(error), parent=self.root)
+            return
+        self.status_var.set(f"Saved: {selected}")
+
+    def save_plot(self, quiet=False):
+        """At the end of a run, beside its CSV; by the button, to a file of choice."""
+        if quiet:
+            if not self.last_paths:
+                return
+            path = self.last_paths["plot"]
+        else:
+            start = self.last_paths["csv"].parent if self.last_paths else HERE
+            name = self.last_paths["plot"].name if self.last_paths else f"{APP_TITLE}_plot.eps"
+            selected = filedialog.asksaveasfilename(
+                parent=self.root, title=f"Save {self.title} plot as", defaultextension=".eps",
+                filetypes=(("EPS", "*.eps"),), initialdir=str(start), initialfile=name)
+            if not selected:
+                return
+            path = Path(selected)
+        try:
             self.canvas.update_idletasks()
             self.canvas.postscript(file=str(path), colormode="color")
         except (OSError, tk.TclError) as error:

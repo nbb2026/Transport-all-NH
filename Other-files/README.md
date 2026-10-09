@@ -1,5 +1,27 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MS-fourState.py: saving as the PPMS page; Cycles in Sequence mode (2026-10-09)
+
+- **Saving (user request: "change the file save logic as main PPMS"):**
+  - **Before:** a fixed folder, `MS-fourState data/<time>_<mode>/`.
+  - **Now:** Start asks for a folder and then a file name, as the PPMS page
+    does. The default name is `MS-fourState_<Cycle|Sequence>_<time>`; the
+    PPMS page's Windows-name check applies, and `_01`, `_02`, … are added so
+    nothing is overwritten.
+  - **The live CSV** is utf-8-sig, and each row is appended, flushed and
+    fsynced (`append_live_csv`).
+  - **Save CSV as** saves all rows again.
+  - **The other files** take the CSV's name, in the same folder:
+    `_settings.json`, `_trace.csv`, `_log.txt` and `_plot.eps`. **Save plot**
+    asks for a file. `manual_log.txt` stays in `MS-fourState data/`.
+- **Cycles in Sequence mode (user request: "add a cycle number input in the
+  run module"):** Sequence mode has its own **Cycles** box, default 1. The
+  typed states run that many times, and the summary reads "Run this sequence
+  N times?". Cycle mode is unchanged.
+- **Tests:** `SaveTests` in `test_ms_four_state.py` covers the folder and
+  name dialogs, the name check, the numbered names, the live rows and Save
+  CSV as; the mode test now covers the Sequence Cycles box.
+
 ## MS-fourState.py runs on its own (2026-10-09)
 
 - **Why:** on the lab PC, `MS-fourState.py` copied alone into

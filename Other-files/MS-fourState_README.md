@@ -13,7 +13,7 @@ The **Mode** list in the Run row chooses how it runs:
 | Mode | Runs |
 | --- | --- |
 | Cycle (default) | A cycle of states, default `D A B E B A`, repeated from its first state (D-A-B-E-B-A-D-A-B-…) for the number of **Cycles** set, or until Stop if that box is ticked |
-| Sequence | The states once, in the order typed, for example `D A B E B A D`, or `A B A B A B` to switch between two states |
+| Sequence | The states in the order typed, for example `D A B E B A D`, or `A B A B A B` to switch between two states, run for the number of **Cycles** set in Sequence mode (default 1, once) |
 
 Each mode keeps its own states, so switching between them loses nothing.
 
@@ -85,7 +85,7 @@ and temperature), is a console in the style of a command-line session.
   is counted on its line (×3) instead of repeated.
 - **Colours:** sent in blue, replies in grey, failures in red.
 - **Keeping it:** **Clear** empties the console. During a run every line also
-  goes to the run's `log.txt`. The console keeps its last 3000 lines.
+  goes to the run's `<name>_log.txt`. The console keeps its last 3000 lines.
 
 ## Manual settings
 
@@ -134,7 +134,7 @@ As on the PPMS page, nothing is sent while the rotator may be moving:
   still be going to that field.
 
 Every manual action and its result is written to `manual_log.txt` in the
-data folder.
+`MS-fourState data` folder next to the program.
 
 **Stop** during a manual action does what it does in a run: 6221 off and
 0 Oe (Driven), read back. That includes a field set earlier with Set H.
@@ -208,7 +208,7 @@ reserve, phase 0, starting range 2 µV.
 
 At each Start, `*CLS` clears any error latched by an earlier disconnect. The
 first harmonic, the external reference and the filters are then set again
-and read back. Everything else is recorded as found in `settings.json`. A
+and read back. Everything else is recorded as found in `<name>_settings.json`. A
 time constant above 10 s is refused.
 
 ## Stops
@@ -233,19 +233,37 @@ The run also stops on:
 
 ## Data
 
-Each run gets a folder `MS-fourState data/<date_time>_<mode>/` next to the
-program, for example `MS-fourState data/20261007_153000_cycle/`:
+Files are saved as on the main program's PPMS page (since 2026-10-09):
 
-- `MS-fourState.csv`: one row per step, written as it is measured. The columns
-  are: state and cycle; angle set and read; write field set and read; pulse
-  current, width, count, compliance and compliance seen; read field;
-  temperature; read current and frequency; X, Y, R, θ and the standard
-  deviations of X and Y; the SR830 range; and R'xy.
-- `settings.json`: every setting of the run, the mode, the SR830 settings
-  found at Start, the SR830 output offsets and
-  expands, and the instruments' identities.
-- `log.txt`: the status and instrument log of that run.
-- `MS-fourState_plot.eps`: the plot, saved at the end and by **Save plot**.
+1. **Start** shows the run's summary; **Yes** goes on to choose where to save.
+2. **Folder:** a folder dialog picks the folder for the live CSV.
+3. **File name:** a box asks for the name.
+   - **Default:** empty uses `MS-fourState_<Cycle|Sequence>_<date>_<time>`.
+   - **Typing a name:** `.csv` may be left off. A name with a path, or with
+     characters Windows forbids, is refused.
+   - **Existing names:** a name that exists already gets `_01`, `_02`, … and
+     nothing is overwritten.
+4. **Writing:** the live CSV is created with its header, and each step's row
+   is appended, flushed and synced to disk as it is measured.
+5. **Save CSV as:** after a run, this saves all its rows again to a file of
+   choice.
+
+In the chosen folder, every file of a run starts with its name:
+
+- `<name>.csv`: one row per step. The columns are:
+  - state and cycle;
+  - angle set and read; write field set and read;
+  - pulse current, width, count, compliance and compliance seen;
+  - read field; temperature; read current and frequency;
+  - X, Y, R, θ and the standard deviations of X and Y;
+  - the SR830 range; and R'xy.
+- `<name>_settings.json`: every setting of the run, the mode, the SR830
+  settings found at Start, the SR830 output offsets and expands, the
+  instruments' identities, and the run's file names.
+- `<name>_trace.csv`: the timeline, below.
+- `<name>_log.txt`: the status and instrument log of that run.
+- `<name>_plot.eps`: the plot, saved at the end. **Save plot** saves it to a
+  file of choice.
 
 The plot is a timing diagram of the run against the time since it started,
 in s (min after 10 min, h after 3 h). Each period shows at its real time and
@@ -261,7 +279,7 @@ for its real length:
   three panels. 0.5 mA hardly shows beside the pulses, but the shading marks
   when the readback was taken.
 
-The same timeline is saved as `MS-fourState_trace.csv` in the run folder,
+The same timeline is saved as `<name>_trace.csv` beside the CSV,
 with columns time_s, quantity, value, unit and state. The quantities are H
 (Oe), I (mA RMS), pulse (mA), X (V) and read (V, the read's mean). A state
 read again after a time therefore shows how long it is kept.

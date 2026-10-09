@@ -1182,9 +1182,8 @@ class DisplayTests(unittest.TestCase):
         app.plot = mock.Mock()
         app.progress = mock.Mock()
         app.last_var = mock.Mock()
-        app.csv_file = mock.Mock()
-        app.csv_writer = mock.Mock()
-        app.csv_writer.writerow.side_effect = OSError("disk full (test)")
+        # A live CSV that cannot be written (its folder is gone).
+        app.run_paths = ms.run_file_paths(Path("/nonexistent/folder"), "run")
         app.csv_failed = False
         return app
 
@@ -1343,6 +1342,69 @@ class DisplayTests(unittest.TestCase):
         app.root.destroy.assert_not_called()
 
 
+class SaveTests(unittest.TestCase):
+    """Saving as the main program's PPMS page (user, 2026-10-09)."""
+
+    def app(self, folder):
+        app = ms.FourStateApp.__new__(ms.FourStateApp)
+        app.root, app.title = None, "MS-fourState"
+        app.mode_var = mock.Mock(get=lambda: "Cycle")
+        app.last_paths = None
+        self.folder = folder
+        return app
+
+    def setUp(self):
+        import tempfile
+        self.directory = Path(tempfile.mkdtemp())
+
+    def choose(self, app, names):
+        answers = iter(names)
+        with mock.patch.object(ms.filedialog, "askdirectory", return_value=str(self.directory)), \
+                mock.patch.object(ms.simpledialog, "askstring", lambda *a, **k: next(answers)), \
+                mock.patch.object(ms.messagebox, "showerror") as error:
+            return app._choose_run_files(), error
+
+    def test_a_folder_then_a_file_name_as_on_the_ppms_page(self):
+        app = self.app(self.directory)
+        paths, _error = self.choose(app, [""])
+        self.assertEqual(paths["csv"].parent, self.directory)
+        self.assertRegex(paths["csv"].name, r"^MS-fourState_Cycle_\d{8}_\d{6}\.csv$", "the default name")
+        with paths["csv"].open(encoding="utf-8-sig") as handle:
+            self.assertEqual(handle.readline().strip().split(","), list(ms.CSV_COLUMNS))
+        stem = paths["csv"].stem
+        self.assertEqual({key: path.name for key, path in paths.items()},
+                         {"csv": f"{stem}.csv", "settings": f"{stem}_settings.json",
+                          "trace": f"{stem}_trace.csv", "log": f"{stem}_log.txt",
+                          "plot": f"{stem}_plot.eps"})
+
+    def test_a_typed_name_is_checked_and_never_overwrites(self):
+        app = self.app(self.directory)
+        first, _ = self.choose(app, ["sample1 run.csv"])
+        self.assertEqual(first["csv"].name, "sample1 run.csv")
+        second, error = self.choose(app, ["bad/name", "CON", "sample1 run"])
+        self.assertEqual(error.call_count, 2, "a path and a reserved name are refused")
+        self.assertEqual(second["csv"].name, "sample1 run_01.csv", "an existing name gets a number")
+        cancelled, _ = self.choose(app, [None])
+        self.assertIsNone(cancelled)
+
+    def test_each_row_is_appended_and_synced_and_save_csv_as_writes_them_all(self):
+        app = self.app(self.directory)
+        paths, _ = self.choose(app, ["live"])
+        row = {column: 1 for column in ms.CSV_COLUMNS}
+        ms.append_live_csv(paths["csv"], row)
+        ms.append_live_csv(paths["csv"], dict(row, step=2))
+        with paths["csv"].open(encoding="utf-8-sig") as handle:
+            self.assertEqual(len(handle.read().splitlines()), 3)
+        app.rows = [row, dict(row, step=2)]
+        app.last_paths = paths
+        app.status_var = mock.Mock()
+        target = self.directory / "again.csv"
+        with mock.patch.object(ms.filedialog, "asksaveasfilename", return_value=str(target)):
+            app.save_csv_as()
+        with target.open(encoding="utf-8-sig") as handle:
+            self.assertEqual(len(handle.read().splitlines()), 3)
+
+
 class WindowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1456,12 +1518,19 @@ class WindowTests(unittest.TestCase):
         self.root.update()
         self.assertEqual([shown(w) for w in (app.cycle_entry, app.count_entry, app.until_stop_box,
                                              app.sequence_entry)], [False, False, False, True])
+        self.assertTrue(shown(app.sequence_count_entry), "a sequence has its own Cycles box")
+        self.assertTrue(shown(app.count_label))
         self.assertEqual(app.sequence_label.cget("text"), "Sequence")
         app.sequence_var.set("A B A B A B")
         settings = app.current_settings()
         self.assertEqual((settings.sequence, settings.repeats), (("A", "B", "A", "B", "A", "B"), 1),
-                         "a sequence runs once, whatever the cycle settings")
+                         "by default a sequence runs once, whatever the cycle settings")
         self.assertIn("Run this once?", app.summary(settings))
+        self.addCleanup(app.sequence_repeats_var.set, "1")
+        app.sequence_repeats_var.set("4")
+        settings = app.current_settings()
+        self.assertEqual(settings.repeats, 4)
+        self.assertIn("Run this sequence 4 times?", app.summary(settings))
         app.sequence_var.set("D A B E")
         self.assertEqual(app.cycle_var.get(), "D A B E B A", "each mode keeps its own states")
 
