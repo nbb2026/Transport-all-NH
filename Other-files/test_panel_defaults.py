@@ -203,6 +203,16 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertEqual(a.nonlocal_iv6221_zurich_range_var.get(), "Autorange ON")
         # The Gate-VI read settings keep their own harmonic fields.
         self.assertEqual(len(self.widgets("TSpinbox", a.nonlocal_vi_lockin_harmonic_vars["8"])), 1)
+        # Laid out as "6221-IV settings" (user, 2026-10-09): a Measure tick
+        # per meter, the 2182A's too, and the safety tick on top.
+        measure = [w for w in self.widgets("TCheckbutton") if str(w.cget("text")).startswith("Measure")]
+        variables = {str(w.cget("variable")) for w in measure}
+        for variable in (a.nonlocal_vi_measurement_enabled_vars["8"], a.nonlocal_vi_measurement_enabled_vars["9"],
+                         a.nonlocal_vi_use_mfli_var, a.nonlocal_vi_use_2182_var):
+            self.assertIn(str(variable), variables)
+        self.assertEqual(len(self.widgets(
+            "TCheckbutton", text="Safety confirmed: voltage pulses, read current, wiring, sample")), 1)
+        self.assertEqual(len(self.widgets("TCombobox", a.nonlocal_vi_output_mode_var)), 1)
 
     def test_non_local_measurements_take_turns_on_the_keithley(self):
         a = self.app

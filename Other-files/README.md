@@ -1,5 +1,22 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local Gate-VI: settings laid out as 6221-IV (2026-10-09)
+
+- **Request:** the user asked for the "Gate-VI settings" box to look like
+  "6221-IV settings".
+- **Left side:** the safety tick on top; then 6221 mA, Frequency Hz and
+  Compliance V; then Trigger line and Output (AC/DC).
+- **Right side:** one row per lock-in: "SR830 #8 / SR830 #9 / Zurich
+  harmonic", Read (X/Y/R), Coupling (AC/DC), **Measure** (was "In scan"), and
+  the autorange. The Zurich row shows its input range, as on 6221-IV.
+- **Last two rows:** "Zurich input" (impedance and scaling), then "2182A
+  Measure (channel 1, NPLC 1, autorange)".
+- **Layout:** the two sides sit side by side when they fit, else stacked
+  (`_arrange_pair_by_width`), as in 6221-IV.
+- **Unchanged:** every setting, its variable and the scan itself.
+- **Tests:** `test_panel_defaults.py` checks the Measure ticks, the safety
+  tick and the Output list.
+
 ## MS-fourState.py: states C and F (2026-10-09)
 
 - **New states (user request):** C (270°, 0 Oe, −23 mA) and F (270°, 0 Oe,

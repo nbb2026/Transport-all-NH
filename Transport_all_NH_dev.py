@@ -21177,25 +21177,10 @@ class CombinedControlApp:
         scan = ttk.LabelFrame(controls, text="Gate-VI scan", padding=6)
         scan.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
-        # Settings: the 6221 read current, then each voltmeter.
-        source = ttk.Frame(settings)
-        source.grid(row=0, column=0, sticky="w")
-        for column, (label, variable) in enumerate((
-            ("6221 current mA", self.nonlocal_vi_current_var),
-            ("Frequency Hz", self.nonlocal_vi_frequency_var),
-            ("Compliance V", self.nonlocal_vi_compliance_var),
-            ("Trigger line", self.nonlocal_vi_marker_line_var),
-        )):
-            ttk.Label(source, text=f"{label}:").grid(
-                row=0, column=2 * column, sticky="e", padx=(0 if column == 0 else 10, 3)
-            )
-            entry = ttk.Entry(source, textvariable=variable, width=7)
-            entry.grid(row=0, column=2 * column + 1, sticky="w", pady=2)
-            if variable is self.nonlocal_vi_frequency_var:
-                self.nonlocal_vi_frequency_entry = entry
-        self._build_nonlocal_vi_read_settings(settings).grid(
-            row=1, column=0, sticky="w", pady=(4, 0)
-        )
+        # Settings, laid out as "6221-IV settings": the safety tick and the
+        # 6221 on the left, one row per voltmeter on the right.
+        settings.columnconfigure(0, weight=1)
+        self._build_nonlocal_vi_read_settings(settings).grid(row=0, column=0, sticky="new")
 
         # Scan: the pulse sweep and the read per point, three to a row.
         for index, (label, variable) in enumerate((
@@ -21430,146 +21415,108 @@ class CombinedControlApp:
         self._update_nonlocal_vi_controls()
 
     def _build_nonlocal_vi_read_settings(self, parent) -> ttk.Frame:
-        """The pulse scan's settings for the 6221 and each voltmeter, and its
-        safety check: the 6221 and SR830s, then the MFLI and 2182A below them.
-        One column, so the "Gate-VI settings" box fits beside "Gate-VI scan"
-        in a wide window, as on the RT-E page."""
-        box = ttk.Frame(parent)
-        left = ttk.Frame(box)
-        right = ttk.Frame(box)
-        left.grid(row=0, column=0, sticky="nw")
-        right.grid(row=1, column=0, sticky="nw", pady=(4, 0))
+        """The pulse scan's settings, laid out as "6221-IV settings" (user,
+        2026-10-09): the safety tick and the 6221 on the left; on the right
+        one row per voltmeter (harmonic, read channel, coupling, Measure,
+        autorange), then the Zurich input and the 2182A.  Side by side when
+        both fit, else stacked."""
+        body = ttk.Frame(parent)
+        params = ttk.Frame(body)
+        params.grid(row=0, column=0, sticky="nsw")
+        meters = ttk.Frame(body)
+        meters.grid(row=0, column=1, sticky="nsw")
 
-        def pad(row: int) -> tuple[int, int]:
-            return (4 if row else 0, 0)
+        ttk.Checkbutton(
+            params,
+            text="Safety confirmed: voltage pulses, read current, wiring, sample",
+            variable=self.nonlocal_vi_safety_var,
+            command=self._update_nonlocal_vi_controls,
+        ).grid(row=0, column=0, columnspan=6, sticky="w")
 
-        def name(frame, row: int, text: str) -> None:
-            ttk.Label(frame, text=text, width=15, anchor="e").grid(
-                row=row, column=0, sticky="e", pady=pad(row)
+        def entry_at(row, column, label, variable):
+            ttk.Label(params, text=label).grid(
+                row=row, column=column, sticky="e", padx=(0 if column == 0 else 8, 3), pady=2
             )
+            entry = ttk.Entry(params, textvariable=variable, width=6)
+            entry.grid(row=row, column=column + 1, sticky="ew", pady=2)
+            return entry
 
-        def label(frame, row: int, column: int, text: str) -> None:
-            ttk.Label(frame, text=text).grid(
-                row=row, column=column, sticky="e",
-                padx=(6 if column == 1 else 0, 3), pady=pad(row),
-            )
-
-        def meter_fields(frame, row, coupling, harmonic, channel, top, check, enabled):
-            # The same fields, column for column, for each SR830 and the MFLI.
-            label(frame, row, 1, "Input coupling AC/DC:")
-            ttk.Combobox(
-                frame, textvariable=coupling, values=("AC", "DC"),
-                state="readonly", width=5,
-            ).grid(row=row, column=2, sticky="ew", padx=(0, 10), pady=pad(row))
-            label(frame, row, 3, "Harmonic:")
-            ttk.Spinbox(
-                frame, from_=1, to=top, textvariable=harmonic, width=7,
-            ).grid(row=row, column=4, sticky="ew", padx=(0, 10), pady=pad(row))
-            label(frame, row, 5, "Read:")
-            ttk.Combobox(
-                frame, textvariable=channel, values=("X", "Y", "R"),
-                state="readonly", width=5,
-            ).grid(row=row, column=6, sticky="ew", padx=(0, 10), pady=pad(row))
-            ttk.Checkbutton(
-                frame, text=check, variable=enabled,
-                command=self._redraw_nonlocal_vi_plots,
-            ).grid(row=row, column=7, sticky="w", pady=pad(row))
-
-        name(left, 0, "Keithley 6221:")
-        label(left, 0, 1, "Output:")
+        # The read current is RMS with an AC output and DC with a DC one.
+        entry_at(1, 0, "6221 mA", self.nonlocal_vi_current_var)
+        self.nonlocal_vi_frequency_entry = entry_at(1, 2, "Frequency Hz", self.nonlocal_vi_frequency_var)
+        entry_at(1, 4, "Compliance V", self.nonlocal_vi_compliance_var)
+        entry_at(2, 0, "Trigger line", self.nonlocal_vi_marker_line_var)
+        ttk.Label(params, text="Output").grid(row=2, column=2, sticky="e", padx=(8, 3), pady=2)
         self.nonlocal_vi_output_mode_combo = ttk.Combobox(
-            left,
+            params,
             textvariable=self.nonlocal_vi_output_mode_var,
             values=("AC", "DC"),
             state="readonly",
-            width=5,
+            width=4,
         )
-        self.nonlocal_vi_output_mode_combo.grid(
-            row=0, column=2, sticky="ew", padx=(0, 10)
-        )
+        self.nonlocal_vi_output_mode_combo.grid(row=2, column=3, sticky="ew", pady=2)
         self.nonlocal_vi_output_mode_var.trace_add(
             "write", lambda *_args: self._on_nonlocal_vi_output_mode_changed()
         )
-        for row, key in ((1, "8"), (2, "9")):
-            name(left, row, f"SR830 #{key}:")
-            meter_fields(
-                left, row,
-                self.nonlocal_vi_lockin_coupling_vars[key],
-                self.nonlocal_vi_lockin_harmonic_vars[key],
-                self.nonlocal_vi_lockin_channel_vars[key],
-                19999, "In scan",
-                self.nonlocal_vi_measurement_enabled_vars[key],
-            )
 
-        name(right, 0, "Zurich MFLI:")
-        meter_fields(
-            right, 0,
-            self.nonlocal_vi_mfli_coupling_var,
-            self.nonlocal_vi_mfli_harmonic_var,
-            self.nonlocal_vi_mfli_channel_var,
-            1024, "In scan (autorange)",
-            self.nonlocal_vi_use_mfli_var,
-        )
-        # The MFLI-only inputs on a second line: one strip after its label,
-        # ending in the tail column 8, so it never widens the columns it
-        # shares with the SR830 rows.  Its reference input and time constant
-        # are on the rack's Zurich row.
-        right.columnconfigure(8, weight=1)
-        # Shorter than "Input coupling AC/DC:", so the shared column keeps
-        # its width.
-        label(right, 1, 1, "Signal Input 1:")
-        mfli_input = ttk.Frame(right)
-        mfli_input.grid(row=1, column=2, columnspan=7, sticky="w", pady=pad(1))
-        ttk.Label(mfli_input, text="Impedance:").pack(side="left", padx=(0, 3))
+        # One row per lock-in, as on 6221-IV: harmonic, then the Gate-VI
+        # choices (read channel, input coupling), Measure and the autorange.
+        for row, (key, harmonic, top, channel, coupling, measure) in enumerate((
+            ("8", self.nonlocal_vi_lockin_harmonic_vars["8"], 19999,
+             self.nonlocal_vi_lockin_channel_vars["8"], self.nonlocal_vi_lockin_coupling_vars["8"],
+             self.nonlocal_vi_measurement_enabled_vars["8"]),
+            ("9", self.nonlocal_vi_lockin_harmonic_vars["9"], 19999,
+             self.nonlocal_vi_lockin_channel_vars["9"], self.nonlocal_vi_lockin_coupling_vars["9"],
+             self.nonlocal_vi_measurement_enabled_vars["9"]),
+            ("mfli", self.nonlocal_vi_mfli_harmonic_var, 1024,
+             self.nonlocal_vi_mfli_channel_var, self.nonlocal_vi_mfli_coupling_var,
+             self.nonlocal_vi_use_mfli_var),
+        )):
+            ttk.Label(meters, text=f"{NONLOCAL_METER_NAMES[key]} harmonic").grid(
+                row=row, column=0, sticky="e", padx=(12, 3), pady=2
+            )
+            ttk.Spinbox(meters, from_=1, to=top, textvariable=harmonic, width=5).grid(
+                row=row, column=1, sticky="ew", pady=2
+            )
+            ttk.Label(meters, text="Read").grid(row=row, column=2, sticky="e", padx=(8, 3), pady=2)
+            ttk.Combobox(
+                meters, textvariable=channel, values=("X", "Y", "R"), state="readonly", width=3,
+            ).grid(row=row, column=3, sticky="ew", pady=2)
+            ttk.Label(meters, text="Coupling").grid(row=row, column=4, sticky="e", padx=(8, 3), pady=2)
+            ttk.Combobox(
+                meters, textvariable=coupling, values=("AC", "DC"), state="readonly", width=4,
+            ).grid(row=row, column=5, sticky="ew", pady=2)
+            ttk.Checkbutton(
+                meters, text="Measure", variable=measure, command=self._redraw_nonlocal_vi_plots,
+            ).grid(row=row, column=6, padx=(8, 3))
+            ttk.Label(
+                meters, width=14,
+                **({"textvariable": self.nonlocal_iv6221_zurich_range_var} if key == "mfli"
+                   else {"text": "Autorange ON"}),
+            ).grid(row=row, column=7, sticky="w", padx=(6, 0))
+        # The Zurich's Signal Input 1 (its reference input and TC are on the
+        # rack's Zurich row), then the 2182A.
+        ttk.Label(meters, text="Zurich input").grid(row=3, column=0, sticky="e", padx=(12, 3), pady=2)
+        zurich_input = ttk.Frame(meters)
+        zurich_input.grid(row=3, column=1, columnspan=7, sticky="w", pady=2)
+        ttk.Label(zurich_input, text="Impedance").pack(side="left", padx=(0, 3))
         ttk.Combobox(
-            mfli_input,
+            zurich_input,
             textvariable=self.nonlocal_vi_mfli_input_impedance_var,
             values=("10 MΩ", "50 Ω"),
             state="readonly",
-            width=8,
-        ).pack(side="left", padx=(0, 10))
-        ttk.Label(mfli_input, text="Scaling:").pack(side="left", padx=(0, 3))
-        ttk.Entry(
-            mfli_input,
-            textvariable=self.nonlocal_vi_mfli_input_scaling_var,
-            width=8,
-        ).pack(side="left")
-        name(right, 2, "Keithley 2182A:")
+            width=7,
+        ).pack(side="left", padx=(0, 8))
+        ttk.Label(zurich_input, text="Scaling").pack(side="left", padx=(0, 3))
+        ttk.Entry(zurich_input, textvariable=self.nonlocal_vi_mfli_input_scaling_var, width=6).pack(side="left")
+        ttk.Label(meters, text="2182A").grid(row=4, column=0, sticky="e", padx=(12, 3), pady=2)
         ttk.Checkbutton(
-            right, text="In scan (channel 1, NPLC 1, autorange)",
+            meters, text="Measure (channel 1, NPLC 1, autorange)",
             variable=self.nonlocal_vi_use_2182_var,
             command=self._redraw_nonlocal_vi_plots,
-        ).grid(row=2, column=1, columnspan=8, sticky="w", padx=(6, 0), pady=pad(2))
-
-        # Stacked, the two grids line up only if each column is as wide in
-        # both: the widest one-column cell of either.
-        try:
-            widths: dict[int, int] = {}
-            for frame in (left, right):
-                for cell in frame.grid_slaves():
-                    info = cell.grid_info()
-                    if int(info["columnspan"]) != 1:
-                        continue
-                    padx = [int(float(str(v))) for v in str(info["padx"]).split()] or [0]
-                    column = int(info["column"])
-                    widths[column] = max(
-                        widths.get(column, 0),
-                        int(cell.winfo_reqwidth())
-                        + (2 * padx[0] if len(padx) == 1 else sum(padx)),
-                    )
-            for frame in (left, right):
-                for column, width in widths.items():
-                    frame.columnconfigure(column, minsize=width)
-        except (tk.TclError, TypeError, ValueError, KeyError, AttributeError):
-            pass  # stubbed widgets, as in offline tests
-
-        ttk.Checkbutton(
-            box,
-            text="Voltage pulses, selected AC/DC read current and sample confirmed safe",
-            variable=self.nonlocal_vi_safety_var,
-            command=self._update_nonlocal_vi_controls,
-        ).grid(row=2, column=0, sticky="w", pady=(6, 0))
-        return box
+        ).grid(row=4, column=1, columnspan=7, sticky="w", pady=2)
+        self._arrange_pair_by_width(body, params, meters, gap=0, stack_gap=4)
+        return body
 
     def _build_nonlocal_iv6221_tab(self, tab) -> None:
         """6221-IV as the RT-E page: "6221-IV settings" (the 6221 and each
