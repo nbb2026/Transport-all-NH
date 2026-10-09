@@ -1,5 +1,32 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local Gate-VI: |R| measured as on |R| vs time, about 5 s each (2026-10-09)
+
+The user found that Gate-VI's |R| (1–7 × 10⁸ Ω, scattered) did not match
+|R| vs time on the same sample (939 MΩ). They allowed about 5 s per
+measurement.
+
+- **Cause:** both use the same Keithley set-up and the same current steps.
+  Gate-VI averaged 5 readings in the first ~1 s after the current switched
+  on. The sample charges up after each current change, and |R| vs time shows
+  it rising to its settled value over about 5 s. Gate-VI therefore read the
+  start of the charge-up: low and variable.
+- **Now** (`NonLocalVI2410Controller.measure_resistance`):
+  - The current is chosen and kept between 0.05 and 2 V as on |R| vs time,
+    checked at every reading.
+  - Once it stops changing, it is held `NONLOCAL_VI_RES_HOLD_S` = 5 s, and
+    the readings of the last `NONLOCAL_VI_RES_AVERAGE_S` = 1 s are averaged.
+  - A current change starts the 5 s again.
+  - Still changing after `NONLOCAL_VI_RES_MAX_S` = 30 s, the measurement
+    fails and the scan stops with the outputs off. This reading is the pulse
+    gate.
+- **Time:** about 5 s per |R| (was about 1 s); the estimate includes it.
+- **Limit:** with the time constant seen on |R| vs time (about 1 s), the 5 s
+  value is within about 1–2 % of the settled one. A slower sample needs a
+  longer hold.
+- Tests: `ResistanceTests` in `test_nonlocal_gate_vi_harmonics.py`, with a
+  stand-in sample that charges up.
+
 ## Non-local Gate-VI: SR830 1+2, Zurich 1+2 and 1+2+3; Pulse gate 100 MΩ (2026-10-09)
 
 The user asked for SR830 1+2 and Zurich 1+2 / 1+2+3 harmonic choices on

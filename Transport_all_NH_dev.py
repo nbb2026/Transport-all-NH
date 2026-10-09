@@ -1413,8 +1413,18 @@ NONLOCAL_VI_RES_CURRENT_LEVELS_A = KEITHLEY_RES_CURRENT_LEVELS_A
 NONLOCAL_VI_RES_TARGET_LOW_V = KEITHLEY_RES_TARGET_VOLTAGE_LOW_V
 NONLOCAL_VI_RES_TARGET_HIGH_V = KEITHLEY_RES_TARGET_VOLTAGE_HIGH_V
 NONLOCAL_VI_RES_COMPLIANCE_V = KEITHLEY_RES_VOLTAGE_LIMIT_V
-NONLOCAL_VI_RES_SETTLE_S = KEITHLEY_RES_SETTLE_S
-NONLOCAL_VI_RES_AVERAGE_COUNT = 5
+NONLOCAL_VI_RES_SAMPLE_INTERVAL_S = KEITHLEY_RES_SAMPLE_INTERVAL_S
+# Gate-VI |R| as |R| vs time measures it (user, 2026-10-09: the same values,
+# about 5 s each).  The sample charges up after the current changes, so the
+# reading rises for a few seconds: the current is held this long after its
+# last change and the readings of the last NONLOCAL_VI_RES_AVERAGE_S are
+# averaged.  Autorange goes on throughout, as on |R| vs time; a change
+# starts the hold again.
+NONLOCAL_VI_RES_HOLD_S = 5.0
+NONLOCAL_VI_RES_AVERAGE_S = 1.0
+# Still changing current after this long: the measurement fails (it is the
+# pulse gate) and the scan stops with the outputs off.
+NONLOCAL_VI_RES_MAX_S = 30.0
 NONLOCAL_VI_RES_NPLC = KEITHLEY_RES_NPLC
 NONLOCAL_VI_RESULTS_DIRECTORY = (
     Path(__file__).resolve().parent / f"{Path(__file__).stem}_NonLocal_VI_Results"
@@ -6250,6 +6260,12 @@ class NonLocalVI2410Controller:
         stop_event: threading.Event,
         status_callback: Callable[[float], None] | None = None,
     ) -> dict:
+        """|R| as the |R| vs time tab measures it: the same set-up and the
+        same current autorange (1 nA up, kept between 0.05 and 2 V, checked
+        at every reading), the current held NONLOCAL_VI_RES_HOLD_S after its
+        last change and the readings of the last NONLOCAL_VI_RES_AVERAGE_S
+        averaged.  Returns the source current and the mean V, I and |R|."""
+        levels = NONLOCAL_VI_RES_CURRENT_LEVELS_A
         with self.lock:
             # A Stop since the last wait: the current source is not switched on.
             if stop_event.is_set():
@@ -6257,45 +6273,59 @@ class NonLocalVI2410Controller:
             cleanup_errors = []
             try:
                 index = 0
-                source_current_a = NONLOCAL_VI_RES_CURRENT_LEVELS_A[index]
+                source_current_a = levels[index]
                 self._setup_resistance_mode(source_current_a)
-                for _ in range(len(NONLOCAL_VI_RES_CURRENT_LEVELS_A) * 2):
-                    if status_callback is not None:
-                        status_callback(source_current_a)
-                    self._wait(NONLOCAL_VI_RES_SETTLE_S, stop_event)
+                started = changed = time.monotonic()
+                if status_callback is not None:
+                    status_callback(source_current_a)
+                readings = []  # (s since the last current change, V, I, |R|)
+                while True:
+                    self._wait(NONLOCAL_VI_RES_SAMPLE_INTERVAL_S, stop_event)
                     voltage_v, current_a, resistance_ohm = (
                         self._read_resistance_sample()
                     )
+                    now = time.monotonic()
                     abs_voltage = abs(voltage_v)
-                    if (
-                        abs_voltage >= NONLOCAL_VI_RES_COMPLIANCE_V * 0.98
-                        and index == 0
-                    ):
+                    if abs_voltage >= NONLOCAL_VI_RES_COMPLIANCE_V * 0.98 and index == 0:
                         raise RuntimeError(
                             f"Resistance exceeds the measurable range at the Keithley {self.model} minimum test current"
                         )
+                    new_index = index
                     if abs_voltage > NONLOCAL_VI_RES_TARGET_HIGH_V and index > 0:
-                        index -= 1
+                        new_index = index - 1
                     elif (
                         abs_voltage < NONLOCAL_VI_RES_TARGET_LOW_V
-                        and index < len(NONLOCAL_VI_RES_CURRENT_LEVELS_A) - 1
+                        and index < len(levels) - 1
                     ):
-                        index += 1
-                    else:
+                        new_index = index + 1
+                    if new_index != index:
+                        if now - started > NONLOCAL_VI_RES_MAX_S:
+                            raise RuntimeError(
+                                f"Keithley {self.model} resistance did not settle within "
+                                f"{NONLOCAL_VI_RES_MAX_S:g} s (the test current kept changing; "
+                                f"last {voltage_v:.4g} V at {source_current_a:.3g} A)"
+                            )
+                        index = new_index
+                        source_current_a = levels[index]
+                        self._write_checked(f":SOUR:CURR {source_current_a:.12e}")
+                        if status_callback is not None:
+                            status_callback(source_current_a)
+                        changed = now
+                        readings = []
+                        continue
+                    readings.append((now - changed, voltage_v, current_a, resistance_ohm))
+                    if now - changed >= NONLOCAL_VI_RES_HOLD_S:
                         break
-                    source_current_a = NONLOCAL_VI_RES_CURRENT_LEVELS_A[index]
-                    self._write_checked(f":SOUR:CURR {source_current_a:.12e}")
-                readings = []
-                for _ in range(NONLOCAL_VI_RES_AVERAGE_COUNT):
-                    self._wait(NONLOCAL_VI_RES_SETTLE_S, stop_event)
-                    readings.append(self._read_resistance_sample())
+                used = [
+                    item for item in readings
+                    if item[0] >= NONLOCAL_VI_RES_HOLD_S - NONLOCAL_VI_RES_AVERAGE_S
+                ]
                 return {
                     "source_current_a": source_current_a,
-                    "voltage_v": statistics.fmean(item[0] for item in readings),
-                    "current_a": statistics.fmean(item[1] for item in readings),
-                    "resistance_ohm": statistics.fmean(
-                        item[2] for item in readings
-                    ),
+                    "voltage_v": statistics.fmean(item[1] for item in used),
+                    "current_a": statistics.fmean(item[2] for item in used),
+                    "resistance_ohm": statistics.fmean(item[3] for item in used),
+                    "sample_count": len(used),
                 }
             finally:
                 try:
@@ -29855,10 +29885,8 @@ class CombinedControlApp:
         # Gate-VI sets the SR830s' time constant to 1 s (configure).
         harmonic_settle_s = max(settings["settle_s"], NONLOCAL_VI_HARMONIC_SETTLE_TAUS * 1.0)
         settings["sample_interval_s"] = 1.0 / settings["sample_hz"]
-        resistance_estimate_s = NONLOCAL_VI_RES_SETTLE_S * (
-            len(NONLOCAL_VI_RES_CURRENT_LEVELS_A) * 2
-            + NONLOCAL_VI_RES_AVERAGE_COUNT
-        )
+        # The hold and a couple of reads while the current is chosen.
+        resistance_estimate_s = NONLOCAL_VI_RES_HOLD_S + 2 * NONLOCAL_VI_RES_SAMPLE_INTERVAL_S
         settings["estimated_s"] = resistance_estimate_s + len(voltage_scan) * (
             settings["pulse_width_s"]
             + settings["post_pulse_s"]

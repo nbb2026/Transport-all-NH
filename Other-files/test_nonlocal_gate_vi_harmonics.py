@@ -1,15 +1,18 @@
 """Gate-VI harmonics (user, 2026-10-09): SR830 1+2 read one order after the
 other at each point, the Zurich 1+2 or 1+2+3 at once.  Pulse gate 100 MΩ.
+Its |R| measured as |R| vs time measures it, held about 5 s.
 
 No Tk and no instrument: stand-in controllers record what the scan asks."""
 import csv
+import math
 import tempfile
+import types
 import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from test_nonlocal_keithley import Var, bare_app
+from test_nonlocal_keithley import FakeSourceMeter, Var, bare_app, connected_controller
 from test_ppms_motor_debug import app
 
 
@@ -241,6 +244,91 @@ class TickLabelTests(unittest.TestCase):
         self.assertGreater(len(short), 1)
         self.assertGreaterEqual(min(b - a for a, b in zip(short, short[1:])), 16.0)
         self.assertGreater(len(self.y_labels(400)), len(short), "a tall plot labels every tick")
+
+
+
+class Clock:
+    """Simulated time: each wait moves it on, nothing sleeps."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+    def is_set(self):
+        return False
+
+    def wait(self, seconds):
+        self.now += seconds
+        return False
+
+
+class ChargingSample(FakeSourceMeter):
+    """A sample that charges up after each current change, as on |R| vs time
+    (user, 2026-10-09): V = I·R·(1 − e^(−t/τ))."""
+
+    def __init__(self, clock, resistance_ohm=939e6, tau_s=1.0):
+        super().__init__(resistance_ohm)
+        self.clock, self.tau_s, self.changed_at = clock, tau_s, clock.now
+
+    def write(self, command):
+        super().write(command)
+        if command.upper().startswith(":SOUR:CURR "):
+            self.changed_at = self.clock.now
+
+    def query(self, command):
+        if command.upper() == ":READ?" and self.mode == "CURR":
+            charge = 1 - math.exp(-(self.clock.now - self.changed_at) / self.tau_s)
+            return f"{self.current_source * self.resistance_ohm * charge:.6e},{self.current_source:.6e}"
+        return super().query(command)
+
+
+class ResistanceTests(unittest.TestCase):
+    def measure(self, meter, clock):
+        controller = connected_controller(meter)
+        sources = []
+        with mock.patch.object(app, "time", types.SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep)):
+            started = clock.now
+            result = controller.measure_resistance(clock, status_callback=sources.append)
+        return result, clock.now - started, sources
+
+    def test_the_reading_settles_as_on_r_vs_time(self):
+        clock = Clock()
+        meter = ChargingSample(clock)
+        result, took, sources = self.measure(meter, clock)
+        self.assertEqual(sources, [1e-9], "1 nA, as |R| vs time chose for this sample")
+        self.assertAlmostEqual(result["resistance_ohm"], 939e6, delta=939e6 * 0.02,
+                               msg="within 2 % of the settled value")
+        self.assertGreaterEqual(took, app.NONLOCAL_VI_RES_HOLD_S)
+        self.assertLess(took, app.NONLOCAL_VI_RES_HOLD_S + 1.0, "about 5 s")
+        self.assertGreaterEqual(result["sample_count"], 4, "the last 1 s averaged")
+        self.assertEqual(meter.output, 0, "switched off afterwards")
+        self.assertEqual(meter.mode, "VOLT", "back in the pulse set-up")
+
+    def test_a_current_change_starts_the_hold_again(self):
+        clock = Clock()
+        meter = ChargingSample(clock, resistance_ohm=1e6, tau_s=0.01)
+        result, took, sources = self.measure(meter, clock)
+        # 1 MΩ: 1 nA reads 1 mV, below 0.05 V, so the current steps up to
+        # 100 nA (0.1 V), as |R| vs time does, then holds 5 s there.
+        self.assertEqual(sources, [1e-9, 3e-9, 1e-8, 3e-8, 1e-7])
+        self.assertEqual(result["source_current_a"], 1e-7)
+        self.assertAlmostEqual(result["resistance_ohm"], 1e6, delta=1e3)
+        self.assertGreaterEqual(took, app.NONLOCAL_VI_RES_HOLD_S + 4 * app.NONLOCAL_VI_RES_SAMPLE_INTERVAL_S)
+
+    def test_a_current_that_keeps_changing_fails_after_30_s(self):
+        clock = Clock()
+        meter = ChargingSample(clock)
+        meter.query = lambda command, original=meter.query: (
+            ("1.0e-02" if meter.current_source == 1e-9 else "3.0e+00") + f",{meter.current_source:.6e}"
+            if command.upper() == ":READ?" and meter.mode == "CURR" else original(command))
+        with self.assertRaisesRegex(RuntimeError, "did not settle within 30 s"):
+            self.measure(meter, clock)
+        self.assertEqual(meter.output, 0, "switched off after the failure")
 
 
 if __name__ == "__main__":
