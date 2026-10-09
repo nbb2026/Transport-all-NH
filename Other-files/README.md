@@ -1,5 +1,79 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Whole-program review: fixes (2026-10-09)
+
+The user asked to check the whole script and optimise its logic. Five
+read-only reviews covered Non-local, PPMS/RT-E, STFMR/FMR, the MOKE pages
+with the camera, and the shared code. Each finding was checked against the
+code before it was changed. Tests: `Other-files/test_review_fixes.py`, plus
+updates in the page tests.
+
+**Instruments left on, or switched back on**
+- MOKE magnet Disconnect wrote nothing: the KEPCOs stayed at their current,
+  and exit then skipped the closed channels. It now writes 0 A first.
+- FMR: the red Zero / OFF did not stop a running scan, whose next frequency
+  switched the KEPCO back on. It stops the scan first.
+- FMR: "Wait s" was re-read mid-scan; a half-typed value stalled the scan
+  with the magnet on. The scan uses the values validated at its start.
+- RT-E KEPCO Zero / OFF acted only on an output this program had switched
+  on, yet said "sent". It now uses `force_output_off`, as the STFMR page does.
+- Non-local: the 0 V drain ran with the Keithley output already off. It
+  timed out, its flag stuck, and the Keithley stayed unusable until a
+  restart. It now drains only with the output read back on.
+- MOKE-24 Keithley: a manual voltage is switched off before a scan changes
+  range and OVP.
+- LED Disconnect switches the LEDs off first. A camera failure stops the
+  running MOKE scans. Exit tells every page's scan to stop at once, and one
+  panel's close failing no longer skips the next.
+
+**Data**
+- MOKE: each redraw (pan, zoom, CLim) fed the same camera frame into the
+  scan's ROI samples again. Each frame now counts once.
+- MOKE: exposure and averaging are refused during a scan. An ROI change no
+  longer deletes finished 2410/6221 results.
+- STFMR SR830: the overload latched by its own range change looked like a
+  new overload, so the range walked to the top and aborted the scan. The
+  latched status is now read and dropped, as on the Non-local page.
+- STFMR lock-in sweep with Loop > 1: the first two points of every loop are
+  discarded, not only of the first. Every loop starts with a jump back to
+  start, and each loop now saves the same number of points.
+- Gate-VI: mean phase from the mean X and Y (±180° averaged to 0°). The CSVs
+  record the SR830's real address.
+- PPMS/RT-E: the 6221's output low is floating again after each `*RST`.
+- PPMS: a typed temperature rate is kept; below 10 K it is lowered to
+  1 K/min. Scan axes no longer repeat their end point. Macro WAITFOR after
+  a Driven command no longer takes the old Persistent status.
+- PPMS: the live CSV is written before the plots.
+- PPMS: the scan confirmation warns before a rotation of more than 30°.
+- Magnet scans use the KEPCO's 1 mA resolution, and recovery never enables
+  a BOP that was not enabled.
+- Plot labels with a 2.5 step at |value| ≥ 1000 keep their half-steps
+  (3002.5 printed as 3002).
+
+**Other**
+- The Keithley state line says "in use" during a measurement.
+- A Keithley that could not be switched off is not blamed on the 6221.
+- Gate-VI Measure ticks are held during a scan.
+- One failed snapshot no longer skips the rest.
+- UI callback errors go to the log (the EXE has no console).
+- Queued AVI finalisation is not cancelled at exit.
+- The short GPIB spelling `GPIB0::30` shares the lease of `GPIB0::30::INSTR`.
+- Removed dead code: the old OpenCV camera loop and `CameraViewport` (about
+  400 lines), and two unused helpers.
+
+**Left for the user to decide** (not changed):
+- MOKE 6221 post-pulse averaging can include pre-pulse frames when the
+  temporal average N > 1.
+- PPMS first-point settling: it runs for every point in non-field modes,
+  and the Zurich keys have no noise floor.
+- PPMS "I off" during a non-field scan ramps the field to zero.
+- The MultiPyVu interface refuses every scan.
+- Gate-VI points with no valid reading are averaged from the invalid ones.
+- Snapshots capture screen pixels.
+- STFMR lows: Connect stays usable during a sweep; the frequency sweep has
+  no live CSV; MFLI-only mode keeps unlocked points; a failed PNA RF-off
+  is hidden.
+
 ## Non-local 2400-IV and Gate-VI: up to ±200 V on a 2400, ±1000 V on a 2410; Set and pulse controls (2026-10-09)
 
 The user asked to raise the 2400-IV voltage limit from ±20 V to ±200 V on a

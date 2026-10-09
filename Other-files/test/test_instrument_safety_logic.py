@@ -270,6 +270,9 @@ class Fake6221:
             return str(self.output)
         if upper == "STAT:MEAS:COND?":
             return str(self.measurement_condition)
+        if upper == "OUTP:LTE?":
+            # Output low floating (the rack's state; checked after each *RST).
+            return "0"
         raise AssertionError(f"unexpected query: {command}")
 
 

@@ -980,8 +980,6 @@ MAGNET_SCAN_RESULTS_DIRECTORY = (
 EXPOSURE_S = 0.02
 RING_BUFFER_FRAMES = 10
 CAMERA_WINDOW = f"{MAIN_WINDOW_TITLE} — Camera Live"
-CAMERA_WINDOW_WIDTH = 900
-CAMERA_WINDOW_HEIGHT = 780
 # Present every PCO frame in the laboratory's preferred orientation before
 # background subtraction, ROI selection, display, recording or saving.  The
 # four numeric corner labels keep their physical-quadrant identity, so a CCW
@@ -1744,7 +1742,8 @@ def instrument_lease_key(resource: str) -> str:
     still goes to VISA unchanged; this does not resolve vendor-defined aliases.
     """
     key = str(resource).strip().upper()
-    match = re.fullmatch(r"GPIB(\d*)::(\d+)(?:::(\d+))?::INSTR", key)
+    # ::INSTR is optional in VISA: GPIB0::30 is the same 6221 (review, 2026-10-09).
+    match = re.fullmatch(r"GPIB(\d*)::(\d+)(?:::(\d+))?(?:::INSTR)?", key)
     if match:
         board, primary, secondary = match.groups()
         key = f"GPIB{int(board or '0')}::{int(primary)}"
@@ -3653,7 +3652,8 @@ def ppms_scan_axis(start, end, step):
     start, end, step = float(start), float(end), abs(float(step))
     if not all(math.isfinite(v) for v in (start, end, step)) or step <= 0:
         raise ValueError("Scan range must be finite and the step must be greater than 0")
-    count = int(math.ceil(abs(end-start)/step))
+    # 1e-9: (0.4 - 0.1) / 0.1 is 3.0000000000000004, which repeated the end.
+    count = int(math.ceil(abs(end-start)/step - 1e-9))
     if count > 10000:
         raise ValueError("A single-axis scan allows at most 10001 points")
     direction = 1 if end >= start else -1
@@ -4260,12 +4260,6 @@ def difference_contrast_parameters(difference, bounds=None) -> tuple[float, floa
     return center, half_range
 
 
-def difference_contrast_max_abs(difference, bounds=None) -> float:
-    """Compatibility helper returning the robust difference half-range."""
-    _center, half_range = difference_contrast_parameters(difference, bounds)
-    return half_range
-
-
 def difference_preview(
     difference,
     bounds=None,
@@ -4380,11 +4374,6 @@ def spatial_bin_average_full_size(image, factor: int):
         ((0, height - binned_height), (0, width - binned_width)),
         mode="edge",
     )
-
-
-def spatial_average_2x2_full_size(image):
-    """Compatibility wrapper for the original 2x2 display-average helper."""
-    return spatial_bin_average_full_size(image, 2)
 
 
 def mean_filter_full_size(image, kernel_size: int):
@@ -4550,7 +4539,9 @@ def format_nice_tick(value: float, step: float) -> str:
     if abs(step) >= 1.0:
         if math.isclose(step, round(step), rel_tol=0.0, abs_tol=1e-12):
             return f"{value:.0f}"
-        return f"{value:.4g}"
+        # A 2.5 step: one decimal (".4g" printed 3002.5 as 3002 and 10002.5
+        # as 1e+04; review, 2026-10-09).
+        return f"{value:.1f}"
     decimals = min(8, max(0, int(math.ceil(-math.log10(abs(step))))))
     while decimals < 8 and not math.isclose(
         abs(step) * (10.0 ** decimals),
@@ -10584,232 +10575,6 @@ class LEDSerialController:
                 self._write_locked(self._command("m", channel, 0))
 
 
-class CameraViewport:
-    """Zoom/pan state and rendering copied from the standalone camera tool."""
-
-    def __init__(self) -> None:
-        self.zoom = 1.0
-        self.center_x = None
-        self.center_y = None
-        self.image_shape = None
-        self.mapping = None
-        self.is_panning = False
-        self.pan_start_x = 0
-        self.pan_start_y = 0
-        self.pan_center_x = 0.0
-        self.pan_center_y = 0.0
-        self.pan_scale_x = 1.0
-        self.pan_scale_y = 1.0
-
-    @staticmethod
-    def auto_preview(image_u16, bounds=None):
-        low, high = auto_contrast_limits(image_u16, bounds)
-        return CameraViewport.fixed_preview(image_u16, low, high)
-
-    @staticmethod
-    def fixed_preview(image_u16, low: float, high: float):
-        preview = np.clip(
-            (image_u16.astype(np.float32) - low)
-            * 255.0
-            / max(high - low, 1.0),
-            0,
-            255,
-        )
-        return preview.astype(np.uint8)
-
-    def crop_bounds(self, width: int, height: int) -> tuple[int, int, int, int]:
-        if self.center_x is None:
-            self.center_x = width / 2.0
-        if self.center_y is None:
-            self.center_y = height / 2.0
-
-        crop_width = max(1, int(width / self.zoom))
-        crop_height = max(1, int(height / self.zoom))
-        self.center_x = float(
-            np.clip(self.center_x, crop_width / 2.0, width - crop_width / 2.0)
-        )
-        self.center_y = float(
-            np.clip(self.center_y, crop_height / 2.0, height - crop_height / 2.0)
-        )
-        x1 = int(round(self.center_x - crop_width / 2.0))
-        y1 = int(round(self.center_y - crop_height / 2.0))
-        x1 = int(np.clip(x1, 0, width - crop_width))
-        y1 = int(np.clip(y1, 0, height - crop_height))
-        return x1, y1, x1 + crop_width, y1 + crop_height
-
-    def render(self, image, window_width: int, window_height: int):
-        height, width = image.shape[:2]
-        x1, y1, x2, y2 = self.crop_bounds(width, height)
-        cropped = image[y1:y2, x1:x2]
-        scale = min(
-            window_width / cropped.shape[1], window_height / cropped.shape[0]
-        )
-        display_width = max(1, int(cropped.shape[1] * scale))
-        display_height = max(1, int(cropped.shape[0] * scale))
-        resized = cv2.resize(
-            cropped,
-            (display_width, display_height),
-            interpolation=cv2.INTER_LINEAR,
-        )
-        canvas = np.zeros((window_height, window_width), dtype=np.uint8)
-        offset_x = (window_width - display_width) // 2
-        offset_y = (window_height - display_height) // 2
-        canvas[
-            offset_y : offset_y + display_height,
-            offset_x : offset_x + display_width,
-        ] = resized
-        self.mapping = {
-            "crop_x1": x1,
-            "crop_y1": y1,
-            "crop_width": x2 - x1,
-            "crop_height": y2 - y1,
-            "offset_x": offset_x,
-            "offset_y": offset_y,
-            "display_width": display_width,
-            "display_height": display_height,
-        }
-        return canvas
-
-    def _update_pan(self, mouse_x: int, mouse_y: int) -> None:
-        self.center_x = self.pan_center_x - (
-            mouse_x - self.pan_start_x
-        ) * self.pan_scale_x
-        self.center_y = self.pan_center_y - (
-            mouse_y - self.pan_start_y
-        ) * self.pan_scale_y
-        height, width = self.image_shape[:2]
-        self.crop_bounds(width, height)
-
-    def mouse_callback(self, event, x, y, flags, _parameter) -> None:
-        if self.image_shape is None or self.mapping is None:
-            return
-        mapping = self.mapping
-        on_image = (
-            mapping["offset_x"] <= x < mapping["offset_x"] + mapping["display_width"]
-            and mapping["offset_y"]
-            <= y
-            < mapping["offset_y"] + mapping["display_height"]
-        )
-
-        if event == cv2.EVENT_LBUTTONDOWN:
-            if not on_image:
-                return
-            self.is_panning = True
-            self.pan_start_x = x
-            self.pan_start_y = y
-            self.pan_center_x = mapping["crop_x1"] + mapping["crop_width"] / 2.0
-            self.pan_center_y = mapping["crop_y1"] + mapping["crop_height"] / 2.0
-            self.pan_scale_x = mapping["crop_width"] / mapping["display_width"]
-            self.pan_scale_y = mapping["crop_height"] / mapping["display_height"]
-            return
-
-        if event == cv2.EVENT_MOUSEMOVE and self.is_panning:
-            if flags & cv2.EVENT_FLAG_LBUTTON:
-                self._update_pan(x, y)
-            else:
-                self.is_panning = False
-            return
-
-        if event == cv2.EVENT_LBUTTONUP:
-            if self.is_panning:
-                self._update_pan(x, y)
-                self.is_panning = False
-            return
-
-        if event != cv2.EVENT_MOUSEWHEEL or not on_image:
-            return
-
-        mouse_image_x = mapping["crop_x1"] + (
-            (x - mapping["offset_x"])
-            / mapping["display_width"]
-            * mapping["crop_width"]
-        )
-        mouse_image_y = mapping["crop_y1"] + (
-            (y - mapping["offset_y"])
-            / mapping["display_height"]
-            * mapping["crop_height"]
-        )
-        old_zoom = self.zoom
-        self.zoom = (
-            min(self.zoom * ZOOM_FACTOR, MAX_ZOOM)
-            if flags > 0
-            else max(self.zoom / ZOOM_FACTOR, MIN_ZOOM)
-        )
-        if self.zoom == old_zoom:
-            return
-
-        height, width = self.image_shape[:2]
-        old_width = width / old_zoom
-        old_height = height / old_zoom
-        new_width = width / self.zoom
-        new_height = height / self.zoom
-        relative_x = (mouse_image_x - mapping["crop_x1"]) / max(old_width, 1.0)
-        relative_y = (mouse_image_y - mapping["crop_y1"]) / max(old_height, 1.0)
-        self.center_x = mouse_image_x - relative_x * new_width + new_width / 2.0
-        self.center_y = mouse_image_y - relative_y * new_height + new_height / 2.0
-        self.crop_bounds(width, height)
-
-    def reset(self) -> None:
-        self.zoom = 1.0
-        if self.image_shape is not None:
-            height, width = self.image_shape[:2]
-            self.center_x = width / 2.0
-            self.center_y = height / 2.0
-
-    @staticmethod
-    def draw_corner_labels(display) -> None:
-        height, width = display.shape[:2]
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        scale = 2.8
-        thickness = 6
-        color = (0, 255, 255)
-        margin = 35
-        cv2.putText(
-            display,
-            CAMERA_CORNER_LABELS["nw"],
-            (margin, margin + 70),
-            font,
-            scale,
-            color,
-            thickness,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            display,
-            CAMERA_CORNER_LABELS["sw"],
-            (margin, height - margin),
-            font,
-            scale,
-            color,
-            thickness,
-            cv2.LINE_AA,
-        )
-        southeast = CAMERA_CORNER_LABELS["se"]
-        size3, _ = cv2.getTextSize(southeast, font, scale, thickness)
-        cv2.putText(
-            display,
-            southeast,
-            (width - size3[0] - margin, height - margin),
-            font,
-            scale,
-            color,
-            thickness,
-            cv2.LINE_AA,
-        )
-        northeast = CAMERA_CORNER_LABELS["ne"]
-        size4, _ = cv2.getTextSize(northeast, font, scale, thickness)
-        cv2.putText(
-            display,
-            northeast,
-            (width - size4[0] - margin, margin + 70),
-            font,
-            scale,
-            color,
-            thickness,
-            cv2.LINE_AA,
-        )
-
-
 @dataclass
 class CameraFrame:
     raw: object
@@ -14032,9 +13797,10 @@ class CombinedControlApp:
         self.ppms_motor_pending = False
         self.ppms_temperature_target_var = tk.StringVar(value="300")
         self.ppms_temperature_rate_var = tk.StringVar(value="10")
-        for variable in (self.ppms_temperature_target_var, self.ppms_temperature_rate_var):
-            if hasattr(variable, 'trace_add'):
-                variable.trace_add('write', self._ppms_adjust_low_temperature_rate)
+        # On a target change only: traced on the rate too, every typed rate
+        # snapped back to 1 or 10 K/min (review, 2026-10-09).
+        if hasattr(self.ppms_temperature_target_var, 'trace_add'):
+            self.ppms_temperature_target_var.trace_add('write', self._ppms_adjust_low_temperature_rate)
         self.ppms_temperature_approach_var = tk.StringVar(value="No overshoot")
         self.ppms_field_target_var = tk.StringVar(value="0")
         self.ppms_field_rate_var = tk.StringVar(
@@ -34386,7 +34152,7 @@ class CombinedControlApp:
                         ready = (abs(float(data['temperature_k']) - args[1]) <= .1
                                  and str(data['temperature_status']).lower().replace(' ', '') in ('stable', 'stableattarget'))
                     if args[2] is not None:
-                        ready = ready and self._ppms_field_is_ready(data, args[2])
+                        ready = ready and self._ppms_field_is_ready(data, args[2], driven=args[3] == 1)
                         if args[3] == 0:
                             ready = ready and str(data["field_status"]).lower().replace(" ", "") in ("persistent", "stablepersistent")
                 now = time.monotonic()
@@ -34461,7 +34227,13 @@ class CombinedControlApp:
             pass  # Allow partially typed temperature values.
 
     def set_ppms_temperature(self) -> None:
-        self._ppms_adjust_low_temperature_rate()
+        # Below 10 K at most 1 K/min; a typed rate is otherwise kept.
+        try:
+            if float(self.ppms_temperature_target_var.get()) < 10 and float(
+                    self.ppms_temperature_rate_var.get()) > 1:
+                self.ppms_temperature_rate_var.set('1')
+        except (ValueError, TypeError, tk.TclError):
+            pass
         try:
             target = float(self.ppms_temperature_target_var.get())
             rate = float(self.ppms_temperature_rate_var.get())
@@ -35390,6 +35162,9 @@ class CombinedControlApp:
         with source.lock:
             source.instrument.write("*RST")
             source.instrument.write("*CLS")
+        # *RST earths the output low again: back to floating, as the
+        # MOKE-6221 path does after its reset (review, 2026-10-09).
+        self._initialize_ppms_6221()
         if 'continuous_sweep_peak_a' in settings:
             # Select range while output is off; never source the maximum target
             # merely to reserve headroom for subsequent live amplitude updates.
@@ -35892,10 +35667,26 @@ class CombinedControlApp:
                 estimated_seconds += abs(temperature - previous_temperature) / temp_rate * 60.0
                 previous_temperature = temperature
         estimate_text = self._format_scan_duration(estimated_seconds)
+        # Every mode first turns the rotator to its angle: warn before a long
+        # turn, as a manual move over 30° asks (review, 2026-10-09).
+        rotation_note = ""
+        try:
+            present_angle = float((self.ppms_last_readback or {})["angle_deg"])
+            turn = abs(float(nested["angle"][0]) - present_angle)
+            if turn > 30.0:
+                rotation_note = (
+                    f"\n\nThe sample rotator turns {turn:.1f}° first "
+                    f"({present_angle:.1f}° → {float(nested['angle'][0]):.1f}°)."
+                )
+        except (KeyError, TypeError, ValueError):
+            pass
         if not messagebox.askyesno(
             "PPMS scan time estimate",
             f"Scan mode: {mode}\nMeasurement points: {total}\nEstimated duration: about {estimate_text}\n\n"
-            "This is an estimate; the actual duration may grow with instrument settling and rotation waits.\nContinue to choose the save folder and start the scan?",
+            "This is an estimate; the actual duration may grow with instrument settling and rotation waits."
+            + rotation_note
+            + "\nContinue to choose the save folder and start the scan?",
+            icon="warning" if rotation_note else "question",
             parent=self.root,
         ):
             return
@@ -36495,8 +36286,10 @@ class CombinedControlApp:
                 # first row's columns so the live CSV stays aligned.
                 if self.ppms_field_scan_rows:
                     row = dict.fromkeys(self.ppms_field_scan_rows[0], "") | row
-                self.ppms_field_scan_rows.append(row)
+                # The live CSV first: a failed write leaves no point that is
+                # only in memory (review, 2026-10-09; RT-E's order).
                 self._append_ppms_live_csv(row)
+                self.ppms_field_scan_rows.append(row)
                 last_field = float(result["field_oe"])
                 mean_point_s = elapsed / max(1, len(self.ppms_field_scan_rows))
                 remaining_s = mean_point_s * max(0, self.ppms_field_scan_total - len(self.ppms_field_scan_rows))
@@ -36851,12 +36644,19 @@ class CombinedControlApp:
         future.add_done_callback(lambda _future: self.post_ui(finished))
 
     def safe_close_ppms(self) -> None:
-        rte_panel = self.__dict__.get("rte_panel")
-        if rte_panel is not None:
-            rte_panel.safe_close_ppms()
-        panel = self.__dict__.get("ppms_panel")
-        if panel is not None:
-            panel.safe_close_ppms()
+        # Each panel on its own: a failure in one must not skip the next's
+        # 6221/2400 OFF (review, 2026-10-09).
+        for name in ("rte_panel", "ppms_panel"):
+            panel = self.__dict__.get(name)
+            if panel is None:
+                continue
+            try:
+                panel.safe_close_ppms()
+            except BaseException as error:
+                try:
+                    self.append_log(f"{name} close warning: {error}")
+                except BaseException:
+                    pass
         if self.ppms_closed:
             return
         self.ppms_closed = True
@@ -37077,6 +36877,12 @@ class CombinedControlApp:
                 if not self.closing:
                     print(f"Transport UI callback error: {error}", file=sys.stderr)
                     traceback.print_exc()
+                    # The built EXE has no console: the log is where it shows
+                    # (review, 2026-10-09).
+                    try:
+                        self.append_log(f"Internal UI error: {error!r}")
+                    except BaseException:
+                        pass
             processed += 1
         try:
             if self.root.winfo_exists():
@@ -37434,6 +37240,21 @@ class CombinedControlApp:
         self.k6221_stop_event.set()
         self.nonlocal_stop_event.set()
         self.nonlocal_vi_stop_event.set()
+        # Every page's scan is told to stop now, not only when the shutdown
+        # thread reaches its page, which could take tens of seconds while the
+        # FMR, STFMR, PPMS and RT-E scans went on driving their sources
+        # (review, 2026-10-09).
+        for owner in (self, self.__dict__.get("ppms_panel"), self.__dict__.get("rte_panel")):
+            if owner is None:
+                continue
+            for name in (
+                "nonlocal_keithley_stop_event", "stfmr_fmr_stop_event",
+                "stfmr_frequency_stop_event", "stfmr_lockin_stop_event",
+                "ppms_field_scan_stop_event",
+            ):
+                event = owner.__dict__.get(name)
+                if event is not None:
+                    event.set()
         try:
             self.magnet_auto_poll_var.set(False)
         except tk.TclError:
@@ -37474,7 +37295,10 @@ class CombinedControlApp:
                     except BaseException as error:
                         self.append_log(f"Camera recording finalisation warning: {error}")
             finally:
-                self.file_executor.shutdown(wait=False, cancel_futures=True)
+                # Queued file work (an AVI finalisation, an export) is left to
+                # finish: cancelling it left an AVI without its index (review,
+                # 2026-10-09).
+                self.file_executor.shutdown(wait=False, cancel_futures=False)
                 self.executor.shutdown(wait=False, cancel_futures=True)
                 self.post_ui(finish_window_close)
 
@@ -37483,166 +37307,6 @@ class CombinedControlApp:
             name="moke-safe-shutdown",
             daemon=True,
         ).start()
-
-
-def tk_alive(root: tk.Tk) -> bool:
-    try:
-        return bool(root.winfo_exists())
-    except tk.TclError:
-        return False
-
-
-def pump_tk(root: tk.Tk) -> bool:
-    try:
-        root.update_idletasks()
-        root.update()
-        return True
-    except tk.TclError:
-        return False
-
-
-def outlined_text(image, text, origin, scale, color, thickness=2) -> None:
-    cv2.putText(
-        image,
-        text,
-        origin,
-        cv2.FONT_HERSHEY_SIMPLEX,
-        scale,
-        (0, 0, 0),
-        thickness + 3,
-        cv2.LINE_AA,
-    )
-    cv2.putText(
-        image,
-        text,
-        origin,
-        cv2.FONT_HERSHEY_SIMPLEX,
-        scale,
-        color,
-        thickness,
-        cv2.LINE_AA,
-    )
-
-
-def draw_camera_info(display, app, viewport, auto_contrast, image_raw) -> None:
-    contrast = "AUTO" if auto_contrast else "FIXED"
-    outlined_text(
-        display,
-        f"Zoom {viewport.zoom:.2f}x   Contrast {contrast}",
-        (210, 30),
-        0.64,
-        (80, 255, 255),
-    )
-    outlined_text(
-        display,
-        f"Raw mean {float(np.mean(image_raw)):.1f}   max {int(np.max(image_raw))}"
-        "   [A] contrast  [R] reset  [Q] quit",
-        (150, 58),
-        0.55,
-        (0, 255, 255),
-        1,
-    )
-
-
-def run_camera(root: tk.Tk, app: CombinedControlApp) -> str:
-    if CAMERA_IMPORT_ERROR is not None:
-        raise RuntimeError(
-            "Camera dependencies are missing. Install pco, numpy and opencv-python, and check the PCO driver.\n\n"
-            + str(CAMERA_IMPORT_ERROR)
-        )
-
-    viewport = CameraViewport()
-    auto_contrast = True
-    fixed_low = 0.0
-    fixed_high = 65535.0
-    camera = None
-    reason = "camera_closed"
-
-    try:
-        camera = pco.Camera()
-        camera.default_configuration()
-        camera.exposure_time = EXPOSURE_S
-        camera.configuration = {"timestamp": "off", "metadata": "off"}
-        cv2.namedWindow(CAMERA_WINDOW, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(CAMERA_WINDOW, CAMERA_WINDOW_WIDTH, CAMERA_WINDOW_HEIGHT)
-        try:
-            cv2.moveWindow(CAMERA_WINDOW, 10, 20)
-        except cv2.error:
-            pass
-        cv2.setMouseCallback(CAMERA_WINDOW, viewport.mouse_callback)
-        camera.record(RING_BUFFER_FRAMES, "ring buffer")
-        app.append_log("PCO camera live preview started")
-
-        while True:
-            if not pump_tk(root):
-                reason = "led_window_closed"
-                break
-            try:
-                visible = cv2.getWindowProperty(CAMERA_WINDOW, cv2.WND_PROP_VISIBLE)
-            except cv2.error:
-                visible = 0
-            if visible < 1:
-                break
-
-            camera.wait_for_new_image()
-            image_raw, _metadata = camera.image(0xFFFFFFFF)
-            image_raw = orient_camera_image(image_raw)
-            viewport.image_shape = image_raw.shape
-            if viewport.center_x is None or viewport.center_y is None:
-                height, width = image_raw.shape[:2]
-                viewport.center_x = width / 2.0
-                viewport.center_y = height / 2.0
-            height, width = image_raw.shape[:2]
-            visible_bounds = viewport.crop_bounds(width, height)
-            if auto_contrast:
-                preview = viewport.auto_preview(image_raw, visible_bounds)
-            else:
-                preview = viewport.fixed_preview(image_raw, fixed_low, fixed_high)
-            viewport.image_shape = preview.shape
-            try:
-                _x, _y, window_width, window_height = cv2.getWindowImageRect(
-                    CAMERA_WINDOW
-                )
-            except cv2.error:
-                window_width, window_height = CAMERA_WINDOW_WIDTH, CAMERA_WINDOW_HEIGHT
-            display_gray = viewport.render(
-                preview, max(window_width, 320), max(window_height, 240)
-            )
-            display = cv2.cvtColor(display_gray, cv2.COLOR_GRAY2BGR)
-            viewport.draw_corner_labels(display)
-            draw_camera_info(display, app, viewport, auto_contrast, image_raw)
-            cv2.imshow(CAMERA_WINDOW, display)
-
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("a"):
-                if auto_contrast:
-                    fixed_low, fixed_high = auto_contrast_limits(
-                        image_raw,
-                        visible_bounds,
-                    )
-                auto_contrast = not auto_contrast
-            elif key == ord("r"):
-                viewport.reset()
-            elif key in (ord("q"), 27):
-                break
-    finally:
-        if camera is not None:
-            try:
-                camera.stop()
-            except BaseException:
-                pass
-            try:
-                camera.close()
-            except BaseException:
-                pass
-        try:
-            cv2.destroyAllWindows()
-            cv2.waitKey(1)
-        except BaseException:
-            pass
-        if tk_alive(root):
-            app.append_log("PCO camera live preview stopped")
-    return reason
 
 
 # ---------------------------------------------------------------------------
@@ -39866,11 +39530,15 @@ class RTEPanel(PPMSPanel):
         if self.rte_closed:
             return
         # Single executor: OFF follows any in-flight command; scan observes cancellation.
-        future = self.ppms_executor.submit(self.rte_controllers['kepco'].zero_output)
+        # force_output_off: an explicit operator request acts even on an
+        # output switched on elsewhere (LabVIEW, front panel, a crash), as
+        # on the STFMR page; zero_output only undoes this program's own
+        # (review, 2026-10-09: the button could do nothing and say "sent").
+        future = self.ppms_executor.submit(self.rte_controllers['kepco'].force_output_off)
         def finished():
             try:
                 future.result()
-                self.rte_drive_live.set('KEPCO: Zero / OFF command sent')
+                self.rte_drive_live.set('KEPCO: zeroed and output OFF')
             except Exception as error:
                 self.rte_drive_live.set(f'KEPCO OFF not confirmed: {error}')
         future.add_done_callback(lambda _: self.post_ui(finished))

@@ -45,7 +45,7 @@ class CurrentCallbacks(unittest.TestCase):
                         return (harmonics[key],)
                     return ({'SOUR:WAVE:AMPL?': settings['peak_a'], 'CURR:COMP?': 50.,
                              'SOUR:WAVE:FREQ?': 317.3, 'FMOD?': 0, 'RSLP?': 1,
-                             'OUTP?': 1, 'FREQ?': 317.3, 'LIAS?': 0}[command],)
+                             'OUTP?': 1, 'FREQ?': 317.3, 'LIAS?': 0, 'OUTP:LTE?': 0}[command],)
                 obj._ppms_query_numbers = query
                 obj._configure_ppms_transport_scan(settings)
                 self.assertEqual(harmonics, {'830_a': ha, '830_b': hb})
@@ -75,7 +75,7 @@ class CurrentCallbacks(unittest.TestCase):
                 return (float(next(c.split()[-1] for c in reversed(writes) if c.startswith('SOUR:WAVE:AMPL '))),)
             return ({'CURR:COMP?': 50., 'SOUR:WAVE:FREQ?': 317.3,
                      'HARM?': 1, 'FMOD?': 0, 'RSLP?': 1, 'OUTP?': 1,
-                     'FREQ?': 317.3, 'LIAS?': 0, '*ESR?': 0}[command],)
+                     'FREQ?': 317.3, 'LIAS?': 0, '*ESR?': 0, 'OUTP:LTE?': 0}[command],)
         obj._ppms_query_numbers = query
         for current in (1., 2., 5.):
             # Deliberately retain the old 1 mA peak in the input dictionary.
