@@ -219,6 +219,11 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertEqual(len(self.widgets(
             "TCheckbutton", text="Safety confirmed: voltage pulses, read current, wiring, sample")), 1)
         self.assertEqual(len(self.widgets("TCombobox", a.nonlocal_vi_output_mode_var)), 1)
+        # 2400-IV settings (user, 2026-10-09): no Sample box; Set, OFF and
+        # Apply pulse for the Keithley on its own.
+        for text in ("Set 2400", "2400 / 6221 OFF", "Apply pulse"):
+            self.assertEqual(len(self.widgets("TButton", text=text)), 1, text)
+        self.assertEqual(self.widgets("TLabel", text="Sample:"), [])
 
     def test_non_local_measurements_take_turns_on_the_keithley(self):
         a = self.app

@@ -1379,8 +1379,16 @@ NONLOCAL_VI_2410_RESOURCE = "GPIB0::24::INSTR"
 # The Non-local page starts with a 2400 chosen (user, 2026-10-08); MOKE-24
 # keeps KEITHLEY_DEFAULT_MODEL.
 NONLOCAL_DEFAULT_KEITHLEY_MODEL = "2400"
+# The pulse setup (setup_voltage_mode): the 20 V range and 20 V OVP.  Pulses
+# and the 2400-IV sweep go beyond it on the model's high range, up to
+# NONLOCAL_KEITHLEY_MAX_ABS_V.
 NONLOCAL_VI_MAX_ABS_PULSE_V = 20.0
 NONLOCAL_VI_2410_SOURCE_OVP_V = 20.0
+# After high voltage (the high range) the output is held on at 0 V this long
+# before it goes off, so the Keithley drains the sample and cable through its
+# current limit (1 mA empties 1 µF from 1000 V in 1 s) instead of leaving
+# them charged (review, 2026-10-09).
+NONLOCAL_KEITHLEY_DISCHARGE_S = 1.0
 NONLOCAL_VI_START_PULSE_V = 20.0
 NONLOCAL_VI_STOP_PULSE_V = -20.0
 NONLOCAL_VI_STEP_PULSE_V = 4.0
@@ -1440,6 +1448,19 @@ NONLOCAL_IV_SWEEP_STEP_V = 0.25
 NONLOCAL_IV_SWEEP_SETTLE_S = 0.5
 NONLOCAL_IV_SWEEP_COMPLIANCE_A = KEITHLEY_DEFAULT_COMPLIANCE_A
 NONLOCAL_IV_SWEEP_MAX_COMPLIANCE_A = 0.1
+# The Non-local Keithley's voltage limits, for the 2400-IV sweep and the
+# Gate-VI pulses (user, 2026-10-09): ±200 V on a 2400 (its 200 V range),
+# ±1000 V on a 2410 (its 1000 V range).  Up to ±20 V it keeps the 20 V range;
+# above, the model's high range and its current limit (KEITHLEY_MODELS:
+# 105 mA on a 2400, 21 mA on a 2410).
+NONLOCAL_KEITHLEY_MAX_ABS_V = {"2400": 200.0, "2410": 1000.0}
+# The hardware OVP levels (:SOUR:VOLT:PROT, 2400-series manual).  The last is
+# "none", the model's maximum output (a 2400 reads back 210 V).  The sweep
+# takes the lowest level at or above its largest |V|.
+KEITHLEY_OVP_LEVELS_V = {
+    "2400": (20.0, 40.0, 60.0, 80.0, 100.0, 120.0, 160.0, 210.0),
+    "2410": (20.0, 40.0, 100.0, 200.0, 300.0, 400.0, 500.0, 1100.0),
+}
 NONLOCAL_IV_SWEEP_NPLC = KEITHLEY_RES_NPLC
 NONLOCAL_IV_SWEEP_MAX_POINTS = 10_000
 NONLOCAL_IV_SWEEP_RESULTS_DIRECTORY = (
@@ -4691,6 +4712,34 @@ def build_iv_sweep_voltages(start_v: float, end_v: float, step_v: float,
     return voltages
 
 
+def nonlocal_keithley_source(model: str, max_abs_v: float) -> dict:
+    """The source range, hardware OVP level and largest current limit on
+    this model for voltages up to ``max_abs_v`` (a 2400-IV sweep or a
+    Gate-VI pulse)."""
+    limit_v = NONLOCAL_KEITHLEY_MAX_ABS_V[model]
+    max_abs_v = abs(float(max_abs_v))
+    if not (math.isfinite(max_abs_v) and max_abs_v <= limit_v):
+        raise ValueError(f"Keithley {model} voltages must be within ±{limit_v:g} V")
+    spec = KEITHLEY_MODELS[model]
+    high = max_abs_v > KEITHLEY_LOW_SOURCE_RANGE_V
+    levels = KEITHLEY_OVP_LEVELS_V[model]
+    # The OVP levels are ±5 % (2400-series manual): above ±20 V the level
+    # chosen is at least 5 % above the voltages, so it cannot clip them.  Up
+    # to ±20 V the pulse setup's 20 V OVP, as before.
+    needed_v = max_abs_v * 1.05 if high else max_abs_v
+    ovp_v = next((level for level in levels if level >= needed_v), levels[-1])
+    return {
+        "max_abs_v": max_abs_v,
+        "range_v": spec["high_range_v"] if high else KEITHLEY_LOW_SOURCE_RANGE_V,
+        "ovp_v": ovp_v,
+        "ovp_none": ovp_v == levels[-1],
+        "max_limit_a": (
+            min(NONLOCAL_IV_SWEEP_MAX_COMPLIANCE_A, spec["high_range_max_compliance_a"])
+            if high else NONLOCAL_IV_SWEEP_MAX_COMPLIANCE_A
+        ),
+    }
+
+
 def current_unit(max_abs_current_a: float) -> tuple[float, str]:
     """(scale, unit) that shows a current of this size in readable numbers."""
     value = abs(float(max_abs_current_a))
@@ -5993,8 +6042,10 @@ class NonLocalVIInterlock:
 
 class NonLocalVI2410Controller:
     """Thread-safe Keithley 2410 or 2400 pulse and resistance controller for
-    VI.  Both models are driven the same way here (20 V range, 20 V OVP,
-    1 mA); ``model`` sets the identity check and the names."""
+    VI.  The pulse setup is the 20 V range with a 20 V OVP; pulses, the
+    2400-IV sweep and Set above ±20 V use the model's high range
+    (_set_source_range_locked).  ``model`` sets the limits, the identity
+    check and the names."""
 
     def __init__(self, logger: Callable[[str], None], model: str = KEITHLEY_DEFAULT_MODEL) -> None:
         self.logger = logger
@@ -6005,6 +6056,12 @@ class NonLocalVI2410Controller:
         self.resource_name = ""
         self.source_mode = None
         self.output_enabled = False
+        # The largest |V| set_iv_voltage takes: the running 2400-IV sweep's,
+        # else the pulse setup's.
+        self.iv_sweep_max_abs_v = NONLOCAL_VI_MAX_ABS_PULSE_V
+        # On the high range (above ±20 V): the output is drained at 0 V
+        # before it goes off (safe_shutdown).
+        self.high_voltage_active = False
         self.lock = threading.RLock()
         self.set_model(model)
 
@@ -6120,6 +6177,11 @@ class NonLocalVI2410Controller:
     def setup_voltage_mode(self, current_compliance_a: float) -> None:
         with self.lock:
             instrument = self._require_instrument()
+            # *RST switches the output off at once: after high voltage, drain
+            # at 0 V first.
+            if self.__dict__.get("high_voltage_active"):
+                self.safe_shutdown(reset=False)
+            self.iv_sweep_max_abs_v = NONLOCAL_VI_MAX_ABS_PULSE_V
             instrument.write("*RST")
             instrument.write("*CLS")
             for command in (
@@ -6137,6 +6199,22 @@ class NonLocalVI2410Controller:
                 self._write_checked(command)
             self.source_mode = "VOLT"
             self.output_enabled = False
+            self.high_voltage_active = False
+            # Back from the high range: the 20 V OVP and range read back.
+            ovp = self._query_float(":SOUR:VOLT:PROT?")
+            source_range = self._query_float(":SOUR:VOLT:RANG?")
+            if not (
+                math.isfinite(ovp)
+                and abs(ovp - NONLOCAL_VI_2410_SOURCE_OVP_V) <= NONLOCAL_VI_2410_SOURCE_OVP_V * 0.01
+                and math.isfinite(source_range)
+                and KEITHLEY_LOW_SOURCE_RANGE_V <= source_range + 1e-9
+                and source_range <= KEITHLEY_LOW_SOURCE_RANGE_V * 1.06
+            ):
+                raise RuntimeError(
+                    f"Keithley {self.model} pulse setup reads OVP {ovp:g} V and range "
+                    f"{source_range:g} V, not {NONLOCAL_VI_2410_SOURCE_OVP_V:g} V and "
+                    f"{KEITHLEY_LOW_SOURCE_RANGE_V:g} V"
+                )
             self.confirm_output_off("after voltage-mode initialization")
 
     def confirm_output_off(self, context: str) -> None:
@@ -6165,12 +6243,18 @@ class NonLocalVI2410Controller:
             commands = [zero_command, ":OUTP OFF"]
             if reset:
                 commands.extend(("*RST", "*CLS"))
+            # After high voltage: 0 V with the output still on for a moment,
+            # so the sample and cable are drained, not left charged.
+            drain = self.source_mode == "VOLT" and bool(self.__dict__.get("high_voltage_active"))
             for command in commands:
                 try:
                     instrument.write(command)
                 except BaseException as error:
                     errors.append(f"{command}: {error}")
+                if command == zero_command and drain:
+                    time.sleep(NONLOCAL_KEITHLEY_DISCHARGE_S)
             self.output_enabled = False
+            self.iv_sweep_max_abs_v = NONLOCAL_VI_MAX_ABS_PULSE_V
             if reset:
                 self.source_mode = None
             if errors:
@@ -6185,14 +6269,19 @@ class NonLocalVI2410Controller:
         stop_event: threading.Event,
         status_callback: Callable[[float], None] | None = None,
     ) -> None:
+        # ±200 V on a 2400, ±1000 V on a 2410 (user, 2026-10-09).
+        limit_v = NONLOCAL_KEITHLEY_MAX_ABS_V[self.model]
         with self.lock:
-            if abs(voltage_v) > NONLOCAL_VI_MAX_ABS_PULSE_V:
+            if not math.isfinite(voltage_v) or abs(voltage_v) > limit_v:
                 raise ValueError(
                     f"Keithley {self.model} pulse voltage exceeds the software limit"
-                    f"±{NONLOCAL_VI_MAX_ABS_PULSE_V:g} V"
+                    f"±{limit_v:g} V"
                 )
             try:
                 self._write_checked(":SOUR:VOLT 0")
+                # This pulse's range and OVP (above ±20 V the high range),
+                # read back while the output is still off.
+                self._set_source_range_locked(abs(voltage_v))
                 # A Stop pressed since the last wait: no output at all.
                 if stop_event.is_set():
                     raise NonLocalVIStopped()
@@ -6217,6 +6306,11 @@ class NonLocalVI2410Controller:
 
     def _setup_resistance_mode(self, source_current_a: float) -> None:
         instrument = self._require_instrument()
+        # *RST switches the output off at once: after high voltage, drain
+        # at 0 V first.
+        if self.__dict__.get("high_voltage_active"):
+            self.safe_shutdown(reset=False)
+        self.high_voltage_active = False
         instrument.write("*RST")
         instrument.write("*CLS")
         for command in (
@@ -6407,26 +6501,62 @@ class NonLocalVI2410Controller:
         resistance_ohm = math.nan if abs(current_a) < 1e-15 else abs(voltage_v / current_a)
         return voltage_v, current_a, resistance_ohm
 
-    def start_iv_sweep(self, current_limit_a: float) -> float:
-        """Voltage source at 0 V, output on, the current measured.  Returns
-        the current limit as the instrument reads it back."""
+    def _set_source_range_locked(self, max_abs_v: float) -> dict:
+        """With the output off: the source range and the lowest hardware OVP
+        level covering |V| up to ``max_abs_v`` (nonlocal_keithley_source),
+        both read back.  Back down to the 20 V range and 20 V OVP for
+        ±20 V."""
+        source = nonlocal_keithley_source(self.model, max_abs_v)
+        if int(self._query_float(":OUTP?")) != 0:
+            raise RuntimeError(f"Keithley {self.model} output must be off to change its range")
+        # Marked before the range changes, so any later switch-off drains.
+        # (The output is off here, so going down to the 20 V range needs
+        # no drain.)
+        self.high_voltage_active = source["range_v"] > KEITHLEY_LOW_SOURCE_RANGE_V
+        self._write_checked(f":SOUR:VOLT:PROT {source['ovp_v']:.12g}")
+        self._write_checked(f":SOUR:VOLT:RANG {source['range_v']:.12g}")
+        # The level selected must be the one asked for; "none" (the model's
+        # maximum) only needs to cover the voltages.
+        ovp = self._query_float(":SOUR:VOLT:PROT?")
+        if not (
+            math.isfinite(ovp)
+            and ovp + 1e-9 >= source["max_abs_v"]
+            and (source["ovp_none"] or abs(ovp - source["ovp_v"]) <= source["ovp_v"] * 0.01)
+        ):
+            raise RuntimeError(
+                f"Keithley {self.model} over-voltage protection reads {ovp:g} V, "
+                f"not the {source['ovp_v']:g} V asked for"
+            )
+        source_range = self._query_float(":SOUR:VOLT:RANG?")
+        if not (math.isfinite(source_range) and source_range + 1e-9 >= source["max_abs_v"]):
+            raise RuntimeError(
+                f"Keithley {self.model} source range reads {source_range:g} V; "
+                f"{source['max_abs_v']:g} V is needed"
+            )
+        return source
+
+    def start_iv_sweep(
+        self, current_limit_a: float, max_abs_v: float = KEITHLEY_LOW_SOURCE_RANGE_V
+    ) -> float:
+        """Voltage source at 0 V, output on, the current measured, for a
+        sweep reaching ``max_abs_v``: up to ±20 V on the 20 V range, above on
+        the model's high range, with the hardware OVP at the lowest level
+        covering it (nonlocal_keithley_source).  Range, OVP and current
+        limit are read back before the output goes on.  Returns the current
+        limit as the instrument reads it back."""
+        source = nonlocal_keithley_source(self.model, max_abs_v)
         limit = float(current_limit_a)
-        if not (math.isfinite(limit) and 0.0 < limit <= NONLOCAL_IV_SWEEP_MAX_COMPLIANCE_A):
+        if not (math.isfinite(limit) and 0.0 < limit <= source["max_limit_a"]):
             raise ValueError(
-                f"Current limit must be above 0 and at most {NONLOCAL_IV_SWEEP_MAX_COMPLIANCE_A:g} A"
+                f"Current limit must be above 0 and at most {source['max_limit_a']:g} A"
+                + (
+                    f" on the Keithley {self.model}'s {source['range_v']:g} V range"
+                    if source["range_v"] > KEITHLEY_LOW_SOURCE_RANGE_V else ""
+                )
             )
         with self.lock:
             self.setup_voltage_mode(limit)
-            # setup_voltage_mode sets the OVP without reading it back.
-            ovp = self._query_float(":SOUR:VOLT:PROT?")
-            if not (
-                math.isfinite(ovp)
-                and abs(ovp - NONLOCAL_VI_2410_SOURCE_OVP_V) <= NONLOCAL_VI_2410_SOURCE_OVP_V * 0.01
-            ):
-                raise RuntimeError(
-                    f"Keithley {self.model} over-voltage protection reads {ovp:g} V, "
-                    f"not the {NONLOCAL_VI_2410_SOURCE_OVP_V:g} V asked for"
-                )
+            self._set_source_range_locked(source["max_abs_v"])
             # The current limit as set, so the at-limit marking uses it.
             protection = self._query_float(":SENS:CURR:PROT?")
             if not (math.isfinite(protection) and abs(protection - limit) <= limit * 0.01):
@@ -6435,16 +6565,51 @@ class NonLocalVI2410Controller:
                     f"not the {limit:g} A asked for"
                 )
             self._write_checked(f":SENS:CURR:NPLC {NONLOCAL_IV_SWEEP_NPLC:.12g}")
+            self.iv_sweep_max_abs_v = source["max_abs_v"]
             self._write_checked(":OUTP ON")
             self.output_enabled = True
             if int(self._query_float(":OUTP?")) != 1:
                 raise RuntimeError(f"Keithley {self.model} output did not turn on for the 2400-IV sweep")
             return protection
 
+    def set_dc_voltage(self, voltage_v: float, current_limit_a: float) -> tuple[float, float]:
+        """The output left on at ``voltage_v`` (2400-IV settings, Set): from
+        the pulse setup at 0 V, on the range and OVP for it, with the
+        current limit read back.  Returns (V, I) read once it is on; on a
+        failure the output is switched off again."""
+        voltage = float(voltage_v)
+        if not math.isfinite(voltage):
+            raise ValueError(f"Keithley {self.model} voltage must be a finite number")
+        source = nonlocal_keithley_source(self.model, abs(voltage))
+        limit = float(current_limit_a)
+        if not (math.isfinite(limit) and 0.0 < limit <= source["max_limit_a"]):
+            raise ValueError(
+                f"Current limit must be above 0 and at most {source['max_limit_a']:g} A"
+            )
+        with self.lock:
+            self.setup_voltage_mode(limit)
+            try:
+                self._set_source_range_locked(source["max_abs_v"])
+                protection = self._query_float(":SENS:CURR:PROT?")
+                if not (math.isfinite(protection) and abs(protection - limit) <= limit * 0.01):
+                    raise RuntimeError(
+                        f"Keithley {self.model} current limit reads {protection:g} A, "
+                        f"not the {limit:g} A asked for"
+                    )
+                self._write_checked(":OUTP ON")
+                self.output_enabled = True
+                self._write_checked(f":SOUR:VOLT {voltage:.12g}")
+                return self.read_iv_point()
+            except BaseException:
+                self.safe_shutdown(reset=False)
+                raise
+
     def set_iv_voltage(self, voltage_v: float) -> None:
         voltage = float(voltage_v)
-        if not math.isfinite(voltage) or abs(voltage) > NONLOCAL_VI_MAX_ABS_PULSE_V:
-            raise ValueError(f"I–V voltage must be within ±{NONLOCAL_VI_MAX_ABS_PULSE_V:g} V")
+        # Within the running sweep's largest |V| (start_iv_sweep).
+        limit_v = self.iv_sweep_max_abs_v
+        if not math.isfinite(voltage) or abs(voltage) > limit_v:
+            raise ValueError(f"I–V voltage must be within ±{limit_v:g} V")
         with self.lock:
             if self.source_mode != "VOLT" or not self.output_enabled:
                 raise RuntimeError(f"Keithley {self.model} is not set up for the 2400-IV sweep")
@@ -6465,7 +6630,8 @@ class NonLocalVI2410Controller:
         return values[0], values[1]
 
     def restore_voltage_mode(self) -> None:
-        """Zero, output off, and back to the pulse setup (20 V, 1 mA)."""
+        """Zero (drained after high voltage), output off, and back to the
+        pulse setup (20 V range, 20 V OVP, 1 mA)."""
         with self.lock:
             if self.instrument is None:
                 return
@@ -12936,12 +13102,19 @@ class CombinedControlApp:
         self.nonlocal_resistance_rows: list[tuple[float, float]] = []
         self.nonlocal_resistance_canvas = None
         self.nonlocal_iv_safety_var = tk.BooleanVar(value=False)
-        self.nonlocal_iv_sample_var = tk.StringVar(value="")
         self.nonlocal_iv_start_var = tk.StringVar(value=f"{NONLOCAL_IV_SWEEP_START_V:g}")
         self.nonlocal_iv_end_var = tk.StringVar(value=f"{NONLOCAL_IV_SWEEP_END_V:g}")
         self.nonlocal_iv_step_var = tk.StringVar(value=f"{NONLOCAL_IV_SWEEP_STEP_V:g}")
         self.nonlocal_iv_settle_var = tk.StringVar(value=f"{NONLOCAL_IV_SWEEP_SETTLE_S:g}")
         self.nonlocal_iv_limit_var = tk.StringVar(value=f"{NONLOCAL_IV_SWEEP_COMPLIANCE_A:g}")
+        # The Keithley on its own (user, 2026-10-09): a voltage left on until
+        # OFF, and one pulse.
+        self.nonlocal_iv_set_voltage_var = tk.StringVar(value="0")
+        self.nonlocal_iv_pulse_voltage_var = tk.StringVar(value="1")
+        self.nonlocal_iv_pulse_width_var = tk.StringVar(value=f"{NONLOCAL_VI_PULSE_WIDTH_S:g}")
+        self.nonlocal_iv_keithley_var = tk.StringVar(
+            value=f"Keithley {NONLOCAL_DEFAULT_KEITHLEY_MODEL}: OFF"
+        )
         self.nonlocal_iv_point_var = tk.StringVar(value="Last point: --")
         self.nonlocal_iv_eta_var = tk.StringVar(value="Remaining: --")
         # (point, set V, source V, current A, elapsed s, at the current limit)
@@ -21961,23 +22134,56 @@ class CombinedControlApp:
             variable=self.nonlocal_iv_safety_var,
             command=self._update_nonlocal_keithley_controls,
         ).grid(row=0, column=0, columnspan=4, sticky="w")
-        ttk.Label(settings, text="Sample:").grid(row=1, column=0, sticky="e", pady=2)
-        ttk.Entry(settings, textvariable=self.nonlocal_iv_sample_var, width=22).grid(
-            row=1, column=1, sticky="w", padx=(3, 10), pady=2
-        )
-        ttk.Label(settings, text="Current limit A:").grid(row=1, column=2, sticky="e", pady=2)
+        # No Sample box (user, 2026-10-09).
+        ttk.Label(settings, text="Current limit A:").grid(row=1, column=0, sticky="e", pady=2)
         ttk.Entry(settings, textvariable=self.nonlocal_iv_limit_var, width=9).grid(
+            row=1, column=1, sticky="w", padx=(3, 0), pady=2
+        )
+        # The Keithley on its own (user, 2026-10-09): a voltage left on until
+        # OFF, and one pulse; both with the Current limit A and the safety
+        # tick, the 6221 switched off first.
+        manual = ttk.Frame(settings)
+        manual.grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        self.nonlocal_iv_set_label = ttk.Label(manual, text=f"{NONLOCAL_DEFAULT_KEITHLEY_MODEL} V:")
+        self.nonlocal_iv_set_label.grid(row=0, column=0, sticky="e", pady=2)
+        ttk.Entry(manual, textvariable=self.nonlocal_iv_set_voltage_var, width=8).grid(
+            row=0, column=1, sticky="w", padx=(3, 6), pady=2
+        )
+        self.nonlocal_iv_set_button = ttk.Button(
+            manual, text=f"Set {NONLOCAL_DEFAULT_KEITHLEY_MODEL}", width=10,
+            command=self.set_nonlocal_keithley_voltage,
+        )
+        self.nonlocal_iv_set_button.grid(row=0, column=2, columnspan=2, sticky="w", pady=2)
+        self.nonlocal_iv_off_button = ttk.Button(
+            manual, text=f"{NONLOCAL_DEFAULT_KEITHLEY_MODEL} / 6221 OFF", width=15,
+            command=self.stop_nonlocal_vi,
+        )
+        self.nonlocal_iv_off_button.grid(row=0, column=4, sticky="w", padx=(6, 0), pady=2)
+        ttk.Label(manual, text="Pulse V:").grid(row=1, column=0, sticky="e", pady=2)
+        ttk.Entry(manual, textvariable=self.nonlocal_iv_pulse_voltage_var, width=8).grid(
+            row=1, column=1, sticky="w", padx=(3, 6), pady=2
+        )
+        ttk.Label(manual, text="Width s:").grid(row=1, column=2, sticky="e", pady=2)
+        ttk.Entry(manual, textvariable=self.nonlocal_iv_pulse_width_var, width=6).grid(
             row=1, column=3, sticky="w", padx=(3, 0), pady=2
+        )
+        self.nonlocal_iv_pulse_button = ttk.Button(
+            manual, text="Apply pulse", width=15, command=self.apply_nonlocal_keithley_pulse,
+        )
+        self.nonlocal_iv_pulse_button.grid(row=1, column=4, sticky="w", padx=(6, 0), pady=2)
+        ttk.Label(manual, textvariable=self.nonlocal_iv_keithley_var).grid(
+            row=2, column=0, columnspan=5, sticky="w", pady=(2, 0)
         )
         ttk.Label(
             settings,
             text=(
-                f"Voltage source, ±{NONLOCAL_VI_MAX_ABS_PULSE_V:g} V range with a "
-                f"{NONLOCAL_VI_2410_SOURCE_OVP_V:g} V OVP; current read at NPLC "
-                f"{NONLOCAL_IV_SWEEP_NPLC:g}"
+                f"Voltage source: up to ±{NONLOCAL_KEITHLEY_MAX_ABS_V['2400']:g} V on a 2400, "
+                f"±{NONLOCAL_KEITHLEY_MAX_ABS_V['2410']:g} V on a 2410 (above ±"
+                f"{KEITHLEY_LOW_SOURCE_RANGE_V:g} V on the high range);\nhardware OVP at the "
+                f"lowest level above the sweep; current read at NPLC {NONLOCAL_IV_SWEEP_NPLC:g}"
             ),
             style="Muted.TLabel",
-        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
         for index, (label, variable) in enumerate((
             ("Start V", self.nonlocal_iv_start_var),
@@ -29084,6 +29290,14 @@ class CombinedControlApp:
         frame = self.nonlocal_vi_plot_frames.get("resistance")
         if frame is not None:
             frame.configure(text=f"Keithley {model} resistance")
+        for name, text in (
+            ("nonlocal_iv_set_label", f"{model} V:"),
+            ("nonlocal_iv_set_button", f"Set {model}"),
+            ("nonlocal_iv_off_button", f"{model} / 6221 OFF"),
+        ):
+            widget = self.__dict__.get(name)
+            if widget is not None:
+                widget.configure(text=text)
 
     def _update_nonlocal_vi_controls(self) -> None:
         if not self.nonlocal_vi_device_connect_buttons:
@@ -29750,12 +29964,14 @@ class CombinedControlApp:
             if key != "output_mode"
         ):
             raise ValueError("Non-local VI parameters must be finite values")
+        model = self.nonlocal_vi_2410_controller.model
+        pulse_limit_v = NONLOCAL_KEITHLEY_MAX_ABS_V.get(model, NONLOCAL_VI_MAX_ABS_PULSE_V)
         if max(
             abs(settings["start_voltage_v"]),
             abs(settings["stop_voltage_v"]),
-        ) > NONLOCAL_VI_MAX_ABS_PULSE_V:
+        ) > pulse_limit_v:
             raise ValueError(
-                f"Keithley {self.nonlocal_vi_2410_controller.model} pulse voltage must be within ±{NONLOCAL_VI_MAX_ABS_PULSE_V:g} V"
+                f"Keithley {model} pulse voltage must be within ±{pulse_limit_v:g} V"
             )
         if settings["voltage_step_v"] <= 0:
             raise ValueError("Voltage step must be greater than 0")
@@ -30000,6 +30216,7 @@ class CombinedControlApp:
             f"Resistance gate: {settings['gate_resistance_ohm'] / 1e6:g} MΩ\n"
             f"{lockin_description}\n"
             f"Estimated total time: {self._format_duration(settings['estimated_s'])}\n\n"
+            + self._nonlocal_vi_high_voltage_note(settings)
             + (
                 "Confirm the interlock wiring and the Trigger Link, then start?"
                 if settings["output_mode"] == "AC"
@@ -30014,6 +30231,7 @@ class CombinedControlApp:
                 pass
             return
         self.nonlocal_vi_run_directory = run_directory
+        self._note_nonlocal_keithley_taken()
         self.nonlocal_vi_stop_event.clear()
         self.nonlocal_vi_running = True
         self.nonlocal_vi_shutdown_error = None
@@ -30044,6 +30262,23 @@ class CombinedControlApp:
             lambda completed: self.post_ui(
                 lambda: self._finish_nonlocal_vi_scan(completed.exception())
             )
+        )
+
+    def _nonlocal_vi_high_voltage_note(self, settings: dict) -> str:
+        """The confirmation's warning for pulses above ±20 V."""
+        model = self.nonlocal_vi_2410_controller.model
+        peak_v = max(abs(settings["start_voltage_v"]), abs(settings["stop_voltage_v"]))
+        if peak_v <= KEITHLEY_LOW_SOURCE_RANGE_V:
+            return ""
+        source = nonlocal_keithley_source(model, peak_v)
+        return (
+            f"HIGH VOLTAGE: pulses up to {peak_v:g} V on the Keithley {model}'s "
+            f"{source['range_v']:g} V range; "
+            + (
+                f"no hardware OVP below its {source['ovp_v']:g} V maximum. "
+                if source["ovp_none"] else f"hardware OVP {source['ovp_v']:g} V. "
+            )
+            + "Everything wired to the sample must tolerate it.\n\n"
         )
 
     @staticmethod
@@ -30814,6 +31049,8 @@ class CombinedControlApp:
             off = [names[key] for key in ("keithley", "6221") if key in confirmed]
             if "6221" in confirmed:
                 self.nonlocal_iv6221_source_var.set("6221: OFF")
+            if "keithley" in confirmed and "nonlocal_iv_keithley_var" in self.__dict__:
+                self.nonlocal_iv_keithley_var.set(f"Keithley {model}: OFF")
             if off:
                 text = " and ".join(off)
                 warning = ""
@@ -31018,6 +31255,28 @@ class CombinedControlApp:
             and not self.nonlocal_vi_running
             and not self.nonlocal_vi_busy
         )
+        # The Keithley on its own: Set and Apply pulse when it is free and
+        # the 2400-IV safety tick is set; OFF whenever an output is connected.
+        manual = free and self.nonlocal_iv_safety_var.get()
+        for name in ("nonlocal_iv_set_button", "nonlocal_iv_pulse_button"):
+            button = self.__dict__.get(name)
+            if button is not None:
+                button.configure(state="normal" if manual else "disabled")
+        off_button = self.__dict__.get("nonlocal_iv_off_button")
+        if off_button is not None:
+            off_button.configure(
+                state="normal"
+                if self.nonlocal_vi_ac_controller.source_connected
+                or self.nonlocal_vi_2410_controller.connected
+                else "disabled"
+            )
+        state = self.__dict__.get("nonlocal_iv_keithley_var")
+        model = self.nonlocal_vi_2410_controller.model
+        if state is not None:
+            if not self.nonlocal_vi_2410_controller.connected:
+                state.set(f"Keithley {model}: not connected")
+            elif state.get().endswith("not connected"):
+                state.set(f"Keithley {model}: OFF")
         self.nonlocal_resistance_button.configure(
             text=(
                 "Measuring continuously…"
@@ -31099,7 +31358,19 @@ class CombinedControlApp:
             return False
         return True
 
+    def _note_nonlocal_keithley_taken(self) -> None:
+        """A voltage left on by Set ends when another measurement takes the
+        Keithley (each starts from off), or the 6221 is switched on."""
+        state = self.__dict__.get("nonlocal_iv_keithley_var")
+        if state is not None and " ON:" in state.get():
+            state.set(
+                f"Keithley {self.nonlocal_vi_2410_controller.model}: "
+                "OFF (switched off by the next measurement)"
+            )
+
     def _begin_nonlocal_keithley_task(self, kind: str, worker, finish) -> None:
+        if kind != "2400set":
+            self._note_nonlocal_keithley_taken()
         self.nonlocal_keithley_stop_event.clear()
         self.nonlocal_keithley_output_off = False
         self.nonlocal_keithley_task = kind
@@ -31132,6 +31403,10 @@ class CombinedControlApp:
             if task == "iv"
             else "Stopping Set 6221; switching the 6221 off next…"
             if task == "iv6221set"
+            else "Stopping Set; switching the Keithley off next…"
+            if task == "2400set"
+            else "Stopping the pulse; switching the Keithley off next…"
+            if task == "2400pulse"
             else "Stopping the 6221-IV scan; switching the 6221 off next…"
         )
         self._update_nonlocal_keithley_controls()
@@ -31505,10 +31780,21 @@ class CombinedControlApp:
             raise ValueError(
                 f"Current limit must be above 0 and at most {NONLOCAL_IV_SWEEP_MAX_COMPLIANCE_A:g} A"
             )
-        voltages = build_iv_sweep_voltages(start_v, end_v, step_v)
         controller = self.nonlocal_vi_2410_controller
+        # ±200 V on a 2400, ±1000 V on a 2410 (user, 2026-10-09).
+        voltages = build_iv_sweep_voltages(
+            start_v, end_v, step_v, NONLOCAL_KEITHLEY_MAX_ABS_V[controller.model]
+        )
+        source = nonlocal_keithley_source(controller.model, max(abs(value) for value in voltages))
+        if limit_a > source["max_limit_a"]:
+            raise ValueError(
+                f"Above ±{KEITHLEY_LOW_SOURCE_RANGE_V:g} V the Keithley {controller.model} sources on its "
+                f"{source['range_v']:g} V range, where the current limit is at most "
+                f"{source['max_limit_a']:g} A"
+            )
         return {
-            "sample": self.nonlocal_iv_sample_var.get().strip(),
+            "max_abs_v": source["max_abs_v"],
+            "source": source,
             "start_v": start_v,
             "end_v": end_v,
             "step_v": step_v,
@@ -31520,6 +31806,230 @@ class CombinedControlApp:
             "identity": controller.identity,
             "started": datetime_module.datetime.now().isoformat(timespec="seconds"),
         }
+
+    # The Keithley on its own: a voltage left on, one pulse ------------------
+
+    def _parse_nonlocal_keithley_manual(self, voltage_var, width_var=None) -> dict:
+        """The voltage (and pulse width) with the Current limit A, against
+        the model's limits (nonlocal_keithley_source)."""
+        model = self.nonlocal_vi_2410_controller.model
+        try:
+            voltage_v = float(voltage_var.get())
+            limit_a = float(self.nonlocal_iv_limit_var.get())
+            width_s = None if width_var is None else float(width_var.get())
+        except (TypeError, ValueError, tk.TclError) as error:
+            raise ValueError("The voltage, pulse width and Current limit A must be numbers") from error
+        values = (voltage_v, limit_a) + (() if width_s is None else (width_s,))
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("The voltage, pulse width and Current limit A must be finite values")
+        source = nonlocal_keithley_source(model, abs(voltage_v))
+        if not 0.0 < limit_a <= source["max_limit_a"]:
+            raise ValueError(
+                f"Current limit A must be above 0 and at most {source['max_limit_a']:g} A"
+                + (
+                    f" on the Keithley {model}'s {source['range_v']:g} V range"
+                    if source["range_v"] > KEITHLEY_LOW_SOURCE_RANGE_V else ""
+                )
+            )
+        if width_s is not None and not 0.0 < width_s <= 60.0:
+            raise ValueError("Pulse width must be within 0–60 s")
+        return {"voltage_v": voltage_v, "limit_a": limit_a, "width_s": width_s,
+                "source": source, "model": model}
+
+    def _nonlocal_keithley_manual_ready(self, what: str) -> bool:
+        if self.nonlocal_keithley_task is not None or not self._nonlocal_keithley_free(what):
+            return False
+        if not self.nonlocal_iv_safety_var.get():
+            messagebox.showwarning(
+                "2400-IV",
+                "Tick the wiring, current limit and voltages confirmation first.",
+                parent=self.root,
+            )
+            return False
+        return True
+
+    def _confirm_nonlocal_keithley_high_voltage(self, title: str, what: str, settings: dict) -> bool:
+        """Above ±20 V, a HIGH VOLTAGE question first."""
+        source, model = settings["source"], settings["model"]
+        if source["range_v"] <= KEITHLEY_LOW_SOURCE_RANGE_V:
+            return True
+        return messagebox.askyesno(
+            title,
+            f"HIGH VOLTAGE: {what} on the Keithley {model}'s {source['range_v']:g} V range; "
+            + (
+                f"no hardware OVP below its {source['ovp_v']:g} V maximum. "
+                if source["ovp_none"] else f"hardware OVP {source['ovp_v']:g} V. "
+            )
+            + f"Current limit {settings['limit_a']:g} A.\n"
+            "Everything wired to the sample must tolerate it. The 6221 is switched off first.\n\n"
+            "Continue?",
+            icon="warning",
+            parent=self.root,
+        )
+
+    def set_nonlocal_keithley_voltage(self) -> None:
+        """Set: the Keithley left on at the voltage given, until OFF or the
+        next measurement (which each start from off)."""
+        model = self.nonlocal_vi_2410_controller.model
+        if not self._nonlocal_keithley_manual_ready(f"Set {model}"):
+            return
+        try:
+            settings = self._parse_nonlocal_keithley_manual(self.nonlocal_iv_set_voltage_var)
+        except ValueError as error:
+            messagebox.showwarning("2400-IV", str(error), parent=self.root)
+            return
+        if not self._confirm_nonlocal_keithley_high_voltage(
+            f"Set {model}", f"{settings['voltage_v']:g} V left on until OFF", settings
+        ):
+            return
+        self.nonlocal_iv_keithley_var.set(f"Keithley {model}: switching on…")
+        self._begin_nonlocal_keithley_task(
+            "2400set",
+            lambda: self._nonlocal_keithley_set_worker(settings),
+            self._finish_nonlocal_keithley_set,
+        )
+
+    def _nonlocal_keithley_set_worker(self, settings: dict) -> tuple[float, float]:
+        """The 6221 off first, as for every Keithley output; then the
+        Keithley on at the voltage.  On a failure or a Stop it is switched
+        off and back in its pulse setup."""
+        controller = self.nonlocal_vi_2410_controller
+        source = self.nonlocal_vi_ac_controller
+        stop = self.nonlocal_keithley_stop_event
+        if stop.is_set():
+            raise InterruptedError("Stopped before the Keithley was switched on")
+        if source.source_connected:
+            try:
+                source.output_off()
+                source.confirm_output_off(f"before switching the Keithley {controller.model} on")
+            except BaseException:
+                self.nonlocal_6221_off_unconfirmed = True
+                self.post_ui(lambda: self.nonlocal_iv6221_source_var.set("6221: check the output"))
+                raise
+            self.post_ui(lambda: self.nonlocal_iv6221_source_var.set("6221: OFF"))
+        self.nonlocal_keithley_untouched = False
+        self.nonlocal_vi_interlock.begin(NonLocalVIInterlock.VOLTAGE)
+        try:
+            if stop.is_set():
+                raise InterruptedError("Stopped before the Keithley was switched on")
+            reading = controller.set_dc_voltage(settings["voltage_v"], settings["limit_a"])
+            if stop.is_set():
+                raise InterruptedError("Stopped as the Keithley switched on; switched off again")
+            return reading
+        except BaseException:
+            try:
+                controller.restore_voltage_mode()
+                self.nonlocal_keithley_output_off = True
+            except BaseException:
+                pass
+            raise
+        finally:
+            self.nonlocal_vi_interlock.end(NonLocalVIInterlock.VOLTAGE)
+
+    def _finish_nonlocal_keithley_set(self, future) -> None:
+        self.nonlocal_keithley_task = None
+        model = self.nonlocal_vi_2410_controller.model
+        try:
+            voltage_v, current_a = future.result()
+        except BaseException as error:
+            off = bool(self.__dict__.get("nonlocal_keithley_output_off")) or bool(
+                self.__dict__.get("nonlocal_keithley_untouched")
+            )
+            self.nonlocal_iv_keithley_var.set(
+                f"Keithley {model}: OFF" if off else f"Keithley {model}: check the output"
+            )
+            self.nonlocal_vi_output_var.set(
+                self._nonlocal_output_text() if off else f"Keithley {model} output: check it"
+            )
+            if isinstance(error, (InterruptedError, NonLocalVIStopped)):
+                self.nonlocal_vi_status_var.set(
+                    f"Set {model} stopped; " + ("output off (read back)" if off else "check the output")
+                )
+            else:
+                self.nonlocal_vi_status_var.set(
+                    f"Set {model} failed: {short_status_error(error).rstrip(';；')}"
+                    + ("; output off (read back)" if off else "; check the output")
+                    + self._nonlocal_output_warning()
+                )
+                if not self.closing:
+                    messagebox.showerror(f"Set {model}", str(error), parent=self.root)
+        else:
+            text = f"ON: {voltage_v:.6g} V, I = {format_current(current_a)}"
+            self.nonlocal_iv_keithley_var.set(f"Keithley {model} {text}")
+            self.nonlocal_vi_output_var.set(f"Keithley {model} {text}; 6221: OFF")
+            self.nonlocal_vi_status_var.set(
+                f"Keithley {model} {text}; it stays on until {model} / 6221 OFF "
+                "or another measurement"
+            )
+        self._update_nonlocal_vi_controls()
+
+    def apply_nonlocal_keithley_pulse(self) -> None:
+        """Apply pulse: one pulse at Pulse V for Width s, the output off
+        before and after, the 6221 off first."""
+        model = self.nonlocal_vi_2410_controller.model
+        if not self._nonlocal_keithley_manual_ready(f"a {model} pulse"):
+            return
+        try:
+            settings = self._parse_nonlocal_keithley_manual(
+                self.nonlocal_iv_pulse_voltage_var, self.nonlocal_iv_pulse_width_var
+            )
+        except ValueError as error:
+            messagebox.showwarning("2400-IV", str(error), parent=self.root)
+            return
+        if not self._confirm_nonlocal_keithley_high_voltage(
+            f"{model} pulse",
+            f"one {settings['voltage_v']:g} V pulse of {settings['width_s']:g} s",
+            settings,
+        ):
+            return
+        self.nonlocal_iv_keithley_var.set(f"Keithley {model}: pulsing…")
+        self._begin_nonlocal_keithley_task(
+            "2400pulse",
+            lambda: self._nonlocal_keithley_pulse_worker(settings),
+            lambda future: self._finish_nonlocal_keithley_pulse(future, settings),
+        )
+
+    def _nonlocal_keithley_pulse_worker(self, settings: dict) -> None:
+        stop = self.nonlocal_keithley_stop_event
+
+        def pulse(controller) -> None:
+            # The Current limit A, then the pulse on its own range and OVP.
+            controller.setup_voltage_mode(settings["limit_a"])
+            controller.apply_voltage_pulse(settings["voltage_v"], settings["width_s"], stop)
+
+        self._run_on_nonlocal_keithley(NonLocalVIInterlock.VOLTAGE, pulse)
+
+    def _finish_nonlocal_keithley_pulse(self, future, settings: dict) -> None:
+        self.nonlocal_keithley_task = None
+        model = self.nonlocal_vi_2410_controller.model
+        untouched = bool(self.__dict__.get("nonlocal_keithley_untouched"))
+        off = untouched or bool(self.__dict__.get("nonlocal_keithley_output_off"))
+        self.nonlocal_iv_keithley_var.set(
+            f"Keithley {model}: OFF" if off else f"Keithley {model}: check the output"
+        )
+        self.nonlocal_vi_output_var.set(
+            f"Keithley {model}: not switched on" if untouched else self._nonlocal_output_text()
+        )
+        try:
+            future.result()
+        except (InterruptedError, NonLocalVIStopped):
+            self.nonlocal_vi_status_var.set(
+                f"{model} pulse stopped before the Keithley was switched on" if untouched
+                else f"{model} pulse stopped; voltage zeroed and output off"
+            )
+        except BaseException as error:
+            self.nonlocal_vi_status_var.set(
+                f"{model} pulse failed: {short_status_error(error).rstrip(';；')}"
+                + self._nonlocal_output_warning()
+            )
+            if not self.closing:
+                messagebox.showerror(f"{model} pulse", str(error), parent=self.root)
+        else:
+            self.nonlocal_vi_status_var.set(
+                f"{model} pulse applied: {settings['voltage_v']:g} V for {settings['width_s']:g} s "
+                f"(limit {settings['limit_a']:g} A); voltage zeroed and output off"
+            )
+        self._update_nonlocal_vi_controls()
 
     def start_nonlocal_iv_sweep(self) -> None:
         if self.nonlocal_keithley_task is not None:
@@ -31540,16 +32050,27 @@ class CombinedControlApp:
             return
         total = len(settings["voltages"])
         estimate = self._format_scan_duration(total * (float(settings["settle_s"]) + 0.15))
+        source = settings["source"]
+        model = self.nonlocal_vi_2410_controller.model
+        high_voltage = source["range_v"] > KEITHLEY_LOW_SOURCE_RANGE_V
         if not messagebox.askyesno(
             "Start the 2400-IV sweep?",
-            f"Keithley {self.nonlocal_vi_2410_controller.model}: "
+            f"Keithley {model}: "
             f"{settings['start_v']:g} V → {settings['end_v']:g} V in {settings['step_v']:g} V steps, "
             f"{total} points, {settings['settle_s']:g} s settle\n"
             f"Current limit: {settings['current_limit_a']:g} A\n"
             f"Estimated time: about {estimate}"
-            + (f"\nSample: {settings['sample']}" if settings["sample"] else "")
+            + (
+                f"\n\nHIGH VOLTAGE: up to {source['max_abs_v']:g} V on the {source['range_v']:g} V range; "
+                + (
+                    f"no hardware OVP below the {model}'s {source['ovp_v']:g} V maximum."
+                    if source["ovp_none"] else f"hardware OVP {source['ovp_v']:g} V."
+                )
+                if high_voltage else ""
+            )
             + "\n\nThe sweep writes a run folder, with a live CSV and the parameter log, "
             "in the folder you choose next. The Keithley is zeroed and switched off at the end.",
+            icon="warning" if high_voltage else "question",
             parent=self.root,
         ):
             return
@@ -31571,14 +32092,13 @@ class CombinedControlApp:
         # A folder per run, as on the STFMR and Gate-VI pages.
         try:
             run_directory = self._nonlocal_make_run_directory(
-                Path(folder), "2400-IV", settings.get("sample", "")
+                Path(folder), "2400-IV", ""
             )
         except OSError as error:
             messagebox.showerror("2400-IV", f"Cannot create the run folder: {error}", parent=self.root)
             return
         csv_path = run_directory / f"{run_directory.name}.csv"
         parameters = {
-            "sample": settings.get("sample", ""),
             "instrument.model": f"Keithley {settings.get('model', '')}",
             "instrument.resource": settings.get("resource", ""),
             "instrument.identity": settings.get("identity", ""),
@@ -31589,8 +32109,11 @@ class CombinedControlApp:
             "sweep.settle_s": settings.get("settle_s"),
             "sweep.current_limit_A": settings.get("current_limit_a"),
             "sweep.nplc": NONLOCAL_IV_SWEEP_NPLC,
-            "sweep.source_range_V": KEITHLEY_LOW_SOURCE_RANGE_V,
-            "sweep.ovp_V": NONLOCAL_VI_2410_SOURCE_OVP_V,
+            "sweep.source_range_V": settings["source"]["range_v"],
+            "sweep.ovp_V": (
+                f"none ({settings['source']['ovp_v']:g} V maximum)"
+                if settings["source"]["ovp_none"] else settings["source"]["ovp_v"]
+            ),
             "sweep.points": total,
             "output.csv": csv_path.name,
         }
@@ -31639,7 +32162,9 @@ class CombinedControlApp:
                 ))
                 file.flush()
                 # The limit as the Keithley reads it back marks the points at it.
-                limit_read = controller.start_iv_sweep(limit)
+                limit_read = controller.start_iv_sweep(
+                    limit, settings.get("max_abs_v", KEITHLEY_LOW_SOURCE_RANGE_V)
+                )
                 started = time.monotonic()
                 for index, target in enumerate(settings["voltages"], start=1):
                     if stop.is_set():

@@ -1,5 +1,53 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local 2400-IV and Gate-VI: up to ±200 V on a 2400, ±1000 V on a 2410; Set and pulse controls (2026-10-09)
+
+The user asked to raise the 2400-IV voltage limit from ±20 V to ±200 V on a
+2400 and ±1000 V on a 2410.
+
+- **Range and OVP:** up to ±20 V the sweep keeps the 20 V range and 20 V
+  OVP, as before. Above that (`nonlocal_keithley_source`):
+  - the model's high range: 200 V on a 2400, 1000 V on a 2410;
+  - the hardware OVP at the lowest level covering the sweep
+    (`KEITHLEY_OVP_LEVELS_V`);
+  - range and OVP are read back before the output goes on.
+- **OVP margin:** the OVP levels are ±5 % (2400-series manual), so above
+  ±20 V the level chosen is at least 5 % above the voltages. 50 V takes
+  60 V; 160 V on a 2400 takes "none".
+- **No OVP above about 152 V on a 2400 and 476 V on a 2410:** those models
+  have no OVP level above 160 V / 500 V, only "none" (their 210 V / 1100 V
+  maximum). The software limit still stops at the user's ±200 V / ±1000 V,
+  and the confirmation says so.
+- **Drained before off** (review, 2026-10-09): after high voltage the
+  Keithley holds 0 V with the output on for `NONLOCAL_KEITHLEY_DISCHARGE_S`
+  = 1 s before switching off, so a capacitive sample or cable is drained
+  through the current limit. Before, it went straight from the set voltage
+  to output off. This applies to every switch-off (Stop, OFF, end of
+  sweep, failure) and before the `*RST` that starts the next measurement.
+- **Pulse setup read back:** `setup_voltage_mode` now reads back the 20 V
+  OVP and 20 V range, so a Keithley left on the high range is caught.
+- **Current limit:** at most 0.1 A, and at most 0.021 A on the 2410's 1000 V
+  range.
+- After the sweep, or on a failure or Stop, the Keithley goes back to the
+  pulse setup (20 V range, 20 V OVP, output off).
+- **Gate-VI pulses** use the same limits (user, 2026-10-09). Each pulse sets
+  its own range and OVP, read back with the output still off
+  (`_set_source_range_locked`); a ±20 V pulse goes back to the 20 V range.
+  Above ±20 V the start confirmation warns about high voltage.
+- **The Keithley on its own** (2400-IV settings, user 2026-10-09):
+  - `2400 V` + **Set 2400** leaves the output on at that voltage
+    (`set_dc_voltage`) until **2400 / 6221 OFF** or the next measurement
+    (each starts from off, and Set 6221 switches the Keithley off first).
+  - `Pulse V` + `Width s` + **Apply pulse**: one pulse, output off before
+    and after, back in the pulse setup.
+  - Both use the Current limit A and the safety tick, switch the 6221 off
+    first, and ask a HIGH VOLTAGE question above ±20 V. A line under them
+    shows the Keithley's state.
+- **No Sample box** any more (user, 2026-10-09); run folders are
+  `2400-IV_<date>_<time>`.
+- Tests: `SweepControllerTests` and `SweepValuesTests` in
+  `test_nonlocal_keithley.py`.
+
 ## Non-local Gate-VI: |R| measured as on |R| vs time, about 5 s each (2026-10-09)
 
 The user found that Gate-VI's |R| (1–7 × 10⁸ Ω, scattered) did not match

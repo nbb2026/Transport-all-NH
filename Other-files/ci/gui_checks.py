@@ -99,7 +99,7 @@ def example_data(app):
     module = sys.modules["transport_ci"]
     voltages = module.build_iv_sweep_voltages(-6, 6, 0.25)
     noise = [((index * 37) % 17 - 8) / 8 for index in range(len(voltages))]
-    app.nonlocal_iv_settings = {"start_v": -6.0, "end_v": 6.0, "sample": "1µm Pt-Pt"}
+    app.nonlocal_iv_settings = {"start_v": -6.0, "end_v": 6.0}
     app.nonlocal_iv_total_points = len(voltages)
     app.nonlocal_iv_rows = [
         (index + 1, voltage, voltage, 2.2e-8 * value, 0.62 * (index + 1), False)

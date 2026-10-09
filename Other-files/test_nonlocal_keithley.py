@@ -73,6 +73,7 @@ class FakeSourceMeter:
         self.current_source = 0.0
         self.limit = 1e-3
         self.ovp = 210.0
+        self.range = 21.0
         self.output = 0
         self.mode = "VOLT"
 
@@ -81,11 +82,14 @@ class FakeSourceMeter:
         upper = command.upper()
         value = command.rsplit(" ", 1)[-1]
         if upper == "*RST":
-            self.output, self.voltage, self.ovp, self.mode = 0, 0.0, 210.0, "VOLT"
+            self.output, self.voltage, self.ovp, self.mode, self.range = 0, 0.0, 210.0, "VOLT", 21.0
         elif upper.startswith(":SOUR:FUNC "):
             self.mode = value.upper()
         elif upper.startswith(":SOUR:VOLT:PROT "):
             self.ovp = float(value)
+        elif upper.startswith(":SOUR:VOLT:RANG "):
+            # The range's full scale, as a 2400 reads it back (21, 210, 1100 V).
+            self.range = float(value) * 1.05 if float(value) < 1000 else 1100.0
         elif upper.startswith(":SOUR:VOLT "):
             self.voltage = float(value)
         elif upper.startswith(":SOUR:CURR "):
@@ -105,6 +109,8 @@ class FakeSourceMeter:
             return str(self.output)
         if upper == ":SOUR:VOLT:PROT?":
             return str(self.ovp)
+        if upper == ":SOUR:VOLT:RANG?":
+            return str(self.range)
         if upper == ":SENS:CURR:PROT?":
             return str(self.limit)
         if upper == ":READ?":
@@ -216,6 +222,27 @@ class SweepValuesTests(unittest.TestCase):
         self.assertEqual(app.build_iv_sweep_voltages(2, 2, 0.1), [2.0])
         with self.assertRaisesRegex(ValueError, "within ±20 V"):
             app.build_iv_sweep_voltages(-25, 6, 1)
+        self.assertEqual(len(app.build_iv_sweep_voltages(-1000, 1000, 2.5, 1000)), 801)
+
+    def test_the_sweep_settings_follow_the_model(self):
+        a = bare_app()
+        a.nonlocal_iv_start_var, a.nonlocal_iv_end_var = Var("-50"), Var("50")
+        a.nonlocal_iv_step_var, a.nonlocal_iv_settle_var = Var("2.5"), Var("0.5")
+        a.nonlocal_iv_limit_var = Var("0.001")
+        a.nonlocal_vi_2410_controller = mock.Mock(model="2400", resource_name="GPIB0::24::INSTR", identity="")
+        settings = a._parse_nonlocal_iv_settings()
+        self.assertEqual((settings["max_abs_v"], settings["source"]["range_v"], settings["source"]["ovp_v"]),
+                         (50.0, 200.0, 60.0))
+        self.assertEqual(len(settings["voltages"]), 41)
+        a.nonlocal_iv_start_var.set("-250")
+        with self.assertRaisesRegex(ValueError, "within ±200 V"):
+            a._parse_nonlocal_iv_settings()
+        a.nonlocal_vi_2410_controller.model = "2410"
+        a.nonlocal_iv_start_var.set("-1000")
+        self.assertEqual(a._parse_nonlocal_iv_settings()["source"]["ovp_v"], 1100.0)
+        a.nonlocal_iv_limit_var.set("0.05")
+        with self.assertRaisesRegex(ValueError, "current limit is at most 0.021 A"):
+            a._parse_nonlocal_iv_settings()
         with self.assertRaisesRegex(ValueError, "increase the step"):
             app.build_iv_sweep_voltages(-10, 10, 0.001)
 
@@ -288,9 +315,123 @@ class SweepControllerTests(unittest.TestCase):
         meter.write = (lambda original: lambda command: original(
             ":SOUR:VOLT:PROT 40" if command.startswith(":SOUR:VOLT:PROT") else command))(meter.write)
         controller = connected_controller(meter)
-        with self.assertRaisesRegex(RuntimeError, "reads 40 V, not the 20 V"):
+        with self.assertRaisesRegex(RuntimeError, "reads OVP 40 V"):
             controller.start_iv_sweep(1e-3)
         self.assertEqual(meter.output, 0)
+
+    def start(self, model, limit_a, max_abs_v):
+        meter = FakeSourceMeter()
+        controller = connected_controller(meter)
+        controller.model = model
+        controller.start_iv_sweep(limit_a, max_abs_v)
+        return meter, controller
+
+    def test_above_20_v_the_high_range_and_the_ovp_level_above_the_sweep(self):
+        # User, 2026-10-09: ±200 V on a 2400, ±1000 V on a 2410.
+        for model, max_abs_v, source_range, ovp in (
+            # Above ±20 V the OVP level is at least 5 % above the voltages
+            # (the levels are ±5 %): 160 V on a 2400 takes "none" (210 V).
+            ("2400", 20, 21.0, 20.0), ("2400", 40, 210.0, 60.0), ("2400", 50, 210.0, 60.0),
+            ("2400", 150, 210.0, 160.0), ("2400", 160, 210.0, 210.0), ("2400", 200, 210.0, 210.0),
+            ("2410", 150, 1100.0, 200.0), ("2410", 1000, 1100.0, 1100.0),
+        ):
+            with self.subTest(model=model, max_abs_v=max_abs_v):
+                meter, controller = self.start(model, 1e-3, max_abs_v)
+                self.assertEqual((meter.range, meter.ovp), (source_range, ovp))
+                self.assertLess(meter.commands.index(f":SOUR:VOLT:PROT {ovp:g}" if ovp != 20 else ":SOUR:VOLT:PROT 20"),
+                                meter.commands.index(":OUTP ON"), "set before the output goes on")
+                controller.set_iv_voltage(-max_abs_v)
+                with self.assertRaisesRegex(ValueError, f"within ±{max_abs_v:g} V"):
+                    controller.set_iv_voltage(max_abs_v + 0.5)
+                controller.restore_voltage_mode()
+                self.assertEqual((meter.output, meter.range, meter.ovp), (0, 21.0, 20.0), "back to the pulse setup")
+                self.assertEqual(controller.iv_sweep_max_abs_v, 20.0)
+
+    def test_the_model_limits_and_the_high_range_current_limit(self):
+        for model, too_high in (("2400", 200.5), ("2410", 1000.5)):
+            with self.assertRaisesRegex(ValueError, "must be within"):
+                self.start(model, 1e-3, too_high)
+        with self.assertRaisesRegex(ValueError, "at most 0.021 A on the Keithley 2410's 1000 V range"):
+            self.start("2410", 0.05, 100)
+        self.start("2410", 0.05, 20)   # 20 V range: up to 0.1 A
+        self.start("2400", 0.1, 200)
+
+    def test_an_ovp_below_the_sweep_stops_before_the_output_is_on(self):
+        meter = FakeSourceMeter()
+        meter.write = (lambda original: lambda command: original(
+            ":SOUR:VOLT:PROT 160" if command.startswith(":SOUR:VOLT:PROT 210") else command))(meter.write)
+        controller = connected_controller(meter)
+        controller.model = "2400"
+        with self.assertRaisesRegex(RuntimeError, "reads 160 V, not the 210 V"):
+            controller.start_iv_sweep(1e-3, 200)
+        self.assertEqual(meter.output, 0)
+
+    def test_set_leaves_the_output_on_at_the_voltage(self):
+        # User, 2026-10-09: a 2400 voltage left on, from 2400-IV settings.
+        meter = FakeSourceMeter()
+        controller = connected_controller(meter)
+        controller.model = "2400"
+        self.assertEqual(controller.set_dc_voltage(50, 1e-3), (50.0, 5e-8))
+        self.assertEqual((meter.output, meter.voltage, meter.range, meter.ovp), (1, 50.0, 210.0, 60.0))
+        self.assertLess(meter.commands.index(":SOUR:VOLT:PROT 60"), meter.commands.index(":OUTP ON"))
+        self.assertLess(meter.commands.index(":OUTP ON"), meter.commands.index(":SOUR:VOLT 50"),
+                        "on at 0 V, then the voltage")
+        with self.assertRaisesRegex(ValueError, "within ±200 V"):
+            controller.set_dc_voltage(250, 1e-3)
+        controller.model = "2410"
+        with self.assertRaisesRegex(ValueError, "at most 0.021 A"):
+            controller.set_dc_voltage(500, 0.05)
+
+    def test_after_high_voltage_the_output_drains_at_0_v_before_it_goes_off(self):
+        # Review, 2026-10-09: a charged sample is drained, not left at 1000 V.
+        meter = FakeSourceMeter()
+        controller = connected_controller(meter)
+        controller.model = "2410"
+        controller.set_dc_voltage(-1000, 1e-3)
+        with mock.patch.object(app.time, "sleep", lambda s: meter.commands.append(f"sleep {s:g}")):
+            meter.commands.clear()
+            controller.safe_shutdown(reset=False)
+            self.assertEqual(meter.commands, [":SOUR:VOLT 0", "sleep 1", ":OUTP OFF"])
+            # The next setup (*RST switches off at once) drains first too.
+            controller.set_dc_voltage(500, 1e-3)
+            meter.commands.clear()
+            controller.setup_voltage_mode(1e-3)
+            self.assertEqual(meter.commands[:4], [":SOUR:VOLT 0", "sleep 1", ":OUTP OFF", "*RST"])
+            self.assertFalse(controller.high_voltage_active)
+            # Up to ±20 V nothing waits.
+            controller.set_dc_voltage(5, 1e-3)
+            meter.commands.clear()
+            controller.safe_shutdown(reset=False)
+            self.assertEqual(meter.commands, [":SOUR:VOLT 0", ":OUTP OFF"])
+
+    def test_a_failed_set_leaves_the_output_off(self):
+        meter = FakeSourceMeter()
+        meter.query = (lambda original: lambda command: (
+            "2e-3" if command.upper() == ":SENS:CURR:PROT?" else original(command)))(meter.query)
+        controller = connected_controller(meter)
+        controller.model = "2400"
+        with self.assertRaisesRegex(RuntimeError, "current limit reads"):
+            controller.set_dc_voltage(50, 1e-3)
+        self.assertEqual(meter.output, 0)
+
+    def test_each_pulse_takes_its_own_range_and_ovp(self):
+        meter = FakeSourceMeter()
+        controller = connected_controller(meter)
+        controller.model = "2400"
+        controller.setup_voltage_mode(1e-3)
+        controller.apply_voltage_pulse(100, 0.0, threading.Event())
+        commands = meter.commands
+        self.assertLess(commands.index(":SOUR:VOLT:PROT 120"), commands.index(":OUTP ON"), "105 V → 120 V")
+        self.assertLess(commands.index(":SOUR:VOLT:RANG 200"), commands.index(":OUTP ON"))
+        self.assertIn(":SOUR:VOLT 100", commands)
+        self.assertEqual(meter.output, 0, "off after the pulse")
+        controller.apply_voltage_pulse(-5, 0.0, threading.Event())
+        self.assertEqual((meter.range, meter.ovp, meter.output), (21.0, 20.0, 0), "back to the 20 V range")
+        with self.assertRaisesRegex(ValueError, "±200 V"):
+            controller.apply_voltage_pulse(201, 0.0, threading.Event())
+        controller.model = "2410"
+        controller.apply_voltage_pulse(-1000, 0.0, threading.Event())
+        self.assertEqual((meter.range, meter.ovp, meter.output), (1100.0, 1100.0, 0))
 
     def test_restore_leaves_the_output_off_in_the_pulse_setup(self):
         self.controller.start_iv_sweep(1e-3)
@@ -454,7 +595,6 @@ class StartQuestionTests(unittest.TestCase):
         a.nonlocal_iv_safety_var = Var(True)
         a.active_file_exports = set()
         a.nonlocal_vi_2410_controller = app.NonLocalVI2410Controller(lambda _m: None)
-        a.nonlocal_iv_sample_var = Var("1µm Pt-Pt")
         a.nonlocal_iv_start_var, a.nonlocal_iv_end_var = Var("-6"), Var("6")
         a.nonlocal_iv_step_var, a.nonlocal_iv_settle_var = Var("0.25"), Var("0.5")
         a.nonlocal_iv_limit_var = Var("1e-6")
@@ -472,7 +612,7 @@ class StartQuestionTests(unittest.TestCase):
         text = self.ask(False)
         self.assertIn("-6 V → 6 V in 0.25 V steps, 49 points, 0.5 s settle", text)
         self.assertIn("Current limit: 1e-06 A", text)
-        self.assertIn("Sample: 1µm Pt-Pt", text)
+        self.assertNotIn("Sample", text, "no Sample box (user, 2026-10-09)")
         self.assertIn("run folder, with a live CSV and the parameter log", text)
         self.ask(True, folder="")
         self.app._begin_nonlocal_keithley_task.assert_not_called()
@@ -495,7 +635,7 @@ class StartQuestionTests(unittest.TestCase):
         csv_path = a.nonlocal_iv_csv_path
         # One folder per run, as on the STFMR and Gate-VI pages.
         self.assertEqual(csv_path.parent.parent, Path(folder))
-        self.assertTrue(csv_path.parent.name.startswith("2400-IV_1µm_Pt-Pt_"), csv_path.parent.name)
+        self.assertRegex(csv_path.parent.name, r"^2400-IV_\d{8}_\d{6}", "no sample name (no Sample box)")
         self.assertEqual(csv_path.name, csv_path.parent.name + ".csv")
         log = csv_path.with_name(csv_path.stem + "_parameters.log").read_text(encoding="utf-8")
         self.assertIn("sweep.current_limit_A=1e-06", log)

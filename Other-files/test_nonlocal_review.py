@@ -202,6 +202,91 @@ class KeithleyTaskTests(unittest.TestCase):
             controller.start_iv_sweep(1e-6)
 
 
+class ManualKeithleyTests(unittest.TestCase):
+    """User, 2026-10-09: Set (a voltage left on) and Apply pulse in
+    "2400-IV settings"."""
+
+    def setUp(self):
+        patcher = mock.patch.object(app.time, "sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.a = a = page()
+        self.meter = FakeSourceMeter()
+        a.nonlocal_vi_2410_controller = connected_controller(self.meter)
+        a.nonlocal_vi_2410_controller.model = "2400"
+        a.nonlocal_vi_ac_controller = mock.Mock(source_connected=True)
+        a.nonlocal_keithley_stop_event = threading.Event()
+        a.nonlocal_iv_safety_var = Var(True)
+        a.nonlocal_iv_limit_var = Var("0.001")
+        a.nonlocal_iv_set_voltage_var = Var("50")
+        a.nonlocal_iv_pulse_voltage_var, a.nonlocal_iv_pulse_width_var = Var("-30"), Var("0.01")
+        a.nonlocal_iv_keithley_var = Var("Keithley 2400: OFF")
+        a.nonlocal_iv6221_source_var = Var("6221 ON")
+        a._nonlocal_keithley_free = lambda what: True
+        self.questions = []
+
+    def run_action(self, action, answer=True):
+        def ask(title, text, **options):
+            self.questions.append(text)
+            return answer
+        with mock.patch.object(app.messagebox, "askyesno", ask), \
+                mock.patch.object(app.messagebox, "showerror"), \
+                mock.patch.object(app.messagebox, "showwarning") as warning:
+            action()
+        return warning
+
+    def test_set_switches_the_6221_off_first_and_leaves_the_keithley_on(self):
+        a = self.a
+        self.run_action(a.set_nonlocal_keithley_voltage)
+        a.nonlocal_vi_ac_controller.output_off.assert_called_once()
+        a.nonlocal_vi_ac_controller.confirm_output_off.assert_called_once()
+        self.assertEqual((self.meter.output, self.meter.voltage), (1, 50.0))
+        self.assertIn("HIGH VOLTAGE: 50 V left on until OFF on the Keithley 2400's 200 V range; "
+                      "hardware OVP 60 V", self.questions[0])
+        self.assertEqual(a.nonlocal_iv_keithley_var.get(), "Keithley 2400 ON: 50 V, I = 50 nA")
+        self.assertEqual(a.nonlocal_iv6221_source_var.get(), "6221: OFF")
+        self.assertIsNone(a.nonlocal_keithley_task)
+        # Another measurement takes the Keithley (each starts from off).
+        a._note_nonlocal_keithley_taken()
+        self.assertEqual(a.nonlocal_iv_keithley_var.get(),
+                         "Keithley 2400: OFF (switched off by the next measurement)")
+
+    def test_no_question_up_to_20_v_and_no_answer_switches_nothing(self):
+        a = self.a
+        a.nonlocal_iv_set_voltage_var.set("5")
+        self.run_action(a.set_nonlocal_keithley_voltage)
+        self.assertEqual(self.questions, [], "no high-voltage question up to ±20 V")
+        self.assertEqual((self.meter.output, self.meter.voltage, self.meter.range), (1, 5.0, 21.0))
+        meter = FakeSourceMeter()
+        a.nonlocal_vi_2410_controller = connected_controller(meter)
+        a.nonlocal_iv_set_voltage_var.set("150")
+        self.run_action(a.set_nonlocal_keithley_voltage, answer=False)
+        self.assertEqual(meter.commands, [], "nothing sent when the question is answered No")
+
+    def test_limits_are_checked_before_anything_is_sent(self):
+        a = self.a
+        a.nonlocal_iv_set_voltage_var.set("250")
+        warning = self.run_action(a.set_nonlocal_keithley_voltage)
+        self.assertIn("within ±200 V", warning.call_args.args[1])
+        a.nonlocal_iv_safety_var.set(False)
+        a.nonlocal_iv_set_voltage_var.set("5")
+        warning = self.run_action(a.set_nonlocal_keithley_voltage)
+        self.assertIn("Tick the wiring", warning.call_args.args[1])
+        self.assertEqual(self.meter.commands, [])
+
+    def test_a_pulse_ends_off_in_the_pulse_setup(self):
+        a = self.a
+        self.run_action(a.apply_nonlocal_keithley_pulse)
+        self.assertIn("one -30 V pulse of 0.01 s", self.questions[0])
+        self.assertIn(":SOUR:VOLT -30", self.meter.commands)
+        self.assertIn(":SOUR:VOLT:RANG 200", self.meter.commands)
+        self.assertEqual((self.meter.output, self.meter.range, self.meter.ovp), (0, 21.0, 20.0),
+                         "off and back in the pulse setup")
+        a.nonlocal_vi_ac_controller.output_off.assert_called()
+        self.assertEqual(a.nonlocal_iv_keithley_var.get(), "Keithley 2400: OFF")
+        self.assertIn("2400 pulse applied: -30 V for 0.01 s", a.nonlocal_vi_status_var.get())
+
+
 class PulseTests(unittest.TestCase):
     def test_the_level_is_checked_after_the_pulse_not_inside_it(self):
         meter = FakeSourceMeter()
