@@ -1391,7 +1391,8 @@ NONLOCAL_VI_READ_CURRENT_RMS_MA = 1.0
 NONLOCAL_VI_FREQUENCY_HZ = 13.7
 NONLOCAL_VI_SAMPLE_HZ = 1.0
 NONLOCAL_VI_6221_SETTLE_S = 10.0
-NONLOCAL_VI_MEASURE_S = 100.0
+# Measure/pt s default (user, 2026-10-09; was 100).
+NONLOCAL_VI_MEASURE_S = 50.0
 # Gate-VI harmonics (user, 2026-10-09): an SR830 reads 1+2 one order after
 # the other at each point; the Zurich reads 1+2 or 1+2+3 at once, on its own
 # demodulators (MF-MD), as on PPMS and 6221-IV.

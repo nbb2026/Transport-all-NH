@@ -13,7 +13,7 @@ Gate-VI, and a Pulse gate default of 100 MΩ.
   max(Settle s, 10 τ; τ is 1 s on Gate-VI), then reads 2ω for Measure s.
   It then goes back to 1ω for the next point. Each order starts on the
   sensitivity it last ended on, not SENS 9. This adds about
-  10 s + Measure s per point.
+  10 s + Measure s per point (60 s with the default 50 s).
 - **Zurich 1+2 / 1+2+3:** all orders at once, as on PPMS and 6221-IV. The
   reference is on Demod 4, the orders on Demods 1-3, and unused demods are
   off. This needs MF-MD; without it the scan stops at configure.
@@ -32,6 +32,7 @@ Gate-VI, and a Pulse gate default of 100 MΩ.
   `NONLOCAL_VI_SUMMARY_CHANNELS`. The 2182A plots its DC voltage. The CSV
   keeps mean X, Y and R for every order.
 - **Pulse gate MΩ** defaults to 100 (was 20).
+- **Measure/pt s** defaults to 50 (was 100).
 - **Also fixed:** "SR830 #n is selected for the scan but is not connected"
   was shown as "parameters must be valid numbers".
 - Tests: `Other-files/test_nonlocal_gate_vi_harmonics.py` and
