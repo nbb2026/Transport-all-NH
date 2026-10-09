@@ -1160,6 +1160,11 @@ class InstrumentSafetyTests(unittest.TestCase):
         self.assertTrue(checker(1))
         self.assertFalse(checker(2))
         self.assertFalse(checker(120))
+        # Loop 2 onwards starts with the jump back to start: its first two too.
+        self.assertTrue(checker(10, 10))
+        self.assertTrue(checker(11, 10))
+        self.assertFalse(checker(12, 10))
+        self.assertFalse(checker(9, 10))
 
     def test_stfmr_progress_clamps_to_valid_scan_range(self):
         progress = FakeProgressbar()

@@ -2394,6 +2394,7 @@ class STFMRSR830Controller(SafeVisaIdentityController):
             self.auto_range_enabled = bool(auto_range)
             self.low_range_count = 0
             self.range_cooldown = 0
+            self.lias_clear_pending = True
             return {
                 "reference_input": reference_input,
                 "reference_slope": actual_reference_slope,
@@ -2475,6 +2476,7 @@ class STFMRSR830Controller(SafeVisaIdentityController):
             )
         self.sensitivity_index = actual
         self.range_cooldown = 3
+        self.lias_clear_pending = True
         return f"SENS {old}->{actual} ({reason})"
 
     def auto_phase(self) -> float:
@@ -2492,6 +2494,12 @@ class STFMRSR830Controller(SafeVisaIdentityController):
             x, y, r_value, theta, frequency = self._numbers(
                 self.instrument.query("SNAP? 1,2,3,4,9"), 5
             )
+            if self.__dict__.pop("lias_clear_pending", False):
+                # The overload bits latched by the range change itself: read
+                # and dropped, as on the Non-local page (review, 2026-10-09:
+                # otherwise every range step looked like a new overload and
+                # the range walked up to the top and aborted the scan).
+                self.instrument.query("LIAS?")
             lias = int(round(float(self.instrument.query("LIAS?").strip())))
             sensitivity_used = int(self.sensitivity_index)
             auto_range_action = self._auto_range_locked(r_value, lias)
@@ -5303,6 +5311,12 @@ class Keithley2410Controller:
         with self.lock:
             if self.instrument is None:
                 raise RuntimeError(f"Keithley {self.model} is not connected")
+            # A manual voltage left on: to zero and off before the range and
+            # OVP change, as apply_manual_voltage does (review, 2026-10-09).
+            if self.output_enabled:
+                self._write_checked(":SOUR:VOLT 0")
+                self._write_checked(":OUTP OFF")
+                self.output_enabled = False
             self._configure_voltage_source_locked(abs(float(max_abs_voltage)))
             self._write_checked(":OUTP ON")
             self.output_enabled = True
@@ -12106,7 +12120,12 @@ class TkCameraWindow:
         self.canvas.tag_raise("measurement_marker")
 
     def _ingest_roi_values(self, frame: CameraFrame) -> str:
-        """Update raw/difference ROI streams without requiring a visible UI."""
+        """Update raw/difference ROI streams without requiring a visible UI.
+        A frame goes into the scan samples once: redraws of the same frame
+        (pan, zoom, CLim) only refresh the label (review, 2026-10-09)."""
+        fresh = frame is not self.__dict__.get("_roi_ingested_frame")
+        if fresh:
+            self._roi_ingested_frame = frame
         roi = self.roi
         if self.selecting_roi and self.roi_start is not None and self.roi_end is not None:
             x1, x2 = sorted((self.roi_start[0], self.roi_end[0]))
@@ -12124,7 +12143,7 @@ class TkCameraWindow:
         raw_mean_value = None
         if raw_roi_values.size:
             raw_mean_value = float(np.mean(raw_roi_values))
-            if not self.selecting_roi:
+            if not self.selecting_roi and fresh:
                 self.app.ingest_led_roi_sample(raw_mean_value)
 
         if frame.difference is None:
@@ -12142,7 +12161,7 @@ class TkCameraWindow:
             if roi_values.size:
                 mean_value = float(np.mean(roi_values))
                 label = f"Processed ROI mean {mean_value:.3f}"
-                if not self.selecting_roi:
+                if not self.selecting_roi and fresh:
                     self.app.ingest_moke_roi_sample(mean_value)
                     self.app.ingest_2410_roi_sample(mean_value)
                     self.app.ingest_6221_roi_sample(mean_value)
@@ -16134,8 +16153,12 @@ class CombinedControlApp:
         raise RuntimeError(f"Lock-in readback contains no valid {component} value")
 
     @staticmethod
-    def _stfmr_should_discard_startup_point(index: int) -> bool:
-        """Drop the first two transitional reads from plots and saved rows."""
+    def _stfmr_should_discard_startup_point(index: int, points_per_loop: int | None = None) -> bool:
+        """Drop the first two transitional reads of each loop from plots and
+        saved rows: every loop starts with the jump from stop back to start
+        (review, 2026-10-09: loops 2 and on kept theirs)."""
+        if points_per_loop:
+            return int(index) % max(int(points_per_loop), 1) < 2
         return int(index) < 2
 
     def _append_stfmr_lockin_live_sample(
@@ -16498,7 +16521,9 @@ class CombinedControlApp:
         if folder is None or self.closing or self.stfmr_lockin_closed:
             return
         total_points = len(frequencies_ghz) * len(points)
-        retained_per_frequency = max(len(points) - 2, 0)
+        # The first two points of every loop are discarded.
+        loops_count = max(len(points) // max(self.stfmr_lockin_points_per_loop, 1), 1)
+        retained_per_frequency = max(len(points) - 2 * loops_count, 0)
         estimated_saved = len(frequencies_ghz) * retained_per_frequency
         if meter == "MFLI + SR830":
             estimated_saved *= 2
@@ -16510,7 +16535,7 @@ class CombinedControlApp:
             f"Microwave: {frequencies_ghz[0]:g} → {frequencies_ghz[-1]:g} GHz, "
             f"{len(frequencies_ghz)} frequencies\n"
             f"{len(points)} points per frequency (start→stop), "
-            f"first two points discarded, about {estimated_saved} points saved\n"
+            f"first two points of each loop discarded, about {estimated_saved} points saved\n"
             + (
                 f"SR830 REF IN：{sr830_reference_input}；"
                 f"Autorange: {'on' if sr830_auto_range else 'off'}\n"
@@ -17052,7 +17077,7 @@ class CombinedControlApp:
                         sr_row[column] = None
                 pair.append(sr_row)
             discard_startup_point = self._stfmr_should_discard_startup_point(
-                index
+                index, self.stfmr_lockin_points_per_loop
             )
             if not discard_startup_point:
                 try:
@@ -17123,7 +17148,12 @@ class CombinedControlApp:
             if done_in_frequency >= len(self.stfmr_lockin_points):
                 if not self._stfmr_lockin_log_event(
                     "frequency_complete", frequency_ghz=frequency_ghz,
-                    saved_points=max(done_in_frequency - 2, 0) * (2 if dual else 1),
+                    saved_points=sum(
+                        not self._stfmr_should_discard_startup_point(
+                            point, self.stfmr_lockin_points_per_loop
+                        )
+                        for point in range(done_in_frequency)
+                    ) * (2 if dual else 1),
                 ):
                     return
                 if frequency_index + 1 >= len(
@@ -17949,6 +17979,11 @@ class CombinedControlApp:
         self.stfmr_fmr_actual_power_by_port.clear()
         self.stfmr_fmr_frequencies = frequencies
         self.stfmr_fmr_currents = currents
+        # The limit and wait as validated at the start: the entries stay
+        # editable, and a half-typed value read mid-scan stalled it with the
+        # magnet on (review, 2026-10-09).
+        self.stfmr_fmr_voltage_limit_v = limit
+        self.stfmr_fmr_settle_s = settle
         self.stfmr_fmr_index = 0
         self.stfmr_fmr_frequency_index = 0
         self.stfmr_fmr_current_index = 0
@@ -18035,7 +18070,7 @@ class CombinedControlApp:
                 result = self.stfmr_controllers["kepco"].set_output(
                     "CURR",
                     current,
-                    float(self.stfmr_fmr_voltage_limit_var.get()),
+                    self.stfmr_fmr_voltage_limit_v,
                 )
             else:
                 result = self.stfmr_controllers["kepco"].set_scan_current(
@@ -18045,7 +18080,7 @@ class CombinedControlApp:
             self._finish_stfmr_fmr_scan(error=error)
             return
         self._apply_stfmr_kepco_readback(result)
-        settle_s = float(self.stfmr_fmr_settle_var.get())
+        settle_s = self.stfmr_fmr_settle_s
         self.stfmr_fmr_field_settle_samples.clear()
         self.stfmr_fmr_field_settle_started = time.monotonic()
         self.stfmr_fmr_field_settle_min_s = max(
@@ -19212,6 +19247,10 @@ class CombinedControlApp:
     def zero_stfmr_kepco_output(self) -> None:
         if not self.stfmr_controllers["kepco"].connected:
             return
+        # A running FMR or frequency scan is stopped first: otherwise its
+        # next frequency switched the KEPCO back on (review, 2026-10-09).
+        if self.stfmr_fmr_running or self.stfmr_frequency_running:
+            self.stop_stfmr_fmr_scan()
         self.stfmr_status_var.set("Zeroing and turning the KEPCO output off…")
         try:
             # Explicit operator request: act even on an output this page did
@@ -22513,6 +22552,15 @@ class CombinedControlApp:
         self.camera_window_visibility_changed(self.camera_window_visible)
 
     def camera_start_failed(self, error: BaseException) -> None:
+        # A running MOKE scan has no images any more: stop it (review,
+        # 2026-10-09; it went on driving the magnet or Keithley).
+        for running, event in (
+            (self.magnet_scan_running, self.magnet_scan_stop_event),
+            (self.keithley_scan_running, self.keithley_stop_event),
+            (self.k6221_scan_running, self.k6221_stop_event),
+        ):
+            if running:
+                event.set()
         failed_camera = self.camera_window
         self.camera_window = None
         self.camera_connected = False
@@ -23385,9 +23433,24 @@ class CombinedControlApp:
         if self.camera_window.latest_frame is not None:
             self.camera_window._draw(self.camera_window.latest_frame)
 
+    def _moke_scan_running(self) -> bool:
+        return bool(
+            self.keithley_scan_running or self.magnet_scan_running or self.k6221_scan_running
+        )
+
     def apply_difference_display_average(self) -> None:
         if self.camera_window is None:
             self.magnet_status_var.set("The camera has not started yet")
+            return
+        # A change mid-scan would process later points differently from the
+        # earlier ones (review, 2026-10-09), as background changes are blocked.
+        if self._moke_scan_running():
+            messagebox.showwarning(
+                "Difference processing",
+                "Stop the running scan before changing the averaging; "
+                "its points would otherwise be processed differently.",
+                parent=self.root,
+            )
             return
         try:
             temporal_count = int(self.difference_temporal_average_var.get())
@@ -23420,6 +23483,16 @@ class CombinedControlApp:
     def apply_camera_exposure(self) -> None:
         if self.camera_window is None:
             self.camera_exposure_status_var.set("Camera not started")
+            return
+        # A new exposure recaptures the background mid-scan (review,
+        # 2026-10-09): later points would have a different reference.
+        if self._moke_scan_running():
+            messagebox.showwarning(
+                "Camera exposure time",
+                "Stop the running scan before changing the exposure; "
+                "it would recapture the background mid-scan.",
+                parent=self.root,
+            )
             return
         try:
             exposure_ms = float(self.camera_exposure_ms_var.get().strip())
@@ -24303,12 +24376,32 @@ class CombinedControlApp:
         self.magnet_auto_poll_var.set(False)
 
         def worker() -> None:
+            # 0 A to every connected BOP first, as on exit (review,
+            # 2026-10-09: Disconnect used to leave the magnet energised, and
+            # exit then skipped the closed channels).
+            warnings = []
+            for key, channel in self.magnet_channels.items():
+                if channel.bop is not None and channel.bop.connected:
+                    try:
+                        channel.bop.set_current(0.0)
+                    except BaseException as error:
+                        warnings.append(f"{MAGNET_CHANNEL_LABELS[key]}: {error}")
             for channel in self.magnet_channels.values():
                 channel.close()
+            return warnings
 
-        def success(_result) -> None:
+        def success(warnings) -> None:
             self.magnet_connection_var.set("Not connected")
-            self.magnet_status_var.set("Magnet devices disconnected")
+            self.magnet_status_var.set(
+                "Magnet devices disconnected; 0 A written first"
+                if not warnings else
+                "Disconnected, but 0 A could not be written to "
+                + "; ".join(warnings) + ": check the KEPCO output"
+            )
+            if warnings and not self.closing:
+                messagebox.showwarning(
+                    "Magnet", self.magnet_status_var.get(), parent=self.root
+                )
             self.magnet_poll_failures = 0
             self.magnet_safety_var.set(False)
             self.magnet_last_currents = {"OUT": None, "IN": None}
@@ -24848,6 +24941,12 @@ class CombinedControlApp:
         if not math.isfinite(numeric_value):
             raise ValueError("Magnet target current must be a finite value")
         expected = round(numeric_value, 3)
+        # Not enabled: refused here, so recovery cannot enable it (review,
+        # 2026-10-09).
+        if expected != 0.0 and not bop.output_armed:
+            raise RuntimeError(
+                f"{MAGNET_CHANNEL_LABELS[key]} is not enabled; please click \"Enable/Zero\" first"
+            )
         last_readback = None
         last_error: BaseException | None = None
         recovery_used = False
@@ -24879,7 +24978,7 @@ class CombinedControlApp:
             try:
                 self._recover_magnet_bop_at_zero(
                     key,
-                    rearm=was_armed or expected != 0.0,
+                    rearm=was_armed,
                 )
                 bop = self._require_magnet_bop(key)
                 last_error = None
@@ -25267,7 +25366,13 @@ class CombinedControlApp:
             raise ValueError("Settle time must be within 0–3600 s")
         if not 0 < collect_s <= 3600:
             raise ValueError("Acquisition time must be within 0–3600 s")
-        sequence = build_current_scan_sequence(start_a, end_a, step_a, loops)
+        # The KEPCO is set in 1 mA steps (T {value:.3f}): the points and the
+        # recorded targets at that resolution (review, 2026-10-09).
+        if step_a < 0.001:
+            raise ValueError("Step must be at least 0.001 A (the KEPCO's 1 mA resolution)")
+        sequence = [
+            round(value, 3) for value in build_current_scan_sequence(start_a, end_a, step_a, loops)
+        ]
         try:
             key = self._selected_magnet_switch_key(required=True)
         except RuntimeError as error:
@@ -26650,16 +26755,9 @@ class CombinedControlApp:
             self.led_roi_live_sample_count = 0
             self._redraw_live_intensity_plots()
             self.clear_moke_plot(quiet=True)
-            with self.keithley_data_lock:
-                self.keithley_raw_rows = []
-                self.keithley_step_rows = []
-            self._redraw_keithley_plot()
-            with self.k6221_data_lock:
-                self.k6221_raw_rows = []
-                self.k6221_step_rows = []
-                self.k6221_train_raw_rows = []
-                self.k6221_train_step_rows = []
-            self._redraw_k6221_plot()
+            # Finished 2410/6221 results are kept for Save, as the magnet
+            # scan's are (review, 2026-10-09: an ROI nudge deleted them);
+            # each scan start clears them.
         self.keithley_roi_var.set(
             f"ROI: centre ({self.keithley_roi['cx']:g}, {self.keithley_roi['cy']:g}); "
             f"W {self.keithley_roi['w']:g}，H {self.keithley_roi['h']:g}；"
@@ -33414,7 +33512,9 @@ class CombinedControlApp:
         if timer is not None:
             try:
                 self.root.after_cancel(timer)
-            except tk.TclError:
+            except Exception:
+                # Called from the shutdown thread: any failure here must not
+                # skip the 6221 output-off below (review, 2026-10-09).
                 pass
         try:
             self.k6221_controller.disconnect()
@@ -37055,11 +37155,25 @@ class CombinedControlApp:
         self.run_task("Connecting and querying…", work, done)
 
     def disconnect(self) -> None:
-        self.run_task(
-            "Disconnecting…",
-            self.controller.disconnect,
-            lambda _result: self.set_connected_ui(False),
-        )
+        def work():
+            # LEDs off first, as on exit (review, 2026-10-09: Disconnect left
+            # them on, and exit then skipped them).
+            try:
+                self.controller.all_off()
+                warning = None
+            except BaseException as error:
+                warning = error
+            self.controller.disconnect()
+            return warning
+
+        def done(warning) -> None:
+            self.set_connected_ui(False)
+            if warning is not None:
+                messagebox.showwarning(
+                    "LEDs", f"Disconnected, but switching the LEDs off failed: {warning}. Check them."
+                )
+
+        self.run_task("Switching off and disconnecting…", work, done)
 
     @staticmethod
     def raw_int(name: str, value: object) -> int:

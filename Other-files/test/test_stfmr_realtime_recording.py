@@ -446,8 +446,10 @@ class StreamingTests(unittest.TestCase):
         h.stfmr_lockin_mfli_timeconstant_var.set('0.8')
         h.root.drain()
         rows = read_csv(recorder.csv_path)
-        self.assertEqual([int(r['index']) for r in rows], list(range(3, 11)))
-        self.assertEqual([int(r['loop']) for r in rows], [1]*3+[2]*5)
+        # The first two points of every loop are discarded: loop 2 starts with
+        # the jump from stop back to start (review, 2026-10-09).
+        self.assertEqual([int(r['index']) for r in rows], [3, 4, 5, 8, 9, 10])
+        self.assertEqual([int(r['loop']) for r in rows], [1]*3+[2]*3)
         self.assertTrue(all(float(r['mfli_timeconstant_s']) == 0.1 for r in rows))
 
     def test_preflight_flush_failure_never_enables_output(self):
