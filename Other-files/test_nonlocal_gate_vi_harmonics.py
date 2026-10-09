@@ -1,6 +1,6 @@
 """Gate-VI harmonics (user, 2026-10-09): SR830 1+2 read one order after the
 other at each point, the Zurich 1+2 or 1+2+3 at once.  Pulse gate 100 MΩ.
-Its |R| measured as |R| vs time measures it, held about 5 s.
+Its |R| measured as |R| vs time measures it: 15 s, the last 5 s averaged.
 
 No Tk and no instrument: stand-in controllers record what the scan asks."""
 import csv
@@ -304,8 +304,11 @@ class ResistanceTests(unittest.TestCase):
         self.assertAlmostEqual(result["resistance_ohm"], 939e6, delta=939e6 * 0.02,
                                msg="within 2 % of the settled value")
         self.assertGreaterEqual(took, app.NONLOCAL_VI_RES_HOLD_S)
-        self.assertLess(took, app.NONLOCAL_VI_RES_HOLD_S + 1.0, "about 5 s")
-        self.assertGreaterEqual(result["sample_count"], 4, "the last 1 s averaged")
+        self.assertEqual((app.NONLOCAL_VI_RES_HOLD_S, app.NONLOCAL_VI_RES_AVERAGE_S), (15.0, 5.0))
+        self.assertLess(took, app.NONLOCAL_VI_RES_HOLD_S + 1.0, "about 15 s")
+        self.assertGreaterEqual(result["sample_count"], 20, "the last 5 s averaged (a reading every 0.2 s)")
+        self.assertAlmostEqual(result["resistance_ohm"], 939e6, delta=939e6 * 0.001,
+                               msg="settled to 0.1 % after 10–15 s")
         self.assertEqual(meter.output, 0, "switched off afterwards")
         self.assertEqual(meter.mode, "VOLT", "back in the pulse set-up")
 

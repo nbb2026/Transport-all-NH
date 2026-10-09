@@ -48,6 +48,14 @@ The user asked to raise the 2400-IV voltage limit from ±20 V to ±200 V on a
 - Tests: `SweepControllerTests` and `SweepValuesTests` in
   `test_nonlocal_keithley.py`.
 
+## Non-local Gate-VI: |R| measured for 15 s, the last 5 s averaged (2026-10-09)
+
+The user asked for 15 s per |R|, averaging the last 5 s
+(`NONLOCAL_VI_RES_HOLD_S` = 15, `NONLOCAL_VI_RES_AVERAGE_S` = 5; was 5 s and
+1 s). On |R| vs time the reading settles in about 10 s. The hold counts from
+the last current change, so with autorange steps a measurement takes a little
+longer. Each point now takes about 10 s more; the estimate includes it.
+
 ## Non-local Gate-VI: |R| measured as on |R| vs time, about 5 s each (2026-10-09)
 
 The user found that Gate-VI's |R| (1–7 × 10⁸ Ω, scattered) did not match

@@ -1422,14 +1422,15 @@ NONLOCAL_VI_RES_TARGET_LOW_V = KEITHLEY_RES_TARGET_VOLTAGE_LOW_V
 NONLOCAL_VI_RES_TARGET_HIGH_V = KEITHLEY_RES_TARGET_VOLTAGE_HIGH_V
 NONLOCAL_VI_RES_COMPLIANCE_V = KEITHLEY_RES_VOLTAGE_LIMIT_V
 NONLOCAL_VI_RES_SAMPLE_INTERVAL_S = KEITHLEY_RES_SAMPLE_INTERVAL_S
-# Gate-VI |R| as |R| vs time measures it (user, 2026-10-09: the same values,
-# about 5 s each).  The sample charges up after the current changes, so the
-# reading rises for a few seconds: the current is held this long after its
-# last change and the readings of the last NONLOCAL_VI_RES_AVERAGE_S are
-# averaged.  Autorange goes on throughout, as on |R| vs time; a change
-# starts the hold again.
-NONLOCAL_VI_RES_HOLD_S = 5.0
-NONLOCAL_VI_RES_AVERAGE_S = 1.0
+# Gate-VI |R| as |R| vs time measures it (user, 2026-10-09: the same
+# values).  The sample charges up after the current changes, so the reading
+# settles over several seconds (about 10 s on |R| vs time): the current is
+# held this long after its last change and the readings of the last
+# NONLOCAL_VI_RES_AVERAGE_S are averaged (user, 2026-10-09: 15 s, the last
+# 5 s).  Autorange goes on throughout, as on |R| vs time; a change starts the
+# hold again.
+NONLOCAL_VI_RES_HOLD_S = 15.0
+NONLOCAL_VI_RES_AVERAGE_S = 5.0
 # Still changing current after this long: the measurement fails (it is the
 # pulse gate) and the scan stops with the outputs off.
 NONLOCAL_VI_RES_MAX_S = 30.0
