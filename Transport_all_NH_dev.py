@@ -30931,9 +30931,12 @@ class CombinedControlApp:
                     markers=True, auto_voltage_unit=voltage, series_labels=names,
                     show_legend=len(series) > 1,
                 )
+        # |R| after each pulse.  The check before the first pulse has no
+        # pulse voltage of its own and is left out (user, 2026-10-09); it is
+        # in VI_resistance_gate.csv as "initial_gate".
         self._draw_nonlocal_series(
             canvases["resistance"],
-            {"8": [(row[0], row[1]) for row in resistances]},
+            {"8": [(row[0], row[1]) for row in resistances if row[3:4] != ("initial_gate",)]},
             "Pulse voltage (V)",
             "|R| (Ω)",
             f"Waiting for Keithley {model} resistance data",

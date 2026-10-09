@@ -368,7 +368,8 @@ class GateVIPlotTests(unittest.TestCase):
         a.nonlocal_vi_time_rows = time_rows
         a.nonlocal_vi_summary_rows = summary_rows
         a.nonlocal_vi_pulse_rows = [(0.5, 4.0)]
-        a.nonlocal_vi_resistance_rows = [(4.0, 1e9)]
+        # (pulse V, |R|, elapsed, stage): the check before the first pulse first.
+        a.nonlocal_vi_resistance_rows = [(4.0, 4e8, 0.1, "initial_gate"), (4.0, 1e9, 2.0, "post_point")]
         a.nonlocal_vi_current_rows = [(1.0, 1.0)]
         a.nonlocal_vi_ac_controller = mock.Mock(connected_lockin_keys=("9",), mfli_connected=True,
                                                 nanovoltmeter_connected=True)
@@ -401,6 +402,8 @@ class GateVIPlotTests(unittest.TestCase):
              {"key": "2182", "order": None, "pulse_voltage_v": 4.0, "mean": 3e-6,
               "mean_x": float("nan"), "mean_y": float("nan")}])
         a._layout_nonlocal_vi_plots.assert_called_with([1])
+        self.assertEqual(drawn["resistance"], {"8": [(4.0, 1e9)]},
+                         "|R| after each pulse; the check before the first pulse is left out")
         self.assertEqual(set(drawn), {(1, "x"), (1, "y"), (1, "theta"), "resistance", ("summary", 1)},
                          "only the order measured; no 6221 current or 2400 command-voltage plot")
         self.assertEqual(drawn[(1, "x")], {"9": [(1.0, 1.7e-6)], "mfli": [(1.0, 4.9e-6)], "2182": [(1.0, 3e-6)]},

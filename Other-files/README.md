@@ -23,6 +23,10 @@ Gate-VI, and a Pulse gate default of 100 MΩ.
   |R| and one plot per order against the pulse voltage. The 2400
   command-voltage plot was removed (user, 2026-10-09). Snapshots are named
   by order (e.g. `2nd_harmonic_X_vs_time_snapshot.png`).
+- **|R| plot:** only the readings after each pulse. The check before the
+  first pulse used to be drawn at the first pulse voltage, which gave two
+  points at 20 V; it is now left out of the plot (user, 2026-10-09) and kept
+  in `VI_resistance_gate.csv` with stage `initial_gate`.
 - **Against the pulse voltage** (user, 2026-10-09): the 1st harmonic plots
   the mean X, the 2nd the mean Y, and the 3rd the mean X (odd, as the 1st);
   `NONLOCAL_VI_SUMMARY_CHANNELS`. The 2182A plots its DC voltage. The CSV

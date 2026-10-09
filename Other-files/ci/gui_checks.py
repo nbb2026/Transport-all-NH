@@ -135,6 +135,7 @@ def example_data(app):
     app.nonlocal_vi_use_mfli_var.set(True)
     time_rows, summary_rows, pulse_rows, resistance_rows = [], [], [], []
     elapsed = 0.0
+    resistance_rows.append((0.0, 3.6e8, 0.0, "initial_gate"))   # not plotted
     for point, voltage in enumerate((0, 4, 8, 12, 16, 20, 16, 12, 8, 4, 0), 1):
         pulse_rows.append((elapsed, float(voltage)))
         state = 1.0 + 0.04 * voltage / 20
