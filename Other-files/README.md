@@ -1,5 +1,19 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MS-fourState.py: states C and F (2026-10-09)
+
+- **New states (user request):** C (270°, 0 Oe, −23 mA) and F (270°, 0 Oe,
+  +23 mA). They are written by the current pulse alone, at a Driven 0 Oe
+  setpoint, and are added below D, A, B and E in the States table.
+- **Colours:** C orange, F teal.
+- **Default cycle and sequence:** unchanged. C and F run where typed, e.g.
+  `C F C F`.
+- **Tests:**
+  - the defaults test;
+  - a C F run (pulses −23 and +23 mA at 0 Oe and 270°, read as C and F);
+  - the simulated sample takes C or F at 270° with no field, by the
+    current's sign.
+
 ## MS-fourState.py: the plot leaves out each read's first 5 s (2026-10-09)
 
 - **Why:** on the lab PC each read's SR830 X settled for a few seconds after

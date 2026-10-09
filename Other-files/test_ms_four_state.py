@@ -27,7 +27,7 @@ sys.modules[spec.name] = ms
 spec.loader.exec_module(ms)
 core = ms.core
 
-HALL_OHM = {"D": 0.060, "A": 0.022, "B": -0.025, "E": -0.055}
+HALL_OHM = {"D": 0.060, "A": 0.022, "B": -0.025, "E": -0.055, "C": 0.010, "F": -0.012}
 
 
 class StandaloneTests(unittest.TestCase):
@@ -98,6 +98,8 @@ class Sample:
     def pulse(self, current_a, field_oe, angle_deg):
         if abs(angle_deg) < 1 or abs(angle_deg - 360) < 1:
             self.state = "D" if field_oe * current_a > 0 else "E"
+        elif abs(angle_deg - 270) < 1 and abs(field_oe) < 1:
+            self.state = "C" if current_a < 0 else "F"  # At no field, by the current alone.
         elif abs(angle_deg - 270) < 1:
             self.state = "A" if field_oe * current_a < 0 else "B"
 
@@ -386,8 +388,10 @@ class SettingsTests(unittest.TestCase):
     def test_defaults_are_the_figure_table(self):
         self.assertEqual(ms.DEFAULT_STATES, (
             ("D", 360.0, 1500.0, 22.0), ("A", 270.0, 1500.0, -22.0),
-            ("B", 270.0, 1500.0, 22.0), ("E", 360.0, -1500.0, 22.0)),
-            "the user's figure of 2026-10-09: E at -1500 Oe, +22 mA")
+            ("B", 270.0, 1500.0, 22.0), ("E", 360.0, -1500.0, 22.0),
+            ("C", 270.0, 0.0, -23.0), ("F", 270.0, 0.0, 23.0)),
+            "the user's figures of 2026-10-09: E at -1500 Oe, +22 mA; C and F at 270 deg, 0 Oe, -/+23 mA")
+        self.assertEqual(set(ms.STATE_COLORS), {"D", "A", "B", "E", "C", "F"}, "each state its colour")
         self.assertEqual(ms.DEFAULTS["read_time_s"], "15", "the figure's read time")
         settings = World().settings()
         self.assertEqual(settings.sequence, ("D", "A", "B", "E"))
@@ -397,11 +401,21 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.read_frequency_hz, core.PPMS_TRANSPORT_FREQUENCY_HZ)
         self.assertEqual(ms.DEFAULT_CYCLE, "D A B E B A")
 
+    def test_c_and_f_are_written_at_no_field_by_the_current_alone(self):
+        world = World()
+        rows = world.run(world.settings("C F"))
+        pulses = [e for e in world.events if e[0] == "pulse"]
+        self.assertEqual([(round(e[1] * 1e3, 6), e[2], e[4]) for e in pulses],
+                         [(-23.0, 0.0, 270.0), (23.0, 0.0, 270.0)])
+        self.assertEqual([row["state"] for row in rows], ["C", "F"])
+        self.assertEqual([round(row["rxy_ohm"], 6) for row in rows], [HALL_OHM["C"], HALL_OHM["F"]])
+
     def test_sequence_text(self):
         names = tuple(name for name, *_ in ms.DEFAULT_STATES)
         self.assertEqual(ms.parse_sequence("d, a B;e", names), ("D", "A", "B", "E"))
         self.assertEqual(ms.parse_sequence("D-A-B-E-B-A", names), ("D", "A", "B", "E", "B", "A"))
-        for text in ("", "D X", "C", "A' B'"):
+        self.assertEqual(ms.parse_sequence("c F", names), ("C", "F"))
+        for text in ("", "D X", "G", "A' B'"):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 ms.parse_sequence(text, names)
 

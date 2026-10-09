@@ -2240,12 +2240,15 @@ OE_PER_T = 10_000.0
 # user's figure (2026-10-09).  0.15 T is 1500 Oe.  At 270 deg the current's
 # sign picks A or B (both +1500 Oe); at 360 deg D is +1500 Oe and E -1500 Oe,
 # both +22 mA.  D and E are at 360 deg rather than 0 (the same orientation):
-# 90 deg from A and B instead of 270 deg.
+# 90 deg from A and B instead of 270 deg.  C and F (user, 2026-10-09) are
+# written at 270 deg with no field, by the current alone: C -23 mA, F +23 mA.
 DEFAULT_STATES = (
     ("D", 360.0, 1500.0, 22.0),
     ("A", 270.0, 1500.0, -22.0),
     ("B", 270.0, 1500.0, 22.0),
     ("E", 360.0, -1500.0, 22.0),
+    ("C", 270.0, 0.0, -23.0),
+    ("F", 270.0, 0.0, 23.0),
 )
 # The manual settings' own fields, the manual pulse width among them (a
 # manual pulse never changes the runs' width); decel, field rate, frequency
@@ -2282,7 +2285,8 @@ def fill_screen(root):
     root.geometry(f"{root.winfo_screenwidth()}x{root.winfo_screenheight()}+0+0")
     return "geometry"
 MODES = {"cycle": "Cycle", "sequence": "Sequence"}  # The Mode list, first is the default.
-STATE_COLORS = {"D": "#000000", "A": "#c62828", "B": "#1565c0", "E": "#2e7d32"}
+STATE_COLORS = {"D": "#000000", "A": "#c62828", "B": "#1565c0", "E": "#2e7d32",
+                "C": "#ef6c00", "F": "#00838f"}
 DEFAULTS = {
     "pulse_width_us": "30",
     "pulse_count": "1",

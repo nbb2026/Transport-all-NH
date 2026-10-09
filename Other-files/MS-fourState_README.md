@@ -162,10 +162,15 @@ Defaults from the user's figure of 2026-10-09, editable in the window
 | A | 270° | +1500 Oe (Hx) | −22 mA | +H ∥ −I |
 | B | 270° | +1500 Oe (Hx) | +22 mA | +H ∥ +I |
 | E | 360° | −1500 Oe (Hz) | +22 mA | −H ⊥ +I |
+| C | 270° | 0 Oe | −23 mA | current only, −I |
+| F | 270° | 0 Oe | +23 mA | current only, +I |
 
 Cycles and sequences are typed as state names separated by spaces, commas or
-dashes, for example `D A B E` or `D-A-B-E-B-A`. Switching between
-A and B, or between D and E, needs no rotation. Switching between, for
+dashes, for example `D A B E` or `D-A-B-E-B-A`. C and F (added 2026-10-09)
+are written at 270° with no field, by the current pulse alone: the write
+field is a Driven 0 Oe setpoint, settled as any other. They run only where a
+cycle or sequence names them, e.g. `C F C F`. Switching between
+A, B, C and F, or between D and E, needs no rotation. Switching between, for
 example, A and D turns the rotator 90° each time. D and E are at 360°, the
 same orientation as 0°, so that this turn is 90° rather than 270° (changed
 2026-10-08). If the rotator reads 0° when a run starts, its first move to
