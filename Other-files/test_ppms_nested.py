@@ -415,8 +415,40 @@ class NestedTests(unittest.TestCase):
         obj, motor, settings, events = self.harness()
         obj._ppms_field_scan_worker = lambda *args: obj.ppms_field_scan_stop_event.set()
         self.run_worker(obj, motor, settings)
+        # An angle/temperature scan keeps the magnet's setpoint and mode
+        # ("I off" or Stop; user, 2026-10-09), and the source goes off.
+        self.assertNotIn(('zero',), events)
+        self.assertEqual(events[-1], ('off',))
+
+    def test_a_stopped_field_scan_still_zeroes_the_field(self):
+        obj, motor, settings, events = self.harness()
+        settings.update(nested=dict(angle=(26.,), temperature=(300.,)), scan_mode="Field")
+        obj._ppms_field_scan_worker = lambda *args: obj.ppms_field_scan_stop_event.set()
+        self.run_worker(obj, motor, settings)
         self.assertIn(('zero',), events)
         self.assertEqual(events[-1], ('off',))
+
+    def test_only_the_first_angle_gets_the_settling_windows(self):
+        # User, 2026-10-09: the source keeps running between angles, so only
+        # the first point after it was started settles.
+        obj, motor, settings, events = self.harness()
+        settings.update(scan_mode="Angle")
+        fresh = []
+        obj._ppms_field_scan_worker = lambda *args: fresh.append(obj.__dict__.pop("ppms_source_fresh", False))
+        self.run_worker(obj, motor, settings)
+        self.assertEqual(fresh[0], True)
+        self.assertFalse(any(fresh[1:]), fresh)
+
+    def test_the_zurich_channels_have_a_noise_floor(self):
+        settled = app.CombinedControlApp._ppms_first_point_settled
+        # A weak 3rd harmonic (nV) wandering by 100 % between windows, on a
+        # 10 mV input range: within 0.2 % of the range, so settled.
+        previous = {"zurich_demod3_x_v": 2e-9, "zurich_demod3_y_v": 1e-9, "zurich_input_range_v": 0.01}
+        current = {"zurich_demod3_x_v": 4e-9, "zurich_demod3_y_v": -1e-9, "zurich_input_range_v": 0.01}
+        self.assertTrue(settled(previous, current))
+        # Without a range (none read) it is still judged on 2 % of R.
+        self.assertFalse(settled({k: v for k, v in previous.items() if "range" not in k},
+                                 {k: v for k, v in current.items() if "range" not in k}))
 
     def test_non_field_failure_keeps_field_but_closes_source(self):
         obj, motor, settings, events = self.harness()

@@ -1,5 +1,30 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## PPMS: first-point settling where it belongs; "I off" keeps the field (2026-10-09)
+
+The user asked to fix two items left open by the whole-program review.
+
+- **First-point settling** (repeated windows until two agree) now runs only
+  where the lock-ins have just seen a change of state:
+  - the first point of a field sweep, after the field jump;
+  - the first point after the 6221 was (re)configured (`ppms_source_fresh`).
+    That is every temperature point, whose source is reconfigured, and the
+    first angle and the first current point.
+
+  The other angle and current points, where the source keeps running, take
+  one acquisition window as any other point. Before, every one of them
+  could take up to 10 windows.
+- **Zurich noise floor:** the settle test now gives the Zurich channels a
+  floor of 0.2 % of the Signal Input range, as the SR830s have 0.2 % of
+  their sensitivity. A weak 2nd or 3rd harmonic no longer holds a point for
+  all 10 windows.
+- **"I off", Stop or exit during a non-field scan** (temperature, angle,
+  current) no longer ramps the field to zero. Only Field and
+  Field+Temperature scans zero it, as the exit dialog says. A persistent
+  field set before a temperature scan stays.
+- Tests: `test_ppms_nested.py` (stop keeps or zeroes the field by mode; only
+  the first angle settles; the Zurich floor).
+
 ## Whole-program review: fixes (2026-10-09)
 
 The user asked to check the whole script and optimise its logic. Five
@@ -64,9 +89,6 @@ updates in the page tests.
 **Left for the user to decide** (not changed):
 - MOKE 6221 post-pulse averaging can include pre-pulse frames when the
   temporal average N > 1.
-- PPMS first-point settling: it runs for every point in non-field modes,
-  and the Zurich keys have no noise floor.
-- PPMS "I off" during a non-field scan ramps the field to zero.
 - The MultiPyVu interface refuses every scan.
 - Gate-VI points with no valid reading are averaged from the invalid ones.
 - Snapshots capture screen pixels.

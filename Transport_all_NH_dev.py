@@ -35945,6 +35945,7 @@ class CombinedControlApp:
         try:
             if settings.get("scan_mode") in ("Angle", "Angle+Temperature"):
                 self._configure_ppms_transport_scan(settings)
+                self.ppms_source_fresh = True   # the first angle settles
                 settings = dict(settings, keep_source_between_angles=True)
             for ai, angle, temperatures in scan_blocks():
                 if stop.is_set() or self.closing:
@@ -36000,6 +36001,7 @@ class CombinedControlApp:
                             point_settings['continuous_sweep_peak_a'] = sweep_peak
                             if not current_source_started:
                                 self._configure_ppms_transport_scan(point_settings)
+                                self.ppms_source_fresh = True   # the first current settles
                                 current_source_started = True
                             else:
                                 self._update_ppms_transport_current(point_settings)
@@ -36026,7 +36028,10 @@ class CombinedControlApp:
             if not preserve_range_output and (failed or self.closing or (
                 stop.is_set() and not self._ppms_preserve_stopped_scan()
             )):
-                if (stop.is_set() or self.closing) and not failed:
+                # Field scans only: the others keep the magnet's setpoint and
+                # mode, on a stop, "I off" or exit (user, 2026-10-09).
+                if ((stop.is_set() or self.closing) and not failed
+                        and settings.get("scan_mode") in ("Field", "Field+Temperature")):
                     self._ppms_zero_field_after_interrupted_scan(rate, approach)
                 self._stop_ppms_transport_source()
 
@@ -36092,8 +36097,9 @@ class CombinedControlApp:
         """True when every lock-in's X/Y moved less than the settle tolerance.
 
         Tolerance per meter: 2 % of its current amplitude R, but never less
-        than 0.2 % of the SR830 sensitivity full scale (so a near-zero
-        channel is not held forever by noise).
+        than 0.2 % of the SR830 sensitivity full scale, or of the Zurich's
+        Signal Input range (so a near-zero channel, e.g. a weak 2nd or 3rd
+        harmonic, is not held forever by noise; user, 2026-10-09).
         """
         scales = NONLOCAL_SR830_FULL_SCALE_V
         checked = False
@@ -36112,6 +36118,15 @@ class CombinedControlApp:
             index = current.get(prefix + "_sensitivity_index")
             if isinstance(index, int) and 0 <= index < len(scales):
                 floor = PPMS_FIRST_POINT_FLOOR_FRACTION * scales[index]
+            elif prefix.startswith("zurich"):
+                # Its demodulators share the Signal Input range, which plays
+                # the part of the SR830 sensitivity.
+                try:
+                    input_range = float(current.get("zurich_input_range_v", ""))
+                except (TypeError, ValueError):
+                    input_range = math.nan
+                if math.isfinite(input_range) and input_range > 0:
+                    floor = PPMS_FIRST_POINT_FLOOR_FRACTION * input_range
             tolerance = max(PPMS_FIRST_POINT_TOLERANCE_FRACTION * math.hypot(x1, y1), floor)
             checked = True
             if abs(x1 - x0) > tolerance or abs(y1 - y0) > tolerance:
@@ -36155,6 +36170,7 @@ class CombinedControlApp:
             if not (transport_settings.get("keep_source_between_angles", False)
                     or transport_settings.get('keep_source_between_current_points', False)):
                 self._configure_ppms_transport_scan(transport_settings)
+                self.ppms_source_fresh = True
             for completed, (loop_index, point_index, points_per_loop, target) in enumerate(
                 sequence, start=1
             ):
@@ -36216,7 +36232,12 @@ class CombinedControlApp:
                     "stable_s": stable_s,
                 }
                 acquisition_s = float(transport_settings["acquisition_s"])
-                if completed == 1:
+                # Settled windows only where the lock-ins have just seen a
+                # field jump (the first point of a field sweep) or a freshly
+                # started source; not at every angle or current point, where
+                # the source keeps running (user, 2026-10-09).
+                source_fresh = bool(self.__dict__.pop("ppms_source_fresh", False))
+                if completed == 1 and (check_field or source_fresh):
                     # First point of a sweep: the lock-in filters have only
                     # just seen the settled field and the freshly started
                     # excitation.  Keep acquiring windows until two in a row
@@ -36339,7 +36360,11 @@ class CombinedControlApp:
                     self._redraw_ppms_transport_plot()
 
                 self.post_ui(update)
-            if self.ppms_field_scan_stop_event.is_set() and not self._ppms_preserve_stopped_scan():
+            # Only a field scan zeroes the field when stopped; other scans keep
+            # the magnet's setpoint and mode (user, 2026-10-09: "I off" during
+            # a temperature scan ramped a persistent field to zero).
+            if (check_field and self.ppms_field_scan_stop_event.is_set()
+                    and not self._ppms_preserve_stopped_scan()):
                 self._ppms_zero_field_after_interrupted_scan(
                     rate_oe_s, approach_code
                 )
