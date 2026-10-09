@@ -1443,9 +1443,10 @@ NONLOCAL_VI_RESULTS_DIRECTORY = (
 # stepped from Start to End and the current read at each step, as in the
 # user's 1 um Pt-Pt figure (-6 to 6 V).  The sweep stays inside the page's
 # 20 V range and 20 V OVP.
-NONLOCAL_IV_SWEEP_START_V = -6.0
-NONLOCAL_IV_SWEEP_END_V = 6.0
-NONLOCAL_IV_SWEEP_STEP_V = 0.25
+# 2400-IV defaults (user, 2026-10-09; were -6, 6 and 0.25 V).
+NONLOCAL_IV_SWEEP_START_V = -50.0
+NONLOCAL_IV_SWEEP_END_V = 50.0
+NONLOCAL_IV_SWEEP_STEP_V = 5.0
 NONLOCAL_IV_SWEEP_SETTLE_S = 0.5
 NONLOCAL_IV_SWEEP_COMPLIANCE_A = KEITHLEY_DEFAULT_COMPLIANCE_A
 NONLOCAL_IV_SWEEP_MAX_COMPLIANCE_A = 0.1

@@ -43,6 +43,8 @@ The user asked to raise the 2400-IV voltage limit from ±20 V to ±200 V on a
   - Both use the Current limit A and the safety tick, switch the 6221 off
     first, and ask a HIGH VOLTAGE question above ±20 V. A line under them
     shows the Keithley's state.
+- **Defaults** (user, 2026-10-09): Start −50 V, End 50 V, Step 5 V,
+  Settle 0.5 s (21 points; the 200 V range on a 2400).
 - **No Sample box** any more (user, 2026-10-09); run folders are
   `2400-IV_<date>_<time>`.
 - Tests: `SweepControllerTests` and `SweepValuesTests` in

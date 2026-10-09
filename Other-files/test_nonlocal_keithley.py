@@ -246,6 +246,12 @@ class SweepValuesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "increase the step"):
             app.build_iv_sweep_voltages(-10, 10, 0.001)
 
+    def test_the_defaults(self):
+        # User, 2026-10-09: -50 → 50 V in 5 V steps, 0.5 s settle (21 points).
+        self.assertEqual((app.NONLOCAL_IV_SWEEP_START_V, app.NONLOCAL_IV_SWEEP_END_V,
+                          app.NONLOCAL_IV_SWEEP_STEP_V, app.NONLOCAL_IV_SWEEP_SETTLE_S), (-50.0, 50.0, 5.0, 0.5))
+        self.assertEqual(len(app.build_iv_sweep_voltages(-50, 50, 5, 200)), 21)
+
     def test_current_units(self):
         self.assertEqual(app.format_current(-1.833e-8), "-18.33 nA")
         self.assertEqual(app.format_current(4e-13), "0.4 pA")
