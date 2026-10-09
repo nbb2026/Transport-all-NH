@@ -45,8 +45,9 @@ the others as they are. The 6221 turns its output off when it disconnects;
 disconnecting the PPMS leaves the field and angle. An address is fixed while
 its instrument is connected.
 
-The window opens at 1720 × 1240 where the screen allows (the lab PC's
-2560 × 1440 does), or smaller on a smaller screen, so the plot has the room.
+The window opens maximised and fills the screen (since 2026-10-09). If it is
+un-maximised it goes to 1720 × 1240 where the screen allows (the lab PC's
+2560 × 1440 does), or smaller on a smaller screen.
 
 **PPMS status**, to the right of Connections (under it in a narrow window),
 shows what the PPMS page's live readings show:

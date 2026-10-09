@@ -1,5 +1,17 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MS-fourState.py opens maximised (2026-10-09)
+
+- **What changed:** the window fills the screen when the script starts (user
+  request).
+- **How:** `fill_screen` uses `state("zoomed")` on Windows (the lab PC) and
+  macOS, and `-zoomed` on X11. Where neither is offered, it sets the window
+  to the screen's size.
+- **Un-maximised size:** 1720 × 1240, as before.
+- **Opting out:** `FourStateApp(root, mode, maximise=False)`. The CI layout
+  check uses this, since it checks fixed sizes.
+- **Tests:** `FillScreenTests` covers all three ways.
+
 ## MS-fourState.py: saving as the PPMS page; Cycles in Sequence mode (2026-10-09)
 
 - **Saving (user request: "change the file save logic as main PPMS"):**

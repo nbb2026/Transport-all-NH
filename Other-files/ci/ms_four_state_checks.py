@@ -73,7 +73,8 @@ def main():
         root = tk.Tk()
         root.tk.call("tk", "scaling", 1.333)  # 96 DPI
         root.maxsize(4000, 3000)
-        app = module.FourStateApp(root, mode)
+        # Checked at fixed sizes, so not maximised.
+        app = module.FourStateApp(root, mode, maximise=False)
         root.geometry(f"{width}x{height}+0+0")
         for _ in range(6):
             root.update()

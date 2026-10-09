@@ -1342,6 +1342,24 @@ class DisplayTests(unittest.TestCase):
         app.root.destroy.assert_not_called()
 
 
+class FillScreenTests(unittest.TestCase):
+    """The window opens maximised, filling the screen (user, 2026-10-09)."""
+
+    def test_zoomed_where_tk_offers_it_else_the_screen_size(self):
+        root = mock.Mock()
+        self.assertEqual(ms.fill_screen(root), "zoomed")
+        root.state.assert_called_once_with("zoomed")
+        root = mock.Mock()
+        root.state.side_effect = tk.TclError("bad argument \"zoomed\"")
+        self.assertEqual(ms.fill_screen(root), "-zoomed")
+        root.attributes.assert_called_once_with("-zoomed", True)
+        root = mock.Mock()
+        root.state.side_effect = root.attributes.side_effect = tk.TclError("no")
+        root.winfo_screenwidth.return_value, root.winfo_screenheight.return_value = 2560, 1440
+        self.assertEqual(ms.fill_screen(root), "geometry")
+        root.geometry.assert_called_once_with("2560x1440+0+0")
+
+
 class SaveTests(unittest.TestCase):
     """Saving as the main program's PPMS page (user, 2026-10-09)."""
 
@@ -1494,8 +1512,8 @@ class WindowTests(unittest.TestCase):
         self.assertNotIn("*IDN?", app.log.get("1.0", "end-1c"), "hidden with the tick off")
 
     def test_the_plot_has_the_room(self):
-        # The window opens at WINDOW_SIZE where the screen allows; the plot
-        # takes what the controls leave.
+        # The window opens maximised; un-maximised it is WINDOW_SIZE where the
+        # screen allows.  The plot takes what the controls leave.
         self.assertEqual(ms.WINDOW_SIZE, (1720, 1240))
         self.assertEqual(int(self.app.log.cget("width")), 46)
 

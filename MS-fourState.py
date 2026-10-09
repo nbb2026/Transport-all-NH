@@ -2254,10 +2254,28 @@ MANUAL_DEFAULTS = {"angle": "360", "field": "0", "current_ma": "0.5", "pulse_ma"
 DEFAULT_SEQUENCE = "D A B E"
 DEFAULT_CYCLE = "D A B E B A"
 APP_TITLE = "MS-fourState"
-# The window opens at this size where the screen allows (the lab PC's
-# 2560 x 1440 does), else smaller, so the plot gets the room; minimum 1100 x 760.
+# The window opens maximised, filling the screen (user, 2026-10-09).  This is
+# its size when un-maximised, where the screen allows (the lab PC's 2560 x
+# 1440 does), else smaller; minimum 1100 x 760.
 WINDOW_SIZE = (1720, 1240)
 WINDOW_MINIMUM = (1100, 760)
+
+
+def fill_screen(root):
+    """Maximise the window: zoomed on Windows (the lab PC) and macOS,
+    -zoomed on X11, else the whole screen's size."""
+    try:
+        root.state("zoomed")
+        return "zoomed"
+    except tk.TclError:
+        pass
+    try:
+        root.attributes("-zoomed", True)
+        return "-zoomed"
+    except tk.TclError:
+        pass
+    root.geometry(f"{root.winfo_screenwidth()}x{root.winfo_screenheight()}+0+0")
+    return "geometry"
 MODES = {"cycle": "Cycle", "sequence": "Sequence"}  # The Mode list, first is the default.
 STATE_COLORS = {"D": "#000000", "A": "#c62828", "B": "#1565c0", "E": "#2e7d32"}
 DEFAULTS = {
@@ -3535,7 +3553,7 @@ class StatePlot:
 
 
 class FourStateApp:
-    def __init__(self, root, mode="cycle"):
+    def __init__(self, root, mode="cycle", maximise=True):
         if mode not in MODES:
             raise ValueError(f"Unknown mode {mode!r}")
         self.root = root
@@ -3547,6 +3565,8 @@ class FourStateApp:
         height = max(WINDOW_MINIMUM[1], min(WINDOW_SIZE[1], root.winfo_screenheight() - 120))
         root.geometry(f"{width}x{height}")
         root.minsize(*WINDOW_MINIMUM)
+        if maximise:
+            fill_screen(root)
         self.events = queue.Queue()
         # Every command to the instruments, and every reply, goes to the
         # command console (EchoedResource, EchoedPPMS).
