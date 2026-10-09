@@ -125,6 +125,10 @@ Gate-VI, and a Pulse gate default of 100 MΩ.
   |R| and one plot per order against the pulse voltage. The 2400
   command-voltage plot was removed (user, 2026-10-09). Snapshots are named
   by order (e.g. `2nd_harmonic_X_vs_time_snapshot.png`).
+- **Colours** (user, 2026-10-09): a colour family per harmonic order, in
+  the time rows and the plots against the pulse voltage alike
+  (`NONLOCAL_VI_ORDER_COLORS`): 1st blue, 2nd red/orange, 3rd green, with
+  shades for the Zurich, SR830 #8 and #9. |R| is purple, the 2182A grey.
 - **|R| plot:** only the readings after each pulse. The check before the
   first pulse used to be drawn at the first pulse voltage, which gave two
   points at 20 V; it is now left out of the plot (user, 2026-10-09) and kept

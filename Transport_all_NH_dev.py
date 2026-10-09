@@ -1419,6 +1419,15 @@ NONLOCAL_VI_HARMONIC_SETTLE_TAUS = 10.0
 # 2026-10-09: X for the 1st harmonic, Y for the 2nd; the 3rd, odd as the
 # 1st, X).  The CSV keeps the mean X, Y and R of every order.
 NONLOCAL_VI_SUMMARY_CHANNELS = {1: "X", 2: "Y", 3: "X"}
+# Gate-VI plot colours (user, 2026-10-09): a colour family per harmonic order
+# (shades for the Zurich, SR830 #8 and #9), |R| in purple, the 2182A grey.
+NONLOCAL_VI_ORDER_COLORS = {
+    1: {"mfli": "#1565c0", "8": "#42a5f5", "9": "#0d47a1"},
+    2: {"mfli": "#c62828", "8": "#ef6c00", "9": "#ad1457"},
+    3: {"mfli": "#2e7d32", "8": "#66bb6a", "9": "#00695c"},
+}
+NONLOCAL_VI_RESISTANCE_COLOR = "#7b1fa2"
+NONLOCAL_VI_2182_COLOR = "#424242"
 NONLOCAL_VI_6221_COMPLIANCE_V = 50.0
 # Pulse gate MΩ default (user, 2026-10-09): a pulse needs |R| above it.
 NONLOCAL_VI_MIN_RESISTANCE_FOR_PULSE_OHM = 100e6
@@ -31204,6 +31213,9 @@ class CombinedControlApp:
         def order_of(row):
             return row[7] if len(row) > 7 and row[7] is not None else shown[0]
 
+        def order_colors(order):
+            return {**NONLOCAL_VI_ORDER_COLORS[order], "2182": NONLOCAL_VI_2182_COLOR}
+
         frames = self.nonlocal_vi_plot_frames
         model = self.nonlocal_vi_2410_controller.model
         for order in shown:
@@ -31249,7 +31261,7 @@ class CombinedControlApp:
                 self._draw_nonlocal_series(
                     canvases[(order, channel)], series, "Elapsed time (s)", label, waiting,
                     markers=True, auto_voltage_unit=voltage, series_labels=names,
-                    show_legend=len(series) > 1,
+                    show_legend=len(series) > 1, series_colors=order_colors(order),
                 )
         # |R| after each pulse.  The check before the first pulse has no
         # pulse voltage of its own and is left out (user, 2026-10-09); it is
@@ -31262,6 +31274,7 @@ class CombinedControlApp:
             f"Waiting for Keithley {model} resistance data",
             markers=True,
             show_legend=False,
+            color_override=NONLOCAL_VI_RESISTANCE_COLOR,
         )
         for order in shown:
             # The lock-ins' mean X or Y (NONLOCAL_VI_SUMMARY_CHANNELS); the
@@ -31288,6 +31301,7 @@ class CombinedControlApp:
                 auto_voltage_unit=True,
                 series_labels=names,
                 show_legend=len(summary) > 1,
+                series_colors=order_colors(order),
             )
 
     # ---- Non-local page: |R| vs time and the I-V sweep on the pulse Keithley

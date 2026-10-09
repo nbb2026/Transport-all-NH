@@ -550,6 +550,14 @@ class GateVIPlotTests(unittest.TestCase):
             text="2nd harmonic Y vs pulse voltage — SR830 #9, Zurich")
         a.nonlocal_vi_plot_frames[(2, "x")].configure.assert_called_with(
             text="2nd harmonic X vs time — SR830 #9, Zurich")
+        # User, 2026-10-09: a colour family per order, |R| in purple.
+        options = {call.args[0]: call.kwargs for call in a._draw_nonlocal_series.call_args_list}
+        colours = {key: options[key].get("series_colors", {}).get("mfli")
+                   for key in ((1, "x"), (2, "x"), (3, "x"), ("summary", 1), ("summary", 2))}
+        self.assertEqual(colours[(1, "x")], colours[("summary", 1)])
+        self.assertEqual(colours[(2, "x")], colours[("summary", 2)])
+        self.assertEqual(len({colours[(1, "x")], colours[(2, "x")], colours[(3, "x")],
+                              options["resistance"]["color_override"]}), 4)
 
 
 class ZurichRowTests(unittest.TestCase):
