@@ -770,7 +770,11 @@ class ZurichRowTests(unittest.TestCase):
         controller.configure_mfli.return_value = {}
         a._apply_nonlocal_mfli_config({"reference": "Aux Input 1", "tc_s": 1.0, "mode": "2"})
         self.assertEqual(controller.configure_mfli.call_args[0], ("AC", 2, "R"))
-        self.assertIsNone(controller.configure_mfli.call_args[1]["external_reference_demodulator"])
+        # As PPMS: one order on MF-MD also puts the reference on Demod 4,
+        # switches the unused demodulators off, and transfers at 10 Sa/s.
+        self.assertEqual(controller.configure_mfli.call_args[1]["external_reference_demodulator"], 3)
+        self.assertEqual(controller.configure_mfli.call_args[1]["sample_rate_hz"], app.NONLOCAL_SAMPLE_HZ)
+        controller.disable_unused_ppms_demods.assert_called_once_with("2")
         controller.configure_second_harmonic.assert_not_called()
         # Without MF-MD the rack's lock display uses the 1st harmonic alone.
         a = self.page()

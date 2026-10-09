@@ -2120,6 +2120,40 @@ class InstrumentSafetyTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "not set up for a continuous current sweep"):
             controller.update_amplitude(0.05)
 
+    def test_the_zurich_is_set_up_as_on_ppms(self):
+        """User, 2026-10-09: the Non-local Zurich as the PPMS module's: on
+        MF-MD the reference on Demod 4 and the unused demodulators off."""
+        for has_md, expected in ((True, 3), (False, None)):
+            with self.subTest(mf_md=has_md):
+                controller = app.NonLocalACController(lambda _message: None)
+                controller.source = Fake6221()
+                controller.mfli_daq = object()
+                controller.mfli_has_multi_demod = lambda: has_md
+                controller.configure_mfli = mock.Mock(return_value={"sample_rate_hz": 10.0})
+                controller.disable_unused_ppms_demods = mock.Mock()
+                controller.configure(0.1, 17.3, 50.0, {}, mfli_config={
+                    "coupling": "AC", "harmonic": 2, "channel": "R", "reference_source": "Trigger In 1",
+                    "input_impedance": "10 MΩ", "input_scaling": 1.0, "timeconstant_s": 0.1})
+                kwargs = controller.configure_mfli.call_args.kwargs
+                self.assertEqual(kwargs["external_reference_demodulator"], expected)
+                self.assertEqual((kwargs["input_impedance"], kwargs["input_scaling"]), ("10 MΩ", 1.0))
+                if has_md:
+                    controller.disable_unused_ppms_demods.assert_called_once_with("1")
+                else:
+                    controller.disable_unused_ppms_demods.assert_not_called()
+        # Several orders ask for Demod 4 themselves; nothing is switched off here.
+        controller = app.NonLocalACController(lambda _message: None)
+        controller.source = Fake6221()
+        controller.mfli_daq = object()
+        controller.mfli_has_multi_demod = lambda: True
+        controller.configure_mfli = mock.Mock(return_value={})
+        controller.disable_unused_ppms_demods = mock.Mock()
+        controller.configure(0.1, 17.3, 50.0, {}, mfli_config={
+            "coupling": "AC", "harmonic": 1, "channel": "R", "reference_source": "Trigger In 1",
+            "input_impedance": "10 MΩ", "input_scaling": 1.0, "external_reference_demodulator": 3})
+        self.assertEqual(controller.configure_mfli.call_args.kwargs["external_reference_demodulator"], 3)
+        controller.disable_unused_ppms_demods.assert_not_called()
+
     def test_6221_standalone_continuous_ac_readback_and_compliance(self):
         controller = app.Keithley6221Controller(lambda _message: None)
         fake = Fake6221()

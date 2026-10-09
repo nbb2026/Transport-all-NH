@@ -1,5 +1,31 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local Zurich set up as the PPMS module's (2026-10-09)
+
+The user asked whether the Zurich should use 10 MΩ or 50 Ω, and for it to
+be set up as on PPMS.
+
+- **Already the same:**
+  - Signal Input 1 at 10 MΩ, scaling 1. PPMS/RT-E, 6221-IV and Gate-VI all
+    use this. 10 MΩ measures a voltage without loading the sample; 50 Ω would
+    draw current through the voltage contacts.
+  - AC coupling, R, the 4th-order filter, and Ref. and TC from the Zurich row.
+- **Reference demodulator:**
+  - **Before:** for a single harmonic, Non-local used the Zurich's default
+    routing, with the reference PLL on Demod 2.
+  - **Now:** `NonLocalACController.configure` puts the reference on Demod 4
+    wherever the Zurich has MF-MD, and switches the demodulators not
+    measuring off, as PPMS/RT-E do (`external_reference_demodulator=3`,
+    `disable_unused_ppms_demods`). This covers Gate-VI, 6221-IV and Set 6221.
+    The rack's set-up does the same.
+  - **A Zurich without MF-MD** keeps its own routing; PPMS's way cannot run on
+    it.
+- **Transfer rate:** the 6221-IV Zurich is now 1 Hz (10 Sa/s), as PPMS/RT-E;
+  it was 25 Sa/s. A reading every 0.2 s is at most 0.1 s old.
+- **One difference kept:** the 2nd and 3rd harmonic demodulators run at the
+  same 10 Sa/s, not PPMS's 1 Sa/s. 6221-IV averages the Zurich over Acquire s,
+  while PPMS takes one snapshot a point.
+
 ## Non-local Gate-VI: no Read/Coupling choice; plots X, Y, θ then 2400 and V vs pulse (2026-10-09)
 
 - **Settings (user request):** the Read and Coupling lists are gone.

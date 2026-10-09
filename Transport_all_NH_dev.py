@@ -8764,6 +8764,14 @@ class NonLocalACController:
                 }
             self.mfli_in_scan = False
             if mfli_config:
+                # As the PPMS/RT-E Zurich (user, 2026-10-09): the reference on
+                # Demod 4 wherever the Zurich has MF-MD, and the demodulators
+                # not measuring switched off.  Several orders ask for Demod 4
+                # themselves; a Zurich without MF-MD keeps its own routing.
+                extref_demodulator = mfli_config.get("external_reference_demodulator")
+                single_on_demod_4 = extref_demodulator is None and self.mfli_has_multi_demod()
+                if single_on_demod_4:
+                    extref_demodulator = 3
                 readbacks["mfli"] = self.configure_mfli(
                     str(mfli_config["coupling"]),
                     int(mfli_config["harmonic"]),
@@ -8775,10 +8783,10 @@ class NonLocalACController:
                     timeconstant_s=float(
                         mfli_config.get("timeconstant_s", NONLOCAL_LOCKIN_TIME_CONSTANT_S)
                     ),
-                    external_reference_demodulator=mfli_config.get(
-                        "external_reference_demodulator"
-                    ),
+                    external_reference_demodulator=extref_demodulator,
                 )
+                if single_on_demod_4:
+                    self.disable_unused_ppms_demods("1")
                 self.mfli_auto_range_enabled = bool(mfli_config.get("auto_range", True))
                 if not self.mfli_auto_range_enabled:
                     self.mfli_initial_autorange_pending = False
@@ -21621,19 +21629,23 @@ class CombinedControlApp:
             # Without MF-MD the rack shows the lock on the 1st harmonic; the
             # 6221-IV scan itself still asks for (and reports) the option.
             mode, multi = "1", False
+        # As the PPMS/RT-E Zurich: the reference on Demod 4 (MF-MD), the
+        # unused demodulators off, 10 Sa/s.
+        on_demod_4 = multi or self._nonlocal_mfli_has_multi_demod()
         with controller.lock:
             readback = controller.configure_mfli(
                 "AC", 1 if multi else int(mode), "R",
                 reference_source=settings["reference"],
-                sample_rate_hz=1.0 / NONLOCAL_IV6221_SAMPLE_INTERVAL_S,
+                sample_rate_hz=NONLOCAL_SAMPLE_HZ,
                 input_impedance="10 MΩ", input_scaling=1.0, timeconstant_s=tc_s,
-                external_reference_demodulator=3 if multi else None,
+                external_reference_demodulator=3 if on_demod_4 else None,
             )
             if multi:
                 rate = float(readback.get("sample_rate_hz", NONLOCAL_SAMPLE_HZ))
                 controller.configure_second_harmonic(tc_s, rate=rate)
                 if mode == "1+2+3":
                     controller.configure_third_harmonic(tc_s, rate=rate)
+            if on_demod_4:
                 controller.disable_unused_ppms_demods(mode)
 
     def _nonlocal_mfli_has_multi_demod(self) -> bool:
@@ -31711,7 +31723,9 @@ class CombinedControlApp:
             initial_ma, settings["frequency_hz"], settings["compliance_v"],
             settings["lockin_configs"], settings["marker_line"],
             mfli_config=settings["mfli_config"], use_nanovoltmeter=False,
-            sample_hz=1.0 / NONLOCAL_IV6221_SAMPLE_INTERVAL_S, output_mode="AC",
+            # The PPMS/RT-E Zurich's 1 Hz (10 Sa/s): a reading every 0.2 s is
+            # at most 0.1 s old.
+            sample_hz=NONLOCAL_SAMPLE_HZ, output_mode="AC",
             sr830_front_panel_time_constant=True, sweep_peak_a=sweep_peak_a,
         )
         mode = settings["zurich_mode"]
