@@ -133,6 +133,14 @@ class PanelDefaultTests(unittest.TestCase):
              a.nonlocal_iv_settle_var.get(), a.nonlocal_iv_limit_var.get()),
             ("-50", "50", "5", "0.5", "0.001"))
 
+    def test_non_local_frequencies_default_to_17_3_hz(self):
+        """2026-10-09: every non-local AC frequency starts at 17.3 Hz (was
+        13.7 on Gate-VI); the MOKE 6221 page keeps its 13.7 Hz."""
+        a = self.app
+        self.assertEqual((a.nonlocal_vi_frequency_var.get(), a.nonlocal_iv6221_frequency_var.get(),
+                          a.nonlocal_frequency_var.get()), ("17.3", "17.3", "17.3"))
+        self.assertEqual(a.k6221_continuous_frequency_var.get(), "13.7")
+
     def widgets(self, cls, variable=None, text=None):
         found, pending = [], [self.app.nonlocal_vi_tab]
         while pending:

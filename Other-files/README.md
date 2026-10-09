@@ -1,5 +1,17 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local: every AC frequency defaults to 17.3 Hz (2026-10-09)
+
+The user asked for 17.3 Hz as every default frequency on the Non-local page.
+
+- **Gate-VI scan:** the 6221 frequency now starts at 17.3 Hz (it was 13.7 Hz).
+- **6221-IV** was already at 17.3 Hz (RT-E's value). It and Gate-VI now take
+  `NONLOCAL_FREQUENCY_HZ`, so the page has a single default.
+- **MOKE 6221 page, continuous AC output:** it used to share that constant.
+  It keeps 13.7 Hz through its own `K6221_CONTINUOUS_FREQUENCY_HZ`.
+- **Test:** `test_panel_defaults.py` checks the three non-local frequencies
+  (17.3) and the MOKE 6221 frequency (13.7).
+
 ## PPMS: first-point settling where it belongs; "I off" keeps the field (2026-10-09)
 
 The user asked to fix two items left open by the whole-program review.

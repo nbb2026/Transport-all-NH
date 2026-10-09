@@ -1108,6 +1108,9 @@ K6221_MAX_PULSE_WIDTH_S = 500.0
 K6221_MIN_COMPLIANCE_V = 0.1
 K6221_MAX_COMPLIANCE_V = 105.0
 K6221_DEFAULT_CURRENT_MA = 1.0
+# MOKE 6221 page, continuous AC output; it shared the non-local default
+# until the non-local pages moved to 17.3 Hz (2026-10-09).
+K6221_CONTINUOUS_FREQUENCY_HZ = 13.7
 # Front panel TRIAX -> OUTPUT LOW -> FLOATING.  Earth-grounding the output low
 # ties the sample to mains ground and forms a loop with the PPMS rack and the
 # lock-in inputs, which shows up as line-frequency pickup on the harmonics.
@@ -1343,7 +1346,8 @@ NONLOCAL_2182_RESOURCE = "GPIB0::7::INSTR"
 NONLOCAL_START_RMS_MA = 0.001
 NONLOCAL_STOP_RMS_MA = 0.01
 NONLOCAL_STEP_RMS_MA = 0.001
-NONLOCAL_FREQUENCY_HZ = 13.7
+# Every non-local AC frequency is 17.3 Hz, as on RT-E (user, 2026-10-09; was 13.7).
+NONLOCAL_FREQUENCY_HZ = 17.3
 NONLOCAL_SAMPLE_HZ = 1.0
 NONLOCAL_SETTLE_S = 10.0
 NONLOCAL_MEASURE_S = 100.0
@@ -1400,7 +1404,7 @@ NONLOCAL_VI_PULSE_WIDTH_S = 0.1
 NONLOCAL_VI_POST_PULSE_SETTLE_S = 0.5
 NONLOCAL_VI_2410_CURRENT_COMPLIANCE_A = KEITHLEY_DEFAULT_COMPLIANCE_A
 NONLOCAL_VI_READ_CURRENT_RMS_MA = 1.0
-NONLOCAL_VI_FREQUENCY_HZ = 13.7
+NONLOCAL_VI_FREQUENCY_HZ = NONLOCAL_FREQUENCY_HZ
 NONLOCAL_VI_SAMPLE_HZ = 1.0
 NONLOCAL_VI_6221_SETTLE_S = 10.0
 # Measure/pt s default (user, 2026-10-09; was 100).
@@ -1497,7 +1501,7 @@ NONLOCAL_IV6221_START_MA = 0.01
 NONLOCAL_IV6221_END_MA = 1.0
 NONLOCAL_IV6221_STEP_MA = 0.01
 NONLOCAL_IV6221_CURRENT_MA = 0.1      # RT-E's RTE_TRANSPORT_CURRENT_RMS_MA (Set 6221)
-NONLOCAL_IV6221_FREQUENCY_HZ = 17.3   # RT-E's RTE_TRANSPORT_FREQUENCY_HZ
+NONLOCAL_IV6221_FREQUENCY_HZ = NONLOCAL_FREQUENCY_HZ   # RT-E's RTE_TRANSPORT_FREQUENCY_HZ
 NONLOCAL_IV6221_COMPLIANCE_V = 50.0
 NONLOCAL_IV6221_SETTLE_S = 0.5
 NONLOCAL_IV6221_ACQUIRE_S = 1.0
@@ -12658,7 +12662,7 @@ class CombinedControlApp:
         self.k6221_continuous_mode_var = tk.StringVar(value="AC")
         self.k6221_continuous_current_var = tk.StringVar(value="0.001")
         self.k6221_continuous_frequency_var = tk.StringVar(
-            value=f"{NONLOCAL_FREQUENCY_HZ:g}"
+            value=f"{K6221_CONTINUOUS_FREQUENCY_HZ:g}"
         )
         self.k6221_readback_mode_var = tk.StringVar(value="Mode: --")
         self.k6221_readback_current_var = tk.StringVar(
