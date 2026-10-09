@@ -1,5 +1,33 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MS-fourState.py runs on its own (2026-10-09)
+
+- **Why:** on the lab PC, `MS-fourState.py` copied alone into
+  `D:\user data\Zhang Cheng` stopped with "Transport_all_NH_dev.py must be in
+  the same folder". The user asked for it to stand alone.
+- **What changed:** it no longer loads the main program. The instrument code
+  it uses is copied into the file, between its `BEGIN` and `END` lines:
+  - the controllers: `Keithley6221Controller`, `SafeVisaIdentityController`
+    (SR830), `PPMSRemoteReadbackController`, the QDInstrument and MultiPyVu
+    back ends, and `PPMSMotorDebug` (the rotator);
+  - the VISA manager and instrument leases;
+  - the PPMS and 6221 constants;
+  - `short_status_error`;
+  - two methods of the main page, as the functions `ppms_field_is_ready` and
+    `read_ppms_cryogen_display`.
+
+  In all, about 2,100 lines. The copy is chosen by following the names the
+  program uses through the main program's top-level definitions.
+- **`core` names unchanged:** `core` is now the module itself, so
+  `core.<name>` still works, and the echoed VISA manager the console installs
+  is the one the copied controllers use.
+- **Refreshing the copy:** `Other-files/tools/ms_fourstate_copy_core.py`
+  rewrites it from `Transport_all_NH_dev.py`.
+- **Tests:** in `test_ms_four_state.py`, `StandaloneTests` checks that the
+  file does not load the main program, and that the copy matches the main
+  program (so a fix there is not forgotten here). The program was also loaded
+  alone in an empty folder.
+
 ## Non-local: fixes from a review of the whole module (2026-10-08)
 
 Five reviewers read the Non-local code: the instrument controllers, |R| and

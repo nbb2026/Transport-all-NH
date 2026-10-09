@@ -3,8 +3,8 @@ every instrument action, the values read, and each stop, against simulated
 instruments.
 
 The 6221 and SR830 are simulated at the level of their commands, so the
-program's own command sequences and the main program's 6221 controller and
-SR830 helpers run.  The fake PPMS ramps the field in simulated time and can
+program's own command sequences and its 6221 controller and SR830 helpers
+(copied from the main program) run.  The fake PPMS ramps the field in simulated time and can
 report a stale status for a while after a command; the fake sample takes the
 state written by the last pulse.  Only WindowTests needs a display.
 """
@@ -28,6 +28,32 @@ spec.loader.exec_module(ms)
 core = ms.core
 
 HALL_OHM = {"D": 0.060, "A": 0.022, "B": -0.025, "E": -0.055}
+
+
+class StandaloneTests(unittest.TestCase):
+    """MS-fourState.py runs on its own (user, 2026-10-09)."""
+
+    def test_it_does_not_load_the_main_program(self):
+        source = PROGRAM.read_text(encoding="utf-8")
+        self.assertNotIn("spec_from_file_location", source)
+        self.assertIs(core, ms, "the copied instrument code is in the file itself")
+
+    def test_the_copied_instrument_code_matches_the_main_program(self):
+        # A fix to the main program's controllers must reach MS-fourState:
+        # run Other-files/tools/ms_fourstate_copy_core.py, then this passes.
+        tool_path = Path(__file__).resolve().parent / "tools" / "ms_fourstate_copy_core.py"
+        tool_spec = importlib.util.spec_from_file_location("ms_fourstate_copy_core", tool_path)
+        tool = importlib.util.module_from_spec(tool_spec)
+        tool_spec.loader.exec_module(tool)
+        expected = tool.copied_block(tool.CORE.read_text(encoding="utf-8"))
+        source = PROGRAM.read_text(encoding="utf-8")
+        actual = tool.BEGIN + source.split(tool.BEGIN, 1)[1].split(tool.END, 1)[0] + tool.END
+
+        def without_digest(text):
+            return "\n".join(line for line in text.splitlines() if "SHA-256" not in line)
+
+        self.assertEqual(without_digest(actual), without_digest(expected),
+                         "run Other-files/tools/ms_fourstate_copy_core.py")
 
 
 class Clock:

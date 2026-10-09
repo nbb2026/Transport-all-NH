@@ -17,9 +17,23 @@ The **Mode** list in the Run row chooses how it runs:
 
 Each mode keeps its own states, so switching between them loses nothing.
 
-It uses the instrument code of `Transport_all_NH_dev.py`, which must sit in
-the same folder. Close the PPMS, 6221 and SR830 connections in `Transport_all_NH_dev.py`
-first. Two programs must never drive the same instruments.
+`MS-fourState.py` runs on its own (since 2026-10-09). Copy that one file to
+any folder and run it; `Transport_all_NH_dev.py` is not needed.
+
+- **What it needs:** Python with `tkinter`, `pyvisa` for the 6221 and SR830,
+  and `pythonnet` for the PPMS (QDInstrument), or `MultiPyVu`.
+- **Close the main program's connections first:** if `Transport_all_NH_dev.py`
+  is open, close its PPMS, 6221 and SR830 connections before connecting here.
+  Two programs must never drive the same instruments.
+- **The copied instrument code:** the code MS-fourState shares with the main
+  program (the 6221, SR830 and PPMS controllers, the rotator, and the
+  constants and helpers they use) is copied into `MS-fourState.py`, between
+  the `BEGIN` and `END` lines.
+  - **Do not edit it there.** Fix the main program instead, then run
+    `python Other-files/tools/ms_fourstate_copy_core.py` from the repository
+    root to refresh the copy.
+  - **The test check:** `test_ms_four_state.py` fails while the copy differs
+    from the main program, as a reminder to run that tool.
 
 ## Connections
 

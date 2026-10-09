@@ -30,14 +30,15 @@ with the Write settings; Read shows the angle, field, temperature and 6221
 output.  Stop during one of them does what it does in a run (6221 off, 0 Oe
 Driven); an error turns the 6221 off and leaves the field and angle.
 
-The instrument code is that of Transport_all_NH_dev.py, which must be in the
-same folder.  Close that program's PPMS, 6221 and SR830 connections first:
-two programs must never drive the same instruments.
+This file runs on its own: the instrument code it shares with
+Transport_all_NH_dev.py (the 6221, SR830 and PPMS controllers and the
+rotator) is copied into it, between the BEGIN and END lines below.  Close the
+main program's PPMS, 6221 and SR830 connections first: two programs must
+never drive the same instruments.
 
     python MS-fourState.py
 """
 import csv
-import importlib.util
 import json
 import math
 import queue
@@ -51,21 +52,2184 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-CORE_PROGRAM = "Transport_all_NH_dev.py"
+# ===== BEGIN copied from Transport_all_NH_dev.py (Other-files/tools/ms_fourstate_copy_core.py) =====
+# The instrument code MS-fourState shares with the main program, copied so
+# this file runs on its own.  Do not edit here: fix the main program and run
+# Other-files/tools/ms_fourstate_copy_core.py.
+# Copied from Transport_all_NH_dev.py, SHA-256 4d138bd8a4e9…
+import importlib
 
 
-def _load_core():
-    path = Path(__file__).resolve().with_name(CORE_PROGRAM)
-    if not path.is_file():
-        raise SystemExit(f"{CORE_PROGRAM} must be in the same folder as {Path(__file__).name}")
-    spec = importlib.util.spec_from_file_location("ms_four_state_core", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+import math
 
 
-core = _load_core()
+import os
+
+
+import re
+
+
+import socket
+
+
+import sys
+
+
+import threading
+
+
+import time
+
+
+from pathlib import Path
+
+
+from typing import Callable
+
+
+try:
+    import pyvisa
+except ImportError:
+    pyvisa = None
+
+
+def short_status_error(error: BaseException, limit: int = 120) -> str:
+    """One-line error summary suitable for a fixed-height Tk status bar."""
+    text = " ".join(str(error).replace("\r", "\n").split())
+    first_sentence = re.split(r"(?<=[。；;])\s+|\n", text, maxsplit=1)[0]
+    if len(first_sentence) <= limit:
+        return first_sentence
+    return first_sentence[: max(1, limit - 1)].rstrip() + "…"
+
+
+K6221_DEFAULT_RESOURCE = "GPIB0::30::INSTR"
+
+
+K6221_MAX_ABS_CURRENT_A = 0.105
+
+
+K6221_MIN_NONZERO_CURRENT_A = 4e-12
+
+
+K6221_MIN_PULSE_WIDTH_S = 5e-6
+
+
+K6221_MAX_PULSE_WIDTH_S = 500.0
+
+
+K6221_MIN_COMPLIANCE_V = 0.1
+
+
+K6221_MAX_COMPLIANCE_V = 105.0
+
+
+K6221_OUTPUT_LOW_FLOATING = "OUTP:LTE OFF"
+
+
+K6221_OUTPUT_LOW_QUERY = "OUTP:LTE?"
+
+
+K6221_DEFAULT_PULSE_WIDTH_US = 10.0
+
+
+K6221_DEFAULT_PULSE_COUNT = 1
+
+
+K6221_MAX_PULSE_COUNT = 99_999_999_900
+
+
+K6221_MAX_WAVEFORM_TIME_S = 999_999.999
+
+
+K6221_DEFAULT_COMPLIANCE_V = 50.0
+
+
+NONLOCAL_MARKER_LINE = 4
+
+
+NONLOCAL_MARKER_PHASE_DEG = 0.0
+
+
+NONLOCAL_SR830_FULL_SCALE_V = (
+    2e-9, 5e-9, 10e-9, 20e-9, 50e-9, 100e-9, 200e-9, 500e-9,
+    1e-6, 2e-6, 5e-6, 10e-6, 20e-6, 50e-6, 100e-6, 200e-6,
+    500e-6, 1e-3, 2e-3, 5e-3, 10e-3, 20e-3, 50e-3, 100e-3,
+    200e-3, 500e-3, 1.0,
+)
+
+
+PPMS_DEFAULT_HOST = "192.168.137.5"
+
+
+PPMS_HOST_CHOICES = ("192.168.137.5", "192.168.137.163")
+
+
+PPMS_QDINSTRUMENT_BACKEND = "QDInstrument remote"
+
+
+PPMS_MULTIPYVU_BACKEND = "MultiPyVu"
+
+
+PPMS_QDINSTRUMENT_DEFAULT_PORT = 11000
+
+
+PPMS_QDINSTRUMENT_DLL_ENV = "MOKE_QDINSTRUMENT_DLL"
+
+
+PPMS_TEMPERATURE_MIN_K = 5.0
+
+
+PPMS_TEMPERATURE_MAX_K = 380.0
+
+
+PPMS_TEMPERATURE_LOW_BOUNDARY_K = 9.0
+
+
+PPMS_TEMPERATURE_MAX_RATE_K_MIN = 10.0
+
+
+PPMS_TEMPERATURE_LOW_MAX_RATE_K_MIN = 1.0
+
+
+PPMS_FIELD_LIMIT_OE = 89_900.0
+
+
+PPMS_FIELD_RATE_LIMIT_OE_S = 150.0  # user requirement is strictly below 150
+
+
+PPMS_FIELD_RATE_DEFAULT_OE_S = 100.0
+
+
+PPMS_FIELD_TOLERANCE_OE = 2.0
+
+
+PPMS_FIELD_RELATIVE_TOLERANCE = 0.0
+
+
+PPMS_PERSISTENT_CONFIRM_S = 10.0
+
+
+PPMS_PERSISTENT_MARGIN_S = 1800.0
+
+
+PPMS_TRANSPORT_FREQUENCY_HZ = 317.3
+
+
+PPMS_TRANSPORT_REFERENCE_TIMEOUT_S = 8.0
+
+
+PPMS_SR830_RESOURCE_OPTIONS = tuple(
+    f"GPIB0::{address}::INSTR" for address in (8, 9, 10)
+)
+
+
+PPMS_SR830_REFERENCE_SLOPE = 1
+
+
+_INSTRUMENT_LEASE_LOCK = threading.RLock()
+
+
+_INSTRUMENT_LEASES: dict[str, tuple[object, str]] = {}
+
+
+_SHARED_VISA_MANAGER_LOCK = threading.RLock()
+
+
+_SHARED_VISA_MANAGER = None
+
+
+_SHARED_VISA_MANAGER_USERS = 0
+
+
+def acquire_shared_visa_manager():
+    global _SHARED_VISA_MANAGER, _SHARED_VISA_MANAGER_USERS
+    if pyvisa is None:
+        raise RuntimeError(
+            "pyvisa is missing; please run: py -m pip install pyvisa pyvisa-py"
+        )
+    with _SHARED_VISA_MANAGER_LOCK:
+        manager = _SHARED_VISA_MANAGER
+        if manager is not None:
+            try:
+                manager.session
+            except BaseException as error:
+                if _SHARED_VISA_MANAGER_USERS:
+                    raise RuntimeError(
+                        "The shared VISA resource manager session became invalid unexpectedly; please close the instruments "
+                        "that still show as connected and reconnect"
+                    ) from error
+                _SHARED_VISA_MANAGER = None
+                manager = None
+        if manager is None:
+            manager = pyvisa.ResourceManager()
+            # Force validation here so a stale manager is rejected before a
+            # controller stores it as an active connection.
+            manager.session
+            _SHARED_VISA_MANAGER = manager
+        _SHARED_VISA_MANAGER_USERS += 1
+        return manager
+
+
+def release_shared_visa_manager(manager) -> None:
+    global _SHARED_VISA_MANAGER, _SHARED_VISA_MANAGER_USERS
+    if manager is None:
+        return
+    with _SHARED_VISA_MANAGER_LOCK:
+        if manager is not _SHARED_VISA_MANAGER:
+            return
+        _SHARED_VISA_MANAGER_USERS = max(
+            0, _SHARED_VISA_MANAGER_USERS - 1
+        )
+        if _SHARED_VISA_MANAGER_USERS == 0:
+            # Close while holding the pool lock.  PyVISA keeps this manager in
+            # its own backend registry until close() returns; allowing another
+            # acquire in that small window could hand out the manager being
+            # closed.
+            try:
+                manager.close()
+            except BaseException:
+                pass
+            finally:
+                _SHARED_VISA_MANAGER = None
+
+
+def instrument_lease_key(resource: str) -> str:
+    """Normalize only unambiguous GPIB spellings for cross-module ownership.
+
+    Keep secondary addresses and board numbers distinct. The original resource
+    still goes to VISA unchanged; this does not resolve vendor-defined aliases.
+    """
+    key = str(resource).strip().upper()
+    match = re.fullmatch(r"GPIB(\d*)::(\d+)(?:::(\d+))?::INSTR", key)
+    if match:
+        board, primary, secondary = match.groups()
+        key = f"GPIB{int(board or '0')}::{int(primary)}"
+        if secondary is not None:
+            key += f"::{int(secondary)}"
+        key += "::INSTR"
+    return key
+
+
+def acquire_instrument_lease(
+    resource: str, owner: object, owner_label: str
+) -> str:
+    key = instrument_lease_key(resource)
+    if not key:
+        raise ValueError("The instrument resource address cannot be empty")
+    with _INSTRUMENT_LEASE_LOCK:
+        current = _INSTRUMENT_LEASES.get(key)
+        if current is not None:
+            raise RuntimeError(
+                f"{resource} is already connected by \"{current[1]}\"; "
+                f"please disconnect it in that module first, then connect from \"{owner_label}\""
+            )
+        _INSTRUMENT_LEASES[key] = (owner, str(owner_label))
+    return key
+
+
+def release_instrument_lease(resource: str, owner: object) -> None:
+    key = instrument_lease_key(resource)
+    if not key:
+        return
+    with _INSTRUMENT_LEASE_LOCK:
+        current = _INSTRUMENT_LEASES.get(key)
+        if current is not None and current[0] is owner:
+            _INSTRUMENT_LEASES.pop(key, None)
+
+
+class SafeVisaIdentityController:
+    """One leased VISA session with fail-closed source disconnect semantics."""
+
+    def __init__(
+        self,
+        logger: Callable[[str], None],
+        label: str,
+        identity_token: str,
+        safe_off_commands: tuple[str, ...] = (),
+        owner_scope: str = "PPMS",
+        preserve_visa_io_defaults: bool = False,
+        safe_off_on_connect: bool = True,
+        enumerate_before_open: bool = False,
+        connect_settle_seconds: float = 0.0,
+    ) -> None:
+        self.logger = logger
+        self.label = str(label)
+        self.identity_token = str(identity_token).upper()
+        self.safe_off_commands = tuple(safe_off_commands)
+        self.owner_scope = str(owner_scope)
+        self.preserve_visa_io_defaults = bool(preserve_visa_io_defaults)
+        self.safe_off_on_connect = bool(safe_off_on_connect)
+        self.enumerate_before_open = bool(enumerate_before_open)
+        self.connect_settle_seconds = max(
+            0.0, float(connect_settle_seconds)
+        )
+        self.resource_manager = None
+        self.instrument = None
+        self.resource_name = ""
+        self.identity = ""
+        self.lock = threading.RLock()
+
+    @property
+    def connected(self) -> bool:
+        return self.instrument is not None
+
+    def connect(self, resource_name: str) -> str:
+        if pyvisa is None:
+            raise RuntimeError(
+                "pyvisa is missing; please run: py -m pip install pyvisa pyvisa-py"
+            )
+        resource_name = str(resource_name).strip()
+        with self.lock:
+            if self.instrument is not None:
+                return self.identity
+            acquire_instrument_lease(
+                resource_name, self, f"{self.owner_scope} / {self.label}"
+            )
+            manager = None
+            instrument = None
+            identity_verified = False
+            try:
+                manager = acquire_shared_visa_manager()
+                if self.enumerate_before_open:
+                    # The legacy BIT 4886 path was only reliable on the
+                    # experiment PC after NI-VISA had enumerated the GPIB bus.
+                    # This is read-only discovery and sends no programming
+                    # command to the power supply.
+                    manager.list_resources()
+                instrument = manager.open_resource(resource_name)
+                instrument.timeout = (
+                    3000 if self.preserve_visa_io_defaults else 5000
+                )
+                # Most newer SCPI instruments in this application explicitly
+                # use LF.  Older GPIB instruments such as the KEPCO BIT 4886
+                # instead rely on the native IEEE-488 EOI handshake.  In that
+                # case preserve the backend defaults (including send_end=True)
+                # exactly as a plain PyVISA open_resource/query sequence does.
+                if not self.preserve_visa_io_defaults:
+                    instrument.write_termination = "\n"
+                    instrument.read_termination = "\n"
+                    try:
+                        instrument.query_delay = 0.05
+                    except (AttributeError, ValueError):
+                        pass
+                else:
+                    # Match the I/O profile verified by the read-only
+                    # Scan_GPIB.py diagnostic on the STFMR computer.  The BIT
+                    # 4886 accepts CR/LF plus the IEEE-488 EOI handshake and
+                    # returns its reply by EOI rather than a text terminator.
+                    instrument.write_termination = "\r\n"
+                    instrument.read_termination = None
+                    instrument.send_end = True
+                if self.connect_settle_seconds > 0:
+                    # Scan_GPIB.py reaches GPIB address 6 only after its first
+                    # serial-port timeout.  Reproduce that known-good warm-up
+                    # interval so the first *IDN? is not issued immediately
+                    # after opening the old BIT 4886 GPIB session.
+                    time.sleep(self.connect_settle_seconds)
+                try:
+                    identity = instrument.query("*IDN?").strip()
+                except BaseException as error:
+                    raise RuntimeError(
+                        f"{self.label} identity query *IDN? failed: {error}; "
+                        "no output/setting command was sent to the device this time; the VISA session has been closed"
+                    ) from error
+                if self.identity_token not in identity.upper():
+                    raise RuntimeError(
+                        f"The device returned by {resource_name} is not {self.label}: {identity}"
+                    )
+                identity_verified = True
+                # Connecting a source must never inherit an output left on by
+                # an earlier crashed program.  SR830 rows have no off commands.
+                if self.safe_off_on_connect:
+                    for command in self.safe_off_commands:
+                        try:
+                            instrument.write(command)
+                        except BaseException as error:
+                            raise RuntimeError(
+                                f"{self.label} connection safety command {command!r} failed: {error}"
+                            ) from error
+                self.resource_manager = manager
+                self.instrument = instrument
+                self.resource_name = resource_name
+                self.identity = identity
+                self.logger(
+                    f"{self.owner_scope} {self.label} connected: {identity}"
+                )
+                return identity
+            except BaseException:
+                if instrument is not None:
+                    # Never send source-control commands to an instrument whose
+                    # identity query failed.  Besides being unsafe for a wrong
+                    # device, doing so after a timed-out GPIB query can leave an
+                    # old controller in a bus state that also breaks the next
+                    # standalone Scan_GPIB.py run.
+                    if identity_verified and self.safe_off_on_connect:
+                        for command in self.safe_off_commands:
+                            try:
+                                instrument.write(command)
+                            except BaseException:
+                                pass
+                    try:
+                        instrument.close()
+                    except BaseException:
+                        pass
+                release_shared_visa_manager(manager)
+                release_instrument_lease(resource_name, self)
+                raise
+
+    def safe_output_off(self) -> None:
+        with self.lock:
+            if self.instrument is None:
+                return
+            errors = []
+            for command in self.safe_off_commands:
+                try:
+                    self.instrument.write(command)
+                except BaseException as error:
+                    errors.append(f"{command}: {error}")
+            if errors:
+                raise RuntimeError(
+                    f"{self.label} failed to turn output off: " + "; ".join(errors)
+                )
+
+    def disconnect(self) -> None:
+        with self.lock:
+            instrument = self.instrument
+            manager = self.resource_manager
+            resource_name = self.resource_name
+            if instrument is None and manager is None:
+                return
+            shutdown_error = None
+            try:
+                self.safe_output_off()
+            except BaseException as error:
+                shutdown_error = error
+            if instrument is not None:
+                try:
+                    instrument.write("SYST:LOC")
+                except BaseException:
+                    pass
+                try:
+                    instrument.close()
+                except BaseException:
+                    pass
+            release_shared_visa_manager(manager)
+            self.instrument = None
+            self.resource_manager = None
+            self.resource_name = ""
+            self.identity = ""
+            release_instrument_lease(resource_name, self)
+            self.logger(f"{self.owner_scope} {self.label} disconnected")
+            if shutdown_error is not None:
+                raise shutdown_error
+
+
+class PPMSMultiVuReadbackController:
+    """PPMS sample-environment client using official Quantum Design MultiPyVu."""
+
+    def __init__(self, logger: Callable[[str], None]) -> None:
+        self.logger = logger
+        self.client = None
+        self.host = ""
+        self.port = 0
+        self.lock = threading.RLock()
+
+    @property
+    def connected(self) -> bool:
+        return self.client is not None
+
+    @staticmethod
+    def validate_endpoint(host: str, port: int) -> tuple[str, int]:
+        host = str(host).strip()
+        if not host:
+            raise ValueError("PPMS IP address cannot be empty")
+        try:
+            socket.getaddrinfo(host, int(port), type=socket.SOCK_STREAM)
+        except (OSError, ValueError) as error:
+            raise ValueError(f"PPMS IP address or port is invalid: {host}:{port}") from error
+        port = int(port)
+        if not 1 <= port <= 65535:
+            raise ValueError("PPMS TCP port must be between 1 and 65535")
+        return host, port
+
+    def connect(self, host: str, port: int) -> dict[str, object]:
+        host, port = self.validate_endpoint(host, port)
+        with self.lock:
+            if self.client is not None:
+                return self.read_environment()
+            try:
+                module = importlib.import_module("MultiPyVu")
+            except ImportError as error:
+                raise RuntimeError(
+                    "Quantum Design MultiPyVu is missing; please run on this machine:\n"
+                    "py -m pip install --upgrade MultiPyVu\n\n"
+                    "and start MultiVu and the MultiPyVu Server on the PPMS host."
+                ) from error
+            client = module.Client(host=host, port=port)
+            try:
+                client.open()
+                self.client = client
+                self.host = host
+                self.port = port
+                result = self.read_environment()
+            except BaseException:
+                try:
+                    client.close_client()
+                except BaseException:
+                    pass
+                self.client = None
+                raise
+            self.logger(f"PPMS MultiVu connected: {host}:{port}")
+            return result
+
+    def read_environment(self) -> dict[str, object]:
+        with self.lock:
+            if self.client is None:
+                raise RuntimeError("PPMS MultiVu is not connected")
+            temperature_k, temperature_status = self.client.get_temperature()
+            field_oe, field_status = self.client.get_field()
+        temperature_k = float(temperature_k)
+        field_oe = float(field_oe)
+        if not math.isfinite(temperature_k) or not math.isfinite(field_oe):
+            raise RuntimeError(
+                f"PPMS returned non-finite readings: T={temperature_k!r}, H={field_oe!r}"
+            )
+        return {
+            "temperature_k": temperature_k,
+            "temperature_status": getattr(
+                temperature_status, "name", str(temperature_status)
+            ),
+            "field_oe": field_oe,
+            "field_status": getattr(field_status, "name", str(field_status)),
+        }
+
+    @staticmethod
+    def _enum_member(client, modern_group: str, legacy_group: str, name: str):
+        group = getattr(client, modern_group, None)
+        if group is not None:
+            nested = getattr(group, "approach_mode", None)
+            if nested is not None and hasattr(nested, name):
+                return getattr(nested, name)
+            nested = getattr(group, "driven_mode", None)
+            if nested is not None and hasattr(nested, name):
+                return getattr(nested, name)
+        group = getattr(client, legacy_group, None)
+        if group is not None and hasattr(group, name):
+            return getattr(group, name)
+        raise RuntimeError(f"The current MultiPyVu version lacks the mode enum {name}")
+
+    def set_temperature(
+        self, target_k: float, rate_k_min: float, approach_code: int
+    ) -> dict[str, object]:
+        with self.lock:
+            if self.client is None:
+                raise RuntimeError("PPMS MultiVu is not connected")
+            current_k, _status = self.client.get_temperature()
+            target_k, rate_k_min = validate_ppms_temperature_command(
+                target_k, rate_k_min, float(current_k)
+            )
+            approach_name = "fast_settle" if int(approach_code) == 0 else "no_overshoot"
+            approach = self._enum_member(
+                self.client, "temperature", "temp_approach_mode", approach_name
+            )
+            self.client.set_temperature(target_k, float(rate_k_min), approach)
+            return self.read_environment()
+
+    def set_field(
+        self,
+        target_oe: float,
+        rate_oe_s: float,
+        approach_code: int,
+        mode_code: int,
+    ) -> dict[str, object]:
+        target_oe, rate_oe_s = validate_ppms_field_command(target_oe, rate_oe_s)
+        approach_names = {0: "linear", 1: "no_overshoot", 2: "oscillate"}
+        mode_names = {0: "persistent", 1: "driven"}
+        try:
+            approach_name = approach_names[int(approach_code)]
+            mode_name = mode_names[int(mode_code)]
+        except KeyError as error:
+            raise ValueError("PPMS field approach/mode parameters are invalid") from error
+        with self.lock:
+            if self.client is None:
+                raise RuntimeError("PPMS MultiVu is not connected")
+            approach = self._enum_member(
+                self.client, "field", "field_approach_mode", approach_name
+            )
+            mode = self._enum_member(
+                self.client, "field", "field_driven_mode", mode_name
+            )
+            self.client.set_field(target_oe, rate_oe_s, approach, mode)
+            return self.read_environment()
+
+    def disconnect(self) -> None:
+        with self.lock:
+            client = self.client
+            self.client = None
+            self.host = ""
+            self.port = 0
+            if client is None:
+                return
+            # Close only this client.  Never call close_server(), and never
+            # alter an in-progress PPMS temperature or field ramp on exit.
+            client.close_client()
+            self.logger("PPMS MultiVu client disconnected (current setpoints unchanged)")
+
+
+class QDCommandUncertain(RuntimeError):
+    """A command was invoked once, but its acknowledgement is ambiguous."""
+
+
+class PPMSQDInstrumentReadbackController:
+    """Remote PPMS client using QDInstrument.dll over TCP 11000."""
+
+    def __init__(self, logger: Callable[[str], None]) -> None:
+        self.logger = logger
+        self.instrument = None
+        self.host = ""
+        self.port = 0
+        self.dll_path = ""
+        self.lock = threading.RLock()
+
+    @property
+    def connected(self) -> bool:
+        return self.instrument is not None
+
+    @staticmethod
+    def candidate_dll_paths(explicit_path: str = "") -> tuple[Path, ...]:
+        candidates: list[Path] = []
+        for raw_path in (
+            explicit_path,
+            os.environ.get(PPMS_QDINSTRUMENT_DLL_ENV, ""),
+        ):
+            if str(raw_path).strip():
+                candidates.append(Path(str(raw_path).strip().strip('"')))
+        script_directory = Path(__file__).resolve().parent
+        executable_directory = Path(sys.executable).resolve().parent
+        working_directory = Path.cwd()
+        candidates.extend(
+            (
+                script_directory / "QDInstrument.dll",
+                script_directory / "QDInstrument" / "QDInstrument.dll",
+                executable_directory / "QDInstrument.dll",
+                executable_directory / "QDInstrument" / "QDInstrument.dll",
+                working_directory / "QDInstrument.dll",
+                working_directory / "QDInstrument" / "QDInstrument.dll",
+                Path(r"C:\QDLabVIEW\QDInstrument.dll"),
+                Path(r"C:\QDInstrument\QDInstrument.dll"),
+                Path(r"C:\ProgramData\Quantum Design\QDInstrument\QDInstrument.dll"),
+                Path(r"C:\Program Files\Quantum Design\QDInstrument\QDInstrument.dll"),
+                Path(r"C:\Program Files (x86)\Quantum Design\QDInstrument\QDInstrument.dll"),
+                Path(r"C:\Program Files\National Instruments\LabVIEW 2020\instr.lib\QDInstrument_LabView\QDInstrument.dll"),
+                Path(r"C:\Program Files (x86)\National Instruments\LabVIEW 2020\instr.lib\QDInstrument_LabView\QDInstrument.dll"),
+                Path(r"C:\Program Files\National Instruments\LabVIEW 2025\QDInstrument.dll"),
+                Path(r"C:\Program Files (x86)\National Instruments\LabVIEW 2025\QDInstrument.dll"),
+                Path(r"D:\user data\Niu Heng\QDInstrument.dll"),
+                Path(r"D:\user data\Niu Heng\QDInstrument\QDInstrument.dll"),
+            )
+        )
+        # A LabVIEW project often keeps vendor .NET assemblies beside its VIs,
+        # while a frozen/Nuitka build may put the assembly beside the exe.
+        # Include those runtime search locations without recursively walking
+        # the whole system during normal startup.
+        for raw_directory in (
+            *sys.path,
+            *os.environ.get("PATH", "").split(os.pathsep),
+        ):
+            if str(raw_directory).strip():
+                candidates.append(
+                    Path(str(raw_directory).strip().strip('"'))
+                    / "QDInstrument.dll"
+                )
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for path in candidates:
+            key = str(path).casefold()
+            if key not in seen:
+                seen.add(key)
+                unique.append(path)
+        return tuple(unique)
+
+    @staticmethod
+    def _windows_discovery_roots() -> tuple[Path, ...]:
+        """Return bounded roots likely to contain the LabVIEW QD assembly."""
+        roots: list[Path] = []
+        for variable in (
+            "USERPROFILE",
+            "PUBLIC",
+            "PROGRAMDATA",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+        ):
+            raw = os.environ.get(variable, "").strip()
+            if not raw:
+                continue
+            base = Path(raw)
+            if variable in ("USERPROFILE", "PUBLIC"):
+                roots.extend((base / "Desktop", base / "Documents"))
+            elif variable == "PROGRAMDATA":
+                roots.append(base / "Quantum Design")
+            else:
+                roots.extend(
+                    (
+                        base / "Quantum Design",
+                        base / "National Instruments",
+                    )
+                )
+        roots.extend(
+            (
+                Path(r"C:\QDInstrument"),
+                Path(r"C:\QDLabVIEW"),
+                Path(r"D:\user data\Niu Heng"),
+            )
+        )
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for root in roots:
+            key = str(root).casefold()
+            if key not in seen:
+                seen.add(key)
+                unique.append(root)
+        return tuple(unique)
+
+    @classmethod
+    def discover_dll_paths(
+        cls,
+        explicit_path: str = "",
+        *,
+        recursive: bool = False,
+        time_limit_s: float = 8.0,
+        max_results: int = 8,
+    ) -> tuple[Path, ...]:
+        """Find QDInstrument.dll without making normal startup scan drives.
+
+        Direct candidates are cheap and always checked.  The optional bounded
+        recursive pass is used only by the GUI's explicit auto-find action or
+        after normal .NET assembly resolution failed.
+        """
+        matches: list[Path] = []
+        seen: set[str] = set()
+
+        def add(path: Path) -> bool:
+            try:
+                if not path.is_file():
+                    return False
+                resolved = path.resolve()
+            except (OSError, RuntimeError):
+                return False
+            key = str(resolved).casefold()
+            if key in seen:
+                return False
+            seen.add(key)
+            matches.append(resolved)
+            return len(matches) >= max(1, int(max_results))
+
+        for path in cls.candidate_dll_paths(explicit_path):
+            if add(path):
+                return tuple(matches)
+        if not recursive or not sys.platform.startswith("win"):
+            return tuple(matches)
+
+        deadline = time.monotonic() + max(0.5, float(time_limit_s))
+        skipped_names = {
+            "$recycle.bin",
+            ".git",
+            ".svn",
+            "appdata",
+            "cache",
+            "node_modules",
+            "site-packages",
+            "temp",
+            "windowsapps",
+        }
+        for root in cls._windows_discovery_roots():
+            if time.monotonic() >= deadline:
+                break
+            try:
+                if not root.is_dir():
+                    continue
+                root_depth = len(root.parts)
+                for current, directory_names, file_names in os.walk(root):
+                    if time.monotonic() >= deadline:
+                        break
+                    current_path = Path(current)
+                    depth = len(current_path.parts) - root_depth
+                    directory_names[:] = [
+                        name
+                        for name in directory_names
+                        if name.casefold() not in skipped_names
+                        and not name.startswith(".")
+                    ]
+                    if depth >= 7:
+                        directory_names[:] = []
+                    for file_name in file_names:
+                        if file_name.casefold() == "qdinstrument.dll":
+                            if add(current_path / file_name):
+                                return tuple(matches)
+            except (OSError, PermissionError):
+                continue
+        return tuple(matches)
+
+    @classmethod
+    def locate_dll(cls, explicit_path: str = "") -> Path:
+        candidates = cls.candidate_dll_paths(explicit_path)
+        matches = cls.discover_dll_paths(explicit_path)
+        if matches:
+            return matches[0]
+        checked = "\n".join(f"  - {path}" for path in candidates)
+        raise RuntimeError(
+            "QDInstrument.dll was not found. Please select that DLL from the currently available LabVIEW QDInstrument "
+            "directory, or set the environment variable "
+            f"{PPMS_QDINSTRUMENT_DLL_ENV}. Checked:\n{checked}"
+        )
+
+    @staticmethod
+    def _import_qdinstrument_api():
+        from QuantumDesign.QDInstrument import (
+            QDInstrumentBase,
+            QDInstrumentFactory,
+        )
+
+        return QDInstrumentBase, QDInstrumentFactory
+
+    @classmethod
+    def _load_qdinstrument_api(cls, clr, explicit_path: str = ""):
+        """Load LabVIEW's matching assembly by path or .NET assembly name."""
+        attempts: list[str] = []
+        for dll in cls.discover_dll_paths(explicit_path):
+            try:
+                clr.AddReference(str(dll))
+                api = cls._import_qdinstrument_api()
+                return (*api, str(dll))
+            except BaseException as error:
+                attempts.append(f"{dll}: {error}")
+
+        # QDInstrument may be installed in the GAC or another .NET probing
+        # location used by LabVIEW.  In that case no file path is required.
+        try:
+            clr.AddReference("QDInstrument")
+            api = cls._import_qdinstrument_api()
+            return (*api, ".NET auto-resolved: QDInstrument")
+        except BaseException as error:
+            attempts.append(f".NET assembly name QDInstrument: {error}")
+
+        # Only after the fast candidates and the .NET loader fail, perform a
+        # bounded recursive search.  connect() already runs off the Tk thread.
+        for dll in cls.discover_dll_paths(
+            explicit_path, recursive=True, time_limit_s=8.0
+        ):
+            try:
+                clr.AddReference(str(dll))
+                api = cls._import_qdinstrument_api()
+                return (*api, str(dll))
+            except BaseException as error:
+                detail = f"{dll}: {error}"
+                if detail not in attempts:
+                    attempts.append(detail)
+
+        explicit_note = ""
+        if str(explicit_path).strip():
+            explicit_note = f"\nManually entered path: {explicit_path}"
+        attempt_text = "\n".join(f"  - {item}" for item in attempts[-8:])
+        raise RuntimeError(
+            "TCP 11000 being reachable only means QDInstrument_Server is listening; the local Python "
+            "still needs the same QDInstrument.dll set as LabVIEW. The program tried loading by .NET assembly name, "
+            "common program/LabVIEW directories and a time-limited automatic search, but did not succeed.\n"
+            "Please locate QDInstrument.dll in an available LabVIEW project directory, or copy the DLL matching "
+            "the LabVIEW/Server set into the main program directory."
+            f"{explicit_note}\nLoad log:\n{attempt_text}"
+        )
+
+    @staticmethod
+    def _normalize_readback(raw_result, quantity: str) -> tuple[float, str]:
+        if isinstance(raw_result, tuple):
+            values = list(raw_result)
+        elif isinstance(raw_result, list):
+            values = raw_result
+        else:
+            try:
+                values = list(raw_result)
+            except TypeError:
+                values = [raw_result]
+        if len(values) < 2:
+            raise RuntimeError(
+                f"QDInstrument {quantity} returned an unexpected format: {raw_result!r}"
+            )
+        # pythonnet returns ref/out arguments after an optional .NET return
+        # value.  Therefore the physical value and status are always the last
+        # two items for both void and integer-returning QDInstrument builds.
+        physical_value, status = values[-2], values[-1]
+        try:
+            physical_value = float(physical_value)
+        except (TypeError, ValueError) as error:
+            raise RuntimeError(
+                f"QDInstrument {quantity} reading is not numeric: {physical_value!r}"
+            ) from error
+        if not math.isfinite(physical_value):
+            raise RuntimeError(
+                f"QDInstrument {quantity} returned a non-finite reading: {physical_value!r}"
+            )
+        if len(values) >= 3:
+            return_code = values[0]
+            try:
+                numeric_code = int(return_code)
+            except (TypeError, ValueError):
+                numeric_code = 0
+            if numeric_code != 0:
+                raise RuntimeError(
+                    f"QDInstrument {quantity} read failed, return code {numeric_code}"
+                )
+        status_text = getattr(status, "name", None)
+        if not status_text:
+            try:
+                status_text = status.ToString()
+            except BaseException:
+                status_text = str(status)
+        return physical_value, str(status_text)
+
+    @staticmethod
+    def _reflection_signature(method) -> str:
+        try:
+            parameters = method.GetParameters()
+            parts = []
+            for parameter in parameters:
+                parameter_type = parameter.ParameterType
+                if bool(getattr(parameter_type, "IsByRef", False)):
+                    parameter_type = parameter_type.GetElementType()
+                    prefix = "ref "
+                else:
+                    prefix = ""
+                type_name = getattr(parameter_type, "FullName", None)
+                if not type_name:
+                    type_name = str(parameter_type)
+                parts.append(f"{prefix}{type_name}")
+            return f"{method.Name}({', '.join(parts)})"
+        except BaseException:
+            return str(method)
+
+    @classmethod
+    def _invoke_ref_readback(cls, instrument, method_name: str):
+        """Invoke QDInstrument ref/out readbacks through .NET reflection.
+
+        QDInstrument releases expose GetTemperature/GetField with ref/out
+        parameters, but their status argument changed between numeric and enum
+        types.  Passing Python integers therefore fails overload resolution in
+        some LabVIEW 2020 assemblies.  Reflection lets the loaded DLL tell us
+        the exact argument types and returns the mutated ref/out values.
+        """
+        try:
+            import System
+        except ImportError as error:
+            raise RuntimeError(
+                "pythonnet loaded QDInstrument.dll, but the System reflection interface cannot be imported"
+            ) from error
+
+        try:
+            methods = [
+                method
+                for method in instrument.GetType().GetMethods()
+                if str(method.Name) == str(method_name)
+            ]
+        except BaseException as error:
+            raise RuntimeError(
+                f"Cannot reflect QDInstrument method {method_name}: {error}"
+            ) from error
+        if not methods:
+            raise RuntimeError(
+                f"The current QDInstrument.dll has no method {method_name}"
+            )
+
+        def rank(method) -> tuple[int, int]:
+            try:
+                parameters = list(method.GetParameters())
+            except BaseException:
+                return (99, 99)
+            ref_count = sum(
+                bool(getattr(item.ParameterType, "IsByRef", False))
+                for item in parameters
+            )
+            # Official QD readbacks use exactly two ref/out parameters:
+            # physical value and state.  Prefer that shape deterministically.
+            return (0 if len(parameters) == 2 else 1, -ref_count)
+
+        errors: list[str] = []
+        for method in sorted(methods, key=rank):
+            signature = cls._reflection_signature(method)
+            try:
+                parameters = list(method.GetParameters())
+                if len(parameters) != 2:
+                    errors.append(f"{signature}: parameter count is not 2")
+                    continue
+                arguments = System.Array[System.Object](len(parameters))
+                for index, parameter in enumerate(parameters):
+                    parameter_type = parameter.ParameterType
+                    if bool(getattr(parameter_type, "IsByRef", False)):
+                        value_type = parameter_type.GetElementType()
+                    else:
+                        value_type = parameter_type
+                    if bool(getattr(value_type, "IsEnum", False)):
+                        value = System.Enum.ToObject(value_type, 0)
+                    elif bool(getattr(value_type, "IsValueType", False)):
+                        value = System.Activator.CreateInstance(value_type)
+                    else:
+                        value = None
+                    arguments[index] = value
+                return_value = method.Invoke(instrument, arguments)
+                output_values = list(arguments)
+                if return_value is not None:
+                    output_values.insert(0, return_value)
+                return tuple(output_values)
+            except BaseException as error:
+                errors.append(f"{signature}: {error}")
+        details = "\n".join(f"  - {item}" for item in errors)
+        raise RuntimeError(
+            f"QDInstrument {method_name} ref/out call failed:\n{details}"
+        )
+
+    @classmethod
+    def _invoke_typed_command(cls, instrument, method_name: str, values):
+        """Invoke a QD command using the exact value/enum types in its DLL."""
+        try:
+            import System
+        except ImportError as error:
+            raise RuntimeError(
+                "pythonnet loaded QDInstrument.dll, but the System reflection interface cannot be imported"
+            ) from error
+        methods = [
+            method
+            for method in instrument.GetType().GetMethods()
+            if str(method.Name) == str(method_name)
+        ]
+        if not methods:
+            raise RuntimeError(f"The current QDInstrument.dll has no method {method_name}")
+        errors: list[str] = []
+        for method in methods:
+            invoked = False
+            signature = cls._reflection_signature(method)
+            try:
+                parameters = list(method.GetParameters())
+                if len(parameters) != len(values):
+                    continue
+                arguments = System.Array[System.Object](len(parameters))
+                for index, (parameter, raw_value) in enumerate(
+                    zip(parameters, values)
+                ):
+                    value_type = parameter.ParameterType
+                    if bool(getattr(value_type, "IsByRef", False)):
+                        value_type = value_type.GetElementType()
+                    if bool(getattr(value_type, "IsEnum", False)):
+                        converted = System.Enum.ToObject(
+                            value_type, int(raw_value)
+                        )
+                    else:
+                        try:
+                            converted = System.Convert.ChangeType(
+                                raw_value,
+                                value_type,
+                                System.Globalization.CultureInfo.InvariantCulture,
+                            )
+                        except BaseException:
+                            converted = value_type(raw_value)
+                    arguments[index] = converted
+                invoked = True
+                return_value = method.Invoke(instrument, arguments)
+                # Boolean success and numeric status codes are different contracts.
+                # Never reinterpret an undocumented integer 1 as success.
+                return_type = getattr(method, "ReturnType", None)
+                if str(getattr(return_type, "FullName", "")) == "System.Boolean":
+                    if not bool(return_value):
+                        raise RuntimeError("returned Boolean False")
+                elif return_value is not None and int(return_value) != 0:
+                    if int(return_value) == 1 and method_name in ("SetTemperature", "SetField"):
+                        raise QDCommandUncertain(f"{method_name} return code 1; the command may have taken effect, not resending")
+                    raise RuntimeError(
+                        f"return code {int(return_value)} (return type {return_type}); "
+                        "the command may have taken effect; please verify the MultiVu target and rate and do not resubmit"
+                    )
+                return return_value
+            except BaseException as error:
+                if invoked:
+                    # Never try another overload after a physical write attempt.
+                    raise
+                errors.append(f"{signature}: {error}")
+        details = "\n".join(f"  - {item}" for item in errors)
+        raise RuntimeError(
+            f"QDInstrument {method_name} call failed:\n{details}"
+        )
+
+    def connect(self, host: str, port: int, dll_path: str = "") -> dict[str, object]:
+        host, port = PPMSMultiVuReadbackController.validate_endpoint(host, port)
+        with self.lock:
+            if self.instrument is not None:
+                return self.read_environment()
+            if not sys.platform.startswith("win"):
+                raise RuntimeError("The QDInstrument remote interface can only be loaded on Windows")
+            try:
+                import clr
+            except ImportError as error:
+                raise RuntimeError(
+                    "The current Python lacks pythonnet; please run:\n"
+                    "py -m pip install pythonnet"
+                ) from error
+            try:
+                QDInstrumentBase, QDInstrumentFactory, load_source = (
+                    self._load_qdinstrument_api(clr, dll_path)
+                )
+
+                instrument = QDInstrumentFactory.GetQDInstrument(
+                    QDInstrumentBase.QDInstrumentType.PPMS,
+                    True,
+                    host,
+                    int(port),
+                )
+            except BaseException as error:
+                raise RuntimeError(
+                    "Loading QDInstrument.dll or creating the remote PPMS session failed. Please confirm the DLL is not "
+                    "blocked by Windows, that .NET Framework 3.5 is enabled on the ThinkPad, and that the same set of "
+                    f"QDInstrument files as the lab PC is used. Original error: {error}"
+                ) from error
+            self.instrument = instrument
+            self.host = host
+            self.port = port
+            self.dll_path = str(load_source)
+            try:
+                result = self.read_environment()
+            except BaseException:
+                self.disconnect()
+                raise
+            self.logger(
+                f"PPMS QDInstrument connected: {host}:{port}; assembly={load_source}"
+            )
+            return result
+
+    def read_environment(self) -> dict[str, object]:
+        with self.lock:
+            if self.instrument is None:
+                raise RuntimeError("PPMS QDInstrument is not connected")
+            temperature_raw = self._invoke_ref_readback(
+                self.instrument, "GetTemperature"
+            )
+            field_raw = self._invoke_ref_readback(self.instrument, "GetField")
+        temperature_k, temperature_status = self._normalize_readback(
+            temperature_raw, "temperature"
+        )
+        field_oe, field_status = self._normalize_readback(field_raw, "magnetic field")
+        data = {
+            "temperature_k": temperature_k,
+            "temperature_status": temperature_status,
+            "field_oe": field_oe,
+            "field_status": field_status,
+        }
+        self._verify_environment_command(data)
+        return data
+
+    def _verify_environment_command(self, data):
+        pending = getattr(self, "pending_environment_command", None)
+        if not pending:
+            return
+        kind, target, deadline = pending
+        temperature = kind == "SetTemperature"
+        label = "Temperature" if temperature else "Magnetic field"
+        measured = float(data["temperature_k" if temperature else "field_oe"])
+        status = str(data["temperature_status" if temperature else "field_status"]).lower().replace(" ", "")
+        stable = (status in ("stable", "stableattarget") if temperature else
+                  status in ("stable", "holding", "persistent", "stablepersistent", "stabledriven", "standby"))
+        tolerance = .1 if temperature else max(PPMS_FIELD_TOLERANCE_OE, abs(target)*PPMS_FIELD_RELATIVE_TOLERANCE)
+        if stable and abs(measured-target) <= tolerance:
+            text = f"{label} reply uncertain; readback now confirms the target {target:g} was reached and is stable (rate not confirmed by readback)"
+            self.pending_environment_command = None
+        elif time.monotonic() >= deadline:
+            text = f"{label} readback confirmation timed out; current {measured:g}, target {target:g}, please check MultiVu; not resent"
+            self.pending_environment_command = None
+        else:
+            text = f"{label} reply uncertain, confirming by readback; target {target:g}, current {measured:g}; not resent"
+        self.environment_command_status = text
+        data["command_verification"] = text
+
+    def _send_environment_command(self, name, values):
+        self.pending_environment_command = None
+        try:
+            self._invoke_typed_command(self.instrument, name, values)
+        except QDCommandUncertain as error:
+            self.logger(str(error))
+            self.pending_environment_command = (name, float(values[0]), time.monotonic() + (14400 if name == "SetTemperature" else 3600))
+
+    def set_temperature(
+        self, target_k: float, rate_k_min: float, approach_code: int
+    ) -> dict[str, object]:
+        with self.lock:
+            if self.instrument is None:
+                raise RuntimeError("PPMS QDInstrument is not connected")
+            current = self.read_environment()
+            target_k, rate_k_min = validate_ppms_temperature_command(
+                target_k, rate_k_min, float(current["temperature_k"])
+            )
+            if int(approach_code) not in (0, 1):
+                raise ValueError("PPMS temperature approach parameter is invalid")
+            self._send_environment_command(
+                "SetTemperature",
+                (target_k, rate_k_min, int(approach_code)),
+            )
+            self.logger(
+                f"PPMS temperature setpoint: {target_k:g} K, {rate_k_min:g} K/min"
+            )
+            return self.read_environment()
+
+    def set_field(
+        self,
+        target_oe: float,
+        rate_oe_s: float,
+        approach_code: int,
+        mode_code: int,
+    ) -> dict[str, object]:
+        target_oe, rate_oe_s = validate_ppms_field_command(target_oe, rate_oe_s)
+        if int(approach_code) not in (0, 1, 2):
+            raise ValueError("PPMS field approach parameter is invalid")
+        if int(mode_code) not in (0, 1):
+            raise ValueError("PPMS field end mode parameter is invalid")
+        with self.lock:
+            if self.instrument is None:
+                raise RuntimeError("PPMS QDInstrument is not connected")
+            self._send_environment_command(
+                "SetField",
+                (
+                    target_oe,
+                    rate_oe_s,
+                    int(approach_code),
+                    int(mode_code),
+                ),
+            )
+            self.logger(
+                f"PPMS field setpoint: {target_oe:+g} Oe, "
+                f"{rate_oe_s:g} Oe/s，mode={int(mode_code)}"
+            )
+            return self.read_environment()
+
+    def disconnect(self) -> None:
+        with self.lock:
+            instrument = self.instrument
+            self.instrument = None
+            self.host = ""
+            self.port = 0
+            self.dll_path = ""
+            if instrument is None:
+                return
+            for method_name in ("Dispose", "Close"):
+                method = getattr(instrument, method_name, None)
+                if callable(method):
+                    try:
+                        method()
+                    except BaseException:
+                        pass
+                    break
+            self.logger(
+                "PPMS QDInstrument client disconnected (current setpoints unchanged)"
+            )
+
+
+class PPMSScanCancelled(RuntimeError):
+    """Requested cancellation, distinct from device or cleanup failure."""
+
+
+class PPMSMotorDebug:
+    """QDInstrument position probe with one explicit index-recovery resend.
+
+    Not an encoder or emergency stop. Keep MultiVu Motion Control available.
+    PPMS uses GetPPMSItem and SendPPMSCommand, not DynaCool position APIs.
+    Only normal MOVE mode 0 is supported; no index/define/configuration writes.
+    """
+
+    AXIS = "Horizontal Rotator"
+
+    def __init__(self, controller):
+        self.controller = controller
+
+    def _method(self, name, count):
+        instrument = self.controller.instrument
+        if instrument is None:
+            raise RuntimeError("Please connect QDInstrument first")
+        methods = [m for m in instrument.GetType().GetMethods()
+                   if str(m.Name) == name and len(list(m.GetParameters())) == count]
+        if len(methods) != 1:
+            raise RuntimeError(f"{name}: no unique compatible interface found; please use 'Interface info' and send the log")
+        return methods[0]
+
+    def describe(self):
+        with self.controller.lock:
+            if self.controller.instrument is None:
+                raise RuntimeError("Please connect QDInstrument first")
+            lines = []
+            for method in self.controller.instrument.GetType().GetMethods():
+                if any(word in str(method.Name).lower() for word in ("position", "ppmsitem", "ppmscommand")):
+                    lines.append(str(method))
+                    for parameter in method.GetParameters():
+                        typ = parameter.ParameterType
+                        if getattr(typ, "IsByRef", False):
+                            typ = typ.GetElementType()
+                        if getattr(typ, "IsEnum", False):
+                            import System
+                            lines.append(f"  {typ}: " + ", ".join(str(n) for n in System.Enum.GetNames(typ)))
+            return "\n".join(lines) or "No motor-related interface found"
+
+    @staticmethod
+    def _check_return(method, value):
+        typ = str(getattr(getattr(method, "ReturnType", None), "FullName", ""))
+        if typ == "System.Boolean":
+            good = bool(value)
+        else:
+            good = value is None or int(value) == 0
+        if not good:
+            raise RuntimeError(f"{method}: returned {value!r} ({typ}); not resending, please verify in MultiVu whether it was executed")
+
+    def _read_item(self, channel):
+        import System
+        with self.controller.lock:
+            # QD application note 1070-210 C0 pp.5-6: GetPosition is
+            # DynaCool-only; PPMS motor angle is GetPPMSItem channel 3.
+            method = self._method("GetPPMSItem", 3)
+            params = list(method.GetParameters())
+            if (str(params[0].ParameterType.FullName) != "System.Int32"
+                    or not getattr(params[1].ParameterType, "IsByRef", False)
+                    or str(params[1].ParameterType.GetElementType().FullName) != "System.Double"
+                    or str(params[2].ParameterType.FullName) != "System.Boolean"):
+                raise RuntimeError(f"GetPPMSItem signature incompatible: {method}")
+            arguments = System.Array[System.Object](3)
+            arguments[0] = System.Int32(channel)
+            arguments[1] = System.Double(0)
+            arguments[2] = System.Boolean(True)
+            result = method.Invoke(self.controller.instrument, arguments)
+            self.controller.logger(f"PPMS motor GetPPMSItem({channel}): return={result!r}; value={arguments[1]!r}")
+            self._check_return(method, result)
+            value = float(arguments[1])
+            if not math.isfinite(value):
+                raise RuntimeError("PPMS data item is not a finite value")
+            return value
+
+    def read(self):
+        with self.controller.lock:
+            angle = self._read_item(3)
+            status = "PositionUnknown"
+            try:
+                word = self._read_item(0)
+                if not word.is_integer() or not 0 <= word <= 65535:
+                    raise ValueError(f"Invalid status word: {word}")
+                code = (int(word) >> 12) & 15
+                status = {1: "AtTarget", 5: "Moving", 8: "AtLimitSwitch", 9: "AtIndexSwitch", 15: "PositionFailure"}.get(code, "PositionUnknown")
+            except Exception as error:
+                self.controller.logger(f"PPMS motor status unavailable: {error}")
+            if not math.isfinite(angle):
+                raise RuntimeError("Motor angle readback is not finite")
+            self.controller.logger(f"PPMS motor: angle={angle:.6f} deg; status={status}")
+            data = {"angle_deg": angle, "status": status}
+            on_read = getattr(self, "on_read", None)
+            if on_read is not None:
+                on_read(dict(data))
+            return data
+
+    @staticmethod
+    def validate_move(target, speed, current, allow_large=False):
+        target, speed = float(target), float(speed)
+        if not all(math.isfinite(v) for v in (target, speed, float(current))):
+            raise ValueError("Motor parameters must be finite values")
+        # The input range limits commanded targets, not measured coordinates.
+        if not -370 <= target <= 370:
+            raise ValueError("PPMS target angle must be within −370 to 370°")
+        if abs(target - current) > 370.0 and not allow_large:
+            raise ValueError("Each move must not exceed 370°; please enter the target based on the latest angle")
+        if not speed.is_integer() or not 0 <= speed <= 14:
+            raise ValueError("Deceleration code must be an integer 0–14; 0 fastest, 14 slowest")
+        return target, int(speed)
+
+    def move(self, target, speed, allow_large=False, _index_retry=False):
+        import System
+        self.movement_attempted = False
+        with self.controller.lock:
+            before = self.read()
+            target, slowdown = self.validate_move(target, speed, before["angle_deg"], allow_large)
+            if before["status"] not in ("AtTarget", "AtIndexSwitch"):
+                raise RuntimeError(f"Motion status is not AtTarget: {before['status']}; MOVE not sent")
+            method = self._method("SendPPMSCommand", 5)
+            params = list(method.GetParameters())
+            types_ = [p.ParameterType for p in params]
+            expected = ["System.String", "System.String", "System.String", "System.Int32", "System.Double"]
+            actual = [str((t.GetElementType() if getattr(t, "IsByRef", False) else t).FullName) for t in types_]
+            if actual != expected or [bool(getattr(t, "IsByRef", False)) for t in types_] != [False, True, True, False, False]:
+                raise RuntimeError(f"SendPPMSCommand signature incompatible: {method}")
+            command = f"MOVE {target:.6f} 0 {slowdown}"
+            args = System.Array[System.Object](5)
+            args[0], args[1], args[2] = command, "", ""
+            args[3], args[4] = System.Int32(0), System.Double(0)
+            self.controller.logger(f"PPMS motor SEND ONCE: {command}")
+            self.movement_attempted = True
+            result = method.Invoke(self.controller.instrument, args)
+            self.controller.logger(f"PPMS motor reply: return={result!r}; reply={args[1]!r}; error={args[2]!r}")
+            # This PPMS returned Int32(1) on a confirmed successful MOVE.
+            # Treat it as ambiguous submission, never as unconditional success.
+            return_type = str(getattr(method.ReturnType, "FullName", ""))
+            ambiguous = return_type == "System.Int32" and int(result) == 1
+            if not ambiguous:
+                self._check_return(method, result)
+            if str(args[1] or "").strip() or str(args[2] or "").strip():
+                ambiguous = True
+                self.controller.logger("MOVE reply is non-empty, execution result pending readback confirmation; MOVE not resent")
+            return {"target_deg": target, "return_code": result, "ambiguous": ambiguous,
+                    "raw_reply": str(args[1] or ""), "raw_error": str(args[2] or "")}
+
+    def move_and_verify(self, target, speed, cancelled=lambda: False,
+                        timeout=90.0, interval=0.5, allow_large=False,
+                        index_target=None):
+        # index_target remains accepted for compatibility; Index never resends MOVE.
+        if cancelled():
+            raise PPMSScanCancelled("Cancelled before moving, MOVE not sent; this does not mean the motor is stopped")
+        submission = self.move(target, speed, allow_large=True) if allow_large else self.move(target, speed)
+        deadline = time.monotonic() + timeout
+        consecutive = 0
+        last = None
+        while time.monotonic() < deadline:
+            if cancelled():
+                raise PPMSScanCancelled("Arrival readback cancelled; this does not mean the motor is stopped, please check MultiVu")
+            try:
+                last = self.read()
+            except Exception as error:
+                raise RuntimeError(f"MOVE was sent, but the arrival readback failed and the motion status is unconfirmed; MOVE not resent, please check MultiVu: {error}") from error
+            if last["status"] in ("AtLimitSwitch", "PositionFailure", "PositionUnknown"):
+                raise RuntimeError(f"Abnormal motor status: {last}; MOVE not resent, please check MultiVu")
+            if last["status"] in ("AtTarget", "AtIndexSwitch") and abs(last["angle_deg"] - submission["target_deg"]) <= 0.06:
+                consecutive += 1
+                if consecutive >= 2:
+                    self.controller.logger(f"PPMS motor VERIFIED: {last}; submission={submission}")
+                    return dict(last, **submission)
+            else:
+                consecutive = 0
+            time.sleep(interval)
+        raise RuntimeError(f"Motor arrival confirmation timed out ({timeout:g}s); last readback {last}; MOVE not resent, please check MultiVu")
+
+
+class PPMSRemoteReadbackController:
+    """Select one Quantum Design remote backend per PPMS connection."""
+
+    def __init__(self, logger: Callable[[str], None]) -> None:
+        self.logger = logger
+        self.active = None
+        self.backend = ""
+        self.lock = threading.RLock()
+
+    @property
+    def connected(self) -> bool:
+        return self.active is not None and self.active.connected
+
+    def connect(
+        self,
+        backend: str,
+        host: str,
+        port: int,
+        dll_path: str = "",
+    ) -> dict[str, object]:
+        with self.lock:
+            if self.connected:
+                return self.active.read_environment()
+            if backend == PPMS_QDINSTRUMENT_BACKEND:
+                controller = PPMSQDInstrumentReadbackController(self.logger)
+                result = controller.connect(host, port, dll_path)
+            elif backend == PPMS_MULTIPYVU_BACKEND:
+                controller = PPMSMultiVuReadbackController(self.logger)
+                result = controller.connect(host, port)
+            else:
+                raise ValueError(f"Unknown PPMS interface: {backend}")
+            self.active = controller
+            self.backend = backend
+            return result
+
+    def read_environment(self) -> dict[str, object]:
+        with self.lock:
+            if not self.connected:
+                raise RuntimeError("PPMS remote interface is not connected")
+            return self.active.read_environment()
+
+    def set_temperature(
+        self, target_k: float, rate_k_min: float, approach_code: int
+    ) -> dict[str, object]:
+        with self.lock:
+            if not self.connected:
+                raise RuntimeError("PPMS remote interface is not connected")
+            return self.active.set_temperature(
+                target_k, rate_k_min, approach_code
+            )
+
+    def set_field(
+        self,
+        target_oe: float,
+        rate_oe_s: float,
+        approach_code: int,
+        mode_code: int,
+    ) -> dict[str, object]:
+        with self.lock:
+            if not self.connected:
+                raise RuntimeError("PPMS remote interface is not connected")
+            return self.active.set_field(
+                target_oe, rate_oe_s, approach_code, mode_code
+            )
+
+    def disconnect(self) -> None:
+        with self.lock:
+            controller = self.active
+            self.active = None
+            self.backend = ""
+            if controller is not None:
+                controller.disconnect()
+
+
+def validate_ppms_temperature_command(
+    target_k: float,
+    rate_k_min: float,
+    current_k: float | None = None,
+) -> tuple[float, float]:
+    """Validate PPMS temperature and return (target K, rate K/min).
+
+    Any command whose path enters the 5–9 K interval (inclusive) is limited to
+    1 K/min. Commands wholly above 9 K may use up to 10 K/min.
+    This conservative whole-ramp limit avoids changing rate mid-ramp.
+    """
+    target_k = float(target_k)
+    rate_k_min = float(rate_k_min)
+    if not math.isfinite(target_k) or not math.isfinite(rate_k_min):
+        raise ValueError("PPMS target temperature and ramp rate must be finite values")
+    if not PPMS_TEMPERATURE_MIN_K <= target_k <= PPMS_TEMPERATURE_MAX_K:
+        raise ValueError(
+            f"PPMS target temperature must be within {PPMS_TEMPERATURE_MIN_K:g}–"
+            f"{PPMS_TEMPERATURE_MAX_K:g} K"
+        )
+    if rate_k_min <= 0:
+        raise ValueError("PPMS temperature ramp rate must be greater than 0 K/min")
+    current_valid = current_k is not None and math.isfinite(float(current_k))
+    enters_low_range = target_k <= PPMS_TEMPERATURE_LOW_BOUNDARY_K
+    if current_valid:
+        enters_low_range = enters_low_range or (
+            float(current_k) <= PPMS_TEMPERATURE_LOW_BOUNDARY_K
+        )
+    maximum = (
+        PPMS_TEMPERATURE_LOW_MAX_RATE_K_MIN
+        if enters_low_range
+        else PPMS_TEMPERATURE_MAX_RATE_K_MIN
+    )
+    if rate_k_min > maximum + 1e-12:
+        region = "within the 5–9 K range" if enters_low_range else "above 9 K"
+        raise ValueError(
+            f"PPMS temperature ramp rate {region} must not exceed {maximum:g} K/min"
+        )
+    return target_k, rate_k_min
+
+
+def validate_ppms_field_command(
+    target_oe: float,
+    rate_oe_s: float,
+) -> tuple[float, float]:
+    """Validate the PPMS field guardrails used by all field commands."""
+    target_oe = float(target_oe)
+    rate_oe_s = float(rate_oe_s)
+    if not math.isfinite(target_oe) or not math.isfinite(rate_oe_s):
+        raise ValueError("PPMS target field and field ramp rate must be finite values")
+    if abs(target_oe) > PPMS_FIELD_LIMIT_OE:
+        raise ValueError(
+            f"PPMS target field must be within ±{PPMS_FIELD_LIMIT_OE:g} Oe"
+        )
+    if rate_oe_s <= 0 or rate_oe_s >= PPMS_FIELD_RATE_LIMIT_OE_S:
+        raise ValueError(
+            f"PPMS field ramp rate must be greater than 0 and below "
+            f"{PPMS_FIELD_RATE_LIMIT_OE_S:g} Oe/s"
+        )
+    return target_oe, rate_oe_s
+
+
+class Keithley6221Controller:
+    """Thread-safe 6221 continuous AC/DC and unipolar-pulse controller.
+
+    This is deliberately not SOUR:PDEL (Pulse Delta): the official Pulse Delta
+    arming sequence requires a Keithley 2182A.  A 50% duty square waveform with
+    amplitude=abs(I)/2 and offset=I/2 produces a standalone 0 A <-> I DC pulse
+    train.  The requested pulse width is the high time, hence f=1/(2*width),
+    and WAVE:DUR:CYCL limits the output to the requested integer pulse count.
+    """
+
+    def __init__(self, logger: Callable[[str], None]) -> None:
+        self.logger = logger
+        self.resource_manager = None
+        self.instrument = None
+        self.resource_name = ""
+        self.identity = ""
+        self.output_enabled = False
+        self.current_a = 0.0
+        self.pulse_width_s = K6221_DEFAULT_PULSE_WIDTH_US / 1_000_000.0
+        self.pulse_count = K6221_DEFAULT_PULSE_COUNT
+        self.compliance_v = K6221_DEFAULT_COMPLIANCE_V
+        self.output_mode = "OFF"
+        self.lock = threading.RLock()
+
+    @property
+    def connected(self) -> bool:
+        return self.instrument is not None
+
+    def _query_error(self, command: str) -> None:
+        response = self.instrument.query("SYST:ERR?").strip()
+        try:
+            code = int(response.split(",", 1)[0].strip())
+        except ValueError as error:
+            raise RuntimeError(f"6221 returned an unparsable error status: {response}") from error
+        if code != 0:
+            raise RuntimeError(f"6221 SCPI error after '{command}': {response}")
+
+    def _write_checked(self, command: str) -> None:
+        self.instrument.write(command)
+        self._query_error(command)
+
+    def _read_output_low_to_earth(self) -> int:
+        """1 when output low is tied to earth ground, 0 when it floats."""
+        text = self.instrument.query(K6221_OUTPUT_LOW_QUERY).strip().upper()
+        if text in ("0", "OFF"):
+            return 0
+        if text in ("1", "ON"):
+            return 1
+        raise RuntimeError(f"6221 returned an unexpected OUTP:LTE state: {text!r}")
+
+    def _set_output_low_floating(self) -> None:
+        """Front panel TRIAX -> OUTPUT LOW -> FLOATING, confirmed by readback."""
+        if self._read_output_low_to_earth() == 0:
+            return
+        self._write_checked(K6221_OUTPUT_LOW_FLOATING)
+        if self._read_output_low_to_earth() != 0:
+            raise RuntimeError("6221 output low stayed earth-grounded; "
+                               "set TRIAX -> OUTPUT LOW -> FLOATING on the front panel")
+
+    @staticmethod
+    def _validate(
+        current_a: float,
+        pulse_width_s: float,
+        compliance_v: float,
+        pulse_count: int,
+    ):
+        current_a = float(current_a)
+        pulse_width_s = float(pulse_width_s)
+        compliance_v = float(compliance_v)
+        try:
+            pulse_count_numeric = float(pulse_count)
+        except (TypeError, ValueError) as error:
+            raise ValueError("6221 pulse count must be an integer") from error
+        if not math.isfinite(pulse_count_numeric) or not pulse_count_numeric.is_integer():
+            raise ValueError("6221 pulse count must be an integer")
+        pulse_count = int(pulse_count_numeric)
+        if not all(
+            math.isfinite(value)
+            for value in (current_a, pulse_width_s, compliance_v)
+        ):
+            raise ValueError("6221 current, pulse width and compliance voltage must be finite values")
+        if abs(current_a) > K6221_MAX_ABS_CURRENT_A:
+            raise ValueError(
+                f"6221 current exceeds the software limit ±{K6221_MAX_ABS_CURRENT_A * 1000:g} mA"
+            )
+        if 0.0 < abs(current_a) < K6221_MIN_NONZERO_CURRENT_A:
+            raise ValueError("6221 non-zero pulse current magnitude cannot be less than 4 pA")
+        if not K6221_MIN_PULSE_WIDTH_S <= pulse_width_s <= K6221_MAX_PULSE_WIDTH_S:
+            raise ValueError(
+                "6221 pulse width must be between "
+                f"{K6221_MIN_PULSE_WIDTH_S * 1e6:g} us–"
+                f"{K6221_MAX_PULSE_WIDTH_S:g} s"
+            )
+        if not K6221_MIN_COMPLIANCE_V <= compliance_v <= K6221_MAX_COMPLIANCE_V:
+            raise ValueError(
+                f"6221 compliance voltage must be between {K6221_MIN_COMPLIANCE_V:g}–"
+                f"{K6221_MAX_COMPLIANCE_V:g} V"
+            )
+        if not 1 <= pulse_count <= K6221_MAX_PULSE_COUNT:
+            raise ValueError(
+                f"6221 pulse count must be between 1 and {K6221_MAX_PULSE_COUNT}"
+            )
+        total_time_s = 2.0 * pulse_width_s * pulse_count
+        if total_time_s > K6221_MAX_WAVEFORM_TIME_S:
+            raise ValueError(
+                "Total waveform time (pulse width × pulse count) exceeds "
+                f"{K6221_MAX_WAVEFORM_TIME_S:g} s"
+            )
+        return current_a, pulse_width_s, compliance_v, pulse_count
+
+    def connect(self, resource_name: str, compliance_v: float) -> str:
+        if pyvisa is None:
+            raise RuntimeError("pyvisa is missing; please run: py -m pip install pyvisa pyvisa-py")
+        _, _, compliance_v, _ = self._validate(
+            0.0, self.pulse_width_s, compliance_v, self.pulse_count
+        )
+        with self.lock:
+            if self.instrument is not None:
+                return self.identity
+            acquire_instrument_lease(resource_name, self, "Keithley 6221 pulse")
+            manager = None
+            instrument = None
+            try:
+                manager = acquire_shared_visa_manager()
+                instrument = manager.open_resource(resource_name)
+                instrument.timeout = 5000
+                instrument.write_termination = "\n"
+                instrument.read_termination = "\n"
+                identity = instrument.query("*IDN?").strip()
+                if "6221" not in identity.upper():
+                    raise RuntimeError(
+                        f"The device returned by {resource_name} is not a Keithley 6221: {identity}"
+                    )
+                self.resource_manager = manager
+                self.instrument = instrument
+                self.resource_name = resource_name
+                self.identity = identity
+                self.compliance_v = compliance_v
+                instrument.write("*RST")
+                instrument.write("*CLS")
+                self._set_output_low_floating()
+                self._write_checked(f"CURR:COMP {compliance_v:.12g}")
+                self._write_checked("OUTP OFF")
+                self.output_enabled = False
+                self.current_a = 0.0
+                self.output_mode = "OFF"
+                self.logger(f"Keithley 6221 connected: {identity}")
+                return identity
+            except BaseException:
+                if instrument is not None:
+                    for command in ("SOUR:WAVE:ABOR", "CURR 0", "OUTP OFF"):
+                        try:
+                            instrument.write(command)
+                        except BaseException:
+                            pass
+                    try:
+                        instrument.close()
+                    except BaseException:
+                        pass
+                release_shared_visa_manager(manager)
+                self.resource_manager = None
+                self.instrument = None
+                release_instrument_lease(resource_name, self)
+                raise
+
+    def set_continuous_output(
+        self,
+        mode: str,
+        current_a: float,
+        frequency_hz: float,
+        compliance_v: float,
+    ) -> dict[str, object]:
+        """Apply continuous sine AC (GUI RMS) or fixed DC output."""
+        mode = str(mode).strip().upper()
+        current_a = float(current_a)
+        frequency_hz = float(frequency_hz)
+        compliance_v = float(compliance_v)
+        if mode not in {"AC", "DC"}:
+            raise ValueError("6221 continuous output mode can only be AC or DC")
+        if not all(
+            math.isfinite(value)
+            for value in (current_a, frequency_hz, compliance_v)
+        ):
+            raise ValueError("6221 continuous output parameters must be finite values")
+        if not K6221_MIN_COMPLIANCE_V <= compliance_v <= K6221_MAX_COMPLIANCE_V:
+            raise ValueError(
+                f"6221 compliance voltage must be between {K6221_MIN_COMPLIANCE_V:g}–"
+                f"{K6221_MAX_COMPLIANCE_V:g} V"
+            )
+        if mode == "AC":
+            if current_a < 0:
+                raise ValueError("6221 AC current uses the RMS amplitude and cannot be negative")
+            peak_a = math.sqrt(2.0) * current_a
+            if peak_a > K6221_MAX_ABS_CURRENT_A:
+                raise ValueError(
+                    "6221 AC peak exceeds the hardware range; "
+                    f"RMS maximum is about {K6221_MAX_ABS_CURRENT_A / math.sqrt(2) * 1000:g} mA"
+                )
+            if 0.0 < current_a < K6221_MIN_NONZERO_CURRENT_A:
+                raise ValueError("6221 non-zero AC RMS current cannot be less than 4 pA")
+            if not 1e-3 <= frequency_hz <= 1e5:
+                raise ValueError("6221 AC frequency must be within 0.001–100000 Hz")
+        else:
+            peak_a = 0.0
+            if abs(current_a) > K6221_MAX_ABS_CURRENT_A:
+                raise ValueError(
+                    f"6221 DC current exceeds ±{K6221_MAX_ABS_CURRENT_A * 1000:g} mA"
+                )
+            if 0.0 < abs(current_a) < K6221_MIN_NONZERO_CURRENT_A:
+                raise ValueError("6221 non-zero DC current magnitude cannot be less than 4 pA")
+
+        with self.lock:
+            if self.instrument is None:
+                raise RuntimeError("Keithley 6221 is not connected")
+            if current_a == 0.0:
+                self.output_off()
+                return self.read_output_state()
+            if mode == "AC":
+                commands = (
+                    "SOUR:WAVE:ABOR",
+                    f"CURR:COMP {compliance_v:.12g}",
+                    "SOUR:WAVE:FUNC SIN",
+                    f"SOUR:WAVE:FREQ {frequency_hz:.12g}",
+                    f"SOUR:WAVE:AMPL {peak_a:.12e}",
+                    "SOUR:WAVE:OFFS 0",
+                    "SOUR:WAVE:RANG BEST",
+                    "SOUR:WAVE:PMAR:STAT OFF",
+                    "SOUR:WAVE:DUR:CYCL INF",
+                    "SOUR:WAVE:ARM",
+                    "OUTP ON",
+                    "SOUR:WAVE:INIT",
+                )
+            else:
+                commands = (
+                    "SOUR:WAVE:ABOR",
+                    f"CURR:COMP {compliance_v:.12g}",
+                    "SOUR:CURR:RANG:AUTO ON",
+                    f"SOUR:CURR {current_a:.12e}",
+                    "OUTP ON",
+                )
+            for command in commands:
+                self._write_checked(command)
+            actual_compliance = float(
+                self.instrument.query("CURR:COMP?").strip()
+            )
+            output_state = int(round(float(
+                self.instrument.query("OUTP?").strip()
+            )))
+            if mode == "AC":
+                actual_peak = float(
+                    self.instrument.query("SOUR:WAVE:AMPL?").strip()
+                )
+                actual_frequency = float(
+                    self.instrument.query("SOUR:WAVE:FREQ?").strip()
+                )
+                actual_current = actual_peak / math.sqrt(2.0)
+                if not math.isclose(
+                    actual_peak, peak_a, rel_tol=5e-4, abs_tol=1e-12
+                ):
+                    self.output_off()
+                    raise RuntimeError(
+                        "6221 AC amplitude readback mismatch: "
+                        f"requested {peak_a:g} Apeak, readback {actual_peak:g} Apeak"
+                    )
+                if not math.isclose(
+                    actual_frequency,
+                    frequency_hz,
+                    rel_tol=5e-4,
+                    abs_tol=1e-6,
+                ):
+                    self.output_off()
+                    raise RuntimeError(
+                        "6221 AC frequency readback mismatch: "
+                        f"requested {frequency_hz:g} Hz, readback {actual_frequency:g} Hz"
+                    )
+            else:
+                actual_current = float(
+                    self.instrument.query("SOUR:CURR?").strip()
+                )
+                actual_frequency = math.nan
+                if not math.isclose(
+                    actual_current, current_a, rel_tol=5e-4, abs_tol=1e-12
+                ):
+                    self.output_off()
+                    raise RuntimeError(
+                        "6221 DC current readback mismatch: "
+                        f"requested {current_a:g} A, readback {actual_current:g} A"
+                    )
+            if not math.isclose(
+                actual_compliance,
+                compliance_v,
+                rel_tol=5e-4,
+                abs_tol=1e-6,
+            ) or output_state != 1:
+                self.output_off()
+                raise RuntimeError(
+                    "6221 continuous output start readback mismatch: "
+                    f"compliance={actual_compliance:g} V, output={output_state}"
+                )
+            self.current_a = actual_current
+            self.compliance_v = actual_compliance
+            self.output_enabled = True
+            self.output_mode = mode
+            return self.read_output_state()
+
+    def read_output_state(self) -> dict[str, object]:
+        """Read source settings and real-time compliance condition (B3)."""
+        with self.lock:
+            if self.instrument is None:
+                raise RuntimeError("Keithley 6221 is not connected")
+            output_on = bool(round(float(
+                self.instrument.query("OUTP?").strip()
+            )))
+            compliance_v = float(
+                self.instrument.query("CURR:COMP?").strip()
+            )
+            measurement_condition = int(round(float(
+                self.instrument.query("STAT:MEAS:COND?").strip()
+            )))
+            mode = self.output_mode if output_on else "OFF"
+            frequency_hz = math.nan
+            if mode in {"AC", "PULSE"}:
+                amplitude_a = float(
+                    self.instrument.query("SOUR:WAVE:AMPL?").strip()
+                )
+                offset_a = float(
+                    self.instrument.query("SOUR:WAVE:OFFS?").strip()
+                )
+                frequency_hz = float(
+                    self.instrument.query("SOUR:WAVE:FREQ?").strip()
+                )
+                if mode == "AC":
+                    current_a = amplitude_a / math.sqrt(2.0)
+                else:
+                    sign_source = offset_a if offset_a != 0 else 1.0
+                    current_a = math.copysign(
+                        abs(offset_a) + abs(amplitude_a), sign_source
+                    )
+            else:
+                current_a = float(
+                    self.instrument.query("SOUR:CURR?").strip()
+                )
+            self.output_enabled = output_on
+            self.current_a = current_a if output_on else 0.0
+            self.compliance_v = compliance_v
+            if not output_on:
+                self.output_mode = "OFF"
+            return {
+                "mode": mode,
+                # This is the instrument's source-setting readback, not an
+                # independent measurement of load current.
+                "current_a": current_a,
+                "frequency_hz": frequency_hz,
+                "compliance_v": compliance_v,
+                "output_on": output_on,
+                "measurement_condition": measurement_condition,
+                "in_compliance": bool(measurement_condition & 8),
+                "sample_monotonic": time.monotonic(),
+            }
+
+    def set_dc_pulse(
+        self,
+        current_a: float,
+        pulse_width_s: float,
+        compliance_v: float,
+        pulse_count: int,
+    ) -> dict[str, object]:
+        current_a, pulse_width_s, compliance_v, pulse_count = self._validate(
+            current_a, pulse_width_s, compliance_v, pulse_count
+        )
+        with self.lock:
+            if self.instrument is None:
+                raise RuntimeError("Keithley 6221 is not connected")
+            if current_a == 0.0:
+                self.output_off()
+                return {
+                    "mode": "OFF",
+                    "current_a": 0.0,
+                    "pulse_width_s": pulse_width_s,
+                    "frequency_hz": 1.0 / (2.0 * pulse_width_s),
+                    "compliance_v": compliance_v,
+                    "pulse_count": pulse_count,
+                    "total_time_s": 0.0,
+                    "output_on": False,
+                    "measurement_condition": 0,
+                    "in_compliance": False,
+                    "sample_monotonic": time.monotonic(),
+                }
+            frequency_hz = 1.0 / (2.0 * pulse_width_s)
+            amplitude_a = abs(current_a) / 2.0
+            offset_a = current_a / 2.0
+            commands = (
+                "SOUR:WAVE:ABOR",
+                f"CURR:COMP {compliance_v:.12g}",
+                "SOUR:WAVE:FUNC SQU",
+                "SOUR:WAVE:DCYC 50",
+                f"SOUR:WAVE:AMPL {amplitude_a:.12e}",
+                f"SOUR:WAVE:OFFS {offset_a:.12e}",
+                f"SOUR:WAVE:FREQ {frequency_hz:.12g}",
+                "SOUR:WAVE:RANG BEST",
+                "SOUR:WAVE:PMAR:STAT OFF",
+                # Standalone pulse output is software-triggered. Explicitly
+                # clear any external-trigger mode left by an earlier workflow
+                # so INIT starts immediately instead of waiting on TLINK.
+                "SOUR:WAVE:EXTR OFF",
+                f"SOUR:WAVE:DUR:CYCL {pulse_count}",
+                "SOUR:WAVE:ARM",
+                "OUTP ON",
+                "SOUR:WAVE:INIT",
+            )
+            for command in commands:
+                self._write_checked(command)
+            actual_amplitude = float(self.instrument.query("SOUR:WAVE:AMPL?").strip())
+            actual_offset = float(self.instrument.query("SOUR:WAVE:OFFS?").strip())
+            actual_frequency = float(self.instrument.query("SOUR:WAVE:FREQ?").strip())
+            actual_compliance = float(self.instrument.query("CURR:COMP?").strip())
+            actual_cycles = int(round(float(
+                self.instrument.query("SOUR:WAVE:DUR:CYCL?").strip()
+            )))
+            output_state = int(round(float(self.instrument.query("OUTP?").strip())))
+            measurement_condition = int(round(float(
+                self.instrument.query("STAT:MEAS:COND?").strip()
+            )))
+            checks = (
+                ("amplitude", actual_amplitude, amplitude_a, 5e-4, 1e-12),
+                ("offset", actual_offset, offset_a, 5e-4, 1e-12),
+                ("frequency", actual_frequency, frequency_hz, 5e-4, 1e-6),
+                ("compliance voltage", actual_compliance, compliance_v, 5e-4, 1e-6),
+            )
+            for label, actual, requested, rel_tol, abs_tol in checks:
+                if not math.isfinite(actual) or not math.isclose(
+                    actual, requested, rel_tol=rel_tol, abs_tol=abs_tol
+                ):
+                    self.output_off()
+                    raise RuntimeError(
+                        f"6221 {label} readback mismatch: requested {requested:g}, "
+                        f"readback {actual:g}"
+                    )
+            if actual_cycles != pulse_count:
+                self.output_off()
+                raise RuntimeError(
+                    "6221 pulse count readback mismatch: "
+                    f"requested {pulse_count}, readback {actual_cycles}"
+                )
+            # A finite waveform turns the 6221 output off automatically when
+            # its programmed duration expires.  For a microsecond one-shot,
+            # the train can therefore finish before OUTP? is queried.  ARM
+            # and INIT have already passed SYST:ERR? checks, and all waveform
+            # parameters plus the cycle count were verified above, so
+            # OUTP=0 here means "completed before readback", not "failed to
+            # start".  A real configuration mismatch is still rejected.
+            completed_before_readback = output_state == 0
+            self.current_a = math.copysign(
+                abs(actual_offset) + abs(actual_amplitude), current_a
+            )
+            self.pulse_width_s = 1.0 / (2.0 * actual_frequency)
+            self.compliance_v = actual_compliance
+            self.pulse_count = pulse_count
+            self.output_enabled = bool(output_state)
+            self.output_mode = "PULSE" if output_state else "OFF"
+            return {
+                "mode": "PULSE",
+                "current_a": self.current_a,
+                "pulse_width_s": self.pulse_width_s,
+                "frequency_hz": actual_frequency,
+                "compliance_v": actual_compliance,
+                "pulse_count": pulse_count,
+                "total_time_s": 2.0 * self.pulse_width_s * pulse_count,
+                "output_on": bool(output_state),
+                "completed_before_readback": completed_before_readback,
+                "measurement_condition": measurement_condition,
+                "in_compliance": bool(measurement_condition & 8),
+                "sample_monotonic": time.monotonic(),
+            }
+
+    def output_off(self) -> None:
+        with self.lock:
+            if self.instrument is None:
+                return
+            errors = []
+            for command in ("SOUR:WAVE:ABOR", "CURR 0", "OUTP OFF"):
+                try:
+                    self.instrument.write(command)
+                except BaseException as error:
+                    errors.append(f"{command}: {error}")
+            self.output_enabled = False
+            self.current_a = 0.0
+            self.output_mode = "OFF"
+            if errors:
+                raise RuntimeError("6221 failed to turn output off: " + "; ".join(errors))
+
+    def disconnect(self) -> None:
+        with self.lock:
+            instrument = self.instrument
+            manager = self.resource_manager
+            resource_name = self.resource_name
+            if instrument is None and manager is None:
+                return
+            shutdown_error = None
+            try:
+                self.output_off()
+            except BaseException as error:
+                shutdown_error = error
+            if instrument is not None:
+                for command in ("*CLS", "SYST:LOC"):
+                    try:
+                        instrument.write(command)
+                    except BaseException:
+                        pass
+                try:
+                    instrument.close()
+                except BaseException:
+                    pass
+            release_shared_visa_manager(manager)
+            self.instrument = None
+            self.resource_manager = None
+            self.resource_name = ""
+            self.identity = ""
+            self.output_enabled = False
+            self.current_a = 0.0
+            release_instrument_lease(resource_name, self)
+            self.logger("Keithley 6221 disconnected")
+            if shutdown_error is not None:
+                raise shutdown_error
+
+
+# CombinedControlApp._ppms_field_is_ready of the main program, as a function.
+def ppms_field_is_ready(result: dict[str, object], target_oe: float, driven: bool = False) -> bool:
+    """At the target with a settled status.  ``driven``: after a Driven
+    command, where a Persistent status is the state from before it (the
+    switch has not warmed yet), so it is not settled."""
+    measured = float(result["field_oe"])
+    tolerance = max(PPMS_FIELD_TOLERANCE_OE, abs(target_oe) * PPMS_FIELD_RELATIVE_TOLERANCE)
+    status = str(result.get("field_status", "")).casefold().replace(" ", "")
+    if driven and "persistent" in status:
+        return False
+    stable_status = any(
+        token in status
+        for token in ("holding", "persistent", "stable", "standby")
+    )
+    return stable_status and abs(measured - target_oe) <= tolerance
+
+
+# CombinedControlApp._read_ppms_cryogen_display of the main program, as a function.
+def read_ppms_cryogen_display(ppms):
+    """Read only: chamber pressure and LEVEL?; never start a helium fill.
+
+    PPMS channel 19 and LEVEL? follow the PSI/Frappy PPMS driver mapping:
+    https://github.com/SampleEnvironment/frappy/blob/master/frappy_psi/ppms.py
+    LEVEL? returns percent plus freshness flag; a stale reading is labelled.
+    This does not read the separate EverCool helium bottle pressure.
+    """
+    result = {"pressure_display": "Unknown / not supported by interface", "helium_display": "Unknown / not supported by interface"}
+    if ppms.backend != PPMS_QDINSTRUMENT_BACKEND:
+        return result
+    reader = PPMSMotorDebug(ppms.active)
+    try:
+        pressure = reader._read_item(19)
+        if pressure < 0:
+            raise ValueError("Negative pressure")
+        result["pressure_display"] = f"{pressure:.5g} Torr"
+    except Exception as error:
+        result["pressure_display"] = f"Unknown / {short_status_error(error, 35)}"
+    try:
+        import System
+        with reader.controller.lock:
+            method = reader._method("SendPPMSCommand", 5)
+            args = System.Array[System.Object](5)
+            args[0], args[1], args[2] = "LEVEL?", "", ""
+            args[3], args[4] = System.Int32(64), System.Double(2.0)
+            code = method.Invoke(reader.controller.instrument, args)
+            reader._check_return(method, code)
+            if str(args[2] or "").strip():
+                raise RuntimeError(str(args[2]))
+            values = [float(v.strip()) for v in str(args[1]).strip().split(",")]
+            if len(values) != 2 or not all(math.isfinite(v) for v in values) or not 0 <= values[0] <= 100 or values[1] not in (0, 1):
+                raise ValueError("LEVEL? reply format or range invalid")
+            result["helium_display"] = f"{values[0]:.2f}%" + (" (stale)" if values[1] == 0 else "")
+            result["helium_percent"] = values[0]
+            result["helium_fresh"] = values[1] == 1
+    except Exception as error:
+        result["helium_display"] = f"Unknown / {short_status_error(error, 35)}"
+    return result
+# ===== END copied from Transport_all_NH_dev.py =====
+
+# The copied instrument code, as ``core.<name>``: this module itself, so a
+# replaced helper (e.g. the echoed VISA manager) is the one the copied
+# controllers call.
+core = sys.modules[__name__]
 
 HERE = Path(__file__).resolve().parent
 OE_PER_T = 10_000.0
@@ -589,7 +2753,7 @@ class FourStateRun:
         while True:
             self.check()
             data = self.environment()
-            if core.CombinedControlApp._ppms_field_is_ready(data, target, driven=True):
+            if core.ppms_field_is_ready(data, target, driven=True):
                 settled_since = self.clock() if settled_since is None else settled_since
                 if self.clock() - settled_since >= s.field_settle_s:
                     return data
@@ -603,7 +2767,7 @@ class FourStateRun:
     def ensure_zero_field(self):
         if self.commanded_field in (None, 0.0):
             data = self.environment()
-            if core.CombinedControlApp._ppms_field_is_ready(data, 0.0):
+            if core.ppms_field_is_ready(data, 0.0):
                 return data  # Already at zero (Driven or Persistent): nothing sent.
         return self.field_to(0.0)
 
@@ -946,7 +3110,7 @@ class FourStateRun:
             s = self.settings
             data = self.environment()
             # A field this run commanded may not show in the reading yet.
-            if self.commanded_field not in (None, 0.0) or not core.CombinedControlApp._ppms_field_is_ready(data, 0.0):
+            if self.commanded_field not in (None, 0.0) or not core.ppms_field_is_ready(data, 0.0):
                 self.emit("status", "Returning the field to 0 Oe…")
                 self.commanded_field = 0.0
                 result = self.ppms.set_field(0.0, s.field_rate_oe_s, s.approach_code, 1)
@@ -959,7 +3123,7 @@ class FourStateRun:
                 while True:
                     self.sleep(0.5)
                     data = self.environment()
-                    if core.CombinedControlApp._ppms_field_is_ready(data, 0.0, driven=True):
+                    if core.ppms_field_is_ready(data, 0.0, driven=True):
                         settled_since = self.clock() if settled_since is None else settled_since
                         if self.clock() - settled_since >= hold:
                             break
@@ -993,7 +3157,7 @@ class FourStateRun:
 
     def require_zero_field(self):
         data = self.environment()
-        if not core.CombinedControlApp._ppms_field_is_ready(data, 0.0):
+        if not core.ppms_field_is_ready(data, 0.0):
             raise RuntimeError(
                 f"The rotator turns only at zero field; the field is {data.get('field_oe')} Oe / "
                 f"{data.get('field_status')}. Zero H first")
@@ -1119,8 +3283,7 @@ def read_instrument_status(ppms, source, cryogen=False, motor=None):
         except Exception as error:
             status["angle_error"] = core.short_status_error(error, 40)
         if cryogen:
-            status.update(core.CombinedControlApp._read_ppms_cryogen_display(
-                types.SimpleNamespace(ppms_environment_controller=ppms)))
+            status.update(core.read_ppms_cryogen_display(ppms))
     if source.connected:
         try:
             status["source_on"] = int(round(source_query(source, "OUTP?"))) == 1
