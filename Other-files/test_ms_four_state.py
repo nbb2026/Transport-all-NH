@@ -386,7 +386,9 @@ class SettingsTests(unittest.TestCase):
     def test_defaults_are_the_figure_table(self):
         self.assertEqual(ms.DEFAULT_STATES, (
             ("D", 360.0, 1500.0, 22.0), ("A", 270.0, 1500.0, -22.0),
-            ("B", 270.0, 1500.0, 22.0), ("E", 360.0, 1500.0, -22.0)), "D, A, B and E, all at +1500 Oe")
+            ("B", 270.0, 1500.0, 22.0), ("E", 360.0, -1500.0, 22.0)),
+            "the user's figure of 2026-10-09: E at -1500 Oe, +22 mA")
+        self.assertEqual(ms.DEFAULTS["read_time_s"], "15", "the figure's read time")
         settings = World().settings()
         self.assertEqual(settings.sequence, ("D", "A", "B", "E"))
         self.assertEqual(settings.pulse_width_s, 30e-6)
@@ -486,7 +488,7 @@ class RunTests(unittest.TestCase):
             self.assertEqual(timeout, 900.0)
         pulses = [e for e in events if e[0] == "pulse"]
         self.assertEqual([(round(e[1] * 1e3, 6), e[2], e[4]) for e in pulses],
-                         [(22.0, 1500.0, 360.0), (-22.0, 1500.0, 270.0), (22.0, 1500.0, 270.0), (-22.0, 1500.0, 360.0)])
+                         [(22.0, 1500.0, 360.0), (-22.0, 1500.0, 270.0), (22.0, 1500.0, 270.0), (22.0, -1500.0, 360.0)])
         for pulse in pulses:
             self.assertEqual(pulse[3], "StableDriven", "pulse only once the write field has settled")
             self.assertAlmostEqual(pulse[5], 30e-6, places=12, msg="30 us wide")
@@ -510,7 +512,7 @@ class RunTests(unittest.TestCase):
             "rotate", "field +1500", "pulse", "field +0", "sine",  # 0 -> D at 360 deg first
             "rotate", "field +1500", "pulse", "field +0", "sine",
             "field +1500", "pulse", "field +0", "sine",
-            "rotate", "field +1500", "pulse", "field +0", "sine"])
+            "rotate", "field -1500", "pulse", "field +0", "sine"])  # E at -1500 Oe
 
     def test_pulse_starts_as_on_the_moke_6221_page(self):
         world = World()

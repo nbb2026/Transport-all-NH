@@ -23,7 +23,7 @@ PROGRAM = Path(__file__).resolve().parents[2] / "MS-fourState.py"
 # (mode, width, height, must fit)
 WINDOWS = (("cycle", 1720, 1240, True), ("cycle", 1360, 960, True), ("cycle", 1100, 760, False),
            ("cycle", 2000, 1100, True), ("sequence", 1360, 960, True))
-EXAMPLE = (("D", 1500, 22, 30e-6), ("A", 1500, -22, 11e-6), ("B", 1500, 22, -12.5e-6), ("E", 1500, -22, -27e-6))
+EXAMPLE = (("D", 1500, 22, 30e-6), ("A", 1500, -22, 11e-6), ("B", 1500, 22, -12.5e-6), ("E", -1500, 22, -27e-6))
 
 
 EXAMPLE_CONSOLE = (

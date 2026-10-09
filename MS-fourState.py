@@ -2236,15 +2236,16 @@ core = sys.modules[__name__]
 HERE = Path(__file__).resolve().parent
 OE_PER_T = 10_000.0
 
-# name, PPMS angle (deg), write field (Oe), pulse current (mA).  0.15 T is
-# 1500 Oe.  Every state is written at +1500 Oe; the current's sign picks D or
-# E (at 360 deg) and A or B (at 270 deg).  D and E are at 360 deg rather than
-# 0 (the same orientation): 90 deg from A and B instead of 270 deg.
+# name, PPMS angle (deg), write field (Oe), pulse current (mA), as the
+# user's figure (2026-10-09).  0.15 T is 1500 Oe.  At 270 deg the current's
+# sign picks A or B (both +1500 Oe); at 360 deg D is +1500 Oe and E -1500 Oe,
+# both +22 mA.  D and E are at 360 deg rather than 0 (the same orientation):
+# 90 deg from A and B instead of 270 deg.
 DEFAULT_STATES = (
     ("D", 360.0, 1500.0, 22.0),
     ("A", 270.0, 1500.0, -22.0),
     ("B", 270.0, 1500.0, 22.0),
-    ("E", 360.0, 1500.0, -22.0),
+    ("E", 360.0, -1500.0, 22.0),
 )
 # The manual settings' own fields, the manual pulse width among them (a
 # manual pulse never changes the runs' width); decel, field rate, frequency
@@ -2293,7 +2294,7 @@ DEFAULTS = {
     "decel": "14",
     "read_current_ma": "0.5",
     "read_frequency_hz": f"{core.PPMS_TRANSPORT_FREQUENCY_HZ:g}",
-    "read_time_s": "3",
+    "read_time_s": "15",  # The user's figure, 2026-10-09.
     "read_settle_s": "1",
     "repeats": "1",
 }

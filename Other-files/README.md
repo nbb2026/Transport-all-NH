@@ -1,5 +1,14 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MS-fourState.py: state E and the read time from the user's figures (2026-10-09)
+
+- **States (`DEFAULT_STATES`):** D 360°/+1500 Oe/+22 mA, A 270°/+1500 Oe/−22 mA
+  and B 270°/+1500 Oe/+22 mA are as before. E is now 360°/−1500 Oe/+22 mA (was
+  +1500 Oe/−22 mA).
+- **Read time:** the default is now 15 s (was 3 s).
+- **Tests:** the defaults test, the pulse order and the action order follow
+  them; the CI screenshot's example uses the new E.
+
 ## MS-fourState.py: PPMS address 192.168.137.137 by default (2026-10-09)
 
 - **Default address:** `PPMS_HOST = "192.168.137.137"` (user request).

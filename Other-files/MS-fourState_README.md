@@ -153,14 +153,15 @@ Zero H or MultiVu.
 
 ## States
 
-Defaults from the measurement table, editable in the window (1500 Oe = 0.15 T):
+Defaults from the user's figure of 2026-10-09, editable in the window
+(1500 Oe = 0.15 T):
 
 | State | φ PPMS | H write | I pulse | |
 | --- | --- | --- | --- | --- |
 | D | 360° | +1500 Oe (Hz) | +22 mA | +H ⊥ +I |
 | A | 270° | +1500 Oe (Hx) | −22 mA | +H ∥ −I |
 | B | 270° | +1500 Oe (Hx) | +22 mA | +H ∥ +I |
-| E | 360° | +1500 Oe (Hz) | −22 mA | +H ⊥ −I |
+| E | 360° | −1500 Oe (Hz) | +22 mA | −H ⊥ +I |
 
 Cycles and sequences are typed as state names separated by spaces, commas or
 dashes, for example `D A B E` or `D-A-B-E-B-A`. Switching between
@@ -302,7 +303,7 @@ read again after a time therefore shows how long it is kept.
   it if the sample needs more.
 - **Other defaults:** field rate 100 Oe/s, "No overshoot", 2 s settle, 1 s
   wait after the pulse; rotator decel 14 (slowest); read 0.5 mA RMS,
-  317.3 Hz, 3 s, 1 s extra settle, autorange on.
+  317.3 Hz, 15 s read, 1 s extra settle, autorange on.
 - **End state:** a run ends Driven at 0 Oe. Use the PPMS page's Zero H or
   Persist if the magnet should rest Persistent.
 
