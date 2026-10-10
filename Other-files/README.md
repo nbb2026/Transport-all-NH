@@ -1,5 +1,47 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local: frequency scan on 6221-IV and Gate-VI (2026-10-10)
+
+The user asked for a frequency scan on 6221-IV and Gate-VI. It follows the
+STFMR multi-frequency sweep: the whole scan runs at one frequency, then at
+the next. The frequencies are chosen as on the microwave test program's
+modulation axis.
+
+- **The row:** each scan box has "Frequency scan", "f start Hz" and
+  "f stop Hz".
+  - Off by default: the scan runs at Frequency Hz, as before.
+  - Ticked: the scan uses the whole-number primes from f start to f stop
+    (default 7–97 Hz, 22 primes). The 2nd and 3rd harmonics of a prime never
+    fall on a 50 or 60 Hz mains harmonic.
+  - A note beside the boxes gives the count, or what is wrong.
+- **Between frequencies:** the 6221 is switched off and read back off, then
+  set up again at the next frequency. The lock-ins are set up again too.
+- **6221-IV:** the whole current scan (all loops and harmonic passes) runs
+  at each frequency. The first point waits at least 5 periods of the new
+  frequency, besides the 10 time constants. The lock is checked again at
+  each frequency.
+- **Gate-VI:** the whole pulse scan (start → stop → start) runs at each
+  frequency.
+  - The 6221 pre-run is at least 5 periods.
+  - The point index runs on across frequencies.
+  - The frequency scan needs an AC read current: the row is greyed out with
+    DC, as Frequency Hz is.
+- **Plots:** one curve per frequency, in each meter's colour, light at the
+  lowest frequency to dark at the highest, as on STFMR. The legend names
+  every frequency up to six, otherwise the lowest and highest. Gate-VI's
+  |R| and voltage-vs-pulse plots do the same. With one frequency the plots
+  are as before.
+- **CSV:** unchanged columns. Each row has its frequency (`frequency_Hz`,
+  `6221_frequency_Hz`).
+- **Limits:**
+  - The demodulation limits (SR830 102 kHz, Zurich 500 kHz) are checked at
+    the highest frequency.
+  - 6221-IV: at most 100000 points, including passes and frequencies.
+  - Gate-VI: at most 10000 points, all frequencies together.
+  - The confirmation shows the count and the estimated time.
+- **Tests:** `test_nonlocal_frequency_scan.py` (18, no Tk) and a
+  `test_panel_defaults.py` check of the rows.
+
 ## Non-local: every AC frequency defaults to 17.3 Hz (2026-10-09)
 
 The user asked for 17.3 Hz as every default frequency on the Non-local page.

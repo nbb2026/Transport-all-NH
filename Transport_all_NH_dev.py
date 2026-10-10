@@ -1521,6 +1521,17 @@ NONLOCAL_IV6221_RESULTS_DIRECTORY = (
     Path(__file__).resolve().parent / f"{Path(__file__).stem}_NonLocal_6221_IV_Results"
 )
 NONLOCAL_METER_NAMES = {"8": "SR830 #8", "9": "SR830 #9", "mfli": "Zurich", "2182": "2182A"}
+# Frequency scan on 6221-IV and Gate-VI (user, 2026-10-10), as the STFMR
+# multi-frequency sweep: the whole scan runs at one frequency, then at the
+# next.  The frequencies are the whole-number primes from f start to f stop,
+# as the microwave test program's modulation axis: the 2nd and 3rd harmonics
+# of a prime never fall on a 50 or 60 Hz mains harmonic.
+NONLOCAL_FSCAN_START_HZ = 7
+NONLOCAL_FSCAN_STOP_HZ = 97
+NONLOCAL_FSCAN_MAX_HZ = 100000          # the 6221's sine
+# A new frequency waits at least this many of its periods before the first
+# reading (the microwave test program's 5/f), besides the scan's own settle.
+NONLOCAL_FSCAN_SETTLE_PERIODS = 5.0
 # The Zurich MFLI time constant on the Non-local rack, as on RT-E, PPMS and
 # STFMR (the Gate-VI and 6221-IV scans both use it).
 NONLOCAL_MFLI_TIME_CONSTANT_S = 0.1
@@ -4771,6 +4782,58 @@ def ramp_levels(target_v: float, step_v: float = NONLOCAL_IV_SWEEP_RAMP_STEP_V) 
     target_v = float(target_v)
     count = math.ceil(abs(target_v) / step_v - 1e-9)
     return [round(target_v * index / count, 10) for index in range(1, count)] if count > 1 else []
+
+
+def nonlocal_prime_frequencies(start_hz, stop_hz) -> tuple[float, ...]:
+    """The frequency scan's frequencies: the whole-number primes from
+    ``start_hz`` to ``stop_hz`` (both included), as the microwave test
+    program's modulation axis."""
+    try:
+        start, stop = float(start_hz), float(stop_hz)
+    except (TypeError, ValueError) as error:
+        raise ValueError("f start and f stop must be whole numbers of Hz") from error
+    if not all(math.isfinite(value) and value.is_integer() for value in (start, stop)):
+        raise ValueError("f start and f stop must be whole numbers of Hz")
+    start, stop = int(start), int(stop)
+    if not 2 <= start <= stop <= NONLOCAL_FSCAN_MAX_HZ:
+        raise ValueError(
+            f"The frequency scan needs 2 ≤ f start ≤ f stop ≤ {NONLOCAL_FSCAN_MAX_HZ} Hz"
+        )
+    sieve = bytearray(b"\x01") * (stop + 1)
+    sieve[:2] = b"\x00\x00"
+    for number in range(2, math.isqrt(stop) + 1):
+        if sieve[number]:
+            sieve[number * number::number] = bytes(len(range(number * number, stop + 1, number)))
+    values = tuple(float(number) for number in range(start, stop + 1) if sieve[number])
+    if not values:
+        raise ValueError(f"No prime from {start} to {stop} Hz; widen the range")
+    return values
+
+
+def shade_color(color: str, fraction: float) -> str:
+    """``color`` lightened towards white (fraction 0) or darkened towards
+    black (fraction 1), itself at 0.5: the frequency-scan curves, from the
+    lowest frequency (light) to the highest (dark), as on STFMR."""
+    fraction = min(max(float(fraction), 0.0), 1.0)
+    rgb = [int(color[index:index + 2], 16) for index in (1, 3, 5)]
+    if fraction < 0.5:
+        mix = (0.5 - fraction) / 0.5 * 0.6
+        rgb = [channel + (255 - channel) * mix for channel in rgb]
+    else:
+        mix = (fraction - 0.5) / 0.5 * 0.45
+        rgb = [channel * (1 - mix) for channel in rgb]
+    return "#" + "".join(f"{round(channel):02x}" for channel in rgb)
+
+
+def nonlocal_frequency_scan_text(start_hz, stop_hz) -> str:
+    """The frequency scan row's note: how many primes, or what is wrong."""
+    try:
+        values = nonlocal_prime_frequencies(start_hz, stop_hz)
+    except ValueError as error:
+        return str(error)
+    if len(values) == 1:
+        return f"1 prime: {values[0]:g} Hz"
+    return f"{len(values)} primes, {values[0]:g}–{values[-1]:g} Hz"
 
 
 def current_unit(max_abs_current_a: float) -> tuple[float, str]:
@@ -12928,6 +12991,11 @@ class CombinedControlApp:
         self.nonlocal_vi_measure_var = tk.StringVar(
             value=f"{NONLOCAL_VI_MEASURE_S:g}"
         )
+        # The frequency scan (user, 2026-10-10); off, the scan runs at Frequency Hz.
+        self.nonlocal_vi_fscan_var = tk.BooleanVar(value=False)
+        self.nonlocal_vi_fstart_var = tk.StringVar(value=f"{NONLOCAL_FSCAN_START_HZ:g}")
+        self.nonlocal_vi_fstop_var = tk.StringVar(value=f"{NONLOCAL_FSCAN_STOP_HZ:g}")
+        self.nonlocal_vi_fscan_info_var = tk.StringVar(value="")
         self.nonlocal_vi_compliance_var = tk.StringVar(
             value=f"{NONLOCAL_VI_6221_COMPLIANCE_V:g}"
         )
@@ -13014,6 +13082,11 @@ class CombinedControlApp:
         self.nonlocal_iv6221_compliance_var = tk.StringVar(value=f"{NONLOCAL_IV6221_COMPLIANCE_V:g}")
         self.nonlocal_iv6221_settle_var = tk.StringVar(value=f"{NONLOCAL_IV6221_SETTLE_S:g}")
         self.nonlocal_iv6221_acquire_var = tk.StringVar(value=f"{NONLOCAL_IV6221_ACQUIRE_S:g}")
+        # The frequency scan (user, 2026-10-10); off, the scan runs at Frequency Hz.
+        self.nonlocal_iv6221_fscan_var = tk.BooleanVar(value=False)
+        self.nonlocal_iv6221_fstart_var = tk.StringVar(value=f"{NONLOCAL_FSCAN_START_HZ:g}")
+        self.nonlocal_iv6221_fstop_var = tk.StringVar(value=f"{NONLOCAL_FSCAN_STOP_HZ:g}")
+        self.nonlocal_iv6221_fscan_info_var = tk.StringVar(value="")
         self.nonlocal_iv6221_harmonic_vars = {
             key: tk.StringVar(value=value) for key, value in NONLOCAL_IV6221_DEFAULT_HARMONICS.items()
         }
@@ -21331,8 +21404,10 @@ class CombinedControlApp:
             ttk.Entry(scan, textvariable=variable, width=8).grid(
                 row=row, column=2 * slot + 1, sticky="w", pady=2
             )
+        fscan, self.nonlocal_vi_fscan_widgets = self._build_nonlocal_fscan_row(scan, "nonlocal_vi")
+        fscan.grid(row=3, column=0, columnspan=6, sticky="ew", pady=2)
         actions = ttk.Frame(scan)
-        actions.grid(row=3, column=0, columnspan=6, sticky="ew", pady=(6, 0))
+        actions.grid(row=4, column=0, columnspan=6, sticky="ew", pady=(6, 0))
         actions.columnconfigure(2, weight=1)
         self.nonlocal_vi_start_button = ttk.Button(
             actions,
@@ -21359,7 +21434,7 @@ class CombinedControlApp:
         # others; the lock-in reference text wraps rather than pushing
         # anything off.
         readouts = ttk.Frame(scan)
-        readouts.grid(row=4, column=0, columnspan=6, sticky="ew", pady=(5, 0))
+        readouts.grid(row=5, column=0, columnspan=6, sticky="ew", pady=(5, 0))
         readouts.columnconfigure(2, weight=1)
         ttk.Label(
             readouts,
@@ -21567,6 +21642,43 @@ class CombinedControlApp:
         self._arrange_pair_by_width(body, params, meters, gap=0, stack_gap=4)
         return body
 
+    def _build_nonlocal_fscan_row(self, parent, prefix: str):
+        """The frequency scan row of 6221-IV and Gate-VI (user, 2026-10-10):
+        the tick, f start and f stop in Hz, and how many primes they give.
+        Returns the row and its tick and entries."""
+        tick_var = getattr(self, f"{prefix}_fscan_var")
+        start_var = getattr(self, f"{prefix}_fstart_var")
+        stop_var = getattr(self, f"{prefix}_fstop_var")
+        info_var = getattr(self, f"{prefix}_fscan_info_var")
+        row = ttk.Frame(parent)
+        row.columnconfigure(5, weight=1)
+        tick = ttk.Checkbutton(row, text="Frequency scan", variable=tick_var)
+        tick.grid(row=0, column=0, sticky="w")
+        widgets = [tick]
+        for column, label, variable in ((1, "f start Hz", start_var), (3, "f stop Hz", stop_var)):
+            ttk.Label(row, text=label).grid(row=0, column=column, sticky="e", padx=(8, 3))
+            entry = ttk.Entry(row, textvariable=variable, width=6)
+            entry.grid(row=0, column=column + 1, sticky="w")
+            widgets.append(entry)
+        info = ttk.Label(row, width=1)
+        info.grid(row=0, column=5, sticky="ew", padx=(8, 0))
+        show_trimmed(info, info_var)
+
+        def refresh(*_args) -> None:
+            try:
+                scanning = bool(tick_var.get())
+            except tk.TclError:
+                scanning = False
+            info_var.set(
+                nonlocal_frequency_scan_text(start_var.get(), stop_var.get())
+                + " (the whole scan at each)" if scanning else "Off: the scan runs at Frequency Hz"
+            )
+
+        for variable in (tick_var, start_var, stop_var):
+            variable.trace_add("write", refresh)
+        refresh()
+        return row, widgets
+
     def _build_nonlocal_iv6221_tab(self, tab) -> None:
         """6221-IV as the RT-E page: "6221-IV settings" (the 6221 and each
         lock-in's harmonic and Measure tick) beside "6221-IV scan", then one
@@ -21669,19 +21781,21 @@ class CombinedControlApp:
             ttk.Entry(scan, textvariable=variable, width=6).grid(
                 row=row, column=2 + 2 * column, padx=2, pady=2, sticky="ew"
             )
+        fscan, _widgets = self._build_nonlocal_fscan_row(scan, "nonlocal_iv6221")
+        fscan.grid(row=2, column=0, columnspan=8, sticky="ew", pady=2)
         self.nonlocal_iv6221_start_button = ttk.Button(
             scan, text="Choose folder and start scan", command=self.start_nonlocal_iv6221
         )
-        self.nonlocal_iv6221_start_button.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        self.nonlocal_iv6221_start_button.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 0))
         self.nonlocal_iv6221_stop_button = ttk.Button(
             scan, text="Stop", command=self.stop_nonlocal_keithley_task, state="disabled"
         )
-        self.nonlocal_iv6221_stop_button.grid(row=2, column=3, columnspan=2, sticky="ew", pady=(4, 0))
+        self.nonlocal_iv6221_stop_button.grid(row=3, column=3, columnspan=2, sticky="ew", pady=(4, 0))
         ttk.Checkbutton(
             scan, text="Round trip", variable=self.nonlocal_iv6221_round_trip_var
-        ).grid(row=2, column=5, columnspan=2, pady=(4, 0))
+        ).grid(row=3, column=5, columnspan=2, pady=(4, 0))
         status = ttk.Frame(scan)
-        status.grid(row=3, column=0, columnspan=8, sticky="ew", pady=(4, 0))
+        status.grid(row=4, column=0, columnspan=8, sticky="ew", pady=(4, 0))
         status.columnconfigure(1, weight=1)
         self.nonlocal_iv6221_progress = ttk.Progressbar(
             status, mode="determinate", maximum=1, value=0, length=110
@@ -21691,7 +21805,7 @@ class CombinedControlApp:
         status_label.grid(row=0, column=1, sticky="ew")
         show_trimmed(status_label, self.nonlocal_iv6221_status_var)
         point = ttk.Label(scan, width=1)
-        point.grid(row=4, column=0, columnspan=8, sticky="ew", pady=(2, 0))
+        point.grid(row=5, column=0, columnspan=8, sticky="ew", pady=(2, 0))
         show_trimmed(point, self.nonlocal_iv6221_point_var)
         self._arrange_pair_by_width(body, params, lockins, gap=0, stack_gap=4)
         self._arrange_pair_by_width(controls, settings, scan, gap=6, stack_gap=4)
@@ -29287,14 +29401,16 @@ class CombinedControlApp:
             state="readonly" if idle and not states["2410"] else "disabled"
         )
         self._refresh_nonlocal_vi_model_labels()
-        self.nonlocal_vi_frequency_entry.configure(
-            state=(
-                "normal"
-                if idle
-                and self.nonlocal_vi_output_mode_var.get().strip().upper() == "AC"
-                else "disabled"
-            )
+        frequency_state = (
+            "normal"
+            if idle
+            and self.nonlocal_vi_output_mode_var.get().strip().upper() == "AC"
+            else "disabled"
         )
+        self.nonlocal_vi_frequency_entry.configure(state=frequency_state)
+        # The frequency scan row as Frequency Hz: an AC read current only.
+        for widget in self.__dict__.get("nonlocal_vi_fscan_widgets", ()):
+            widget.configure(state=frequency_state)
         for key, device_connected in states.items():
             self.nonlocal_vi_device_connect_buttons[key].configure(
                 state=(
@@ -30043,6 +30159,29 @@ class CombinedControlApp:
                 f"VI scan total points exceed {NONLOCAL_VI_MAX_POINTS}"
             )
         settings["voltage_scan"] = voltage_scan
+        # The frequency scan (user, 2026-10-10): the whole pulse scan at each
+        # frequency in turn, as on STFMR.  A DC read current has none.
+        scanning, frequencies = (
+            self._nonlocal_scan_frequencies("nonlocal_vi", settings["frequency_hz"])
+            if settings["output_mode"] == "AC" else (False, (settings["frequency_hz"],))
+        )
+        if scanning:
+            top = max(frequencies)
+            for key in lockin_configs:
+                if max(lockin_orders[key]) * top > 102000:
+                    raise ValueError(
+                        f"SR830 #{key} demodulation frequency exceeds 102 kHz at {top:g} Hz"
+                    )
+            if mfli_config and top * max(lockin_orders["mfli"]) > 500000:
+                raise ValueError(
+                    f"Zurich MFLI demodulation frequency exceeds the base model's 500 kHz at {top:g} Hz"
+                )
+        if len(voltage_scan) * len(frequencies) > NONLOCAL_VI_MAX_POINTS:
+            raise ValueError(
+                f"VI scan total points (all frequencies) exceed {NONLOCAL_VI_MAX_POINTS}"
+            )
+        settings["frequency_scan"] = scanning
+        settings["frequencies"] = frequencies
         settings["lockin_configs"] = lockin_configs
         settings["mfli_config"] = mfli_config
         settings["use_nanovoltmeter"] = use_nanovoltmeter
@@ -30068,17 +30207,29 @@ class CombinedControlApp:
         settings["sample_interval_s"] = 1.0 / settings["sample_hz"]
         # The hold and a couple of reads while the current is chosen.
         resistance_estimate_s = NONLOCAL_VI_RES_HOLD_S + 2 * NONLOCAL_VI_RES_SAMPLE_INTERVAL_S
-        settings["estimated_s"] = resistance_estimate_s + len(voltage_scan) * (
-            # The drain after each pulse (at least 1 s, then two readings).
-            NONLOCAL_KEITHLEY_DISCHARGE_S + 2 * NONLOCAL_KEITHLEY_SAMPLE_INTERVAL_S
-            + settings["pulse_width_s"]
-            + settings["post_pulse_s"]
-            + settings["settle_s"]
-            + settings["measure_s"]
-            + resistance_estimate_s
-            + (len(settings["read_passes"]) - 1) * (harmonic_settle_s + settings["measure_s"])
+        settings["estimated_s"] = resistance_estimate_s + sum(
+            len(voltage_scan) * (
+                # The drain after each pulse (at least 1 s, then two readings).
+                NONLOCAL_KEITHLEY_DISCHARGE_S + 2 * NONLOCAL_KEITHLEY_SAMPLE_INTERVAL_S
+                + settings["pulse_width_s"]
+                + settings["post_pulse_s"]
+                + self._nonlocal_vi_pre_run_s(settings, frequency)
+                + settings["measure_s"]
+                + resistance_estimate_s
+                + (len(settings["read_passes"]) - 1) * (harmonic_settle_s + settings["measure_s"])
+            )
+            for frequency in frequencies
         )
         return settings
+
+    @staticmethod
+    def _nonlocal_vi_pre_run_s(settings: dict, frequency_hz: float) -> float:
+        """The 6221's run before each read: "6221 pre-run s", and in a
+        frequency scan at least 5 periods of the frequency, as the microwave
+        test program waits."""
+        if not settings.get("frequency_scan"):
+            return float(settings["settle_s"])
+        return max(float(settings["settle_s"]), NONLOCAL_FSCAN_SETTLE_PERIODS / float(frequency_hz))
 
     def start_nonlocal_vi_scan(self) -> None:
         if self.nonlocal_keithley_task is not None:
@@ -30172,14 +30323,27 @@ class CombinedControlApp:
                 "Keithley 2182A: channel 1 DC reading (not a lock-in AC amplitude), "
                 "NPLC 1, Autozero + Front Autozero, autorange"
             )
+        frequencies = settings["frequencies"]
+        points = len(settings["voltage_scan"])
         if not messagebox.askyesno(
             "Non-local VI scan",
             f"Pulses: {settings['start_voltage_v']:g} → "
             f"{settings['stop_voltage_v']:g} → "
             f"{settings['start_voltage_v']:g} V, "
-            f"{len(settings['voltage_scan'])} points\n"
-            f"6221：{settings['current_rms_ma']:g} "
-            f"{'mA RMS，' + format(settings['frequency_hz'], 'g') + ' Hz' if settings['output_mode'] == 'AC' else 'mA DC'}\n"
+            + (
+                f"{points} points per frequency × {len(frequencies)} frequencies = "
+                f"{points * len(frequencies)} points\n"
+                if len(frequencies) > 1 else f"{points} points\n"
+            )
+            + f"6221：{settings['current_rms_ma']:g} "
+            + (
+                f"mA RMS; frequency scan: {len(frequencies)} prime(s), "
+                f"{frequencies[0]:g}–{frequencies[-1]:g} Hz, the whole pulse scan at each "
+                "(6221 set up again in between)\n"
+                if settings["frequency_scan"]
+                else f"{'mA RMS，' + format(settings['frequency_hz'], 'g') + ' Hz' if settings['output_mode'] == 'AC' else 'mA DC'}\n"
+            )
+            + 
             f"Resistance gate: {settings['gate_resistance_ohm'] / 1e6:g} MΩ\n"
             f"{lockin_description}\n"
             f"Estimated total time: {self._format_duration(settings['estimated_s'])}\n\n"
@@ -30212,7 +30376,7 @@ class CombinedControlApp:
             self.nonlocal_vi_current_rows = []
             self.nonlocal_vi_resistance_rows = []
         self.nonlocal_vi_progress.configure(
-            maximum=max(len(settings["voltage_scan"]), 1), value=0
+            maximum=max(len(settings["voltage_scan"]) * len(settings["frequencies"]), 1), value=0
         )
         self.nonlocal_vi_eta_var.set(
             f"Remaining: {self._format_duration(settings['estimated_s'])}"
@@ -30321,6 +30485,7 @@ class CombinedControlApp:
         stage: str,
         writer,
         csv_file,
+        frequency_hz: float = math.nan,
     ) -> dict:
         self.nonlocal_vi_ac_controller.output_off()
         self.nonlocal_vi_ac_controller.confirm_output_off(
@@ -30355,8 +30520,9 @@ class CombinedControlApp:
         )
         csv_file.flush()
         with self.nonlocal_vi_data_lock:
+            # The frequency of its pulse scan, for a curve per frequency.
             self.nonlocal_vi_resistance_rows.append(
-                (pulse_voltage_v, result["resistance_ohm"], elapsed, stage)
+                (pulse_voltage_v, result["resistance_ohm"], elapsed, stage, frequency_hz)
             )
         self.post_ui(
             lambda value=result["resistance_ohm"]: self.nonlocal_vi_status_var.set(
@@ -30373,10 +30539,17 @@ class CombinedControlApp:
         try:
             # A voltage left on by Set: drained and off before the 6221.
             self._nonlocal_keithley_off_first("before the Gate-VI scan", in_use="in use by the Gate-VI scan")
-            frequency, lockin_readbacks = (
-                self.nonlocal_vi_ac_controller.configure(
+            source = self.nonlocal_vi_ac_controller
+            # The frequency scan (user, 2026-10-10), as the STFMR
+            # multi-frequency sweep: the whole pulse scan at each frequency
+            # in turn, the 6221 set up again in between.
+            frequencies = tuple(settings.get("frequencies") or (settings["frequency_hz"],))
+            total_points = len(settings["voltage_scan"]) * len(frequencies)
+
+            def configure_at(set_frequency):
+                return source.configure(
                     settings["current_rms_ma"],
-                    settings["frequency_hz"],
+                    set_frequency,
                     settings["compliance_v"],
                     settings["lockin_configs"],
                     settings["marker_line"],
@@ -30385,8 +30558,20 @@ class CombinedControlApp:
                     sample_hz=settings["sample_hz"],
                     output_mode=settings["output_mode"],
                 )
-            )
-            source = self.nonlocal_vi_ac_controller
+
+            def set_up_zurich_orders(readbacks):
+                if len(orders.get("mfli", ())) > 1:
+                    # As on PPMS and 6221-IV: the 2nd (and 3rd) order on their
+                    # own demodulators, at Demod 1's rate and the rack's TC,
+                    # and the demodulators not measuring off.
+                    tc_s = float(settings["mfli_config"]["timeconstant_s"])
+                    rate = float(readbacks["mfli"].get("sample_rate_hz", settings["sample_hz"]))
+                    source.configure_second_harmonic(tc_s, rate=rate)
+                    if 3 in orders["mfli"]:
+                        source.configure_third_harmonic(tc_s, rate=rate)
+                    source.disable_unused_ppms_demods("+".join(map(str, orders["mfli"])))
+
+            frequency, lockin_readbacks = configure_at(frequencies[0])
             # The harmonic orders of each meter (the 2182A has none).
             orders = {
                 key: tuple(settings.get("lockin_orders", {}).get(key) or (
@@ -30395,16 +30580,7 @@ class CombinedControlApp:
                 for key in settings["measurement_keys"]
             }
             read_passes = settings.get("read_passes") or [settings["measurement_keys"]]
-            if len(orders.get("mfli", ())) > 1:
-                # As on PPMS and 6221-IV: the 2nd (and 3rd) order on their own
-                # demodulators, at Demod 1's rate and the rack's TC, and the
-                # demodulators not measuring off.
-                tc_s = float(settings["mfli_config"]["timeconstant_s"])
-                rate = float(lockin_readbacks["mfli"].get("sample_rate_hz", settings["sample_hz"]))
-                source.configure_second_harmonic(tc_s, rate=rate)
-                if 3 in orders["mfli"]:
-                    source.configure_third_harmonic(tc_s, rate=rate)
-                source.disable_unused_ppms_demods("+".join(map(str, orders["mfli"])))
+            set_up_zurich_orders(lockin_readbacks)
             # Each SR830's order now, and the range each order last ended on
             # (its next read starts there rather than at the configure range).
             current_orders = {key: orders[key][0] for key in settings["lockin_configs"]}
@@ -30481,318 +30657,344 @@ class CombinedControlApp:
                 resistance_writer,
                 resistance_file,
             )
-            for point_index, pulse_voltage_v in enumerate(
-                settings["voltage_scan"], 1
-            ):
-                if self.nonlocal_vi_stop_event.is_set():
-                    raise NonLocalVIStopped()
-                gate_resistance = abs(float(gate_result["resistance_ohm"]))
-                if (
-                    not math.isfinite(gate_resistance)
-                    or gate_resistance <= settings["gate_resistance_ohm"]
-                ):
-                    raise RuntimeError(
-                        f"Pulse {point_index} blocked by the resistance gate: "
-                        f"|R|={gate_resistance:.6e} Ω, must be >"
-                        f"{settings['gate_resistance_ohm']:.6e} Ω"
-                    )
-
-                self.nonlocal_vi_ac_controller.output_off()
-                self.nonlocal_vi_ac_controller.confirm_output_off(
-                    f"before the Keithley {self.nonlocal_vi_2410_controller.model} pulse"
-                )
-                self.nonlocal_vi_interlock.begin(NonLocalVIInterlock.VOLTAGE)
-                try:
-                    self.nonlocal_vi_2410_controller.apply_voltage_pulse(
-                        pulse_voltage_v,
-                        settings["pulse_width_s"],
-                        self.nonlocal_vi_stop_event,
-                        status_callback=lambda value: self._nonlocal_vi_record_pulse(
-                            run_start, value
-                        ),
-                    )
-                finally:
-                    self.nonlocal_vi_interlock.end(NonLocalVIInterlock.VOLTAGE)
-                self.nonlocal_vi_2410_controller.confirm_output_off(
-                    "after the pulse"
-                )
-                if self.nonlocal_vi_stop_event.wait(settings["post_pulse_s"]):
-                    raise NonLocalVIStopped()
-
-                self.nonlocal_vi_2410_controller.confirm_output_off(
-                    "before starting the 6221 read current"
-                )
-                current_readback_ma = self.nonlocal_vi_ac_controller.set_current(
-                    settings["current_rms_ma"], frequency
-                )
-                current_elapsed = time.monotonic() - run_start
-                with self.nonlocal_vi_data_lock:
-                    self.nonlocal_vi_current_rows.append(
-                        (current_elapsed, current_readback_ma)
-                    )
-                self.post_ui(
-                    lambda value=current_readback_ma, mode=settings["output_mode"]:
-                    self.nonlocal_vi_output_var.set(
-                        f"Keithley {self.nonlocal_vi_2410_controller.model} OFF | 6221 {value:.6g} "
-                        f"{'mA RMS' if mode == 'AC' else 'mA DC'}"
-                    )
-                )
-                if self.nonlocal_vi_stop_event.wait(settings["settle_s"]):
-                    raise NonLocalVIStopped()
-                self.nonlocal_vi_2410_controller.confirm_output_off(
-                    "before the voltmeter read"
-                )
-
-                self.nonlocal_vi_interlock.begin(NonLocalVIInterlock.SR830_READ)
-                try:
-                    sync = self.nonlocal_vi_ac_controller.wait_references(
-                        frequency, self.nonlocal_vi_stop_event,
-                        tuple(settings["lockin_configs"]),
-                    )
+            point_index = 0
+            for frequency_index, set_frequency in enumerate(frequencies, 1):
+                if frequency_index > 1:
+                    if self.nonlocal_vi_stop_event.is_set():
+                        raise NonLocalVIStopped()
+                    # As STFMR between frequencies: with the Keithley and the
+                    # 6221 off (read back), the 6221 and the lock-ins set up
+                    # at the next frequency.
+                    self.nonlocal_vi_2410_controller.confirm_output_off("before the next frequency")
+                    source.output_off()
+                    source.confirm_output_off("before the next frequency")
+                    frequency, lockin_readbacks = configure_at(set_frequency)
+                    set_up_zurich_orders(lockin_readbacks)
+                    source.output_off()
+                    source.confirm_output_off("after setting up the next frequency")
+                    # configure() leaves each SR830 on its first order.
+                    current_orders.update({key: orders[key][0] for key in settings["lockin_configs"]})
                     self.post_ui(
-                        lambda info=sync, mode=settings["output_mode"]:
-                        self._publish_reference_sync(info, mode, vi=True)
+                        lambda n=frequency_index, value=set_frequency:
+                        self.nonlocal_vi_status_var.set(
+                            f"Frequency {n}/{len(frequencies)}: {value:g} Hz; the pulse scan starts again"
+                        )
                     )
-                    # One list per meter and harmonic order.
-                    samples = {
-                        (key, order): []
-                        for key in settings["measurement_keys"]
-                        for order in orders[key]
-                    }
-                    for pass_index, pass_keys in enumerate(read_passes):
-                        if pass_index:
-                            # The SR830s' next order (user, 2026-10-09: an
-                            # SR830 reads 1+2 one after the other): switched,
-                            # read back, its filter settled, then read.
-                            for key in pass_keys:
-                                switch_harmonic(key, orders[key][pass_index])
-                            taus = [
-                                float(lockin_readbacks[key].get("time_constant_s", math.nan))
-                                for key in pass_keys
-                            ]
-                            tau_s = max((tau for tau in taus if math.isfinite(tau)), default=1.0)
-                            if self.nonlocal_vi_stop_event.wait(
-                                max(settings["settle_s"], NONLOCAL_VI_HARMONIC_SETTLE_TAUS * tau_s)
-                            ):
-                                raise NonLocalVIStopped()
-                            self.nonlocal_vi_2410_controller.confirm_output_off(
-                                "before the next harmonic read"
-                            )
-                        read_start = time.monotonic()
-                        next_sample = read_start
-                        while (
-                            time.monotonic() - read_start < settings["measure_s"]
-                        ):
-                            if self.nonlocal_vi_stop_event.is_set():
-                                raise NonLocalVIStopped()
-                            if self.nonlocal_vi_stop_event.wait(
-                                max(0.0, next_sample - time.monotonic())
-                            ):
-                                raise NonLocalVIStopped()
-                            self.nonlocal_vi_interlock.require(
-                                NonLocalVIInterlock.SR830_READ
-                            )
-                            self.nonlocal_vi_2410_controller.confirm_output_off(
-                                "voltmeter acquiring"
-                            )
-                            current_samples = (
-                                self.nonlocal_vi_ac_controller.read_samples(
-                                    frequency, pass_keys
-                                )
-                            )
-                            elapsed = time.monotonic() - run_start
-                            read_elapsed = time.monotonic() - read_start
-                            stamp = datetime_module.datetime.now().isoformat(
-                                timespec="milliseconds"
-                            )
-                            readings = self._nonlocal_vi_order_readings(
-                                current_samples, orders, current_orders,
-                            )
-                            for key, order, sample in readings:
-                                config = lockin_readbacks[key]
-                                raw_writer.writerow(
-                                    (
-                                        stamp, "formal", point_index,
-                                        pulse_voltage_v, gate_resistance,
-                                        key, config["meter_type"],
-                                        config["resource"],
-                                        config.get("coupling", ""),
-                                        order if order is not None else config.get("harmonic", ""),
-                                        config.get("channel", "VOLT"),
-                                        current_readback_ma, frequency, read_elapsed,
-                                        sample["X"], sample["Y"], sample["R"],
-                                        sample["phase_deg"],
-                                        sample["reference_frequency_hz"],
-                                        sample.get("demodulation_frequency_hz", ""),
-                                        sample["lia_status"], sample["status_text"],
-                                        sample["reference_valid"],
-                                        sample["output_on"],
-                                        sample["measurement_condition"],
-                                        sample["in_compliance"],
-                                        sample["sensitivity_index"],
-                                        sample.get("input_range_v", ""),
-                                        sample.get("input_utilization", ""),
-                                        sample["auto_range"], 0,
-                                        settings["marker_line"],
-                                    )
-                                )
-                                samples[(key, order)].append(sample)
-                            raw_file.flush()
-                            with self.nonlocal_vi_data_lock:
-                                for key, order, sample in readings:
-                                    # (elapsed, meter, R, θ, kind, X, Y, order):
-                                    # X, Y and θ are plotted against time, a
-                                    # row per order.
-                                    self.nonlocal_vi_time_rows.append(
-                                        (
-                                            elapsed, key, sample["R"],
-                                            sample["phase_deg"], "formal",
-                                            sample["X"], sample["Y"], order,
-                                        )
-                                    )
-                            remaining = max(
-                                0.0, settings["estimated_s"] - elapsed
-                            )
-                            self.post_ui(
-                                lambda values=current_samples, e=elapsed,
-                                remain=remaining, index=point_index,
-                                now={**current_orders, **zurich_now}:
-                                self._publish_nonlocal_vi_samples(
-                                    values,
-                                    e,
-                                    remain,
-                                    index,
-                                    len(settings["voltage_scan"]),
-                                    now,
-                                )
-                            )
-                            next_sample += settings["sample_interval_s"]
-                    # Back to the first order for the next point.
-                    for key in settings["lockin_configs"]:
-                        if current_orders[key] != orders[key][0]:
-                            switch_harmonic(key, orders[key][0])
-                finally:
-                    self.nonlocal_vi_interlock.end(
-                        NonLocalVIInterlock.SR830_READ
-                    )
+                pre_run_s = self._nonlocal_vi_pre_run_s(settings, set_frequency)
+                for pulse_voltage_v in settings["voltage_scan"]:
+                    point_index += 1
+                    if self.nonlocal_vi_stop_event.is_set():
+                        raise NonLocalVIStopped()
+                    gate_resistance = abs(float(gate_result["resistance_ohm"]))
+                    if (
+                        not math.isfinite(gate_resistance)
+                        or gate_resistance <= settings["gate_resistance_ohm"]
+                    ):
+                        raise RuntimeError(
+                            f"Pulse {point_index} blocked by the resistance gate: "
+                            f"|R|={gate_resistance:.6e} Ω, must be >"
+                            f"{settings['gate_resistance_ohm']:.6e} Ω"
+                        )
+
                     self.nonlocal_vi_ac_controller.output_off()
                     self.nonlocal_vi_ac_controller.confirm_output_off(
-                        "after the voltmeter read"
+                        f"before the Keithley {self.nonlocal_vi_2410_controller.model} pulse"
+                    )
+                    self.nonlocal_vi_interlock.begin(NonLocalVIInterlock.VOLTAGE)
+                    try:
+                        self.nonlocal_vi_2410_controller.apply_voltage_pulse(
+                            pulse_voltage_v,
+                            settings["pulse_width_s"],
+                            self.nonlocal_vi_stop_event,
+                            status_callback=lambda value: self._nonlocal_vi_record_pulse(
+                                run_start, value
+                            ),
+                        )
+                    finally:
+                        self.nonlocal_vi_interlock.end(NonLocalVIInterlock.VOLTAGE)
+                    self.nonlocal_vi_2410_controller.confirm_output_off(
+                        "after the pulse"
+                    )
+                    if self.nonlocal_vi_stop_event.wait(settings["post_pulse_s"]):
+                        raise NonLocalVIStopped()
+
+                    self.nonlocal_vi_2410_controller.confirm_output_off(
+                        "before starting the 6221 read current"
+                    )
+                    current_readback_ma = self.nonlocal_vi_ac_controller.set_current(
+                        settings["current_rms_ma"], frequency
+                    )
+                    current_elapsed = time.monotonic() - run_start
+                    with self.nonlocal_vi_data_lock:
+                        self.nonlocal_vi_current_rows.append(
+                            (current_elapsed, current_readback_ma)
+                        )
+                    self.post_ui(
+                        lambda value=current_readback_ma, mode=settings["output_mode"]:
+                        self.nonlocal_vi_output_var.set(
+                            f"Keithley {self.nonlocal_vi_2410_controller.model} OFF | 6221 {value:.6g} "
+                            f"{'mA RMS' if mode == 'AC' else 'mA DC'}"
+                        )
+                    )
+                    if self.nonlocal_vi_stop_event.wait(pre_run_s):
+                        raise NonLocalVIStopped()
+                    self.nonlocal_vi_2410_controller.confirm_output_off(
+                        "before the voltmeter read"
                     )
 
-                post_resistance = self._nonlocal_vi_measure_resistance(
-                    run_start,
-                    point_index,
-                    pulse_voltage_v,
-                    "post_point",
-                    resistance_writer,
-                    resistance_file,
-                )
-                for (key, order), lockin_samples in samples.items():
-                    harmonic_text = (
-                        "" if order is None else f" ({order}ω)"
+                    self.nonlocal_vi_interlock.begin(NonLocalVIInterlock.SR830_READ)
+                    try:
+                        sync = self.nonlocal_vi_ac_controller.wait_references(
+                            frequency, self.nonlocal_vi_stop_event,
+                            tuple(settings["lockin_configs"]),
+                        )
+                        self.post_ui(
+                            lambda info=sync, mode=settings["output_mode"]:
+                            self._publish_reference_sync(info, mode, vi=True)
+                        )
+                        # One list per meter and harmonic order.
+                        samples = {
+                            (key, order): []
+                            for key in settings["measurement_keys"]
+                            for order in orders[key]
+                        }
+                        for pass_index, pass_keys in enumerate(read_passes):
+                            if pass_index:
+                                # The SR830s' next order (user, 2026-10-09: an
+                                # SR830 reads 1+2 one after the other): switched,
+                                # read back, its filter settled, then read.
+                                for key in pass_keys:
+                                    switch_harmonic(key, orders[key][pass_index])
+                                taus = [
+                                    float(lockin_readbacks[key].get("time_constant_s", math.nan))
+                                    for key in pass_keys
+                                ]
+                                tau_s = max((tau for tau in taus if math.isfinite(tau)), default=1.0)
+                                if self.nonlocal_vi_stop_event.wait(
+                                    max(settings["settle_s"], NONLOCAL_VI_HARMONIC_SETTLE_TAUS * tau_s)
+                                ):
+                                    raise NonLocalVIStopped()
+                                self.nonlocal_vi_2410_controller.confirm_output_off(
+                                    "before the next harmonic read"
+                                )
+                            read_start = time.monotonic()
+                            next_sample = read_start
+                            while (
+                                time.monotonic() - read_start < settings["measure_s"]
+                            ):
+                                if self.nonlocal_vi_stop_event.is_set():
+                                    raise NonLocalVIStopped()
+                                if self.nonlocal_vi_stop_event.wait(
+                                    max(0.0, next_sample - time.monotonic())
+                                ):
+                                    raise NonLocalVIStopped()
+                                self.nonlocal_vi_interlock.require(
+                                    NonLocalVIInterlock.SR830_READ
+                                )
+                                self.nonlocal_vi_2410_controller.confirm_output_off(
+                                    "voltmeter acquiring"
+                                )
+                                current_samples = (
+                                    self.nonlocal_vi_ac_controller.read_samples(
+                                        frequency, pass_keys
+                                    )
+                                )
+                                elapsed = time.monotonic() - run_start
+                                read_elapsed = time.monotonic() - read_start
+                                stamp = datetime_module.datetime.now().isoformat(
+                                    timespec="milliseconds"
+                                )
+                                readings = self._nonlocal_vi_order_readings(
+                                    current_samples, orders, current_orders,
+                                )
+                                for key, order, sample in readings:
+                                    config = lockin_readbacks[key]
+                                    raw_writer.writerow(
+                                        (
+                                            stamp, "formal", point_index,
+                                            pulse_voltage_v, gate_resistance,
+                                            key, config["meter_type"],
+                                            config["resource"],
+                                            config.get("coupling", ""),
+                                            order if order is not None else config.get("harmonic", ""),
+                                            config.get("channel", "VOLT"),
+                                            current_readback_ma, frequency, read_elapsed,
+                                            sample["X"], sample["Y"], sample["R"],
+                                            sample["phase_deg"],
+                                            sample["reference_frequency_hz"],
+                                            sample.get("demodulation_frequency_hz", ""),
+                                            sample["lia_status"], sample["status_text"],
+                                            sample["reference_valid"],
+                                            sample["output_on"],
+                                            sample["measurement_condition"],
+                                            sample["in_compliance"],
+                                            sample["sensitivity_index"],
+                                            sample.get("input_range_v", ""),
+                                            sample.get("input_utilization", ""),
+                                            sample["auto_range"], 0,
+                                            settings["marker_line"],
+                                        )
+                                    )
+                                    samples[(key, order)].append(sample)
+                                raw_file.flush()
+                                with self.nonlocal_vi_data_lock:
+                                    for key, order, sample in readings:
+                                        # (elapsed, meter, R, θ, kind, X, Y, order):
+                                        # X, Y and θ are plotted against time, a
+                                        # row per order.
+                                        self.nonlocal_vi_time_rows.append(
+                                            (
+                                                elapsed, key, sample["R"],
+                                                sample["phase_deg"], "formal",
+                                                sample["X"], sample["Y"], order,
+                                            )
+                                        )
+                                remaining = max(
+                                    0.0, settings["estimated_s"] - elapsed
+                                )
+                                self.post_ui(
+                                    lambda values=current_samples, e=elapsed,
+                                    remain=remaining, index=point_index,
+                                    now={**current_orders, **zurich_now}:
+                                    self._publish_nonlocal_vi_samples(
+                                        values,
+                                        e,
+                                        remain,
+                                        index,
+                                        total_points,
+                                        now,
+                                    )
+                                )
+                                next_sample += settings["sample_interval_s"]
+                        # Back to the first order for the next point.
+                        for key in settings["lockin_configs"]:
+                            if current_orders[key] != orders[key][0]:
+                                switch_harmonic(key, orders[key][0])
+                    finally:
+                        self.nonlocal_vi_interlock.end(
+                            NonLocalVIInterlock.SR830_READ
+                        )
+                        self.nonlocal_vi_ac_controller.output_off()
+                        self.nonlocal_vi_ac_controller.confirm_output_off(
+                            "after the voltmeter read"
+                        )
+
+                    post_resistance = self._nonlocal_vi_measure_resistance(
+                        run_start,
+                        point_index,
+                        pulse_voltage_v,
+                        "post_point",
+                        resistance_writer,
+                        resistance_file,
+                        frequency_hz=set_frequency,
                     )
-                    if not lockin_samples:
-                        raise RuntimeError(
-                            f"Meter {key}{harmonic_text} returned no data for the {pulse_voltage_v:g} V pulse"
+                    for (key, order), lockin_samples in samples.items():
+                        harmonic_text = (
+                            "" if order is None else f" ({order}ω)"
                         )
-                    valid = [
-                        item for item in lockin_samples
-                        if item.get(
-                            "measurement_valid", item["reference_valid"]
-                        )
-                    ]
-                    used = valid or lockin_samples
-                    config = lockin_readbacks[key]
-                    channel = config.get("channel", "voltage")
-                    values = [
-                        sample.get(channel, sample["voltage"])
-                        for sample in used
-                    ]
-                    mean = statistics.fmean(values)
-                    std = statistics.pstdev(values) if len(values) > 1 else 0.0
-                    harmonic = order if order is not None else config.get("harmonic", "")
-                    summary = {
-                        "point_index": point_index,
-                        "pulse_voltage_v": pulse_voltage_v,
-                        "key": key,
-                        "order": order,
-                        "meter_type": config["meter_type"],
-                        "resource": config["resource"],
-                        "coupling": config.get("coupling", ""),
-                        "harmonic": harmonic,
-                        "channel": channel,
-                        "current_rms_ma": current_readback_ma,
-                        "frequency_hz": frequency,
-                        "sample_count": len(used),
-                        "mean": mean,
-                        "std": std,
-                        "sem": std / math.sqrt(len(values)),
-                        "mean_x": (
-                            statistics.fmean(item["X"] for item in used)
-                            if key != "2182" else math.nan
-                        ),
-                        "mean_y": (
-                            statistics.fmean(item["Y"] for item in used)
-                            if key != "2182" else math.nan
-                        ),
-                        "mean_r": statistics.fmean(item["R"] for item in used),
-                        # From the mean X and Y, as 6221-IV: a mean of phases
-                        # near ±180° came out near 0° (review, 2026-10-09).
-                        "mean_phase": (
-                            math.degrees(math.atan2(
-                                statistics.fmean(item["Y"] for item in used),
-                                statistics.fmean(item["X"] for item in used),
-                            ))
-                            if key != "2182" else math.nan
-                        ),
-                        "mean_reference": (
-                            statistics.fmean(
-                                item["reference_frequency_hz"]
-                                for item in used
+                        if not lockin_samples:
+                            raise RuntimeError(
+                                f"Meter {key}{harmonic_text} returned no data for the {pulse_voltage_v:g} V pulse"
                             )
-                            if key != "2182" else math.nan
-                        ),
-                        "warning_count": sum(
-                            item["lia_status"] != 0
-                            or not item["reference_valid"]
-                            for item in lockin_samples
-                        ),
-                        "compliance_count": sum(
-                            item["in_compliance"] for item in lockin_samples
-                        ),
-                        "gate_resistance": gate_resistance,
-                        "post_resistance": dict(post_resistance),
-                    }
-                    summary_writer.writerow(
-                        (
-                            point_index, pulse_voltage_v, key,
-                            config["meter_type"], config["resource"],
-                            config.get("coupling", ""),
-                            harmonic, channel,
-                            current_readback_ma, frequency,
-                            len(used), mean, std, summary["sem"],
-                            summary["mean_x"], summary["mean_y"],
-                            summary["mean_r"], summary["mean_phase"],
-                            summary["mean_reference"],
-                            summary["warning_count"],
-                            summary["compliance_count"], gate_resistance,
-                            post_resistance["source_current_a"],
-                            post_resistance["voltage_v"],
-                            post_resistance["current_a"],
-                            post_resistance["resistance_ohm"],
-                            settings["marker_line"],
+                        valid = [
+                            item for item in lockin_samples
+                            if item.get(
+                                "measurement_valid", item["reference_valid"]
+                            )
+                        ]
+                        used = valid or lockin_samples
+                        config = lockin_readbacks[key]
+                        channel = config.get("channel", "voltage")
+                        values = [
+                            sample.get(channel, sample["voltage"])
+                            for sample in used
+                        ]
+                        mean = statistics.fmean(values)
+                        std = statistics.pstdev(values) if len(values) > 1 else 0.0
+                        harmonic = order if order is not None else config.get("harmonic", "")
+                        summary = {
+                            "point_index": point_index,
+                            "pulse_voltage_v": pulse_voltage_v,
+                            "key": key,
+                            "order": order,
+                            "meter_type": config["meter_type"],
+                            "resource": config["resource"],
+                            "coupling": config.get("coupling", ""),
+                            "harmonic": harmonic,
+                            "channel": channel,
+                            "current_rms_ma": current_readback_ma,
+                            "frequency_hz": frequency,
+                            "set_frequency_hz": set_frequency,
+                            "frequency_index": frequency_index,
+                            "sample_count": len(used),
+                            "mean": mean,
+                            "std": std,
+                            "sem": std / math.sqrt(len(values)),
+                            "mean_x": (
+                                statistics.fmean(item["X"] for item in used)
+                                if key != "2182" else math.nan
+                            ),
+                            "mean_y": (
+                                statistics.fmean(item["Y"] for item in used)
+                                if key != "2182" else math.nan
+                            ),
+                            "mean_r": statistics.fmean(item["R"] for item in used),
+                            # From the mean X and Y, as 6221-IV: a mean of phases
+                            # near ±180° came out near 0° (review, 2026-10-09).
+                            "mean_phase": (
+                                math.degrees(math.atan2(
+                                    statistics.fmean(item["Y"] for item in used),
+                                    statistics.fmean(item["X"] for item in used),
+                                ))
+                                if key != "2182" else math.nan
+                            ),
+                            "mean_reference": (
+                                statistics.fmean(
+                                    item["reference_frequency_hz"]
+                                    for item in used
+                                )
+                                if key != "2182" else math.nan
+                            ),
+                            "warning_count": sum(
+                                item["lia_status"] != 0
+                                or not item["reference_valid"]
+                                for item in lockin_samples
+                            ),
+                            "compliance_count": sum(
+                                item["in_compliance"] for item in lockin_samples
+                            ),
+                            "gate_resistance": gate_resistance,
+                            "post_resistance": dict(post_resistance),
+                        }
+                        summary_writer.writerow(
+                            (
+                                point_index, pulse_voltage_v, key,
+                                config["meter_type"], config["resource"],
+                                config.get("coupling", ""),
+                                harmonic, channel,
+                                current_readback_ma, frequency,
+                                len(used), mean, std, summary["sem"],
+                                summary["mean_x"], summary["mean_y"],
+                                summary["mean_r"], summary["mean_phase"],
+                                summary["mean_reference"],
+                                summary["warning_count"],
+                                summary["compliance_count"], gate_resistance,
+                                post_resistance["source_current_a"],
+                                post_resistance["voltage_v"],
+                                post_resistance["current_a"],
+                                post_resistance["resistance_ohm"],
+                                settings["marker_line"],
+                            )
+                        )
+                        with self.nonlocal_vi_data_lock:
+                            self.nonlocal_vi_summary_rows.append(summary)
+                    summary_file.flush()
+                    gate_result = post_resistance
+                    self.post_ui(
+                        lambda index=point_index: self._complete_nonlocal_vi_point(
+                            index
                         )
                     )
-                    with self.nonlocal_vi_data_lock:
-                        self.nonlocal_vi_summary_rows.append(summary)
-                summary_file.flush()
-                gate_result = post_resistance
-                self.post_ui(
-                    lambda index=point_index: self._complete_nonlocal_vi_point(
-                        index
-                    )
-                )
         finally:
             # A shutdown failure is kept beside the scan's own error, not in
             # its place (the finish reports both).
@@ -31189,16 +31391,34 @@ class CombinedControlApp:
         # |R| after each pulse.  The check before the first pulse has no
         # pulse voltage of its own and is left out (user, 2026-10-09); it is
         # in VI_resistance_gate.csv as "initial_gate".
+        after_pulses = [row for row in resistances if row[3:4] != ("initial_gate",)]
+        # A frequency scan (user, 2026-10-10): a curve per frequency's pulse
+        # scan, light (lowest) to dark (highest), as on STFMR.
+        frequency_of = {id(row): row[4] if len(row) > 4 else math.nan for row in after_pulses}
+        by_frequency = len({frequency_of[id(row)] for row in after_pulses}) > 1
+        if by_frequency:
+            series = {}
+            for row in after_pulses:
+                series.setdefault(f"8_freq_{frequency_of[id(row)]:.12g}_loop_1", []).append((row[0], row[1]))
+            labels, colors, _markers = self._nonlocal_frequency_styles(
+                series, {"8": NONLOCAL_VI_RESISTANCE_COLOR}
+            )
+            styles = {"series_labels": labels, "series_colors": colors, "show_legend": True}
+        else:
+            series = {"8": [(row[0], row[1]) for row in after_pulses]}
+            styles = {"show_legend": False, "color_override": NONLOCAL_VI_RESISTANCE_COLOR}
         self._draw_nonlocal_series(
             canvases["resistance"],
-            {"8": [(row[0], row[1]) for row in resistances if row[3:4] != ("initial_gate",)]},
+            series,
             "Pulse voltage (V)",
             "|R| (Ω)",
             f"Waiting for Keithley {model} resistance data",
             markers=True,
-            show_legend=False,
-            color_override=NONLOCAL_VI_RESISTANCE_COLOR,
+            **styles,
         )
+        summary_frequencies = {
+            row.get("set_frequency_hz", row.get("frequency_hz")) for row in summaries
+        }
         for order in shown:
             # The lock-ins' mean X or Y (NONLOCAL_VI_SUMMARY_CHANNELS); the
             # 2182A, with neither, its mean DC voltage.
@@ -31214,6 +31434,28 @@ class CombinedControlApp:
                 ]
                 for key in on(order, True)
             }
+            styles = {
+                "series_labels": names, "show_legend": len(summary) > 1,
+                "series_colors": order_colors(order),
+            }
+            if len(summary_frequencies) > 1:
+                # A frequency scan: a curve per meter and frequency.
+                summary = {}
+                for row in summaries:
+                    key = row["key"]
+                    if key not in on(order, True) or (
+                        row.get("order") if row.get("order") is not None else shown[0]
+                    ) != order:
+                        continue
+                    frequency = row.get("set_frequency_hz", row.get("frequency_hz"))
+                    summary.setdefault(f"{key}_freq_{frequency:.12g}_loop_1", []).append(
+                        (row["pulse_voltage_v"], row["mean"] if key == "2182" else row[field])
+                    )
+                labels, colors, markers = self._nonlocal_frequency_styles(
+                    summary, order_colors(order)
+                )
+                styles = {"series_labels": labels, "series_colors": colors,
+                          "series_markers": markers or None, "show_legend": True}
             self._draw_nonlocal_series(
                 canvases[("summary", order)],
                 summary,
@@ -31222,9 +31464,7 @@ class CombinedControlApp:
                 "Shown after the first voltage point" if meters else waiting,
                 markers=True,
                 auto_voltage_unit=True,
-                series_labels=names,
-                show_legend=len(summary) > 1,
-                series_colors=order_colors(order),
+                **styles,
             )
 
     # ---- Non-local page: |R| vs time and the I-V sweep on the pulse Keithley
@@ -32598,9 +32838,23 @@ class CombinedControlApp:
             raise ValueError("Settle time must be within 0–3600 s")
         if not 0.0 < acquire_s <= 3600.0:
             raise ValueError("Acquire time must be above 0 and at most 3600 s")
-        if len(plan) * len(settings["passes"]) > 100000:
-            raise ValueError("6221-IV scans are limited to 100000 points including harmonic passes")
+        scanning, frequencies = self._nonlocal_scan_frequencies(
+            "nonlocal_iv6221", settings["frequency_hz"]
+        )
+        top = max(frequencies)
+        for key in settings["measured"]:
+            limit = 500000.0 if key == "mfli" else 102000.0
+            if top * max(settings["orders"][key]) > limit:
+                raise ValueError(
+                    f"{NONLOCAL_METER_NAMES[key]} demodulation frequency exceeds "
+                    f"{limit / 1000:g} kHz at {top:g} Hz"
+                )
+        if len(plan) * len(settings["passes"]) * len(frequencies) > 100000:
+            raise ValueError(
+                "6221-IV scans are limited to 100000 points including harmonic passes and frequencies"
+            )
         settings.update({
+            "frequency_scan": scanning, "frequencies": frequencies,
             "start_ma": start_ma, "end_ma": end_ma, "step_ma": step_ma,
             "loops": int(float(loops)),
             "round_trip": bool(self.nonlocal_iv6221_round_trip_var.get()),
@@ -32608,6 +32862,22 @@ class CombinedControlApp:
             "started": datetime_module.datetime.now().isoformat(timespec="seconds"),
         })
         return settings
+
+    def _nonlocal_scan_frequencies(self, prefix: str, frequency_hz: float):
+        """(scanning, the frequencies) of a 6221-IV or Gate-VI scan:
+        Frequency Hz alone, or with Frequency scan ticked the primes from
+        f start to f stop, the whole scan at each (user, 2026-10-10)."""
+        tick = self.__dict__.get(f"{prefix}_fscan_var")
+        try:
+            scanning = bool(tick.get()) if tick is not None else False
+        except tk.TclError:
+            scanning = False
+        if not scanning:
+            return False, (float(frequency_hz),)
+        return True, nonlocal_prime_frequencies(
+            self.__dict__[f"{prefix}_fstart_var"].get(),
+            self.__dict__[f"{prefix}_fstop_var"].get(),
+        )
 
     def _nonlocal_iv6221_ready(self) -> bool:
         if self.nonlocal_keithley_task is not None:
@@ -32740,17 +33010,28 @@ class CombinedControlApp:
             messagebox.showwarning("6221-IV", str(error), parent=self.root)
             return
         points = len(settings["plan"])
-        total = points * len(settings["passes"])
+        frequencies = settings["frequencies"]
+        total = points * len(settings["passes"]) * len(frequencies)
         # Each pass also settles its first point for 10 time constants (the
         # Zurich's TC; an SR830's front-panel one adds to this) and checks it
-        # in a second window.
+        # in a second window; in a frequency scan, at each frequency, at
+        # least 5 of its periods.
         first_point_s = (
             NONLOCAL_IV6221_FIRST_SETTLE_TAUS * float(settings["mfli_config"]["timeconstant_s"])
             if settings["mfli_config"] else 0.0
         ) + settings["acquire_s"]
         estimate = self._format_scan_duration(
             total * (settings["settle_s"] + settings["acquire_s"] + 0.3)
-            + len(settings["passes"]) * first_point_s
+            + len(settings["passes"]) * sum(
+                first_point_s + (NONLOCAL_FSCAN_SETTLE_PERIODS / frequency
+                                 if settings["frequency_scan"] else 0.0)
+                for frequency in frequencies
+            )
+        )
+        frequency_text = (
+            f"Frequency scan: {len(frequencies)} prime(s), {frequencies[0]:g}–{frequencies[-1]:g} Hz, "
+            "the whole scan at each (6221 off and set up again in between)"
+            if settings["frequency_scan"] else f"{settings['frequency_hz']:g} Hz"
         )
         meters = ", ".join(
             f"{NONLOCAL_METER_NAMES[key]} {self.nonlocal_iv6221_harmonic_vars[key].get()}"
@@ -32763,7 +33044,8 @@ class CombinedControlApp:
             + (", round trip" if settings["round_trip"] else "")
             + f", {settings['loops']} loop(s): {points} points"
             + (f" × {len(settings['passes'])} harmonic passes" if len(settings["passes"]) > 1 else "")
-            + f"\n{settings['frequency_hz']:g} Hz, compliance {settings['compliance_v']:g} V, "
+            + (f" × {len(frequencies)} frequencies" if len(frequencies) > 1 else "")
+            + f"\n{frequency_text}, compliance {settings['compliance_v']:g} V, "
             f"Trigger Link line {settings['marker_line']}\n"
             f"Settle {settings['settle_s']:g} s, acquire {settings['acquire_s']:g} s per point\n"
             f"Lock-ins (harmonic): {meters}\n"
@@ -32799,6 +33081,7 @@ class CombinedControlApp:
             if key not in {"plan", "lockin_configs", "mfli_config", "passes", "orders", "measured"}
         }
         parameters["points"] = points
+        parameters["frequency_count"] = len(frequencies)
         parameters["harmonic_passes"] = len(settings["passes"])
         parameters["lockins"] = meters
         for key, config in settings["lockin_configs"].items():
@@ -33025,6 +33308,11 @@ class CombinedControlApp:
         keithley = self.nonlocal_vi_2410_controller
         plan = settings["plan"]
         passes = settings["passes"]
+        # The frequency scan (user, 2026-10-10), as the STFMR multi-frequency
+        # sweep: the whole scan at each frequency in turn, the 6221 off and
+        # set up again in between.
+        frequencies = tuple(settings.get("frequencies") or (settings["frequency_hz"],))
+        scanning = bool(settings.get("frequency_scan"))
         # The Keithley must be off while the voltmeters read: drained and
         # read back off first (also after a Set).
         self._nonlocal_keithley_off_first("before the 6221-IV scan")
@@ -33033,170 +33321,207 @@ class CombinedControlApp:
                 raise InterruptedError("Stopped before the 6221 was switched on")
             self.nonlocal_vi_interlock.begin(NonLocalVIInterlock.SR830_READ)
             # As the RT-E Current scan: one fixed range for the largest
-            # current, the sine started once, then only its amplitude changed
-            # (no abort/re-arm), so the reference never stops.
+            # current, the sine started once per frequency, then only its
+            # amplitude changed (no abort/re-arm), so the reference never stops.
             sweep_peak_a = math.sqrt(2.0) * max(value for _loop, _point, value in plan) * 1e-3
-            frequency, readbacks = self._nonlocal_iv6221_configure(
-                source, settings, plan[0][2], sweep_peak_a=sweep_peak_a
-            )
-            running = False
-            # Far jumps (the first point of each pass, the jump back to Start
-            # at a new loop) wait at least 10 time constants of the slowest
-            # lock-in: the SR830 front-panel one read back, the Zurich's TC.
-            taus = [
-                float(readbacks.get(key, {}).get("time_constant_s", math.nan))
-                for key in settings["lockin_configs"]
-            ]
-            if settings["mfli_config"]:
-                taus.append(float(settings["mfli_config"]["timeconstant_s"]))
-            longest_tau = max((tau for tau in taus if math.isfinite(tau)), default=0.0)
-            long_settle = max(float(settings["settle_s"]), NONLOCAL_IV6221_FIRST_SETTLE_TAUS * longest_tau)
-            # After an autorange step, as RT-E: 5 τ of that SR830, 10 τ of the Zurich.
-            range_settle_s = {
-                key: NONLOCAL_IV6221_RANGE_SETTLE_TAUS["sr830"] * float(
-                    readbacks.get(key, {}).get("time_constant_s", math.nan)
+
+            def set_up(set_frequency):
+                """The 6221 sine (output off) and the lock-ins at this
+                frequency, and the waits their time constants ask for."""
+                frequency, readbacks = self._nonlocal_iv6221_configure(
+                    source, dict(settings, frequency_hz=set_frequency), plan[0][2],
+                    sweep_peak_a=sweep_peak_a,
                 )
-                for key in settings["lockin_configs"]
-            }
-            range_settle_s = {key: value for key, value in range_settle_s.items() if math.isfinite(value)}
-            if settings["mfli_config"]:
-                range_settle_s["mfli"] = NONLOCAL_IV6221_RANGE_SETTLE_TAUS["mfli"] * float(
-                    settings["mfli_config"]["timeconstant_s"]
+                # Far jumps (the first point of each pass, the jump back to
+                # Start at a new loop) wait at least 10 time constants of the
+                # slowest lock-in: the SR830 front-panel one read back, the
+                # Zurich's TC.
+                taus = [
+                    float(readbacks.get(key, {}).get("time_constant_s", math.nan))
+                    for key in settings["lockin_configs"]
+                ]
+                if settings["mfli_config"]:
+                    taus.append(float(settings["mfli_config"]["timeconstant_s"]))
+                longest_tau = max((tau for tau in taus if math.isfinite(tau)), default=0.0)
+                long_settle = max(
+                    float(settings["settle_s"]), NONLOCAL_IV6221_FIRST_SETTLE_TAUS * longest_tau
                 )
-            settings = dict(settings, range_settle_s=range_settle_s)
+                if scanning:
+                    # And at least 5 periods of the new frequency, as the
+                    # microwave test program waits.
+                    long_settle = max(long_settle, NONLOCAL_FSCAN_SETTLE_PERIODS / float(frequency))
+                # After an autorange step, as RT-E: 5 τ of that SR830, 10 τ of the Zurich.
+                range_settle_s = {
+                    key: NONLOCAL_IV6221_RANGE_SETTLE_TAUS["sr830"] * float(
+                        readbacks.get(key, {}).get("time_constant_s", math.nan)
+                    )
+                    for key in settings["lockin_configs"]
+                }
+                range_settle_s = {
+                    key: value for key, value in range_settle_s.items() if math.isfinite(value)
+                }
+                if settings["mfli_config"]:
+                    range_settle_s["mfli"] = NONLOCAL_IV6221_RANGE_SETTLE_TAUS["mfli"] * float(
+                        settings["mfli_config"]["timeconstant_s"]
+                    )
+                return frequency, long_settle, dict(
+                    settings, frequency_hz=set_frequency, range_settle_s=range_settle_s
+                )
+
+            frequency, long_settle, point_settings = set_up(frequencies[0])
             with Path(csv_path).open("x", newline="", encoding="utf-8-sig") as file:
                 writer = csv.writer(file)
                 writer.writerow(self._nonlocal_iv6221_header(settings))
                 file.flush()
                 started = time.monotonic()
                 index = 0
-                for run in passes:
-                    if stop.is_set():
-                        raise InterruptedError("6221-IV scan stopped")
-                    for key, harmonic in run["harmonics"].items():
-                        if run["pass"] > 1:
-                            source.set_lockin_harmonic(key, harmonic)
-                    keys = run["keys"]
-                    for loop, point, target in plan:
-                        index += 1
+                for frequency_index, set_frequency in enumerate(frequencies, 1):
+                    if frequency_index > 1:
                         if stop.is_set():
                             raise InterruptedError("6221-IV scan stopped")
-                        if keithley.connected:
-                            keithley.confirm_output_off("before a 6221-IV point")
-                        if running:
-                            actual_ma = source.update_amplitude(target)
-                        else:
-                            actual_ma = source.set_current(target, frequency)
-                            running = True
+                        # As STFMR between frequencies: the source off (read
+                        # back), then set up at the next frequency.
+                        source.output_off()
+                        source.confirm_output_off("before the next frequency")
                         self.post_ui(
-                            lambda value=actual_ma: self.nonlocal_iv6221_source_var.set(
-                                f"6221 ON: {value:.4g} mA RMS / {frequency:g} Hz"
+                            lambda n=frequency_index, value=set_frequency:
+                            self.nonlocal_iv6221_point_var.set(
+                                f"Transport acquisition: 6221 off; setting up frequency "
+                                f"{n}/{len(frequencies)}, {value:g} Hz"
                             )
                         )
-                        far = point == 1 and (loop == 1 or not settings.get("round_trip"))
-                        if stop.wait(long_settle if far else float(settings["settle_s"])):
+                        frequency, long_settle, point_settings = set_up(set_frequency)
+                    running = False
+                    for run in passes:
+                        if stop.is_set():
                             raise InterruptedError("6221-IV scan stopped")
-                        if loop == 1 and point == 1:
-                            # The reference lock, at the start of each pass;
-                            # a PLL at a few Hz can take several seconds.
-                            deadline = time.monotonic() + NONLOCAL_IV6221_REFERENCE_WAIT_S
-                            while True:
-                                sync = source.wait_references(
-                                    frequency, stop, tuple(key for key in keys if key != "mfli")
-                                )
-                                if stop.is_set():
-                                    raise InterruptedError("6221-IV scan stopped")
-                                self.post_ui(
-                                    lambda info=sync: self._publish_reference_sync(info, "AC", vi=True)
-                                )
-                                unlocked = [
-                                    key for key in keys
-                                    if not (sync.get(key) or {}).get("valid", False)
-                                ]
-                                if not unlocked or time.monotonic() >= deadline:
-                                    break
-                                self.post_ui(
-                                    lambda names=", ".join(NONLOCAL_METER_NAMES[k] for k in unlocked):
-                                    self.nonlocal_iv6221_point_var.set(
-                                        f"Transport acquisition: waiting for the reference lock ({names})"
-                                    )
-                                )
-                            if unlocked:
-                                hint = (
-                                    f"; the Zurich Ref. is {settings['mfli_config']['reference_source']}"
-                                    if "mfli" in unlocked and settings["mfli_config"] else ""
-                                )
-                                raise RuntimeError(
-                                    f"Lock-in reference not locked at {frequency:g} Hz: "
-                                    f"{', '.join(NONLOCAL_METER_NAMES[k] for k in unlocked)}; check Trigger Link line "
-                                    f"{settings['marker_line']}, its cable and the Zurich Ref. input{hint}"
-                                )
-                            if settings["mfli_config"]:
-                                self.post_ui(lambda: self._show_nonlocal_mfli_lock(True))
-                        # The first point of each pass, as RT-E's: windows of
-                        # Acquire s until two in a row agree (at most 10).
-                        first = loop == 1 and point == 1
-                        windows, previous = 0, None
-                        discarded_total: dict[str, int] = {}
-                        compliance_total = 0
-                        while True:
-                            windows += 1
-                            if first:
-                                self.post_ui(
-                                    lambda n=windows: self.nonlocal_iv6221_point_var.set(
-                                        f"Transport acquisition: first point, settling window "
-                                        f"{n}/{PPMS_FIRST_POINT_MAX_WINDOWS}"
-                                    )
-                                )
-                            readings, discarded, compliance = self._nonlocal_iv6221_read_point(
-                                source, frequency, keys, settings, stop
-                            )
-                            # Every window's left-out readings count for the point.
-                            for key, count in discarded.items():
-                                discarded_total[key] = discarded_total.get(key, 0) + count
-                            compliance_total += compliance
-                            results = self._nonlocal_iv6221_results(readings, run, settings)
-                            if (not first or windows >= PPMS_FIRST_POINT_MAX_WINDOWS
-                                    or self._nonlocal_iv6221_settled(previous, results)):
-                                break
-                            previous = results
-                        discarded, compliance = discarded_total, compliance_total
-                        row = {
-                            "index": index, "pass": run["pass"], "loop": loop, "point": point,
-                            "set_current_rms_ma": float(target), "current_rms_ma": float(actual_ma),
-                            "frequency_hz": float(frequency),
-                            "elapsed_s": time.monotonic() - started,
-                            "series": {name: result for name, result in results.items()},
-                            "discarded": sum(discarded.values()), "windows": windows,
-                        }
-                        csv_row = [
-                            index, run["pass"], loop, point, f"{target:.10g}", f"{actual_ma:.10g}",
-                            f"{frequency:.10g}", f"{row['elapsed_s']:.3f}", windows,
-                        ]
-                        for key in settings["measured"]:
-                            if key == "mfli":
-                                used = readings.get("mfli", [])
-                                for order in settings["zurich_orders"]:
-                                    result = results.get(("mfli", order))
-                                    if result is not None:
-                                        csv_row += [f"{result['X']:.10g}", f"{result['Y']:.10g}",
-                                                    f"{result['R']:.10g}", f"{result['theta']:.6g}"]
-                                    else:
-                                        csv_row += ["", "", "", ""]
-                                csv_row += [len(used), discarded.get("mfli", "")]
-                            elif key in keys:
-                                harmonic = run["harmonics"][key]
-                                result = results[(key, harmonic)]
-                                csv_row += [harmonic, f"{result['X']:.10g}", f"{result['Y']:.10g}",
-                                            f"{result['R']:.10g}", f"{result['theta']:.6g}",
-                                            result["samples"], discarded[key]]
+                        for key, harmonic in run["harmonics"].items():
+                            if run["pass"] > 1:
+                                source.set_lockin_harmonic(key, harmonic)
+                        keys = run["keys"]
+                        for loop, point, target in plan:
+                            index += 1
+                            if stop.is_set():
+                                raise InterruptedError("6221-IV scan stopped")
+                            if keithley.connected:
+                                keithley.confirm_output_off("before a 6221-IV point")
+                            if running:
+                                actual_ma = source.update_amplitude(target)
                             else:
-                                # This SR830's orders ended in an earlier pass.
-                                csv_row += ["", "", "", "", "", "", ""]
-                        csv_row.append(compliance)
-                        writer.writerow(csv_row)
-                        file.flush()
-                        self.post_ui(lambda data=row: self._append_nonlocal_iv6221_point(data))
+                                actual_ma = source.set_current(target, frequency)
+                                running = True
+                            self.post_ui(
+                                lambda value=actual_ma, hz=frequency: self.nonlocal_iv6221_source_var.set(
+                                    f"6221 ON: {value:.4g} mA RMS / {hz:g} Hz"
+                                )
+                            )
+                            far = point == 1 and (loop == 1 or not settings.get("round_trip"))
+                            if stop.wait(long_settle if far else float(settings["settle_s"])):
+                                raise InterruptedError("6221-IV scan stopped")
+                            if loop == 1 and point == 1:
+                                # The reference lock, at the start of each pass;
+                                # a PLL at a few Hz can take several seconds.
+                                deadline = time.monotonic() + NONLOCAL_IV6221_REFERENCE_WAIT_S
+                                while True:
+                                    sync = source.wait_references(
+                                        frequency, stop, tuple(key for key in keys if key != "mfli")
+                                    )
+                                    if stop.is_set():
+                                        raise InterruptedError("6221-IV scan stopped")
+                                    self.post_ui(
+                                        lambda info=sync: self._publish_reference_sync(info, "AC", vi=True)
+                                    )
+                                    unlocked = [
+                                        key for key in keys
+                                        if not (sync.get(key) or {}).get("valid", False)
+                                    ]
+                                    if not unlocked or time.monotonic() >= deadline:
+                                        break
+                                    self.post_ui(
+                                        lambda names=", ".join(NONLOCAL_METER_NAMES[k] for k in unlocked):
+                                        self.nonlocal_iv6221_point_var.set(
+                                            f"Transport acquisition: waiting for the reference lock ({names})"
+                                        )
+                                    )
+                                if unlocked:
+                                    hint = (
+                                        f"; the Zurich Ref. is {settings['mfli_config']['reference_source']}"
+                                        if "mfli" in unlocked and settings["mfli_config"] else ""
+                                    )
+                                    raise RuntimeError(
+                                        f"Lock-in reference not locked at {frequency:g} Hz: "
+                                        f"{', '.join(NONLOCAL_METER_NAMES[k] for k in unlocked)}; check Trigger Link line "
+                                        f"{settings['marker_line']}, its cable and the Zurich Ref. input{hint}"
+                                    )
+                                if settings["mfli_config"]:
+                                    self.post_ui(lambda: self._show_nonlocal_mfli_lock(True))
+                            # The first point of each pass, as RT-E's: windows of
+                            # Acquire s until two in a row agree (at most 10).
+                            first = loop == 1 and point == 1
+                            windows, previous = 0, None
+                            discarded_total: dict[str, int] = {}
+                            compliance_total = 0
+                            while True:
+                                windows += 1
+                                if first:
+                                    self.post_ui(
+                                        lambda n=windows: self.nonlocal_iv6221_point_var.set(
+                                            f"Transport acquisition: first point, settling window "
+                                            f"{n}/{PPMS_FIRST_POINT_MAX_WINDOWS}"
+                                        )
+                                    )
+                                readings, discarded, compliance = self._nonlocal_iv6221_read_point(
+                                    source, frequency, keys, point_settings, stop
+                                )
+                                # Every window's left-out readings count for the point.
+                                for key, count in discarded.items():
+                                    discarded_total[key] = discarded_total.get(key, 0) + count
+                                compliance_total += compliance
+                                results = self._nonlocal_iv6221_results(readings, run, point_settings)
+                                if (not first or windows >= PPMS_FIRST_POINT_MAX_WINDOWS
+                                        or self._nonlocal_iv6221_settled(previous, results)):
+                                    break
+                                previous = results
+                            discarded, compliance = discarded_total, compliance_total
+                            row = {
+                                "index": index, "pass": run["pass"], "loop": loop, "point": point,
+                                "set_current_rms_ma": float(target), "current_rms_ma": float(actual_ma),
+                                "frequency_hz": float(frequency),
+                                "set_frequency_hz": float(set_frequency),
+                                "frequency_index": frequency_index,
+                                "frequency_count": len(frequencies),
+                                "elapsed_s": time.monotonic() - started,
+                                "series": {name: result for name, result in results.items()},
+                                "discarded": sum(discarded.values()), "windows": windows,
+                            }
+                            csv_row = [
+                                index, run["pass"], loop, point, f"{target:.10g}", f"{actual_ma:.10g}",
+                                f"{frequency:.10g}", f"{row['elapsed_s']:.3f}", windows,
+                            ]
+                            for key in settings["measured"]:
+                                if key == "mfli":
+                                    used = readings.get("mfli", [])
+                                    for order in settings["zurich_orders"]:
+                                        result = results.get(("mfli", order))
+                                        if result is not None:
+                                            csv_row += [f"{result['X']:.10g}", f"{result['Y']:.10g}",
+                                                        f"{result['R']:.10g}", f"{result['theta']:.6g}"]
+                                        else:
+                                            csv_row += ["", "", "", ""]
+                                    csv_row += [len(used), discarded.get("mfli", "")]
+                                elif key in keys:
+                                    harmonic = run["harmonics"][key]
+                                    result = results[(key, harmonic)]
+                                    csv_row += [harmonic, f"{result['X']:.10g}", f"{result['Y']:.10g}",
+                                                f"{result['R']:.10g}", f"{result['theta']:.6g}",
+                                                result["samples"], discarded[key]]
+                                else:
+                                    # This SR830's orders ended in an earlier pass.
+                                    csv_row += ["", "", "", "", "", "", ""]
+                            csv_row.append(compliance)
+                            writer.writerow(csv_row)
+                            file.flush()
+                            self.post_ui(lambda data=row: self._append_nonlocal_iv6221_point(data))
         finally:
             try:
                 self.nonlocal_vi_interlock.end(NonLocalVIInterlock.SR830_READ)
@@ -33219,6 +33544,8 @@ class CombinedControlApp:
         )
         self.nonlocal_iv6221_point_var.set(
             f"Transport acquisition: pass {row['pass']}, I = {row['current_rms_ma']:.4g} mA RMS"
+            + (f", f {row['frequency_index']}/{row['frequency_count']} = {row['set_frequency_hz']:g} Hz"
+               if row.get("frequency_count", 1) > 1 else "")
             + (f"; {row['discarded']} reading(s) left out (unlocked/overload/range)"
                if row["discarded"] else "")
         )
@@ -33281,6 +33608,13 @@ class CombinedControlApp:
         canvases = self.__dict__.get("nonlocal_iv6221_canvases") or {}
         rows = list(self.__dict__.get("nonlocal_iv6221_rows", ()))
         labels = {key: NONLOCAL_METER_NAMES[key] for key in ("8", "9", "mfli")}
+        # The PPMS/RT-E meter colours, fixed per meter.
+        meter_colors = {
+            "8": PPMS_METER_COLORS["830_a"], "9": PPMS_METER_COLORS["830_b"],
+            "mfli": PPMS_METER_COLORS["zurich"],
+        }
+        # A frequency scan: a curve per frequency, as on STFMR.
+        by_frequency = len({row.get("set_frequency_hz", row.get("frequency_hz")) for row in rows}) > 1
         for (order, channel), canvas in canvases.items():
             if not self._canvas_is_visible(canvas):
                 continue
@@ -33294,24 +33628,59 @@ class CombinedControlApp:
                     if key == "mfli" and row["pass"] != 1:
                         continue
                     # One line per loop, as RT-E: no line from End back to Start.
-                    name = f"{key}_loop_{row.get('loop', 1)}"
+                    frequency = row.get("set_frequency_hz", row.get("frequency_hz"))
+                    name = (
+                        f"{key}_freq_{frequency:.12g}_loop_{row.get('loop', 1)}" if by_frequency
+                        else f"{key}_loop_{row.get('loop', 1)}"
+                    )
                     series.setdefault(name, []).append(
                         (row["current_rms_ma"], row["series"][(key, order)][channel])
                     )
                     labels[name] = NONLOCAL_METER_NAMES[key]
+            styles = {
+                # The title names the meters; a legend tells two or more apart.
+                "series_labels": labels, "series_colors": meter_colors,
+                "show_legend": len({name.split("_loop_", 1)[0] for name in series}) > 1,
+            }
+            if by_frequency:
+                names, colors, markers = self._nonlocal_frequency_styles(series, meter_colors)
+                styles = {"series_labels": names, "series_colors": colors,
+                          "series_markers": markers or None, "show_legend": True}
             self._draw_nonlocal_series(
                 canvas, series, "6221 current (mA RMS)",
                 "θ (°)" if channel == "theta" else channel,
                 "Shown point by point once a 6221-IV scan starts",
-                markers=True, auto_voltage_unit=channel != "theta", series_labels=labels,
-                # The title names the meters; a legend tells two or more apart.
-                show_legend=len({name.split("_loop_", 1)[0] for name in series}) > 1,
-                # The PPMS/RT-E meter colours, fixed per meter.
-                series_colors={
-                    "8": PPMS_METER_COLORS["830_a"], "9": PPMS_METER_COLORS["830_b"],
-                    "mfli": PPMS_METER_COLORS["zurich"],
-                },
+                markers=True, auto_voltage_unit=channel != "theta", **styles,
             )
+
+    @staticmethod
+    def _nonlocal_frequency_styles(series, base_colors: dict) -> tuple[dict, dict, dict]:
+        """For a frequency scan's curves ("<meter>_freq_<Hz>_loop_<n>"), as
+        the STFMR multi-frequency plots: each meter's colour, light at the
+        lowest frequency to dark at the highest; the legend names the
+        frequencies (only the lowest and highest when there are more than
+        six), and the meter when several are overlaid, each with its own
+        marker.  Returns (labels, colours, markers)."""
+        parsed = {}
+        for key in series:
+            match = re.fullmatch(r"(.+?)_freq_([-+0-9.eE]+)_loop_(\d+)", str(key))
+            if match is not None:
+                parsed[key] = (match.group(1), float(match.group(2)), int(match.group(3)))
+        frequencies = sorted({item[1] for item in parsed.values()})
+        several = len({item[0] for item in parsed.values()}) > 1
+        named = set(frequencies) if len(frequencies) <= 6 else {frequencies[0], frequencies[-1]}
+        shapes = {"mfli": "circle", "8": "open_circle", "9": "square", "2182": "square"}
+        labels, colors, markers = {}, {}, {}
+        for key, (meter, frequency, loop) in parsed.items():
+            fraction = frequencies.index(frequency) / max(1, len(frequencies) - 1)
+            colors[key] = shade_color(base_colors.get(meter, "#555555"), fraction)
+            labels[key] = (
+                f"{frequency:g} Hz" + (f" {NONLOCAL_METER_NAMES.get(meter, meter)}" if several else "")
+                if loop == 1 and frequency in named else ""
+            )
+            if several:
+                markers[key] = shapes.get(meter, "circle")
+        return labels, colors, markers
 
     def safe_close_nonlocal_vi(self) -> None:
         if self.nonlocal_vi_closed:
