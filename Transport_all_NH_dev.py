@@ -4818,7 +4818,8 @@ def shade_color(color: str, fraction: float) -> str:
     fraction = min(max(float(fraction), 0.0), 1.0)
     rgb = [int(color[index:index + 2], 16) for index in (1, 3, 5)]
     if fraction < 0.5:
-        mix = (0.5 - fraction) / 0.5 * 0.6
+        # At most 40 % white: the lightest legend label stays readable.
+        mix = (0.5 - fraction) / 0.5 * 0.4
         rgb = [channel + (255 - channel) * mix for channel in rgb]
     else:
         mix = (fraction - 0.5) / 0.5 * 0.45
