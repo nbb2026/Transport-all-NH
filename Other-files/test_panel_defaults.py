@@ -150,11 +150,13 @@ class PanelDefaultTests(unittest.TestCase):
             self.assertFalse(getattr(a, f"{prefix}_fscan_var").get())
             self.assertEqual((getattr(a, f"{prefix}_fstart_var").get(),
                               getattr(a, f"{prefix}_fstop_var").get()), ("7", "97"))
-            self.assertEqual(getattr(a, f"{prefix}_fscan_info_var").get(),
-                             "Off: the scan runs at Frequency Hz")
+            self.assertEqual(getattr(a, f"{prefix}_fscan_info_var").get(), "Off: Frequency Hz only")
         self.addCleanup(a.nonlocal_vi_fscan_var.set, False)
         a.nonlocal_vi_fscan_var.set(True)
-        self.assertEqual(a.nonlocal_vi_fscan_info_var.get(), "22 primes, 7–97 Hz (the whole scan at each)")
+        self.assertEqual(a.nonlocal_vi_fscan_info_var.get(), "22 primes: 7–97 Hz")
+        # 6221-IV's row is held while a measurement runs, as its lock-in choices.
+        held = {widget for widget, _state in a.nonlocal_iv6221_choice_widgets}
+        self.assertTrue(set(a.nonlocal_iv6221_fscan_widgets) <= held)
         states = lambda: {str(widget.cget("state")) for widget in a.nonlocal_vi_fscan_widgets}
         self.assertEqual(states(), {"normal"})
         self.addCleanup(a.nonlocal_vi_output_mode_var.set, "AC")

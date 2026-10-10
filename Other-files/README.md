@@ -12,8 +12,12 @@ modulation axis.
   - Off by default: the scan runs at Frequency Hz, as before.
   - Ticked: the scan uses the whole-number primes from f start to f stop
     (default 7–97 Hz, 22 primes). The 2nd and 3rd harmonics of a prime never
-    fall on a 50 or 60 Hz mains harmonic.
+    fall exactly on a 50 or 60 Hz mains harmonic. Some come within 1 Hz,
+    e.g. 3 × 17 = 51 Hz, 59 and 61 Hz.
   - A note beside the boxes gives the count, or what is wrong.
+  - Frequency Hz is not used, and not checked, while the tick is set. The
+    parameter log's `frequency_hz` is then the first frequency scanned.
+  - The row is held while a measurement runs.
 - **Between frequencies:** the 6221 is switched off and read back off, then
   set up again at the next frequency. The lock-ins are set up again too.
 - **6221-IV:** the whole current scan (all loops and harmonic passes) runs
@@ -24,6 +28,8 @@ modulation axis.
   frequency.
   - The 6221 pre-run is at least 5 periods.
   - The point index runs on across frequencies.
+  - At each new frequency every SR830 order starts again from the
+    configure range, not the range it ended on at the last frequency.
   - The frequency scan needs an AC read current: the row is greyed out with
     DC, as Frequency Hz is.
 - **Plots:** one curve per frequency, in each meter's colour, light at the
@@ -31,16 +37,31 @@ modulation axis.
   every frequency up to six, otherwise the lowest and highest. Gate-VI's
   |R| and voltage-vs-pulse plots do the same. With one frequency the plots
   are as before.
-- **CSV:** unchanged columns. Each row has its frequency (`frequency_Hz`,
-  `6221_frequency_Hz`).
+- **CSV:** unchanged columns.
+  - 6221-IV and the Gate-VI raw and summary CSVs give each row's frequency
+    (`frequency_Hz`, `6221_frequency_Hz`).
+  - `VI_resistance_gate.csv` has no frequency column. Its rows match the
+    summary by `point_index`, and `VI_summary.csv` also carries each point's
+    |R| (`post_resistance_Ohm`).
 - **Limits:**
   - The demodulation limits (SR830 102 kHz, Zurich 500 kHz) are checked at
     the highest frequency.
   - 6221-IV: at most 100000 points, including passes and frequencies.
   - Gate-VI: at most 10000 points, all frequencies together.
   - The confirmation shows the count and the estimated time.
-- **Tests:** `test_nonlocal_frequency_scan.py` (18, no Tk) and a
-  `test_panel_defaults.py` check of the rows.
+- **Review (2026-10-10):** an independent review found no hardware-safety
+  defect. The outputs are off and read back off at each frequency change,
+  on Stop and on errors, and the tick-off path is unchanged. Its low
+  findings are fixed:
+  - the unused Frequency Hz is no longer checked;
+  - each SR830 order starts afresh at a new frequency;
+  - the 6221-IV row is held during a run;
+  - the 6221 line says OFF while it is set up again;
+  - the 6221-IV time estimate is corrected.
+- **Tests:**
+  - `test_nonlocal_frequency_scan.py`: 21 tests, no Tk.
+  - `test_panel_defaults.py`: a check of the rows.
+  - The CI screenshots show a three-frequency 6221-IV example.
 
 ## Non-local: every AC frequency defaults to 17.3 Hz (2026-10-09)
 

@@ -1525,7 +1525,8 @@ NONLOCAL_METER_NAMES = {"8": "SR830 #8", "9": "SR830 #9", "mfli": "Zurich", "218
 # multi-frequency sweep: the whole scan runs at one frequency, then at the
 # next.  The frequencies are the whole-number primes from f start to f stop,
 # as the microwave test program's modulation axis: the 2nd and 3rd harmonics
-# of a prime never fall on a 50 or 60 Hz mains harmonic.
+# of a prime never fall exactly on a 50 or 60 Hz mains harmonic (some come
+# within 1 Hz, e.g. 3 × 17 = 51 Hz).
 NONLOCAL_FSCAN_START_HZ = 7
 NONLOCAL_FSCAN_STOP_HZ = 97
 NONLOCAL_FSCAN_MAX_HZ = 100000          # the 6221's sine
@@ -4833,7 +4834,7 @@ def nonlocal_frequency_scan_text(start_hz, stop_hz) -> str:
         return str(error)
     if len(values) == 1:
         return f"1 prime: {values[0]:g} Hz"
-    return f"{len(values)} primes, {values[0]:g}–{values[-1]:g} Hz"
+    return f"{len(values)} primes: {values[0]:g}–{values[-1]:g} Hz"
 
 
 def current_unit(max_abs_current_a: float) -> tuple[float, str]:
@@ -21670,8 +21671,8 @@ class CombinedControlApp:
             except tk.TclError:
                 scanning = False
             info_var.set(
-                nonlocal_frequency_scan_text(start_var.get(), stop_var.get())
-                + " (the whole scan at each)" if scanning else "Off: the scan runs at Frequency Hz"
+                nonlocal_frequency_scan_text(start_var.get(), stop_var.get()) if scanning
+                else "Off: Frequency Hz only"
             )
 
         for variable in (tick_var, start_var, stop_var):
@@ -21781,8 +21782,12 @@ class CombinedControlApp:
             ttk.Entry(scan, textvariable=variable, width=6).grid(
                 row=row, column=2 + 2 * column, padx=2, pady=2, sticky="ew"
             )
-        fscan, _widgets = self._build_nonlocal_fscan_row(scan, "nonlocal_iv6221")
+        fscan, self.nonlocal_iv6221_fscan_widgets = self._build_nonlocal_fscan_row(scan, "nonlocal_iv6221")
         fscan.grid(row=2, column=0, columnspan=8, sticky="ew", pady=2)
+        # Held while a measurement runs, as the lock-in choices (its list is fixed then).
+        self.nonlocal_iv6221_choice_widgets.extend(
+            (widget, "normal") for widget in self.nonlocal_iv6221_fscan_widgets
+        )
         self.nonlocal_iv6221_start_button = ttk.Button(
             scan, text="Choose folder and start scan", command=self.start_nonlocal_iv6221
         )
@@ -30045,6 +30050,15 @@ class CombinedControlApp:
             if key != "output_mode"
         ):
             raise ValueError("Non-local VI parameters must be finite values")
+        # The frequency scan (user, 2026-10-10): the whole pulse scan at each
+        # frequency in turn, as on STFMR.  A DC read current has none.  The
+        # frequency checks below are at the highest frequency scanned.
+        scanning, frequencies = (
+            self._nonlocal_scan_frequencies("nonlocal_vi", settings["frequency_hz"])
+            if settings["output_mode"] == "AC" else (False, (settings["frequency_hz"],))
+        )
+        top = max(frequencies)
+        at_top = f" at {top:g} Hz" if scanning else ""
         model = self.nonlocal_vi_2410_controller.model
         pulse_limit_v = NONLOCAL_KEITHLEY_MAX_ABS_V.get(model, NONLOCAL_VI_MAX_ABS_PULSE_V)
         if max(
@@ -30079,7 +30093,7 @@ class CombinedControlApp:
             raise ValueError("6221 DC current must be within ±105 mA")
         if (
             settings["output_mode"] == "AC"
-            and not 1e-3 <= settings["frequency_hz"] <= 1e5
+            and not 1e-3 <= min(frequencies) <= top <= 1e5
         ):
             raise ValueError("6221 frequency must be within 0.001–100000 Hz")
         if not 0 < settings["sample_hz"] <= 100:
@@ -30117,9 +30131,9 @@ class CombinedControlApp:
                 raise ValueError(f"SR830 #{key} harmonic must be 1–19999")
             if (
                 settings["output_mode"] == "AC"
-                and max(lockin_orders[key]) * settings["frequency_hz"] > 102000
+                and max(lockin_orders[key]) * top > 102000
             ):
-                raise ValueError(f"SR830 #{key} demodulation frequency exceeds 102 kHz")
+                raise ValueError(f"SR830 #{key} demodulation frequency exceeds 102 kHz{at_top}")
             if config["channel"] not in {"X", "Y", "R"}:
                 raise ValueError(f"SR830 #{key} read channel must be X, Y or R")
         if mfli_config:
@@ -30131,9 +30145,11 @@ class CombinedControlApp:
                 raise ValueError("Zurich MFLI harmonic must be 1–1024")
             if (
                 settings["output_mode"] == "AC"
-                and settings["frequency_hz"] * max(lockin_orders["mfli"]) > 500000
+                and top * max(lockin_orders["mfli"]) > 500000
             ):
-                raise ValueError("Zurich MFLI demodulation frequency exceeds the base model's 500 kHz")
+                raise ValueError(
+                    f"Zurich MFLI demodulation frequency exceeds the base model's 500 kHz{at_top}"
+                )
             if mfli_config["channel"] not in {"X", "Y", "R"}:
                 raise ValueError("Zurich MFLI read channel must be X, Y or R")
             if mfli_config["input_impedance"] not in {"10 MΩ", "50 Ω"}:
@@ -30159,29 +30175,15 @@ class CombinedControlApp:
                 f"VI scan total points exceed {NONLOCAL_VI_MAX_POINTS}"
             )
         settings["voltage_scan"] = voltage_scan
-        # The frequency scan (user, 2026-10-10): the whole pulse scan at each
-        # frequency in turn, as on STFMR.  A DC read current has none.
-        scanning, frequencies = (
-            self._nonlocal_scan_frequencies("nonlocal_vi", settings["frequency_hz"])
-            if settings["output_mode"] == "AC" else (False, (settings["frequency_hz"],))
-        )
-        if scanning:
-            top = max(frequencies)
-            for key in lockin_configs:
-                if max(lockin_orders[key]) * top > 102000:
-                    raise ValueError(
-                        f"SR830 #{key} demodulation frequency exceeds 102 kHz at {top:g} Hz"
-                    )
-            if mfli_config and top * max(lockin_orders["mfli"]) > 500000:
-                raise ValueError(
-                    f"Zurich MFLI demodulation frequency exceeds the base model's 500 kHz at {top:g} Hz"
-                )
         if len(voltage_scan) * len(frequencies) > NONLOCAL_VI_MAX_POINTS:
             raise ValueError(
                 f"VI scan total points (all frequencies) exceed {NONLOCAL_VI_MAX_POINTS}"
             )
         settings["frequency_scan"] = scanning
         settings["frequencies"] = frequencies
+        if scanning:
+            # The log names the frequencies scanned, not the unused Frequency Hz.
+            settings["frequency_hz"] = frequencies[0]
         settings["lockin_configs"] = lockin_configs
         settings["mfli_config"] = mfli_config
         settings["use_nanovoltmeter"] = use_nanovoltmeter
@@ -30672,8 +30674,11 @@ class CombinedControlApp:
                     set_up_zurich_orders(lockin_readbacks)
                     source.output_off()
                     source.confirm_output_off("after setting up the next frequency")
-                    # configure() leaves each SR830 on its first order.
+                    # configure() leaves each SR830 on its first order, at
+                    # its start range; the other orders start afresh too
+                    # (review, 2026-10-10: not on the last frequency's range).
                     current_orders.update({key: orders[key][0] for key in settings["lockin_configs"]})
+                    sensitivity_memory.clear()
                     self.post_ui(
                         lambda n=frequency_index, value=set_frequency:
                         self.nonlocal_vi_status_var.set(
@@ -32702,7 +32707,7 @@ class CombinedControlApp:
             raise ValueError(f"Harmonic must be one of {', '.join(PPMS_ZURICH_MODE_ORDERS)}")
         return tuple(orders)
 
-    def _parse_nonlocal_iv6221_lockins(self) -> dict[str, object]:
+    def _parse_nonlocal_iv6221_lockins(self, check_frequency: bool = True) -> dict[str, object]:
         """The 6221 and lock-in settings (shared by Set 6221 and the scan).
 
         As on RT-E: each SR830 reads one order per pass, and one with 1+2
@@ -32738,7 +32743,9 @@ class CombinedControlApp:
                 raise ValueError("The Zurich is ticked Measure but is not connected")
             if key != "mfli" and key not in connected:
                 raise ValueError(f"SR830 #{key} is ticked Measure but is not connected")
-        if not 1e-3 <= frequency_hz <= 1e5:
+        # A frequency scan checks its own frequencies instead (review,
+        # 2026-10-10: Frequency Hz is not used then).
+        if check_frequency and not 1e-3 <= frequency_hz <= 1e5:
             raise ValueError("6221 frequency must be within 0.001–100000 Hz")
         if not K6221_MIN_COMPLIANCE_V <= compliance_v <= K6221_MAX_COMPLIANCE_V:
             raise ValueError("6221 compliance must be within 0.1–105 V")
@@ -32754,7 +32761,7 @@ class CombinedControlApp:
                 raise ValueError("The Zurich TC (s) on the rack must be above 0 and at most 100 s")
         for key in measured:
             limit = 500000.0 if key == "mfli" else 102000.0
-            if frequency_hz * max(orders[key]) > limit:
+            if check_frequency and frequency_hz * max(orders[key]) > limit:
                 raise ValueError(
                     f"{NONLOCAL_METER_NAMES[key]} demodulation frequency exceeds {limit / 1000:g} kHz"
                 )
@@ -32810,7 +32817,9 @@ class CombinedControlApp:
         }
 
     def _parse_nonlocal_iv6221_settings(self) -> dict[str, object]:
-        settings = self._parse_nonlocal_iv6221_lockins()
+        settings = self._parse_nonlocal_iv6221_lockins(
+            check_frequency=not self._nonlocal_fscan_ticked("nonlocal_iv6221")
+        )
         try:
             start_ma = float(self.nonlocal_iv6221_start_var.get())
             end_ma = float(self.nonlocal_iv6221_end_var.get())
@@ -32853,6 +32862,10 @@ class CombinedControlApp:
             raise ValueError(
                 "6221-IV scans are limited to 100000 points including harmonic passes and frequencies"
             )
+        if scanning:
+            # The log and the run then name the frequencies scanned, not the
+            # unused Frequency Hz.
+            settings["frequency_hz"] = frequencies[0]
         settings.update({
             "frequency_scan": scanning, "frequencies": frequencies,
             "start_ma": start_ma, "end_ma": end_ma, "step_ma": step_ma,
@@ -32863,16 +32876,18 @@ class CombinedControlApp:
         })
         return settings
 
+    def _nonlocal_fscan_ticked(self, prefix: str) -> bool:
+        tick = self.__dict__.get(f"{prefix}_fscan_var")
+        try:
+            return bool(tick.get()) if tick is not None else False
+        except tk.TclError:
+            return False
+
     def _nonlocal_scan_frequencies(self, prefix: str, frequency_hz: float):
         """(scanning, the frequencies) of a 6221-IV or Gate-VI scan:
         Frequency Hz alone, or with Frequency scan ticked the primes from
         f start to f stop, the whole scan at each (user, 2026-10-10)."""
-        tick = self.__dict__.get(f"{prefix}_fscan_var")
-        try:
-            scanning = bool(tick.get()) if tick is not None else False
-        except tk.TclError:
-            scanning = False
-        if not scanning:
+        if not self._nonlocal_fscan_ticked(prefix):
             return False, (float(frequency_hz),)
         return True, nonlocal_prime_frequencies(
             self.__dict__[f"{prefix}_fstart_var"].get(),
@@ -33016,15 +33031,15 @@ class CombinedControlApp:
         # Zurich's TC; an SR830's front-panel one adds to this) and checks it
         # in a second window; in a frequency scan, at each frequency, at
         # least 5 of its periods.
-        first_point_s = (
+        first_settle_s = (
             NONLOCAL_IV6221_FIRST_SETTLE_TAUS * float(settings["mfli_config"]["timeconstant_s"])
             if settings["mfli_config"] else 0.0
-        ) + settings["acquire_s"]
+        )
         estimate = self._format_scan_duration(
             total * (settings["settle_s"] + settings["acquire_s"] + 0.3)
             + len(settings["passes"]) * sum(
-                first_point_s + (NONLOCAL_FSCAN_SETTLE_PERIODS / frequency
-                                 if settings["frequency_scan"] else 0.0)
+                max(first_settle_s, NONLOCAL_FSCAN_SETTLE_PERIODS / frequency
+                    if settings["frequency_scan"] else 0.0) + settings["acquire_s"]
                 for frequency in frequencies
             )
         )
@@ -33383,6 +33398,9 @@ class CombinedControlApp:
                         # back), then set up at the next frequency.
                         source.output_off()
                         source.confirm_output_off("before the next frequency")
+                        self.post_ui(lambda value=set_frequency: self.nonlocal_iv6221_source_var.set(
+                            f"6221: OFF; setting up {value:g} Hz"
+                        ))
                         self.post_ui(
                             lambda n=frequency_index, value=set_frequency:
                             self.nonlocal_iv6221_point_var.set(

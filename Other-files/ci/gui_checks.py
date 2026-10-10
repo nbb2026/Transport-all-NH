@@ -109,24 +109,30 @@ def example_data(app):
         (0.2 * index, 369.7e6 * (1 + 0.002 * ((index * 7) % 5 - 2))) for index in range(100)
     ]
     # 6221-IV at RT-E's start-up settings: the Zurich alone, 1+2+3, added
-    # point by point as a scan does, so the rows and status show too.
+    # point by point as a scan does, so the rows and status show too.  A
+    # frequency scan (7, 11, 13 Hz): a curve per frequency, light to dark;
+    # the pick-up in Y grows with the frequency.
     app.nonlocal_iv6221_rows = []
-    app.nonlocal_iv6221_total_points = 100
-    for index in range(1, 41):
-        current = 0.01 * index
-        app._append_nonlocal_iv6221_point({
-            "index": index, "pass": 1, "loop": 1, "point": index, "elapsed_s": 1.6 * index,
-            "set_current_rms_ma": current, "current_rms_ma": current, "frequency_hz": 17.3,
-            "discarded": 1 if index == 40 else 0,
-            "series": {
-                ("mfli", 1): {"X": 2.0e-4 * current, "Y": 1.0e-6 * current,
-                              "R": 2.0e-4 * current, "theta": 0.3},
-                ("mfli", 2): {"X": 3.0e-7 * current ** 2, "Y": -2.0e-8 * current,
-                              "R": 3.0e-7 * current ** 2, "theta": -88.0},
-                ("mfli", 3): {"X": 4.0e-9 * current ** 3, "Y": 1.0e-9 * current,
-                              "R": 4.0e-9 * current ** 3, "theta": 12.0},
-            },
-        })
+    app.nonlocal_iv6221_total_points = 60
+    index = 0
+    for frequency_index, frequency in enumerate((7.0, 11.0, 13.0), 1):
+        for point in range(1, 21):
+            index += 1
+            current = 0.02 * point
+            app._append_nonlocal_iv6221_point({
+                "index": index, "pass": 1, "loop": 1, "point": point, "elapsed_s": 1.6 * index,
+                "set_current_rms_ma": current, "current_rms_ma": current, "frequency_hz": frequency,
+                "set_frequency_hz": frequency, "frequency_index": frequency_index,
+                "frequency_count": 3, "discarded": 1 if index == 60 else 0,
+                "series": {
+                    ("mfli", 1): {"X": 2.0e-4 * current, "Y": 1.0e-7 * frequency * current,
+                                  "R": 2.0e-4 * current, "theta": 0.03 * frequency},
+                    ("mfli", 2): {"X": 3.0e-7 * current ** 2, "Y": -2.0e-9 * frequency * current,
+                                  "R": 3.0e-7 * current ** 2, "theta": -88.0 + 0.1 * frequency},
+                    ("mfli", 3): {"X": 4.0e-9 * current ** 3, "Y": 1.0e-10 * frequency * current,
+                                  "R": 4.0e-9 * current ** 3, "theta": 12.0 + 0.2 * frequency},
+                },
+            })
     # Gate-VI with SR830 #8 at 1+2 and the Zurich at 1+2+3: a row of X, Y,
     # θ per order, then |R| and the X or Y vs pulse voltage per order.
     app.nonlocal_vi_lockin_harmonic_vars["8"].set("1+2")

@@ -55,7 +55,7 @@ class PrimeTests(unittest.TestCase):
                 app.nonlocal_prime_frequencies(start, stop)
 
     def test_the_row_note(self):
-        self.assertEqual(app.nonlocal_frequency_scan_text("7", "97"), "22 primes, 7–97 Hz")
+        self.assertEqual(app.nonlocal_frequency_scan_text("7", "97"), "22 primes: 7–97 Hz")
         self.assertEqual(app.nonlocal_frequency_scan_text("17", "17"), "1 prime: 17 Hz")
         self.assertIn("No prime", app.nonlocal_frequency_scan_text("24", "28"))
 
@@ -109,6 +109,8 @@ class IV6221Tests(unittest.TestCase):
         a._publish_reference_sync = mock.Mock()
         a._show_nonlocal_mfli_lock = mock.Mock()
         a.nonlocal_iv6221_source_var, a.nonlocal_iv6221_point_var = Var(), Var()
+        self.sources = []
+        a.nonlocal_iv6221_source_var.set = self.sources.append
         for name, value in (("NONLOCAL_IV6221_FIRST_SETTLE_TAUS", 0.0),
                             ("NONLOCAL_IV6221_REFERENCE_WAIT_S", 0.0)):
             patcher = mock.patch.object(app, name, value)
@@ -123,6 +125,14 @@ class IV6221Tests(unittest.TestCase):
         settings = self.make(tick=False)._parse_nonlocal_iv6221_settings()
         self.assertFalse(settings["frequency_scan"])
         self.assertEqual(settings["frequencies"], (17.3,))
+
+    def test_the_unused_frequency_hz_is_not_checked_and_the_log_names_the_first_scanned(self):
+        # Review, 2026-10-10: 2 × 60 kHz is above the SR830's 102 kHz, but
+        # Frequency Hz is not used in a frequency scan.
+        settings = self.make("7", "31", frequency="60000")._parse_nonlocal_iv6221_settings()
+        self.assertEqual(settings["frequency_hz"], 7.0)
+        with self.assertRaisesRegex(ValueError, "SR830 #8 demodulation frequency exceeds 102 kHz"):
+            self.make(tick=False, frequency="60000")._parse_nonlocal_iv6221_settings()
 
     def test_limits_at_the_highest_frequency(self):
         # SR830 #8 at its 2nd harmonic: 2 × 99991 Hz is above its 102 kHz.
@@ -164,6 +174,9 @@ class IV6221Tests(unittest.TestCase):
             callback()
         self.assertEqual([(row["set_frequency_hz"], row["frequency_index"], row["frequency_count"])
                           for row in appended], [(11.0, 1, 2), (11.0, 1, 2), (13.0, 2, 2), (13.0, 2, 2)])
+        self.assertEqual(self.sources, ["6221 ON: 0.1 mA RMS / 11 Hz", "6221 ON: 0.2 mA RMS / 11 Hz",
+                                        "6221: OFF; setting up 13 Hz",
+                                        "6221 ON: 0.1 mA RMS / 13 Hz", "6221 ON: 0.2 mA RMS / 13 Hz"])
 
     def test_without_the_tick_one_scan_and_no_extra_wait(self):
         a = self.make(tick=False, start="0.1", end="0.2", step="0.1")
@@ -260,6 +273,25 @@ class GateVITests(unittest.TestCase):
         settings = a._parse_nonlocal_vi_settings()
         self.assertFalse(settings["frequency_scan"], "a DC read current has no frequency to scan")
         self.assertEqual(len(settings["frequencies"]), 1)
+
+    def test_the_unused_frequency_hz_is_not_checked(self):
+        a = self.make("7", "31", sr830="1+2")
+        a.nonlocal_vi_frequency_var.set("60000")
+        self.assertEqual(a._parse_nonlocal_vi_settings()["frequency_hz"], 7.0)
+        a.nonlocal_vi_fscan_var.set(False)
+        with self.assertRaisesRegex(ValueError, "SR830 #8 demodulation frequency exceeds 102 kHz$"):
+            a._parse_nonlocal_vi_settings()
+
+    def test_each_order_starts_afresh_at_a_new_frequency(self):
+        a = self.make(sr830="1+2")
+        self.run_scan(a)
+        switches = [c[1:] for c in a.nonlocal_vi_ac_controller.calls if c[0] in ("harmonic", "configure")]
+        # Per point 2ω then back to 1ω; the 2nd order's first switch at the
+        # next frequency starts at the configure range, not the last one.
+        second = switches.index((13.0,))
+        self.assertEqual(switches[1], ("8", 2, None))
+        self.assertEqual(switches[second + 1], ("8", 2, None))
+        self.assertEqual(switches[second + 3], ("8", 2, 12), "then on its own last range again")
 
     def test_limits_and_the_time_estimate(self):
         with self.assertRaisesRegex(ValueError, "SR830 #8 demodulation frequency exceeds 102 kHz at 99991 Hz"):
