@@ -1,5 +1,19 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local: Gate-VI scan defaults from the user's figure (2026-10-11)
+
+- **New defaults:**
+  - Start V 100, Stop V −100, Step V 10 (were 20, −20, 4).
+  - 6221 pre-run 5 s (was 10).
+  - Measure/pt 30 s (was 50).
+- **Unchanged:** pulse width 0.1 s, post-pulse wait 0.5 s, pulse gate
+  100 MΩ, Sample Hz 1, Loops 2, frequency scan off at 7–97 Hz.
+- **High voltage:** ±100 V puts the 2400 on its 200 V range, with its
+  120 V OVP. The start confirmation shows the HIGH VOLTAGE note.
+- **Scan size:** one loop is 41 pulses; the default 2 loops are 82.
+- **Tests:** `test_nonlocal_gate_vi_harmonics.py` and
+  `test_panel_defaults.py` check the values.
+
 ## Non-local: Loops on the Gate-VI scan (2026-10-11)
 
 The user asked for a loop count on the Gate-VI scan, default 2.

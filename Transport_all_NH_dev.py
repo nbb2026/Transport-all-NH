@@ -1397,18 +1397,21 @@ NONLOCAL_KEITHLEY_DISCHARGE_S = 1.0
 # drains slowly).
 NONLOCAL_KEITHLEY_DRAIN_MAX_S = 30.0
 NONLOCAL_KEITHLEY_SAMPLE_INTERVAL_S = 0.2
-NONLOCAL_VI_START_PULSE_V = 20.0
-NONLOCAL_VI_STOP_PULSE_V = -20.0
-NONLOCAL_VI_STEP_PULSE_V = 4.0
+# Gate-VI scan defaults (user's figure, 2026-10-11; were 20, -20 and 4 V,
+# pre-run 10 s, Measure/pt 50 s).  ±100 V needs the 2400's 200 V range; the
+# start confirmation warns about it.
+NONLOCAL_VI_START_PULSE_V = 100.0
+NONLOCAL_VI_STOP_PULSE_V = -100.0
+NONLOCAL_VI_STEP_PULSE_V = 10.0
 NONLOCAL_VI_PULSE_WIDTH_S = 0.1
 NONLOCAL_VI_POST_PULSE_SETTLE_S = 0.5
 NONLOCAL_VI_2410_CURRENT_COMPLIANCE_A = KEITHLEY_DEFAULT_COMPLIANCE_A
 NONLOCAL_VI_READ_CURRENT_RMS_MA = 1.0
 NONLOCAL_VI_FREQUENCY_HZ = NONLOCAL_FREQUENCY_HZ
 NONLOCAL_VI_SAMPLE_HZ = 1.0
-NONLOCAL_VI_6221_SETTLE_S = 10.0
-# Measure/pt s default (user, 2026-10-09; was 100).
-NONLOCAL_VI_MEASURE_S = 50.0
+NONLOCAL_VI_6221_SETTLE_S = 5.0
+# Measure/pt s default (user's figure, 2026-10-11; was 50, before that 100).
+NONLOCAL_VI_MEASURE_S = 30.0
 # Loops (user, 2026-10-11): the pulse scan (start → stop → start) run this
 # many times; in a frequency scan, at each frequency.  Default 2 (user).
 NONLOCAL_VI_LOOPS = 2

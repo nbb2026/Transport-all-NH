@@ -122,8 +122,14 @@ class ParseTests(unittest.TestCase):
     def test_the_pulse_gate_default_is_100_megohm(self):
         self.assertEqual(app.NONLOCAL_VI_MIN_RESISTANCE_FOR_PULSE_OHM, 100e6)
 
-    def test_the_measure_time_default_is_50_s(self):
-        self.assertEqual(app.NONLOCAL_VI_MEASURE_S, 50.0)
+    def test_the_scan_defaults_follow_the_users_figure(self):
+        # User's figure, 2026-10-11.
+        self.assertEqual(
+            (app.NONLOCAL_VI_START_PULSE_V, app.NONLOCAL_VI_STOP_PULSE_V, app.NONLOCAL_VI_STEP_PULSE_V,
+             app.NONLOCAL_VI_PULSE_WIDTH_S, app.NONLOCAL_VI_POST_PULSE_SETTLE_S,
+             app.NONLOCAL_VI_MIN_RESISTANCE_FOR_PULSE_OHM, app.NONLOCAL_VI_SAMPLE_HZ,
+             app.NONLOCAL_VI_6221_SETTLE_S, app.NONLOCAL_VI_MEASURE_S, app.NONLOCAL_VI_LOOPS),
+            (100.0, -100.0, 10.0, 0.1, 0.5, 100e6, 1.0, 5.0, 30.0, 2))
 
     def test_choices_become_orders_and_passes(self):
         settings = gate_page()._parse_nonlocal_vi_settings()

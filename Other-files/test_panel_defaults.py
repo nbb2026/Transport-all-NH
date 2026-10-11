@@ -167,6 +167,12 @@ class PanelDefaultTests(unittest.TestCase):
         """2026-10-11: Loops on the Gate-VI scan, beside the frequency scan row."""
         a = self.app
         self.assertEqual(a.nonlocal_vi_loops_var.get(), "2")
+        # The scan box at the user's figure (2026-10-11).
+        self.assertEqual(
+            tuple(getattr(a, f"nonlocal_vi_{name}_var").get() for name in (
+                "start_voltage", "stop_voltage", "step_voltage", "pulse_width", "post_pulse",
+                "gate_resistance", "sample_hz", "settle", "measure")),
+            ("100", "-100", "10", "0.1", "0.5", "100", "1", "5", "30"))
         self.assertEqual(len(self.widgets("TEntry", a.nonlocal_vi_loops_var)), 1)
         self.assertEqual(len(self.widgets("TLabel", text="Loops:")), 1)
 
