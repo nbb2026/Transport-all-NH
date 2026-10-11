@@ -131,7 +131,7 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertEqual(
             (a.nonlocal_iv_start_var.get(), a.nonlocal_iv_end_var.get(), a.nonlocal_iv_step_var.get(),
              a.nonlocal_iv_settle_var.get(), a.nonlocal_iv_limit_var.get()),
-            ("-50", "50", "5", "0.5", "0.001"))
+            ("-10", "10", "1", "0.5", "0.001"))
 
     def test_non_local_frequencies_default_to_17_3_hz(self):
         """2026-10-09: every non-local AC frequency starts at 17.3 Hz (was

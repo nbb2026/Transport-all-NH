@@ -1,5 +1,12 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local: 2400-IV defaults −10 → 10 V (2026-10-11)
+
+As in the user's figure, 2400-IV starts at Start −10 V, End 10 V, Step 1 V,
+Settle 0.5 s: 21 points. The defaults were −50 V, 50 V and 5 V. The sweep now
+stays on the 2400's 20 V range. `test_nonlocal_keithley.py` and
+`test_panel_defaults.py` check the values.
+
 ## Non-local: frequency scan on 6221-IV and Gate-VI (2026-10-10)
 
 The user asked for a frequency scan on 6221-IV and Gate-VI. It follows the

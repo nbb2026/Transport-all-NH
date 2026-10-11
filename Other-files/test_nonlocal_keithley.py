@@ -250,10 +250,10 @@ class SweepValuesTests(unittest.TestCase):
             app.build_iv_sweep_voltages(-10, 10, 0.001)
 
     def test_the_defaults(self):
-        # User, 2026-10-09: -50 → 50 V in 5 V steps, 0.5 s settle (21 points).
+        # User's figure, 2026-10-11: -10 → 10 V in 1 V steps, 0.5 s settle (21 points).
         self.assertEqual((app.NONLOCAL_IV_SWEEP_START_V, app.NONLOCAL_IV_SWEEP_END_V,
-                          app.NONLOCAL_IV_SWEEP_STEP_V, app.NONLOCAL_IV_SWEEP_SETTLE_S), (-50.0, 50.0, 5.0, 0.5))
-        self.assertEqual(len(app.build_iv_sweep_voltages(-50, 50, 5, 200)), 21)
+                          app.NONLOCAL_IV_SWEEP_STEP_V, app.NONLOCAL_IV_SWEEP_SETTLE_S), (-10.0, 10.0, 1.0, 0.5))
+        self.assertEqual(len(app.build_iv_sweep_voltages(-10, 10, 1, 200)), 21)
 
     def test_current_units(self):
         self.assertEqual(app.format_current(-1.833e-8), "-18.33 nA")

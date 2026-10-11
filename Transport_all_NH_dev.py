@@ -1460,10 +1460,10 @@ NONLOCAL_VI_RESULTS_DIRECTORY = (
 # stepped from Start to End and the current read at each step, as in the
 # user's 1 um Pt-Pt figure (-6 to 6 V).  The sweep stays inside the page's
 # 20 V range and 20 V OVP.
-# 2400-IV defaults (user, 2026-10-09; were -6, 6 and 0.25 V).
-NONLOCAL_IV_SWEEP_START_V = -50.0
-NONLOCAL_IV_SWEEP_END_V = 50.0
-NONLOCAL_IV_SWEEP_STEP_V = 5.0
+# 2400-IV defaults (user's figure, 2026-10-11; were -50, 50 and 5 V).
+NONLOCAL_IV_SWEEP_START_V = -10.0
+NONLOCAL_IV_SWEEP_END_V = 10.0
+NONLOCAL_IV_SWEEP_STEP_V = 1.0
 NONLOCAL_IV_SWEEP_SETTLE_S = 0.5
 # The ramp from 0 V to Start V before the first point (user, 2026-10-09):
 # steps of at most this size, this long apart (25 V/s; -1000 V in 40 s).
