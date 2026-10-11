@@ -21416,7 +21416,9 @@ class CombinedControlApp:
             row=3, column=1, sticky="w", pady=2
         )
         fscan, self.nonlocal_vi_fscan_widgets = self._build_nonlocal_fscan_row(scan, "nonlocal_vi")
-        fscan.grid(row=3, column=2, columnspan=4, sticky="ew", padx=(10, 0), pady=2)
+        # Into the box's spare width (column 6), so its note is not cut short.
+        scan.columnconfigure(6, weight=1)
+        fscan.grid(row=3, column=2, columnspan=5, sticky="ew", padx=(10, 0), pady=2)
         actions = ttk.Frame(scan)
         actions.grid(row=4, column=0, columnspan=6, sticky="ew", pady=(6, 0))
         actions.columnconfigure(2, weight=1)
