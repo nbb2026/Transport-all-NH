@@ -1,5 +1,29 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local: Loops on the Gate-VI scan (2026-10-11)
+
+The user asked for a loop count on the Gate-VI scan, default 2.
+
+- **Where:** "Loops:" sits at the start of the frequency-scan row, so the
+  box is no taller.
+- **What a loop is:** each loop is a whole pulse scan, start → stop → start.
+  The next loop starts again at Start V, so the Start V pulse is applied at
+  the end of one loop and again at the start of the next.
+- **Frequency scan:** the loops run at each frequency in turn
+  (f1: loop 1, loop 2; f2: loop 1, loop 2 …), as on 6221-IV.
+- **Limits:** a whole number from 1 to 10000, as RT-E's Loops. All loops and
+  frequencies together are at most 10000 points.
+- **Time:** the estimate, the point count and the progress bar count every
+  loop.
+- **CSV:** `VI_raw.csv`, `VI_summary.csv` and `VI_resistance_gate.csv` gain
+  a last column, `loop`. It is empty for the initial |R| check.
+- **Plots:** the |R| and voltage-vs-pulse plots draw a line per loop, in the
+  same colour, with no line from one loop back to the next. With a frequency
+  scan, a curve per frequency and loop.
+- **Tests:**
+  - `test_nonlocal_gate_vi_loops.py`: 9 tests, no Tk.
+  - `test_panel_defaults.py`: the default and the box.
+
 ## Non-local: 2400-IV defaults −10 → 10 V (2026-10-11)
 
 As in the user's figure, 2400-IV starts at Start −10 V, End 10 V, Step 1 V,

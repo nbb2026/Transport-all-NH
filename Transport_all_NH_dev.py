@@ -1409,6 +1409,9 @@ NONLOCAL_VI_SAMPLE_HZ = 1.0
 NONLOCAL_VI_6221_SETTLE_S = 10.0
 # Measure/pt s default (user, 2026-10-09; was 100).
 NONLOCAL_VI_MEASURE_S = 50.0
+# Loops (user, 2026-10-11): the pulse scan (start → stop → start) run this
+# many times; in a frequency scan, at each frequency.  Default 2 (user).
+NONLOCAL_VI_LOOPS = 2
 # Gate-VI harmonics (user, 2026-10-09): an SR830 reads 1+2 one order after
 # the other at each point; the Zurich reads 1+2 or 1+2+3 at once, on its own
 # demodulators (MF-MD), as on PPMS and 6221-IV.
@@ -12993,6 +12996,7 @@ class CombinedControlApp:
         self.nonlocal_vi_measure_var = tk.StringVar(
             value=f"{NONLOCAL_VI_MEASURE_S:g}"
         )
+        self.nonlocal_vi_loops_var = tk.StringVar(value=f"{NONLOCAL_VI_LOOPS:g}")
         # The frequency scan (user, 2026-10-10); off, the scan runs at Frequency Hz.
         self.nonlocal_vi_fscan_var = tk.BooleanVar(value=False)
         self.nonlocal_vi_fstart_var = tk.StringVar(value=f"{NONLOCAL_FSCAN_START_HZ:g}")
@@ -21406,8 +21410,13 @@ class CombinedControlApp:
             ttk.Entry(scan, textvariable=variable, width=8).grid(
                 row=row, column=2 * slot + 1, sticky="w", pady=2
             )
+        # Loops (user, 2026-10-11), then the frequency scan, on one row.
+        ttk.Label(scan, text="Loops:").grid(row=3, column=0, sticky="e", padx=(0, 3), pady=2)
+        ttk.Entry(scan, textvariable=self.nonlocal_vi_loops_var, width=8).grid(
+            row=3, column=1, sticky="w", pady=2
+        )
         fscan, self.nonlocal_vi_fscan_widgets = self._build_nonlocal_fscan_row(scan, "nonlocal_vi")
-        fscan.grid(row=3, column=0, columnspan=6, sticky="ew", pady=2)
+        fscan.grid(row=3, column=2, columnspan=4, sticky="ew", padx=(10, 0), pady=2)
         actions = ttk.Frame(scan)
         actions.grid(row=4, column=0, columnspan=6, sticky="ew", pady=(6, 0))
         actions.columnconfigure(2, weight=1)
@@ -30160,6 +30169,16 @@ class CombinedControlApp:
                 or mfli_config["input_scaling"] <= 0
             ):
                 raise ValueError("Zurich MFLI scaling must be a finite positive number")
+        # Loops (user, 2026-10-11), as RT-E's: a whole number from 1 to 10000
+        # (a page without the box, as the tests' stand-ins: one loop).
+        loops_var = self.__dict__.get("nonlocal_vi_loops_var")
+        try:
+            loops_value = float(loops_var.get()) if loops_var is not None else 1.0
+        except (TypeError, ValueError, tk.TclError) as error:
+            raise ValueError("Loops must be an integer from 1 to 10000") from error
+        if not (math.isfinite(loops_value) and loops_value.is_integer() and 1 <= loops_value <= 10000):
+            raise ValueError("Loops must be an integer from 1 to 10000")
+        loops = int(loops_value)
         outward = self._build_nonlocal_vi_segment(
             settings["start_voltage_v"],
             settings["stop_voltage_v"],
@@ -30176,10 +30195,11 @@ class CombinedControlApp:
                 f"VI scan total points exceed {NONLOCAL_VI_MAX_POINTS}"
             )
         settings["voltage_scan"] = voltage_scan
-        if len(voltage_scan) * len(frequencies) > NONLOCAL_VI_MAX_POINTS:
+        if len(voltage_scan) * loops * len(frequencies) > NONLOCAL_VI_MAX_POINTS:
             raise ValueError(
-                f"VI scan total points (all frequencies) exceed {NONLOCAL_VI_MAX_POINTS}"
+                f"VI scan total points (all loops and frequencies) exceed {NONLOCAL_VI_MAX_POINTS}"
             )
+        settings["loops"] = loops
         settings["frequency_scan"] = scanning
         settings["frequencies"] = frequencies
         if scanning:
@@ -30210,7 +30230,7 @@ class CombinedControlApp:
         settings["sample_interval_s"] = 1.0 / settings["sample_hz"]
         # The hold and a couple of reads while the current is chosen.
         resistance_estimate_s = NONLOCAL_VI_RES_HOLD_S + 2 * NONLOCAL_VI_RES_SAMPLE_INTERVAL_S
-        settings["estimated_s"] = resistance_estimate_s + sum(
+        settings["estimated_s"] = resistance_estimate_s + loops * sum(
             len(voltage_scan) * (
                 # The drain after each pulse (at least 1 s, then two readings).
                 NONLOCAL_KEITHLEY_DISCHARGE_S + 2 * NONLOCAL_KEITHLEY_SAMPLE_INTERVAL_S
@@ -30328,15 +30348,18 @@ class CombinedControlApp:
             )
         frequencies = settings["frequencies"]
         points = len(settings["voltage_scan"])
+        loops = int(settings.get("loops", 1))
         if not messagebox.askyesno(
             "Non-local VI scan",
             f"Pulses: {settings['start_voltage_v']:g} → "
             f"{settings['stop_voltage_v']:g} → "
             f"{settings['start_voltage_v']:g} V, "
             + (
-                f"{points} points per frequency × {len(frequencies)} frequencies = "
-                f"{points * len(frequencies)} points\n"
-                if len(frequencies) > 1 else f"{points} points\n"
+                f"{points} points"
+                + (f" × {loops} loops" if loops > 1 else "")
+                + (f" × {len(frequencies)} frequencies" if len(frequencies) > 1 else "")
+                + f" = {points * loops * len(frequencies)} points\n"
+                if loops > 1 or len(frequencies) > 1 else f"{points} points\n"
             )
             + f"6221：{settings['current_rms_ma']:g} "
             + (
@@ -30379,7 +30402,10 @@ class CombinedControlApp:
             self.nonlocal_vi_current_rows = []
             self.nonlocal_vi_resistance_rows = []
         self.nonlocal_vi_progress.configure(
-            maximum=max(len(settings["voltage_scan"]) * len(settings["frequencies"]), 1), value=0
+            maximum=max(
+                len(settings["voltage_scan"]) * int(settings.get("loops", 1)) * len(settings["frequencies"]), 1
+            ),
+            value=0,
         )
         self.nonlocal_vi_eta_var.set(
             f"Remaining: {self._format_duration(settings['estimated_s'])}"
@@ -30429,7 +30455,7 @@ class CombinedControlApp:
             "6221_measurement_condition", "6221_compliance",
             "SR830_sensitivity_index", "MFLI_input_range_V",
             "MFLI_input_utilization", "auto_range_action",
-            "2410_output_state", "6221_trigger_link_line",
+            "2410_output_state", "6221_trigger_link_line", "loop",
         )
 
     @staticmethod
@@ -30445,7 +30471,7 @@ class CombinedControlApp:
             "warning_sample_count", "compliance_sample_count",
             "pulse_gate_resistance_Ohm", "post_resistance_source_current_A",
             "post_resistance_voltage_V", "post_resistance_current_A",
-            "post_resistance_Ohm", "6221_trigger_link_line",
+            "post_resistance_Ohm", "6221_trigger_link_line", "loop",
         )
 
     def _nonlocal_vi_shutdown_outputs(self) -> tuple[str, ...]:
@@ -30489,6 +30515,7 @@ class CombinedControlApp:
         writer,
         csv_file,
         frequency_hz: float = math.nan,
+        loop="",
     ) -> dict:
         self.nonlocal_vi_ac_controller.output_off()
         self.nonlocal_vi_ac_controller.confirm_output_off(
@@ -30519,13 +30546,15 @@ class CombinedControlApp:
                 result["voltage_v"],
                 result["current_a"],
                 result["resistance_ohm"],
+                loop,
             )
         )
         csv_file.flush()
         with self.nonlocal_vi_data_lock:
-            # The frequency of its pulse scan, for a curve per frequency.
+            # The frequency and loop of its pulse scan, for a curve per
+            # frequency and a line per loop.
             self.nonlocal_vi_resistance_rows.append(
-                (pulse_voltage_v, result["resistance_ohm"], elapsed, stage, frequency_hz)
+                (pulse_voltage_v, result["resistance_ohm"], elapsed, stage, frequency_hz, loop)
             )
         self.post_ui(
             lambda value=result["resistance_ohm"]: self.nonlocal_vi_status_var.set(
@@ -30547,7 +30576,10 @@ class CombinedControlApp:
             # multi-frequency sweep: the whole pulse scan at each frequency
             # in turn, the 6221 set up again in between.
             frequencies = tuple(settings.get("frequencies") or (settings["frequency_hz"],))
-            total_points = len(settings["voltage_scan"]) * len(frequencies)
+            # Loops (user, 2026-10-11): the pulse scan this many times at
+            # each frequency, each loop start → stop → start.
+            loops = int(settings.get("loops", 1))
+            total_points = len(settings["voltage_scan"]) * loops * len(frequencies)
 
             def configure_at(set_frequency):
                 return source.configure(
@@ -30624,7 +30656,7 @@ class CombinedControlApp:
                 (
                     "timestamp", "stage", "point_index", "pulse_voltage_V",
                     "source_current_A", "measured_voltage_V",
-                    "measured_current_A", "absolute_resistance_Ohm",
+                    "measured_current_A", "absolute_resistance_Ohm", "loop",
                 )
             )
             parameter_lines = [
@@ -30687,8 +30719,20 @@ class CombinedControlApp:
                         )
                     )
                 pre_run_s = self._nonlocal_vi_pre_run_s(settings, set_frequency)
-                for pulse_voltage_v in settings["voltage_scan"]:
+                for loop_index, loop_point, pulse_voltage_v in (
+                    (loop, point, voltage)
+                    for loop in range(1, loops + 1)
+                    for point, voltage in enumerate(settings["voltage_scan"], 1)
+                ):
                     point_index += 1
+                    if loop_point == 1 and loops > 1:
+                        self.post_ui(
+                            lambda n=loop_index, value=set_frequency, scan=len(frequencies) > 1:
+                            self.nonlocal_vi_status_var.set(
+                                f"Loop {n}/{loops}" + (f" at {value:g} Hz" if scan else "")
+                                + ": the pulse scan starts"
+                            )
+                        )
                     if self.nonlocal_vi_stop_event.is_set():
                         raise NonLocalVIStopped()
                     gate_resistance = abs(float(gate_result["resistance_ohm"]))
@@ -30838,7 +30882,7 @@ class CombinedControlApp:
                                             sample.get("input_range_v", ""),
                                             sample.get("input_utilization", ""),
                                             sample["auto_range"], 0,
-                                            settings["marker_line"],
+                                            settings["marker_line"], loop_index,
                                         )
                                     )
                                     samples[(key, order)].append(sample)
@@ -30893,6 +30937,7 @@ class CombinedControlApp:
                         resistance_writer,
                         resistance_file,
                         frequency_hz=set_frequency,
+                        loop=loop_index,
                     )
                     for (key, order), lockin_samples in samples.items():
                         harmonic_text = (
@@ -30920,6 +30965,7 @@ class CombinedControlApp:
                         harmonic = order if order is not None else config.get("harmonic", "")
                         summary = {
                             "point_index": point_index,
+                            "loop": loop_index,
                             "pulse_voltage_v": pulse_voltage_v,
                             "key": key,
                             "order": order,
@@ -30989,7 +31035,7 @@ class CombinedControlApp:
                                 post_resistance["voltage_v"],
                                 post_resistance["current_a"],
                                 post_resistance["resistance_ohm"],
-                                settings["marker_line"],
+                                settings["marker_line"], loop_index,
                             )
                         )
                         with self.nonlocal_vi_data_lock:
@@ -31398,18 +31444,33 @@ class CombinedControlApp:
         # pulse voltage of its own and is left out (user, 2026-10-09); it is
         # in VI_resistance_gate.csv as "initial_gate".
         after_pulses = [row for row in resistances if row[3:4] != ("initial_gate",)]
+
+        def loop_of(row):
+            # (pulse V, |R|, elapsed, stage, frequency, loop); older rows have no loop.
+            loop = row[5] if len(row) > 5 else 1
+            return int(loop) if isinstance(loop, (int, float)) and loop >= 1 else 1
+
         # A frequency scan (user, 2026-10-10): a curve per frequency's pulse
-        # scan, light (lowest) to dark (highest), as on STFMR.
+        # scan, light (lowest) to dark (highest), as on STFMR; several loops
+        # (user, 2026-10-11): a line per loop.
         frequency_of = {id(row): row[4] if len(row) > 4 else math.nan for row in after_pulses}
         by_frequency = len({frequency_of[id(row)] for row in after_pulses}) > 1
+        by_loop = any(loop_of(row) > 1 for row in after_pulses)
         if by_frequency:
             series = {}
             for row in after_pulses:
-                series.setdefault(f"8_freq_{frequency_of[id(row)]:.12g}_loop_1", []).append((row[0], row[1]))
+                series.setdefault(
+                    f"8_freq_{frequency_of[id(row)]:.12g}_loop_{loop_of(row)}", []
+                ).append((row[0], row[1]))
             labels, colors, _markers = self._nonlocal_frequency_styles(
                 series, {"8": NONLOCAL_VI_RESISTANCE_COLOR}
             )
             styles = {"series_labels": labels, "series_colors": colors, "show_legend": True}
+        elif by_loop:
+            series = {}
+            for row in after_pulses:
+                series.setdefault(f"8_loop_{loop_of(row)}", []).append((row[0], row[1]))
+            styles = {"show_legend": False, "color_override": NONLOCAL_VI_RESISTANCE_COLOR}
         else:
             series = {"8": [(row[0], row[1]) for row in after_pulses]}
             styles = {"show_legend": False, "color_override": NONLOCAL_VI_RESISTANCE_COLOR}
@@ -31425,6 +31486,7 @@ class CombinedControlApp:
         summary_frequencies = {
             row.get("set_frequency_hz", row.get("frequency_hz")) for row in summaries
         }
+        summary_loops = any(int(row.get("loop") or 1) > 1 for row in summaries)
         for order in shown:
             # The lock-ins' mean X or Y (NONLOCAL_VI_SUMMARY_CHANNELS); the
             # 2182A, with neither, its mean DC voltage.
@@ -31444,8 +31506,10 @@ class CombinedControlApp:
                 "series_labels": names, "show_legend": len(summary) > 1,
                 "series_colors": order_colors(order),
             }
-            if len(summary_frequencies) > 1:
-                # A frequency scan: a curve per meter and frequency.
+            if len(summary_frequencies) > 1 or summary_loops:
+                # A frequency scan: a curve per meter and frequency; several
+                # loops: a line per loop.
+                by_frequency = len(summary_frequencies) > 1
                 summary = {}
                 for row in summaries:
                     key = row["key"]
@@ -31453,15 +31517,24 @@ class CombinedControlApp:
                         row.get("order") if row.get("order") is not None else shown[0]
                     ) != order:
                         continue
+                    loop = int(row.get("loop") or 1)
                     frequency = row.get("set_frequency_hz", row.get("frequency_hz"))
-                    summary.setdefault(f"{key}_freq_{frequency:.12g}_loop_1", []).append(
-                        (row["pulse_voltage_v"], row["mean"] if key == "2182" else row[field])
+                    summary.setdefault(
+                        f"{key}_freq_{frequency:.12g}_loop_{loop}" if by_frequency else f"{key}_loop_{loop}",
+                        [],
+                    ).append((row["pulse_voltage_v"], row["mean"] if key == "2182" else row[field]))
+                if by_frequency:
+                    labels, colors, markers = self._nonlocal_frequency_styles(
+                        summary, order_colors(order)
                     )
-                labels, colors, markers = self._nonlocal_frequency_styles(
-                    summary, order_colors(order)
-                )
-                styles = {"series_labels": labels, "series_colors": colors,
-                          "series_markers": markers or None, "show_legend": True}
+                    styles = {"series_labels": labels, "series_colors": colors,
+                              "series_markers": markers or None, "show_legend": True}
+                else:
+                    labels = {name: names[name.split("_loop_", 1)[0]] for name in summary}
+                    styles = {
+                        "series_labels": labels, "series_colors": order_colors(order),
+                        "show_legend": len({name.split("_loop_", 1)[0] for name in summary}) > 1,
+                    }
             self._draw_nonlocal_series(
                 canvases[("summary", order)],
                 summary,

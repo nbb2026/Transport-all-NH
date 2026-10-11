@@ -296,7 +296,7 @@ class GateVITests(unittest.TestCase):
     def test_limits_and_the_time_estimate(self):
         with self.assertRaisesRegex(ValueError, "SR830 #8 demodulation frequency exceeds 102 kHz at 99991 Hz"):
             self.make("99991", "99991", sr830="1+2")._parse_nonlocal_vi_settings()
-        with self.assertRaisesRegex(ValueError, "all frequencies"):
+        with self.assertRaisesRegex(ValueError, "all loops and frequencies"):
             a = self.make("2", "100000")
             a.nonlocal_vi_step_voltage_var.set("0.01")
             a._parse_nonlocal_vi_settings()

@@ -163,6 +163,13 @@ class PanelDefaultTests(unittest.TestCase):
         a.nonlocal_vi_output_mode_var.set("DC")
         self.assertEqual(states(), {"disabled"})
 
+    def test_gate_vi_loops_default_to_2(self):
+        """2026-10-11: Loops on the Gate-VI scan, beside the frequency scan row."""
+        a = self.app
+        self.assertEqual(a.nonlocal_vi_loops_var.get(), "2")
+        self.assertEqual(len(self.widgets("TEntry", a.nonlocal_vi_loops_var)), 1)
+        self.assertEqual(len(self.widgets("TLabel", text="Loops:")), 1)
+
     def widgets(self, cls, variable=None, text=None):
         found, pending = [], [self.app.nonlocal_vi_tab]
         while pending:
