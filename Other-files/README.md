@@ -8,9 +8,13 @@
   - `Keithley6221Controller.set_continuous_output` stays, because
     `MS-fourState.py` copies the controller.
 - **Moved:** the pulse output box now sits beside the connection box, where
-  the AC/DC box was. The live readback (OUTP state and the compliance light,
-  read every 0.3 s while idle) is now on the pulse box's bottom line, beside
-  the output set.
+  the AC/DC box was.
+  - The pulse box has the fields on its first line. Apply pulse output and
+    the red stop button are on the second line, with the live readback (OUTP
+    state and the compliance light, read every 0.3 s while idle) and the
+    output set.
+  - That keeps the two boxes side by side at the lab's 2000 px window with
+    the Windows fonts.
 - **Pulse output defaults:** 2 mA, 50 µs high-level width, 1 pulse,
   compliance 100 V (were 1 mA, 10 µs, 50 V).
   - New constants: `K6221_OUTPUT_PULSE_WIDTH_US`, `K6221_OUTPUT_COMPLIANCE_V`.

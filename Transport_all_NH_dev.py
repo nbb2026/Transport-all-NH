@@ -13429,8 +13429,8 @@ class CombinedControlApp:
     def _pair_natural_width(section) -> int:
         """Width a section requests with every pair inside it side by side.
 
-        A section that holds its own pair (MOKE-6221's pulse output does)
-        requests less while that pair is stacked.  Judged by its current
+        A section that holds its own pair requests less while that pair is
+        stacked.  Judged by its current
         request, both "outer side, inner stacked" and "outer stacked, inner
         side" were stable at the same width, so the layout depended on how
         the window had been resized.  Judging by the side-by-side width makes
@@ -20810,14 +20810,14 @@ class CombinedControlApp:
         )
         output.grid(row=0, column=1, sticky="nsew")
         output.columnconfigure(0, weight=1)
-        # Fields, then the Apply and red stop buttons; the buttons move below
-        # the fields when the window is too narrow, so neither is ever cut.
-        output_row = ttk.Frame(output)
-        output_row.grid(row=0, column=0, columnspan=10, sticky="ew")
-        output_fields = ttk.Frame(output_row)
+        # The fields, then the Apply and red stop buttons on the line below
+        # with the live readback, so the box is narrow enough to sit beside
+        # the connection at the lab's 2000 px window (Windows fonts).
+        output_fields = ttk.Frame(output)
         output_fields.grid(row=0, column=0, sticky="w")
-        output_buttons = ttk.Frame(output_row)
-        output_buttons.grid(row=0, column=1, sticky="w")
+        readback = ttk.Frame(output)
+        readback.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        readback.columnconfigure(4, weight=1)
         ttk.Label(output_fields, text="Pulse current (mA):").grid(row=0, column=0)
         ttk.Entry(output_fields, textvariable=self.k6221_current_var, width=9).grid(
             row=0, column=1, padx=(0, 10)
@@ -20835,11 +20835,11 @@ class CombinedControlApp:
             row=0, column=7, padx=(0, 10)
         )
         self.k6221_apply_button = ttk.Button(
-            output_buttons, text="Apply pulse output", command=self.apply_k6221_output
+            readback, text="Apply pulse output", command=self.apply_k6221_output
         )
         self.k6221_apply_button.grid(row=0, column=0, padx=(0, 3))
         self.k6221_off_button = tk.Button(
-            output_buttons,
+            readback,
             text="6221 stop now / zero",
             command=self.stop_k6221,
             bg="#d70018",
@@ -20849,26 +20849,22 @@ class CombinedControlApp:
             padx=10,
             pady=3,
         )
-        self.k6221_off_button.grid(row=0, column=1, padx=(8, 0))
-        self._arrange_pair_by_width(output_row, output_fields, output_buttons, gap=4, stack_gap=5)
+        self.k6221_off_button.grid(row=0, column=1, padx=(8, 18))
         # The live readback (read every 0.3 s while idle): the output state
         # and whether the 6221 is in compliance; then the output set.
-        readback = ttk.Frame(output)
-        readback.grid(row=1, column=0, columnspan=10, sticky="ew", pady=(6, 0))
-        readback.columnconfigure(2, weight=1)
         ttk.Label(
             readback, textvariable=self.k6221_readback_output_var, style="Metric.TLabel"
-        ).grid(row=0, column=0, sticky="w", padx=(0, 18))
+        ).grid(row=0, column=2, sticky="w", padx=(0, 12))
         self.k6221_compliance_state_label = ttk.Label(
             readback,
             textvariable=self.k6221_compliance_state_var,
             foreground="#666666",
             font=(self.ui_font_family, self.ui_font_size, "bold"),
         )
-        self.k6221_compliance_state_label.grid(row=0, column=1, sticky="w")
+        self.k6221_compliance_state_label.grid(row=0, column=3, sticky="w")
         ttk.Label(
             readback, textvariable=self.k6221_output_var, style="Metric.TLabel"
-        ).grid(row=0, column=2, sticky="e", padx=(18, 0))
+        ).grid(row=0, column=4, sticky="e", padx=(12, 0))
         self._arrange_pair_by_width(top, connection, output, gap=7)
 
         bottom = ttk.Frame(outer)
