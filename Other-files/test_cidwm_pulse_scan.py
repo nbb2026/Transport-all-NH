@@ -31,10 +31,18 @@ def frame(window_start, value=0):
 
 class Camera:
     """The running camera: the latest frame's average began just now, after
-    any pulse.  ``stale`` reads first give a frame begun before the pulse."""
+    any pulse.  ``stale`` reads first give a frame begun before the pulse.
+    Camera Live shows the latest frame (``drawing``), on a 4 x 3 canvas."""
 
-    def __init__(self, frames=True, stale=0):
-        self.frames, self.stale = frames, stale
+    def __init__(self, frames=True, stale=0, drawing=True):
+        self.frames, self.stale, self.drawing = frames, stale, drawing
+
+    @property
+    def latest_display(self):
+        if not self.drawing:
+            return None
+        shown = self.latest_frame
+        return (np.full((3, 4), 9, dtype=np.uint8), (0, 0, 4, 3), shown)
 
     @property
     def latest_frame(self):
@@ -123,6 +131,10 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual([(r["pulse"], r["sign"], r["set_current_mA"]) for r in rows],
                          [("1", "+", "2"), ("2", "-", "-2"), ("3", "+", "2")])
         self.assertEqual(rows[1]["raw_tiff"], "CIDWM_pulse00002_neg_-2mA_raw16.tiff")
+        self.assertEqual(rows[1]["display_png"], "CIDWM_pulse00002_neg_-2mA_display8.png",
+                         "the display too (user, 2026-10-12)")
+        np.testing.assert_array_equal(np.asarray(Image.open(self.folder / rows[1]["display_png"])),
+                                      np.full((3, 4), 9, dtype=np.uint8))
         self.assertEqual(rows[1]["processed_tiff"],
                          "CIDWM_pulse00002_neg_-2mA_TrackingDiff_Avg4_Bin2x2_Mean1x1_float32.tiff")
         self.assertTrue(rows[0]["roi_mean_processed"], "the ROI mean of the processed image")
@@ -134,6 +146,7 @@ class WorkerTests(unittest.TestCase):
         np.testing.assert_allclose(processed, expected.display_difference)
         self.assertEqual({r["note"] for r in rows}, {""})
         self.assertEqual(len(list(self.folder.glob("*.tiff"))), 6)
+        self.assertEqual(len(list(self.folder.glob("*_display8.png"))), 3)
 
     def test_a_stop_ends_after_the_pulse_with_the_6221_off(self):
         event = threading.Event()
@@ -170,6 +183,16 @@ class WorkerTests(unittest.TestCase):
         a._cidwm_pulse_scan_worker(dict(SETTINGS, signs=(1,)), self.folder)
         raw = np.asarray(Image.open(next(self.folder.glob("*_raw16.tiff"))))
         np.testing.assert_array_equal(raw, frame(0.0).raw, "not the stale frame (raw + 100)")
+
+    def test_without_camera_live_drawing_the_tiffs_and_a_note(self):
+        a = page(camera=Camera(drawing=False))
+        with mock.patch.object(app, "CIDWM_SCAN_DISPLAY_TIMEOUT_S", 0.1):
+            a._cidwm_pulse_scan_worker(dict(SETTINGS, signs=(1,)), self.folder)
+        with (self.folder / "run.csv").open(encoding="utf-8-sig") as file:
+            row = next(csv.DictReader(file))
+        self.assertEqual(row["display_png"], "")
+        self.assertTrue(row["raw_tiff"] and row["processed_tiff"])
+        self.assertIn("display not saved", row["note"])
 
     def test_no_difference_image_is_refused(self):
         a = page()
@@ -216,6 +239,34 @@ class WindowStartTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SizeTests(unittest.TestCase):
+    """The scan's own |I| (user, 2026-10-12); width and compliance from the
+    pulse output."""
+
+    def page(self, size):
+        a = bare_app()
+        a.k6221_controller = app.Keithley6221Controller(lambda _message: None)
+        a.k6221_current_var, a.k6221_width_var = Var("1"), Var("50")
+        a.k6221_compliance_var, a.k6221_count_var = Var("100"), Var("1")
+        a.cidwm_scan_current_var = Var(size)
+        a.cidwm_scan_pulses_var, a.cidwm_scan_signs_var, a.cidwm_scan_wait_var = Var("4"), Var("+-"), Var("1")
+        return a
+
+    def test_the_size_is_the_scans_own(self):
+        settings = self.page("3.5")._parse_cidwm_pulse_scan()
+        self.assertEqual((settings["current_ma"], settings["width_s"], settings["compliance_v"]),
+                         (3.5, 50e-6, 100.0))
+        self.assertEqual(self.page("-3.5")._parse_cidwm_pulse_scan()["current_ma"], 3.5, "the size only")
+
+    def test_what_is_refused(self):
+        for size, message in (("0", "above 0"), ("x", "a number"), ("200", "software limit")):
+            with self.assertRaisesRegex(ValueError, message):
+                self.page(size)._parse_cidwm_pulse_scan()
+
+    def test_the_default(self):
+        self.assertEqual(app.K6221_DEFAULT_CURRENT_MA, 2.0)
 
 
 class SaveImagesTests(unittest.TestCase):

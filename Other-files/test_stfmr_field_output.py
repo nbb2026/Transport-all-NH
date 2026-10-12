@@ -434,7 +434,8 @@ class FieldOutputTests(unittest.TestCase):
         self.assertLess(connection.winfo_rootx(), pulse.winfo_rootx(), "connection on the left")
         self.assertLess(difference.winfo_rootx(), images.winfo_rootx(), "difference display on the left")
         outer = connection.master.master
-        self.assertIn("Pulse sign scan (raw + processed TIFF after each pulse)", frames)
+        self.assertIn("Pulse sign scan (display, raw + processed TIFF after each pulse)", frames)
+        self.assertIn("Camera settings", frames)
         self.assertEqual(int(outer.rowconfigure(4)["weight"]), 1, "spare height below the controls")
 
     def test_cidwm_red_stop_button_is_never_clipped(self):

@@ -160,8 +160,9 @@ class PanelDefaultTests(unittest.TestCase):
         """2026-10-12: Pulses, Signs and Wait after pulse s, with its own
         start and stop buttons (disabled until the 6221 is connected)."""
         a = self.app
-        self.assertEqual((a.cidwm_scan_pulses_var.get(), a.cidwm_scan_signs_var.get(),
-                          a.cidwm_scan_wait_var.get()), ("10", "+-", "1"))
+        self.assertEqual((a.cidwm_scan_current_var.get(), a.cidwm_scan_pulses_var.get(),
+                          a.cidwm_scan_signs_var.get(), a.cidwm_scan_wait_var.get()),
+                         ("2", "10", "+-", "1"))
         self.assertEqual(str(a.cidwm_scan_start_button.cget("state")), "disabled")
         self.assertEqual(str(a.cidwm_scan_stop_button.cget("state")), "disabled")
         self.assertEqual(str(a.cidwm_scan_start_button.cget("text")), "Choose folder and start scan")
@@ -273,6 +274,7 @@ class PanelDefaultTests(unittest.TestCase):
         # 2026-10-12: no ROI editing and no live ROI plot; one Save images button.
         self.assertFalse({"MOKE ROI editing", "ROI mean intensity vs time (live)"} & titles)
         self.assertIn("Images", titles)
+        self.assertIn("Camera settings", titles)
         self.assertNotIn("Pulse current scan and ROI acquisition", titles)
         self.assertEqual((len(a.difference_capture_buttons), len(a.objective_100x_marker_buttons)), (2, 2))
         self.assertEqual(len(a.difference_mode_buttons), 6)

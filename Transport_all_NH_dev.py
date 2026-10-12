@@ -1338,6 +1338,9 @@ CIDWM_SCAN_WAIT_S = 1.0
 CIDWM_SCAN_MAX_PULSES = 100_000
 # After the wait, at most this long for a camera frame newer than the pulse.
 CIDWM_SCAN_FRAME_TIMEOUT_S = 10.0
+# Then at most this long for Camera Live to draw such a frame (its display is
+# saved too, user 2026-10-12); a hidden Camera Live draws nothing.
+CIDWM_SCAN_DISPLAY_TIMEOUT_S = 3.0
 CIDWM_SCAN_DIRECTORY = (
     Path(__file__).resolve().parent / f"{Path(__file__).stem}_CIDWM_Results"
 )
@@ -11603,6 +11606,9 @@ class TkCameraWindow:
         # clicked, avoiding a full-Canvas allocation on every live frame.
         self.latest_display_image = None
         self.latest_display_geometry = None
+        # (display image, its geometry, the frame drawn), replaced as one, so
+        # another thread reads a matching set (CIDWM pulse sign scan).
+        self.latest_display = None
         self.photo = None
         self.mapping = None
         self.zoom = 1.0
@@ -11871,6 +11877,7 @@ class TkCameraWindow:
             canvas_width,
             canvas_height,
         )
+        self.latest_display = (self.latest_display_image, self.latest_display_geometry, frame)
         self._record_current_8bit_view(
             display_array,
             offset_x,
@@ -12963,6 +12970,8 @@ class CombinedControlApp:
         self.k6221_output_var = tk.StringVar(value="Output: 0 mA / OFF")
         self.k6221_status_var = tk.StringVar(value="Ready")
         # The pulse sign scan (user, 2026-10-12).
+        # The scan's own pulse size (user, 2026-10-12), |I| in mA.
+        self.cidwm_scan_current_var = tk.StringVar(value=f"{K6221_DEFAULT_CURRENT_MA:g}")
         self.cidwm_scan_pulses_var = tk.StringVar(value=str(CIDWM_SCAN_PULSES))
         self.cidwm_scan_signs_var = tk.StringVar(value=CIDWM_SCAN_SIGNS)
         self.cidwm_scan_wait_var = tk.StringVar(value=f"{CIDWM_SCAN_WAIT_S:g}")
@@ -21106,11 +21115,12 @@ class CombinedControlApp:
         # output's |I|, width and compliance, each with its sign from Signs,
         # and after each the raw and processed TIFFs.
         scan = ttk.LabelFrame(
-            outer, text="Pulse sign scan (raw + processed TIFF after each pulse)", padding=7
+            outer, text="Pulse sign scan (display, raw + processed TIFF after each pulse)", padding=7
         )
         scan.grid(row=1, column=0, sticky="ew", pady=(7, 0))
-        scan.columnconfigure(9, weight=1)
+        scan.columnconfigure(11, weight=1)
         for column, (label, variable, width) in enumerate((
+            ("|I| mA:", self.cidwm_scan_current_var, 7),
             ("Pulses:", self.cidwm_scan_pulses_var, 7),
             ("Signs:", self.cidwm_scan_signs_var, 14),
             ("Wait after pulse s:", self.cidwm_scan_wait_var, 6),
@@ -21121,27 +21131,32 @@ class CombinedControlApp:
             ttk.Entry(scan, textvariable=variable, width=width).grid(
                 row=0, column=2 * column + 1, sticky="w"
             )
+        # The buttons on their own line, so the row fits the lab's default
+        # 1101 px window with the |I| box.
+        buttons = ttk.Frame(scan)
+        buttons.grid(row=1, column=0, columnspan=12, sticky="w", pady=(4, 0))
         self.cidwm_scan_start_button = ttk.Button(
-            scan, text="Choose folder and start scan", command=self.start_cidwm_pulse_scan
+            buttons, text="Choose folder and start scan", command=self.start_cidwm_pulse_scan
         )
-        self.cidwm_scan_start_button.grid(row=0, column=6, padx=(12, 3))
+        self.cidwm_scan_start_button.grid(row=0, column=0, padx=(0, 3))
         self.cidwm_scan_stop_button = ttk.Button(
-            scan, text="Stop", command=self.stop_k6221, state="disabled"
+            buttons, text="Stop", command=self.stop_k6221, state="disabled"
         )
-        self.cidwm_scan_stop_button.grid(row=0, column=7, padx=(3, 0))
+        self.cidwm_scan_stop_button.grid(row=0, column=1, padx=(3, 0))
         ttk.Label(
             scan,
-            text="Signs: + and - per pulse, repeated to fill Pulses (+- alternates, ++-- goes in pairs)",
+            text="Signs: + and - per pulse, repeated to fill Pulses (+- alternates, ++-- goes in pairs); "
+                 "width and compliance from the pulse output",
             style="Muted.TLabel",
-        ).grid(row=1, column=0, columnspan=10, sticky="w", pady=(4, 0))
+        ).grid(row=2, column=0, columnspan=12, sticky="w", pady=(4, 0))
         scan_status = ttk.Label(scan, width=1)
-        scan_status.grid(row=2, column=0, columnspan=10, sticky="ew", pady=(2, 0))
+        scan_status.grid(row=3, column=0, columnspan=12, sticky="ew", pady=(2, 0))
         show_trimmed(scan_status, self.cidwm_scan_status_var)
 
         # CIDWM: under the pulse sign scan, the MOKE magnet page's
         # difference display beside one Save images button, then its display
-        # rows (user, 2026-10-12: no ROI editing, no live ROI plot).  They
-        # share the camera settings with MOKE magnet.
+        # rows as "Camera settings" (user, 2026-10-12: no ROI editing, no live
+        # ROI plot).  They share the camera settings with MOKE magnet.
         moke = ttk.Frame(outer)
         moke.grid(row=2, column=0, sticky="ew", pady=(7, 3))
         moke.columnconfigure(1, weight=1)
@@ -21160,9 +21175,11 @@ class CombinedControlApp:
             style="Muted.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
         self._arrange_pair_by_width(moke, difference_box, images, gap=7)
-        self._build_moke_display_controls(outer).grid(
-            row=3, column=0, sticky="ew", pady=(0, 4)
-        )
+        # The display rows in one box (user, 2026-10-12: "Camera settings").
+        camera_settings = ttk.LabelFrame(outer, text="Camera settings", padding=4)
+        camera_settings.grid(row=3, column=0, sticky="ew", pady=(0, 4))
+        camera_settings.columnconfigure(0, weight=1)
+        self._build_moke_display_controls(camera_settings).grid(row=0, column=0, sticky="ew")
         # Spare height below the controls, so the status line stays at the
         # bottom of the page.
         outer.rowconfigure(4, weight=1)
@@ -22972,6 +22989,11 @@ class CombinedControlApp:
         camera = self.camera_window
         array = None if camera is None else camera.latest_display_image
         geometry = None if camera is None else camera.latest_display_geometry
+        return self._compose_display_snapshot(array, geometry)
+
+    @staticmethod
+    def _compose_display_snapshot(array, geometry):
+        """The displayed 8-bit image on its canvas-sized black background."""
         if array is None or geometry is None:
             raise RuntimeError("Camera Live has not produced a display image to save yet")
         array = np.asarray(array)
@@ -27896,9 +27918,15 @@ class CombinedControlApp:
         return raw.copy(), processed.copy(), settings, roi_mean
 
     def _parse_cidwm_pulse_scan(self) -> dict:
-        current_a, width_s, compliance_v, _count = self._parse_k6221_output()
-        if not current_a:
-            raise ValueError("Pulse current |I| must be above 0 mA for the pulse sign scan")
+        _current_a, width_s, compliance_v, _count = self._parse_k6221_output()
+        try:
+            current_a = abs(float(self.cidwm_scan_current_var.get())) / 1000.0
+        except (TypeError, ValueError) as error:
+            raise ValueError("The scan's |I| mA must be a number") from error
+        if not (math.isfinite(current_a) and current_a > 0):
+            raise ValueError("The scan's |I| mA must be above 0")
+        # The 6221's limits for this size, width and compliance.
+        current_a = abs(self.k6221_controller._validate(current_a, width_s, compliance_v, 1)[0])
         signs = cidwm_sign_sequence(self.cidwm_scan_pulses_var.get(), self.cidwm_scan_signs_var.get())
         try:
             wait_s = float(self.cidwm_scan_wait_var.get())
@@ -27943,8 +27971,8 @@ class CombinedControlApp:
             f"{settings['width_s'] * 1e6:g} us, compliance {settings['compliance_v']:g} V\n"
             f"Signs: {shown}\n"
             f"After each pulse: wait {settings['wait_s']:g} s, then for a camera frame whose processed "
-            "image holds only frames taken after the pulse; save its raw 16-bit TIFF and its processed "
-            "(difference) TIFF\n"
+            "image holds only frames taken after the pulse; save its display (8-bit PNG), its raw "
+            "16-bit TIFF and its processed (difference) TIFF\n"
             f"Estimated time: about {self._format_duration(estimate)}\n\n"
             "The scan writes a run folder, with the images, a CSV and the parameter log, "
             "in the folder you choose next. The 6221 is switched off after each pulse and at the end.",
@@ -28020,6 +28048,20 @@ class CombinedControlApp:
             if self.k6221_stop_event.wait(0.05):
                 return None
 
+    def _cidwm_display_after(self, pulse_end: float):
+        """What Camera Live shows, (image, geometry, frame), once the frame
+        it shows holds only frames taken after ``pulse_end``; None if it
+        draws none within CIDWM_SCAN_DISPLAY_TIMEOUT_S, or if stopped."""
+        deadline = time.monotonic() + CIDWM_SCAN_DISPLAY_TIMEOUT_S
+        while True:
+            displayed = getattr(self.camera_window, "latest_display", None)
+            if displayed is not None:
+                start = float(getattr(displayed[2], "window_start_monotonic", math.nan) or math.nan)
+                if math.isfinite(start) and start > pulse_end:
+                    return displayed
+            if time.monotonic() >= deadline or self.k6221_stop_event.wait(0.05):
+                return None
+
     def _cidwm_pulse_scan_worker(self, settings: dict, run_directory: Path) -> dict:
         """Each pulse: |I| with its sign (one pulse, the pulse output's width
         and compliance), the 6221 off, Wait after pulse s, a camera frame
@@ -28040,7 +28082,7 @@ class CombinedControlApp:
                 writer.writerow((
                     "pulse", "sign", "set_current_mA", "current_mA", "pulse_width_us",
                     "compliance_V", "elapsed_s", "in_compliance_at_readback", "roi_mean_processed",
-                    "processing", "raw_tiff", "processed_tiff", "note",
+                    "processing", "raw_tiff", "processed_tiff", "display_png", "note",
                 ))
                 file.flush()
                 for index, sign in enumerate(signs, 1):
@@ -28066,7 +28108,7 @@ class CombinedControlApp:
                     actual_ma = float(actual["current_a"]) * 1000.0
 
                     def record(raw_name="", processed_name="", note="", roi_mean=math.nan,
-                               processing=None):
+                               processing=None, display_name=""):
                         # Every pulse applied has its row (review, 2026-10-12),
                         # with or without its images.
                         writer.writerow((
@@ -28075,7 +28117,7 @@ class CombinedControlApp:
                             f"{time.monotonic() - started:.3f}", bool(actual.get("in_compliance")),
                             "" if not math.isfinite(roi_mean) else f"{roi_mean:.10g}",
                             "" if processing is None else self.processed_image_settings_suffix(processing),
-                            raw_name, processed_name, note,
+                            raw_name, processed_name, display_name, note,
                         ))
                         file.flush()
 
@@ -28087,18 +28129,35 @@ class CombinedControlApp:
                         if frame is None:
                             record(note="stopped before the images were saved")
                             break
+                        # The display of such a frame, and then that frame's
+                        # raw and processed images: all three from one frame.
+                        displayed = self._cidwm_display_after(pulse_end)
+                        if self.k6221_stop_event.is_set():
+                            record(note="stopped before the images were saved")
+                            break
+                        note = ""
+                        if displayed is not None:
+                            display = self._compose_display_snapshot(displayed[0], displayed[1])
+                            frame = displayed[2]
+                        else:
+                            display = None
+                            note = "display not saved: Camera Live did not draw a frame after the pulse"
                         raw, processed, processing, roi_mean = self._cidwm_snapshot(frame)
                         stem = f"CIDWM_pulse{index:05d}_{'pos' if sign > 0 else 'neg'}_{actual_ma:+.6g}mA"
                         raw_name = f"{stem}_raw16.tiff"
                         processed_name = (
                             f"{stem}_{self.processed_image_settings_suffix(processing)}_float32.tiff"
                         )
+                        display_name = f"{stem}_display8.png" if display is not None else ""
                         save_raw_u16_tiff(raw, Path(run_directory) / raw_name)
                         save_processed_f32_tiff(processed, Path(run_directory) / processed_name)
+                        if display is not None:
+                            save_display_u8_png(display, Path(run_directory) / display_name)
                     except BaseException as error:
                         record(note=f"images not saved: {short_status_error(error)}")
                         raise
-                    record(raw_name, processed_name, roi_mean=roi_mean, processing=processing)
+                    record(raw_name, processed_name, note, roi_mean=roi_mean, processing=processing,
+                           display_name=display_name)
                     done = index
                     self.post_ui(
                         lambda n=index, text=label, mean=roi_mean: self.cidwm_scan_status_var.set(

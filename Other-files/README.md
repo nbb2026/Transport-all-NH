@@ -1,5 +1,24 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## CIDWM: the scan's own pulse size, the display saved too; "Camera settings" (2026-10-12)
+
+- **Pulse size:** the pulse sign scan has its own "|I| mA:" box (default
+  2 mA), checked against the 6221's limits. Width and compliance still come
+  from the pulse output.
+- **Display saved too:** after each pulse the scan also saves the display,
+  `…_display8.png` (8-bit, no overlays), and the CSV gains `display_png`.
+  - The display is that of a frame wholly after the pulse. The raw and
+    processed TIFFs are of that same frame, so all three match.
+  - If Camera Live does not draw such a frame within 3 s (window hidden),
+    the TIFFs are saved and the note says the display was not.
+  - The camera window keeps what it shows as one value (`latest_display`:
+    image, geometry, frame).
+- **Camera settings:** on CIDWM, the CLim, temporal average, binning, mean
+  filter, exposure and recording rows are in a box named "Camera settings".
+  The MOKE ROI editing box was already removed (it is in the user's older
+  screenshot).
+- **Tests:** `test_cidwm_pulse_scan.py`: 18 tests.
+
 ## Camera display defaults from the user's figure (2026-10-12)
 
 - **New defaults:** difference temporal average 4 frames, binning 4×4, mean
