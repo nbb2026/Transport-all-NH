@@ -1,5 +1,25 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MOKE-6221: no AC/DC continuous output; pulse defaults from the user's figure (2026-10-12)
+
+- **Removed:** the "AC/DC continuous output and live readback" box and its
+  handlers (Apply continuous output, its Stop / zero, the mode, current and
+  frequency boxes).
+  - `Keithley6221Controller.set_continuous_output` stays, because
+    `MS-fourState.py` copies the controller.
+- **Moved:** the pulse output box now sits beside the connection box, where
+  the AC/DC box was. The live readback (OUTP state and the compliance light,
+  read every 0.3 s while idle) is now on the pulse box's bottom line, beside
+  the output set.
+- **Pulse output defaults:** 2 mA, 50 µs high-level width, 1 pulse,
+  compliance 100 V (were 1 mA, 10 µs, 50 V).
+  - New constants: `K6221_OUTPUT_PULSE_WIDTH_US`, `K6221_OUTPUT_COMPLIANCE_V`.
+  - The scan and train widths keep 10 µs.
+  - The controller's own start values are unchanged.
+- **Tests:** `test_panel_defaults.py` checks the defaults and that the box is
+  gone; the `test_stfmr_field_output.py` layout check now pairs the
+  connection with the pulse box.
+
 ## Non-local: Gate-VI scan defaults from the user's figure (2026-10-11)
 
 - **New defaults:**

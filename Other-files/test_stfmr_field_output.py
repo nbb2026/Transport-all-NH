@@ -418,15 +418,17 @@ class FieldOutputTests(unittest.TestCase):
         self.arranged(LAB_WIDE, "MOKE-6221", self.a.stfmr_lockin_resource_widgets)
         frames = self.page_frames(self.a.k6221_tab)
         connection = frames["Keithley 6221 / VISA"]
-        continuous = frames["AC/DC continuous output and live readback"]
+        # 2026-10-12: the pulse output beside the connection (no AC/DC output).
+        pulse = frames["DC unipolar pulse output (0 A ↔ setpoint, 50% duty)"]
         scan = frames["Pulse current scan and ROI acquisition"]
         roi = frames["ROI editing"]
-        self.assertIs(connection.master, continuous.master)
+        self.assertNotIn("AC/DC continuous output and live readback", frames)
+        self.assertIs(connection.master, pulse.master)
         self.assertIs(scan.master, roi.master)
-        self.assertLess(connection.winfo_rootx(), continuous.winfo_rootx(), "connection on the left")
+        self.assertLess(connection.winfo_rootx(), pulse.winfo_rootx(), "connection on the left")
         self.assertLess(scan.winfo_rootx(), roi.winfo_rootx(), "scan on the left")
         outer = connection.master.master
-        self.assertEqual(int(outer.rowconfigure(3)["weight"]), 1, "the plots row takes spare height")
+        self.assertEqual(int(outer.rowconfigure(2)["weight"]), 1, "the plots row takes spare height")
         canvas = self.a.k6221_plot_canvas
         self.assertGreater(canvas.winfo_height(), canvas.winfo_reqheight())
 

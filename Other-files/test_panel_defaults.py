@@ -135,11 +135,30 @@ class PanelDefaultTests(unittest.TestCase):
 
     def test_non_local_frequencies_default_to_17_3_hz(self):
         """2026-10-09: every non-local AC frequency starts at 17.3 Hz (was
-        13.7 on Gate-VI); the MOKE 6221 page keeps its 13.7 Hz."""
+        13.7 on Gate-VI)."""
         a = self.app
         self.assertEqual((a.nonlocal_vi_frequency_var.get(), a.nonlocal_iv6221_frequency_var.get(),
                           a.nonlocal_frequency_var.get()), ("17.3", "17.3", "17.3"))
-        self.assertEqual(a.k6221_continuous_frequency_var.get(), "13.7")
+
+    def test_moke_6221_has_no_continuous_output_and_the_pulse_defaults(self):
+        """2026-10-12: no AC/DC continuous output on MOKE-6221; the pulse
+        output at the user's figure (2 mA, 50 us, 1 pulse, 100 V)."""
+        a = self.app
+        titles = set()
+        pending = [a.k6221_tab]
+        while pending:
+            widget = pending.pop()
+            pending.extend(widget.winfo_children())
+            if widget.winfo_class() == "TLabelframe":
+                titles.add(str(widget.cget("text")))
+        self.assertNotIn("AC/DC continuous output and live readback", titles)
+        self.assertIn("DC unipolar pulse output (0 A ↔ setpoint, 50% duty)", titles)
+        self.assertFalse(hasattr(a, "apply_k6221_continuous_output"))
+        self.assertEqual((a.k6221_current_var.get(), a.k6221_width_var.get(), a.k6221_count_var.get(),
+                          a.k6221_compliance_var.get()), ("2", "50", "1", "100"))
+        # The live readback stays, in the pulse box.
+        self.assertEqual(a.k6221_readback_output_var.get(), "OUTP：OFF")
+        self.assertIsNotNone(a.k6221_compliance_state_label)
 
     def test_frequency_scan_rows_on_6221_iv_and_gate_vi(self):
         """2026-10-10: a Frequency scan row on 6221-IV and Gate-VI, off by

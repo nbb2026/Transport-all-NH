@@ -1107,10 +1107,12 @@ K6221_MIN_PULSE_WIDTH_S = 5e-6
 K6221_MAX_PULSE_WIDTH_S = 500.0
 K6221_MIN_COMPLIANCE_V = 0.1
 K6221_MAX_COMPLIANCE_V = 105.0
-K6221_DEFAULT_CURRENT_MA = 1.0
-# MOKE 6221 page, continuous AC output; it shared the non-local default
-# until the non-local pages moved to 17.3 Hz (2026-10-09).
-K6221_CONTINUOUS_FREQUENCY_HZ = 13.7
+# MOKE-6221 pulse output defaults (user's figure, 2026-10-12; were 1 mA,
+# 10 us and 50 V).  The controller's own start values stay as they were:
+# MS-fourState.py copies them.
+K6221_DEFAULT_CURRENT_MA = 2.0
+K6221_OUTPUT_PULSE_WIDTH_US = 50.0
+K6221_OUTPUT_COMPLIANCE_V = 100.0
 # Front panel TRIAX -> OUTPUT LOW -> FLOATING.  Earth-grounding the output low
 # ties the sample to mains ground and forms a loop with the PPMS rack and the
 # lock-in inputs, which shows up as line-frequency pickup on the harmonics.
@@ -12730,30 +12732,17 @@ class CombinedControlApp:
         self.k6221_intensity_canvas = None
         self.k6221_plot_frame = None
         self.k6221_resource_var = tk.StringVar(value=K6221_DEFAULT_RESOURCE)
-        self.k6221_continuous_mode_var = tk.StringVar(value="AC")
-        self.k6221_continuous_current_var = tk.StringVar(value="0.001")
-        self.k6221_continuous_frequency_var = tk.StringVar(
-            value=f"{K6221_CONTINUOUS_FREQUENCY_HZ:g}"
-        )
-        self.k6221_readback_mode_var = tk.StringVar(value="Mode: --")
-        self.k6221_readback_current_var = tk.StringVar(
-            value="I readback：--"
-        )
-        self.k6221_readback_frequency_var = tk.StringVar(
-            value="f readback：--"
-        )
-        self.k6221_readback_compliance_var = tk.StringVar(value="Compliance: --")
         self.k6221_readback_output_var = tk.StringVar(value="OUTP：OFF")
         self.k6221_compliance_state_var = tk.StringVar(value="Compliance state: --")
         self.k6221_monitor_inflight = False
         self.k6221_monitor_after_id = None
         self.k6221_current_var = tk.StringVar(value=f"{K6221_DEFAULT_CURRENT_MA:g}")
         self.k6221_width_var = tk.StringVar(
-            value=f"{K6221_DEFAULT_PULSE_WIDTH_US:g}"
+            value=f"{K6221_OUTPUT_PULSE_WIDTH_US:g}"
         )
         self.k6221_count_var = tk.StringVar(value=str(K6221_DEFAULT_PULSE_COUNT))
         self.k6221_compliance_var = tk.StringVar(
-            value=f"{K6221_DEFAULT_COMPLIANCE_V:g}"
+            value=f"{K6221_OUTPUT_COMPLIANCE_V:g}"
         )
         self.k6221_start_var = tk.StringVar(value=f"{K6221_DEFAULT_START_MA:g}")
         self.k6221_end_var = tk.StringVar(value=f"{K6221_DEFAULT_END_MA:g}")
@@ -12786,9 +12775,6 @@ class CombinedControlApp:
         self.k6221_scan_image_session_dir: Path | None = None
         self.k6221_csv_directory = K6221_RESULTS_DIRECTORY
         self.k6221_roi_edit_buttons = []
-        self.k6221_continuous_widgets: list[tk.Widget] = []
-        self.k6221_continuous_apply_button = None
-        self.k6221_continuous_frequency_entry = None
         self.k6221_compliance_state_label = None
 
         self.nonlocal_controller = NonLocalACController(self.thread_log)
@@ -13443,8 +13429,8 @@ class CombinedControlApp:
     def _pair_natural_width(section) -> int:
         """Width a section requests with every pair inside it side by side.
 
-        A section that holds its own pair (MOKE-6221's continuous output
-        does) requests less while that pair is stacked.  Judged by its current
+        A section that holds its own pair (MOKE-6221's pulse output does)
+        requests less while that pair is stacked.  Judged by its current
         request, both "outer side, inner stacked" and "outer stacked, inner
         side" were stable at the same width, so the layout depended on how
         the window had been resized.  Judging by the side-by-side width makes
@@ -20774,13 +20760,14 @@ class CombinedControlApp:
         outer = ttk.Frame(self.k6221_tab, padding=7)
         outer.grid(row=0, column=0, sticky="nsew")
         outer.columnconfigure(0, weight=1)
-        # Spare window height goes to the plots (row 3), so they fill the page
+        # Spare window height goes to the plots (row 2), so they fill the page
         # down to the status line instead of an empty row below it.
-        outer.rowconfigure(3, weight=1)
+        outer.rowconfigure(2, weight=1)
 
-        # Compact, as on the STFMR page: the connection beside the continuous
+        # Compact, as on the STFMR page: the connection beside the pulse
         # output, and the pulse scan beside ROI editing.  Each pair stacks by
-        # itself when the window is too narrow for both.
+        # itself when the window is too narrow for both.  (User, 2026-10-12:
+        # no AC/DC continuous output on this page.)
         top = ttk.Frame(outer)
         top.grid(row=0, column=0, sticky="ew")
         top.columnconfigure(1, weight=1)
@@ -20818,111 +20805,10 @@ class CombinedControlApp:
             pady=(8, 0),
         )
 
-        continuous = ttk.LabelFrame(
-            top, text="AC/DC continuous output and live readback", padding=7
-        )
-        continuous.grid(row=0, column=1, sticky="nsew")
-        continuous.columnconfigure(0, weight=1)
-        continuous_row = ttk.Frame(continuous)
-        continuous_row.grid(row=0, column=0, columnspan=10, sticky="ew")
-        continuous_fields = ttk.Frame(continuous_row)
-        continuous_fields.grid(row=0, column=0, sticky="w")
-        continuous_buttons = ttk.Frame(continuous_row)
-        continuous_buttons.grid(row=0, column=1, sticky="w")
-        ttk.Label(continuous_fields, text="Mode:").grid(row=0, column=0)
-        mode_combo = ttk.Combobox(
-            continuous_fields,
-            textvariable=self.k6221_continuous_mode_var,
-            values=("AC", "DC"),
-            state="readonly",
-            width=5,
-        )
-        mode_combo.grid(row=0, column=1, padx=(0, 10))
-        mode_combo.bind(
-            "<<ComboboxSelected>>",
-            lambda _event: self._update_k6221_continuous_mode_ui(),
-        )
-        ttk.Label(continuous_fields, text="Current (mA, RMS for AC):").grid(
-            row=0, column=2
-        )
-        current_entry = ttk.Entry(
-            continuous_fields,
-            textvariable=self.k6221_continuous_current_var,
-            width=10,
-        )
-        current_entry.grid(row=0, column=3, padx=(0, 10))
-        ttk.Label(continuous_fields, text="Frequency (Hz):").grid(row=0, column=4)
-        self.k6221_continuous_frequency_entry = ttk.Entry(
-            continuous_fields,
-            textvariable=self.k6221_continuous_frequency_var,
-            width=9,
-        )
-        self.k6221_continuous_frequency_entry.grid(
-            row=0, column=5, padx=(0, 10)
-        )
-        ttk.Label(continuous_fields, text="Compliance (V):").grid(row=0, column=6)
-        compliance_entry = ttk.Entry(
-            continuous_fields,
-            textvariable=self.k6221_compliance_var,
-            width=8,
-        )
-        compliance_entry.grid(row=0, column=7, padx=(0, 10))
-        self.k6221_continuous_apply_button = ttk.Button(
-            continuous_buttons,
-            text="Apply continuous output",
-            command=self.apply_k6221_continuous_output,
-        )
-        self.k6221_continuous_apply_button.grid(row=0, column=0, padx=(0, 3))
-        self.k6221_continuous_off_button = ttk.Button(
-            continuous_buttons,
-            text="Stop / zero",
-            command=self.stop_k6221,
-        )
-        self.k6221_continuous_off_button.grid(row=0, column=1, padx=(3, 0))
-        self._arrange_pair_by_width(continuous_row, continuous_fields, continuous_buttons, gap=4, stack_gap=5)
-        self.k6221_continuous_widgets.extend(
-            (mode_combo, current_entry, compliance_entry)
-        )
-
-        readback = ttk.Frame(continuous)
-        readback.grid(
-            row=1, column=0, columnspan=10, sticky="ew", pady=(7, 0)
-        )
-        for column, variable in enumerate(
-            (
-                self.k6221_readback_mode_var,
-                self.k6221_readback_current_var,
-                self.k6221_readback_frequency_var,
-                self.k6221_readback_compliance_var,
-                self.k6221_readback_output_var,
-            )
-        ):
-            ttk.Label(
-                readback, textvariable=variable, style="Metric.TLabel"
-            ).grid(row=0, column=column, padx=(0, 18), sticky="w")
-        self.k6221_compliance_state_label = ttk.Label(
-            readback,
-            textvariable=self.k6221_compliance_state_var,
-            foreground="#666666",
-            font=(self.ui_font_family, self.ui_font_size, "bold"),
-        )
-        self.k6221_compliance_state_label.grid(
-            row=0, column=5, padx=(4, 0), sticky="w"
-        )
-        ttk.Label(
-            continuous,
-            text=(
-                "Note: I readback is the 6221 source setpoint; in compliance the actual load current may be lower."
-            ),
-            style="Muted.TLabel",
-        ).grid(row=2, column=0, columnspan=10, sticky="w", pady=(5, 0))
-
-        self._arrange_pair_by_width(top, connection, continuous, gap=7)
-
         output = ttk.LabelFrame(
-            outer, text="DC unipolar pulse output (0 A ↔ setpoint, 50% duty)", padding=7
+            top, text="DC unipolar pulse output (0 A ↔ setpoint, 50% duty)", padding=7
         )
-        output.grid(row=1, column=0, sticky="ew", pady=(7, 7))
+        output.grid(row=0, column=1, sticky="nsew")
         output.columnconfigure(0, weight=1)
         # Fields, then the Apply and red stop buttons; the buttons move below
         # the fields when the window is too narrow, so neither is ever cut.
@@ -20965,12 +20851,28 @@ class CombinedControlApp:
         )
         self.k6221_off_button.grid(row=0, column=1, padx=(8, 0))
         self._arrange_pair_by_width(output_row, output_fields, output_buttons, gap=4, stack_gap=5)
+        # The live readback (read every 0.3 s while idle): the output state
+        # and whether the 6221 is in compliance; then the output set.
+        readback = ttk.Frame(output)
+        readback.grid(row=1, column=0, columnspan=10, sticky="ew", pady=(6, 0))
+        readback.columnconfigure(2, weight=1)
         ttk.Label(
-            output, textvariable=self.k6221_output_var, style="Metric.TLabel"
-        ).grid(row=1, column=0, columnspan=10, sticky="e", pady=(6, 0))
+            readback, textvariable=self.k6221_readback_output_var, style="Metric.TLabel"
+        ).grid(row=0, column=0, sticky="w", padx=(0, 18))
+        self.k6221_compliance_state_label = ttk.Label(
+            readback,
+            textvariable=self.k6221_compliance_state_var,
+            foreground="#666666",
+            font=(self.ui_font_family, self.ui_font_size, "bold"),
+        )
+        self.k6221_compliance_state_label.grid(row=0, column=1, sticky="w")
+        ttk.Label(
+            readback, textvariable=self.k6221_output_var, style="Metric.TLabel"
+        ).grid(row=0, column=2, sticky="e", padx=(18, 0))
+        self._arrange_pair_by_width(top, connection, output, gap=7)
 
         bottom = ttk.Frame(outer)
-        bottom.grid(row=2, column=0, sticky="ew", pady=(0, 7))
+        bottom.grid(row=1, column=0, sticky="ew", pady=(7, 7))
         bottom.columnconfigure(1, weight=1)
         scan = ttk.LabelFrame(bottom, text="Pulse current scan and ROI acquisition", padding=7)
         scan.grid(row=0, column=0, sticky="nsew")
@@ -21108,7 +21010,7 @@ class CombinedControlApp:
         self._arrange_pair_by_width(bottom, scan, roi_edit, gap=7)
 
         data = ttk.Frame(outer)
-        data.grid(row=3, column=0, sticky="nsew")
+        data.grid(row=2, column=0, sticky="nsew")
         data.rowconfigure(0, weight=1)
         # Keep the live ROI trace as the primary plot, matching the MOKE page,
         # while reserving a narrower column for the scan-only relation plot.
@@ -21151,8 +21053,7 @@ class CombinedControlApp:
             textvariable=self.k6221_status_var,
             style="Status.TLabel",
             anchor="w",
-        ).grid(row=4, column=0, sticky="ew", pady=(7, 0))
-        self._update_k6221_continuous_mode_ui()
+        ).grid(row=3, column=0, sticky="ew", pady=(7, 0))
         self._update_k6221_controls()
 
     def build_nonlocal_vi_ui(self) -> None:
@@ -27520,17 +27421,6 @@ class CombinedControlApp:
         else:
             self._set_mfli_lock_from_sync(sync, vi=vi)
 
-    def _update_k6221_continuous_mode_ui(self) -> None:
-        entry = self.k6221_continuous_frequency_entry
-        if entry is None:
-            return
-        editable = (
-            self.k6221_continuous_mode_var.get().strip().upper() == "AC"
-            and not self.k6221_busy
-            and not self.k6221_scan_running
-        )
-        entry.configure(state="normal" if editable else "disabled")
-
     def _clear_k6221_readback_history(self, *, redraw: bool = True) -> None:
         with self.k6221_data_lock:
             self.k6221_readback_rows = []
@@ -27592,10 +27482,6 @@ class CombinedControlApp:
         )
 
     def _reset_k6221_readback(self, *, record_off: bool = True) -> None:
-        self.k6221_readback_mode_var.set("Mode: --")
-        self.k6221_readback_current_var.set("I readback：--")
-        self.k6221_readback_frequency_var.set("f readback：--")
-        self.k6221_readback_compliance_var.set("Compliance: --")
         self.k6221_readback_output_var.set("OUTP：OFF")
         self.k6221_compliance_state_var.set("Compliance state: --")
         if self.k6221_compliance_state_label is not None:
@@ -27604,27 +27490,8 @@ class CombinedControlApp:
             self._record_k6221_off_point()
 
     def _publish_k6221_readback(self, state: dict[str, object]) -> None:
-        mode = str(state.get("mode", "OFF"))
-        current_ma = float(state.get("current_a", 0.0)) * 1000.0
-        frequency_hz = float(state.get("frequency_hz", math.nan))
-        compliance_v = float(state.get("compliance_v", math.nan))
         output_on = bool(state.get("output_on"))
         in_compliance = bool(state.get("in_compliance"))
-        self.k6221_readback_mode_var.set(f"Mode: {mode}")
-        current_unit = "mA RMS" if mode == "AC" else "mA"
-        self.k6221_readback_current_var.set(
-            f"I readback：{current_ma:+.9g} {current_unit}"
-        )
-        self.k6221_readback_frequency_var.set(
-            f"f readback：{frequency_hz:.9g} Hz"
-            if math.isfinite(frequency_hz)
-            else "f readback：--"
-        )
-        self.k6221_readback_compliance_var.set(
-            f"Compliance: {compliance_v:.9g} V"
-            if math.isfinite(compliance_v)
-            else "Compliance: --"
-        )
         self.k6221_readback_output_var.set(
             f"OUTP：{'ON' if output_on else 'OFF'}"
         )
@@ -27680,102 +27547,6 @@ class CombinedControlApp:
             )
         else:
             self._publish_k6221_readback(state)
-
-    def apply_k6221_continuous_output(self) -> None:
-        if not self.k6221_controller.connected:
-            messagebox.showwarning(
-                "Keithley 6221", "Connect the instrument first", parent=self.root
-            )
-            return
-        if self.k6221_busy or self.k6221_scan_running:
-            return
-        if not self.k6221_safety_var.get():
-            messagebox.showwarning(
-                "Keithley 6221", "Tick the 6221 safety confirmation first", parent=self.root
-            )
-            return
-        try:
-            mode = self.k6221_continuous_mode_var.get().strip().upper()
-            current_a = float(
-                self.k6221_continuous_current_var.get()
-            ) / 1000.0
-            frequency_hz = (
-                float(self.k6221_continuous_frequency_var.get())
-                if mode == "AC"
-                else 0.0
-            )
-            compliance_v = float(self.k6221_compliance_var.get())
-        except (TypeError, ValueError, tk.TclError):
-            messagebox.showwarning(
-                "Keithley 6221",
-                "AC/DC continuous output parameters must be valid numbers",
-                parent=self.root,
-            )
-            return
-        self.k6221_busy = True
-        self.k6221_stop_event.clear()
-        self.k6221_status_var.set(f"Configuring 6221 {mode} continuous output…")
-        self._update_k6221_controls()
-        future = self.k6221_executor.submit(
-            self._k6221_continuous_output_worker,
-            mode,
-            current_a,
-            frequency_hz,
-            compliance_v,
-        )
-        future.add_done_callback(
-            lambda completed: self.post_ui(
-                lambda: self._finish_k6221_continuous_output(completed)
-            )
-        )
-
-    def _k6221_continuous_output_worker(
-        self,
-        mode: str,
-        current_a: float,
-        frequency_hz: float,
-        compliance_v: float,
-    ) -> dict[str, object]:
-        try:
-            return self.k6221_controller.set_continuous_output(
-                mode, current_a, frequency_hz, compliance_v
-            )
-        except BaseException:
-            self.k6221_controller.output_off()
-            raise
-
-    def _finish_k6221_continuous_output(self, completed) -> None:
-        self.k6221_busy = False
-        try:
-            state = completed.result()
-        except BaseException as error:
-            self.k6221_output_var.set("Output: 0 mA / OFF")
-            self._reset_k6221_readback()
-            self.k6221_status_var.set(f"Continuous output failed: {error}")
-            if not self.closing:
-                messagebox.showerror(
-                    "Keithley 6221", str(error), parent=self.root
-                )
-        else:
-            self._publish_k6221_readback(state)
-            mode = str(state["mode"])
-            current_ma = float(state["current_a"]) * 1000.0
-            if not state["output_on"]:
-                self.k6221_output_var.set("Output: 0 mA / OFF")
-                self.k6221_status_var.set("Setpoint is 0; zeroed and output off")
-            elif mode == "AC":
-                frequency_hz = float(state["frequency_hz"])
-                self.k6221_output_var.set(
-                    f"Output: {current_ma:.9g} mA RMS @ "
-                    f"{frequency_hz:.9g} Hz / ON"
-                )
-                self.k6221_status_var.set("6221 AC continuous output enabled")
-            else:
-                self.k6221_output_var.set(
-                    f"Output: {current_ma:+.9g} mA DC / ON"
-                )
-                self.k6221_status_var.set("6221 DC continuous output enabled")
-        self._update_k6221_controls()
 
     def connect_k6221(self) -> None:
         if (
@@ -28950,33 +28721,6 @@ class CombinedControlApp:
             and "keithley-6221-csv" not in self.active_file_exports
         )
         self.k6221_apply_button.configure(state="normal" if can_operate else "disabled")
-        if self.k6221_continuous_apply_button is not None:
-            self.k6221_continuous_apply_button.configure(
-                state="normal" if can_operate else "disabled"
-            )
-        if hasattr(self, "k6221_continuous_off_button"):
-            self.k6221_continuous_off_button.configure(
-                state="normal" if connected else "disabled"
-            )
-        continuous_editable = idle and not blocked
-        for widget in self.k6221_continuous_widgets:
-            widget.configure(
-                state="readonly"
-                if isinstance(widget, ttk.Combobox) and continuous_editable
-                else "normal"
-                if continuous_editable
-                else "disabled"
-            )
-        if self.k6221_continuous_frequency_entry is not None:
-            self.k6221_continuous_frequency_entry.configure(
-                state=(
-                    "normal"
-                    if continuous_editable
-                    and self.k6221_continuous_mode_var.get().strip().upper()
-                    == "AC"
-                    else "disabled"
-                )
-            )
         self.k6221_start_button.configure(state="normal" if can_operate else "disabled")
         self.k6221_train_start_button.configure(
             state="normal" if can_operate else "disabled"
