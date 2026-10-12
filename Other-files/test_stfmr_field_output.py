@@ -421,7 +421,7 @@ class FieldOutputTests(unittest.TestCase):
         self.arranged(LAB_WIDE, "CIDWM", self.a.stfmr_lockin_resource_widgets)
         frames = self.page_frames(self.a.k6221_tab)
         connection = frames["Keithley 6221 / VISA"]
-        pulse = frames["DC unipolar pulse output (0 A ↔ setpoint, 50% duty)"]
+        pulse = frames["DC unipolar pulse output (0 A ↔ ±I, 50% duty)"]
         difference = frames["MOKE difference display"]
         roi = frames["MOKE ROI editing"]
         for gone in ("AC/DC continuous output and live readback",

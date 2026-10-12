@@ -1,5 +1,19 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## CIDWM: negative pulses (2026-10-12)
+
+- **The buttons:** "Apply +I pulse" and "Apply −I pulse" replace "Apply pulse
+  output". Both use the size typed in "Pulse current |I| (mA)", with the
+  button's sign, so the direction changes without retyping. The box title is
+  now "DC unipolar pulse output (0 A ↔ ±I, 50% duty)".
+- **The 6221:** a −I train is the same square wave between 0 A and −|I|
+  (amplitude |I|/2, offset −|I|/2). The count, width and total time are as
+  for +I. The 6221 always accepted a negative current; only the page did not
+  offer it.
+- **Tests:**
+  - `test_cidwm_pulse_polarity.py`: 3 tests, no Tk.
+  - `test_panel_defaults.py`: the buttons.
+
 ## CIDWM: MOKE-6221 renamed and moved, MOKE imaging from MOKE magnet, no pulse current scan (2026-10-12)
 
 The user asked to rename MOKE-6221 as CIDWM, put it between MOKE magnet and

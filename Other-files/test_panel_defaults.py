@@ -152,7 +152,7 @@ class PanelDefaultTests(unittest.TestCase):
             if widget.winfo_class() == "TLabelframe":
                 titles.add(str(widget.cget("text")))
         self.assertNotIn("AC/DC continuous output and live readback", titles)
-        self.assertIn("DC unipolar pulse output (0 A ↔ setpoint, 50% duty)", titles)
+        self.assertIn("DC unipolar pulse output (0 A ↔ ±I, 50% duty)", titles)
         # 2026-10-12, CIDWM: MOKE magnet's difference display and ROI editing
         # (one set of variables: one camera), no pulse current scan.
         self.assertTrue({"MOKE difference display", "MOKE ROI editing",
@@ -169,6 +169,9 @@ class PanelDefaultTests(unittest.TestCase):
                 texts.append(str(widget.cget("text")))
         self.assertNotIn("Clear curve", texts, "the magnet scan's curve: MOKE magnet only")
         self.assertIn("Save difference raw image", texts)
+        # 2026-10-12: +I and -I pulses, the size from "Pulse current |I| (mA)".
+        self.assertTrue({"Apply +I pulse", "Apply −I pulse"} <= set(texts))
+        self.assertNotIn("Apply pulse output", texts)
         self.assertTrue(set(a.k6221_roi_edit_buttons), "the ROI nudges report to the CIDWM status")
         self.assertFalse(hasattr(a, "apply_k6221_continuous_output"))
         self.assertEqual((a.k6221_current_var.get(), a.k6221_width_var.get(), a.k6221_count_var.get(),

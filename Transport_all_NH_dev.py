@@ -20781,7 +20781,7 @@ class CombinedControlApp:
         )
 
         output = ttk.LabelFrame(
-            top, text="DC unipolar pulse output (0 A ↔ setpoint, 50% duty)", padding=7
+            top, text="DC unipolar pulse output (0 A ↔ ±I, 50% duty)", padding=7
         )
         output.grid(row=0, column=1, sticky="nsew")
         output.columnconfigure(0, weight=1)
@@ -20792,8 +20792,10 @@ class CombinedControlApp:
         output_fields.grid(row=0, column=0, sticky="w")
         readback = ttk.Frame(output)
         readback.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-        readback.columnconfigure(4, weight=1)
-        ttk.Label(output_fields, text="Pulse current (mA):").grid(row=0, column=0)
+        readback.columnconfigure(5, weight=1)
+        # The size of the pulse; its sign is the button's (user, 2026-10-12:
+        # negative pulses), so the direction changes without retyping.
+        ttk.Label(output_fields, text="Pulse current |I| (mA):").grid(row=0, column=0)
         ttk.Entry(output_fields, textvariable=self.k6221_current_var, width=9).grid(
             row=0, column=1, padx=(0, 10)
         )
@@ -20810,9 +20812,13 @@ class CombinedControlApp:
             row=0, column=7, padx=(0, 10)
         )
         self.k6221_apply_button = ttk.Button(
-            readback, text="Apply pulse output", command=self.apply_k6221_output
+            readback, text="Apply +I pulse", command=lambda: self.apply_k6221_output(1)
         )
         self.k6221_apply_button.grid(row=0, column=0, padx=(0, 3))
+        self.k6221_apply_negative_button = ttk.Button(
+            readback, text="Apply −I pulse", command=lambda: self.apply_k6221_output(-1)
+        )
+        self.k6221_apply_negative_button.grid(row=0, column=1, padx=(3, 3))
         self.k6221_off_button = tk.Button(
             readback,
             text="6221 stop now / zero",
@@ -20824,22 +20830,22 @@ class CombinedControlApp:
             padx=10,
             pady=3,
         )
-        self.k6221_off_button.grid(row=0, column=1, padx=(8, 18))
+        self.k6221_off_button.grid(row=0, column=2, padx=(8, 18))
         # The live readback (read every 0.3 s while idle): the output state
         # and whether the 6221 is in compliance; then the output set.
         ttk.Label(
             readback, textvariable=self.k6221_readback_output_var, style="Metric.TLabel"
-        ).grid(row=0, column=2, sticky="w", padx=(0, 12))
+        ).grid(row=0, column=3, sticky="w", padx=(0, 12))
         self.k6221_compliance_state_label = ttk.Label(
             readback,
             textvariable=self.k6221_compliance_state_var,
             foreground="#666666",
             font=(self.ui_font_family, self.ui_font_size, "bold"),
         )
-        self.k6221_compliance_state_label.grid(row=0, column=3, sticky="w")
+        self.k6221_compliance_state_label.grid(row=0, column=4, sticky="w")
         ttk.Label(
             readback, textvariable=self.k6221_output_var, style="Metric.TLabel"
-        ).grid(row=0, column=4, sticky="e", padx=(12, 0))
+        ).grid(row=0, column=5, sticky="e", padx=(12, 0))
         self._arrange_pair_by_width(top, connection, output, gap=7)
 
         # CIDWM (user, 2026-10-12): under the 6221 pulse output, the MOKE
@@ -27358,7 +27364,10 @@ class CombinedControlApp:
         self._update_k6221_controls()
         self._update_nonlocal_vi_controls()
 
-    def apply_k6221_output(self) -> None:
+    def apply_k6221_output(self, polarity: int = 1) -> None:
+        """Apply +I pulse (polarity 1) or Apply −I pulse (polarity −1): the
+        pulses at |Pulse current| with the button's sign (user, 2026-10-12).
+        A −I train is the same square wave between 0 A and −|I|."""
         if not self.k6221_controller.connected:
             messagebox.showwarning("Keithley 6221", "Connect the instrument first", parent=self.root)
             return
@@ -27372,6 +27381,8 @@ class CombinedControlApp:
         except ValueError as error:
             messagebox.showwarning("Keithley 6221", str(error), parent=self.root)
             return
+        if current_a:
+            current_a = math.copysign(abs(current_a), -1.0 if polarity < 0 else 1.0)
         self.k6221_busy = True
         self.k6221_stop_event.clear()
         self.k6221_output_var.set(
@@ -27717,7 +27728,8 @@ class CombinedControlApp:
             and not blocked
             and self.k6221_safety_var.get()
         )
-        self.k6221_apply_button.configure(state="normal" if can_operate else "disabled")
+        for button in (self.k6221_apply_button, self.k6221_apply_negative_button):
+            button.configure(state="normal" if can_operate else "disabled")
         self.k6221_off_button.configure(state="normal" if connected else "disabled")
         edit_state = (
             "normal"
