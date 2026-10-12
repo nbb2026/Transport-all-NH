@@ -12682,6 +12682,11 @@ class STFMRScanRecorder:
         return errors
 
 
+# Side-by-side/stacked flips of one pair, within a second at one window
+# width, after which it stays stacked (see _arrange_pair_by_width).
+PAIR_FLIP_LIMIT = 8
+
+
 class CombinedControlApp:
     """Tk LED panel with a strictly main-thread UI event queue."""
 
@@ -13645,6 +13650,31 @@ class CombinedControlApp:
             wide = available >= needed
             if getattr(container, "_pair_side_by_side", None) is wide:
                 return
+            # A pair whose width follows its own layout (its column sized by
+            # its content) flips at every <Configure> and the window never
+            # finishes drawing: 2026-10-12, the CIDWM difference display's
+            # mode row hung the program at start-up.  After PAIR_FLIP_LIMIT
+            # flips within a second at one window width it stays stacked,
+            # the layout that never clips, until the window is resized.
+            try:
+                window_width = container.winfo_toplevel().winfo_width()
+            except (tk.TclError, AttributeError):
+                window_width = None
+            now = time.monotonic()
+            guard = getattr(container, "_pair_flip_guard", None)
+            if guard is None or guard["window"] != window_width:
+                guard = {"window": window_width, "since": now, "flips": 0, "held": False}
+                container._pair_flip_guard = guard
+            if guard["held"]:
+                return  # stacked until the window is resized
+            if now - guard["since"] > 1.0:
+                guard["since"], guard["flips"] = now, 0
+            guard["flips"] += 1
+            if guard["flips"] > PAIR_FLIP_LIMIT:
+                guard["held"] = True
+                if getattr(container, "_pair_side_by_side", None) is False:
+                    return
+                wide = False
             container._pair_side_by_side = wide
             if wide:
                 left.grid_configure(row=0, column=0, columnspan=1, padx=(0, gap), pady=0)
@@ -21187,7 +21217,12 @@ class CombinedControlApp:
         # ROI plot).  They share the camera settings with MOKE magnet.
         moke = ttk.Frame(outer)
         moke.grid(row=2, column=0, sticky="ew", pady=(7, 3))
-        moke.columnconfigure(1, weight=1)
+        # The Images box keeps its natural width and the difference display
+        # takes the rest, as on MOKE magnet, so the display's width never
+        # depends on its own mode row's layout (2026-10-12: with the spare
+        # width on the Images side, that row flipped between side by side
+        # and stacked forever and the program hung at start-up).
+        moke.columnconfigure(0, weight=1)
         difference_box = self._build_moke_difference_box(moke)
         difference_box.grid(row=0, column=0, sticky="nsew")
         images = ttk.LabelFrame(moke, text="Images", padding=7)
@@ -39898,18 +39933,7 @@ def maximize_main_window(root: tk.Tk) -> None:
 
 
 def main() -> None:
-    # If the window is not up within a minute, write where the program is to
-    # the terminal, every minute until it is (2026-10-12: a start-up that
-    # seemed stuck on the lab PC left nothing to go on).
-    import faulthandler
-    faulthandler.dump_traceback_later(60, repeat=True)
-    print("Transport: starting...", flush=True)
     root = tk.Tk()
-
-    def started() -> None:
-        faulthandler.cancel_dump_traceback_later()
-        print("Transport: window ready", flush=True)
-
     app = CombinedControlApp(root)
     app.update_raw_state()
 
@@ -39917,7 +39941,6 @@ def main() -> None:
     motor_self_test()
     app.attach_motor(MotorAppClass)
     root.after_idle(lambda: maximize_main_window(root))
-    root.after(500, started)
 
     if serial is None:
         root.after(
