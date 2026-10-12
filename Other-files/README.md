@@ -1,5 +1,17 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Camera display defaults from the user's figure (2026-10-12)
+
+- **New defaults:** difference temporal average 4 frames, binning 4×4, mean
+  filter 2×2, exposure 100 ms. They were 1 frame, 1×1, off and 20 ms.
+- **Already as in the figure:** CLim −2 ~ 2, FPS 10, Refresh 0.2 s,
+  Points 100, edit steps A 1, W 1, H 1, X 5, Y 5.
+- **One source:** the page (MOKE magnet and CIDWM) and the camera worker
+  both start from `EXPOSURE_S`, `DIFFERENCE_TEMPORAL_AVERAGE_FRAMES`,
+  `DIFFERENCE_SPATIAL_BINNING` and `DIFFERENCE_MEAN_FILTER_SIZE`, so the
+  first frames are processed as the page shows.
+- **Test:** `test_panel_defaults.py` checks the values.
+
 ## CIDWM: no ROI editing or live ROI plot; one Save images button (2026-10-12)
 
 - **Removed:** the "MOKE ROI editing" box and the live "ROI mean intensity

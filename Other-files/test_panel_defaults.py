@@ -140,6 +140,22 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertEqual((a.nonlocal_vi_frequency_var.get(), a.nonlocal_iv6221_frequency_var.get(),
                           a.nonlocal_frequency_var.get()), ("17.3", "17.3", "17.3"))
 
+    def test_camera_display_defaults_follow_the_users_figure(self):
+        """2026-10-12: CLim -2 ~ 2, 4 frames, 4×4 binning, 2×2 mean filter,
+        exposure 100 ms, FPS 10; refresh 0.2 s, 100 points; edit steps
+        1, 1, 1, 5, 5.  The camera worker starts from the same values."""
+        a = self.app
+        self.assertEqual((a.difference_clim_low_var.get(), a.difference_clim_high_var.get(),
+                          a.difference_temporal_average_var.get(), a.difference_spatial_binning_var.get(),
+                          a.difference_mean_filter_var.get(), a.camera_exposure_ms_var.get(),
+                          a.camera_video_fps_var.get()), ("-2", "2", 4, 4, 2, "100", "10"))
+        self.assertEqual((float(a.roi_live_interval_var.get()), int(float(a.roi_live_max_points_var.get()))),
+                         (0.2, 100))
+        self.assertEqual({key: var.get() for key, var in a.roi_edit_step_vars.items()},
+                         {"A": "1", "W": "1", "H": "1", "X": "5", "Y": "5"})
+        self.assertEqual((app.DIFFERENCE_TEMPORAL_AVERAGE_FRAMES, app.DIFFERENCE_SPATIAL_BINNING,
+                          app.DIFFERENCE_MEAN_FILTER_SIZE, app.EXPOSURE_S), (4, 4, 2, 0.1))
+
     def test_cidwm_pulse_sign_scan_row(self):
         """2026-10-12: Pulses, Signs and Wait after pulse s, with its own
         start and stop buttons (disabled until the 6221 is connected)."""

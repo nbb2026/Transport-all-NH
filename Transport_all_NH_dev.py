@@ -1176,7 +1176,13 @@ MAGNET_SCAN_RESULTS_DIRECTORY = (
 # Camera constants
 # ---------------------------------------------------------------------------
 
-EXPOSURE_S = 0.02
+# Camera start-up exposure and difference display (user's figure,
+# 2026-10-12; were 20 ms, 1 frame, 1×1 and no mean filter).  The camera
+# worker and the page both start from these.
+EXPOSURE_S = 0.1
+DIFFERENCE_TEMPORAL_AVERAGE_FRAMES = 4
+DIFFERENCE_SPATIAL_BINNING = 4
+DIFFERENCE_MEAN_FILTER_SIZE = 2
 RING_BUFFER_FRAMES = 10
 CAMERA_WINDOW = f"{MAIN_WINDOW_TITLE} — Camera Live"
 # Present every PCO frame in the laboratory's preferred orientation before
@@ -11046,9 +11052,9 @@ class CameraAcquisitionWorker:
         self.last_difference_center = 0.0
         self.difference_contrast_valid = False
         self.difference_manual_clim: tuple[float, float] | None = None
-        self.difference_temporal_average_count = 1
-        self.difference_spatial_binning = 1
-        self.difference_mean_filter_size = 1
+        self.difference_temporal_average_count = DIFFERENCE_TEMPORAL_AVERAGE_FRAMES
+        self.difference_spatial_binning = DIFFERENCE_SPATIAL_BINNING
+        self.difference_mean_filter_size = DIFFERENCE_MEAN_FILTER_SIZE
         self.difference_average_reset_requested = True
         # The following arrays are owned only by the acquisition thread.
         self._difference_average_sum = None
@@ -12736,9 +12742,9 @@ class CombinedControlApp:
         self.difference_clim_low_var = tk.StringVar(value="-2")
         self.difference_clim_high_var = tk.StringVar(value="2")
         self.difference_clim_status_var = tk.StringVar(value="Auto")
-        self.difference_temporal_average_var = tk.IntVar(value=1)
-        self.difference_spatial_binning_var = tk.IntVar(value=1)
-        self.difference_mean_filter_var = tk.IntVar(value=1)
+        self.difference_temporal_average_var = tk.IntVar(value=DIFFERENCE_TEMPORAL_AVERAGE_FRAMES)
+        self.difference_spatial_binning_var = tk.IntVar(value=DIFFERENCE_SPATIAL_BINNING)
+        self.difference_mean_filter_var = tk.IntVar(value=DIFFERENCE_MEAN_FILTER_SIZE)
         self.camera_exposure_ms_var = tk.StringVar(value=f"{EXPOSURE_S * 1000:g}")
         self.camera_exposure_status_var = tk.StringVar(
             value=f"{EXPOSURE_S * 1000:g} ms"
