@@ -14,7 +14,7 @@ from unittest import mock
 from lab_screen import LAB_WIDE, build_lab_app, lab_window
 from test_ppms_motor_debug import app
 
-WIDTHS = (LAB_WIDE, 1101, 826, 1574)  # as Other-files/ci/gui_checks.py
+WIDTHS = (LAB_WIDE, 1101, 826, 1574, 2560)  # gui_checks.py's, and maximized at the lab
 
 
 def descendants(widget):
@@ -108,7 +108,7 @@ class GuardTests(Built, unittest.TestCase):
         row = cidwm_mode_row(self.a)
         self.assertTrue(row._pair_flip_guard["held"])
         self.assertIs(row._pair_side_by_side, False)
-        self.assertLessEqual(row._pair_flip_guard["flips"], app.PAIR_FLIP_LIMIT + 1)
+        self.assertEqual(row._pair_flip_guard["flips"], app.PAIR_FLIP_LIMIT + 1, "no flip after the hold")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,28 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Review of the start-up fix (2026-10-12)
+
+Four read-only reviewers (the guard, every other pair, start-up risks since
+`38f351a`), each finding checked by a second agent.
+
+- **Non-local Gate-VI and 6221-IV (confirmed):** the settings box sits in a
+  column without weight, beside the scan box, and holds its own pair: the
+  shape that hung CIDWM. After a jump in width (maximize from a narrow
+  window) its pair stayed stacked for the session. Now, while side by side,
+  the settings column keeps the room its own pair needs
+  (`_keep_pair_left_room`, RT-E's `keep_settings_room`).
+- **Message box over a Tcl window (confirmed):** if a Combobox's open list or
+  Tk's file dialog held the grab, the box raised KeyError and stayed on top
+  for good. The previous grab is now kept by its Tcl name and given back; a
+  box that fails while it is built is removed and the standard box shown.
+- **Kept as is:** the guard's one-second window (refuted: the program's
+  pairs take their width from the window, and a slower reset would hold
+  pairs whose labels update twice a second). A hold lasts until the pair
+  next tries to flip at another window width.
+- **Tests:** the loop test also visits the Non-local sub-pages and the
+  maximized 2560 px width; `test_panel_defaults.py`: a box while a Tcl
+  window holds the grab.
+
 ## MOKE motor: a 6400 µm quick position; version 1.0.0 (2026-10-12)
 
 - **6400 µm button:** beside 7250 µm in "Position and step (µm)". Like

@@ -255,6 +255,26 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertTrue(answer, "the outer box's own answer")
         self.assertEqual(log, [("open", ["Inner", "Outer"]), ("inner", "ok")])
 
+    def test_a_box_while_a_tcl_window_holds_the_grab(self):
+        """Review, 2026-10-12: a Combobox's open list or Tk's file dialog is
+        not a tkinter widget, so grab_current() raised KeyError and the box
+        stayed on top for good.  It answers now and gives the grab back."""
+        root = self.app.root
+        root.tk.eval("toplevel .tcl_only_grab; wm geometry .tcl_only_grab 120x60+0+0")
+        try:
+            root.update()
+            root.tk.call("grab", "set", ".tcl_only_grab")
+            answer = self._ask(app.messagebox.askyesno, "Grab", "Answer?", [
+                (300, lambda: self._button(self._boxes()[0], "yes").invoke()),
+            ])
+            self.assertTrue(answer)
+            self.assertEqual(self._boxes(), [], "no box left behind")
+            self.assertEqual(str(root.tk.call("grab", "current", root._w)), ".tcl_only_grab",
+                             "the grab given back")
+        finally:
+            root.tk.call("grab", "release", ".tcl_only_grab")
+            root.tk.eval("destroy .tcl_only_grab")
+
     def test_moke_6221_has_no_continuous_output_and_the_pulse_defaults(self):
         """2026-10-12: no AC/DC continuous output on CIDWM (MOKE-6221); the pulse
         output at the user's figure (2 mA, 50 us, 1 pulse, 100 V)."""

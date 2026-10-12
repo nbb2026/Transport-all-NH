@@ -91,7 +91,7 @@ def english_message_box(title=None, message=None, _icon=None, _type=None, **opti
     rest = {key: value for key, value in options.items() if key != "parent"}
     try:
         return _english_message_box(parent, title, message, _icon, _type, **rest)
-    except tk.TclError:
+    except Exception:
         return _NATIVE_MESSAGE_SHOW(title, message, _icon, _type, **options)
 
 
@@ -103,6 +103,19 @@ def _english_message_box(parent, title, message, _icon, _type, **options) -> str
     # Closing the window or Escape: the safe answer.
     cancel = next((name for name in ("cancel", "no", "abort", "ok") if name in names), names[-1])
     top = tk.Toplevel(parent, class_="EnglishMessageBox")
+    try:
+        return _show_english_message_box(top, parent, title, message, _icon, kind, buttons,
+                                         names, default, cancel, options)
+    except BaseException:
+        try:
+            top.destroy()  # never a box left on screen that nothing waits on
+        except tk.TclError:
+            pass
+        raise
+
+
+def _show_english_message_box(top, parent, title, message, _icon, kind, buttons, names,
+                              default, cancel, options) -> str:
     top.withdraw()
     top.title(str(title or ""))
     try:
@@ -180,7 +193,14 @@ def _english_message_box(parent, title, message, _icon, _type, **options) -> str
         top.focus_force()
     except tk.TclError:
         pass
-    previous_grab = top.grab_current()
+    # The window holding the grab, by its Tcl name: a Combobox's open list
+    # and Tk's own file dialogs are not tkinter widgets, and grab_current()
+    # raised KeyError for them, which left this box on top for good (review,
+    # 2026-10-12).
+    try:
+        previous_grab = str(top.tk.call("grab", "current", top._w)) or None
+    except tk.TclError:
+        previous_grab = None
     try:
         top.grab_set()
     except tk.TclError:
@@ -197,8 +217,9 @@ def _english_message_box(parent, title, message, _icon, _type, **options) -> str
             pass
         if previous_grab is not None:
             try:
-                if previous_grab.winfo_exists():
-                    previous_grab.grab_set()
+                if (int(parent.tk.call("winfo", "exists", previous_grab))
+                        and int(parent.tk.call("winfo", "viewable", previous_grab))):
+                    parent.tk.call("grab", "set", previous_grab)
             except tk.TclError:
                 pass
     return value
