@@ -12940,7 +12940,6 @@ class CombinedControlApp:
         ] = []
         self.k6221_readback_start_monotonic = time.monotonic()
         self.k6221_readback_canvas = None
-        self.k6221_intensity_canvas = None
         self.k6221_resource_var = tk.StringVar(value=K6221_DEFAULT_RESOURCE)
         self.k6221_readback_output_var = tk.StringVar(value="OUTP: OFF")
         self.k6221_compliance_state_var = tk.StringVar(value="Compliance state: --")
@@ -12963,10 +12962,10 @@ class CombinedControlApp:
         self.cidwm_scan_wait_var = tk.StringVar(value=f"{CIDWM_SCAN_WAIT_S:g}")
         self.cidwm_scan_status_var = tk.StringVar(value="Pulse sign scan: not started")
         self.cidwm_scan_directory = CIDWM_SCAN_DIRECTORY
+        self.cidwm_image_directory = CIDWM_SCAN_DIRECTORY
         self.k6221_roi_var = tk.StringVar(value="ROI: none selected")
         self.k6221_roi_mean_var = tk.StringVar(value="ROI mean: --")
         self.k6221_safety_var = tk.BooleanVar(value=False)
-        self.k6221_roi_edit_buttons = []
         self.k6221_compliance_state_label = None
 
         self.nonlocal_controller = NonLocalACController(self.thread_log)
@@ -19770,8 +19769,8 @@ class CombinedControlApp:
         return mode_box
 
     def _build_moke_roi_edit_box(self, parent, page: str) -> ttk.LabelFrame:
-        """"MOKE ROI editing": page "MOKE" (MOKE magnet, with the magnet
-        scan's Clear curve and Field) or "CIDWM"."""
+        """"MOKE ROI editing" (MOKE magnet, with the magnet scan's Clear curve
+        and Field).  CIDWM had it too until 2026-10-12."""
         moke = page == "MOKE"
         roi_edit = ttk.LabelFrame(parent, text="MOKE ROI editing", padding=4)
         roi_edit.columnconfigure(0, weight=1)
@@ -19819,8 +19818,8 @@ class CombinedControlApp:
         roi_toolbar.pack(side="left")
         self._populate_roi_nudge_toolbar(
             roi_toolbar,
-            self.edit_moke_roi if moke else self.edit_k6221_roi,
-            self.moke_roi_edit_buttons if moke else self.k6221_roi_edit_buttons,
+            self.edit_moke_roi,
+            self.moke_roi_edit_buttons,
             initial_state="disabled",
         )
         live_settings = ttk.Frame(roi_actions)
@@ -20987,9 +20986,6 @@ class CombinedControlApp:
         outer = ttk.Frame(self.k6221_tab, padding=7)
         outer.grid(row=0, column=0, sticky="nsew")
         outer.columnconfigure(0, weight=1)
-        # Spare window height goes to the live ROI plot (row 4), so it fills
-        # the page down to the status line instead of an empty row below it.
-        outer.rowconfigure(4, weight=1)
 
         # Compact, as on the STFMR page: the connection beside the pulse
         # output, and the pulse scan beside ROI editing.  Each pair stacks by
@@ -21136,37 +21132,34 @@ class CombinedControlApp:
         scan_status.grid(row=2, column=0, columnspan=10, sticky="ew", pady=(2, 0))
         show_trimmed(scan_status, self.cidwm_scan_status_var)
 
-        # CIDWM (user, 2026-10-12): under the 6221 pulse output, the MOKE
-        # magnet page's difference display and ROI editing (side by side when
-        # both fit), its display rows and the live ROI plot; no pulse current
-        # scan.  They share the camera settings with MOKE magnet.
+        # CIDWM: under the pulse sign scan, the MOKE magnet page's
+        # difference display beside one Save images button, then its display
+        # rows (user, 2026-10-12: no ROI editing, no live ROI plot).  They
+        # share the camera settings with MOKE magnet.
         moke = ttk.Frame(outer)
         moke.grid(row=2, column=0, sticky="ew", pady=(7, 3))
         moke.columnconfigure(1, weight=1)
         difference_box = self._build_moke_difference_box(moke)
         difference_box.grid(row=0, column=0, sticky="nsew")
-        roi_edit = self._build_moke_roi_edit_box(moke, "CIDWM")
-        roi_edit.grid(row=0, column=1, sticky="nsew")
-        self._arrange_pair_by_width(moke, difference_box, roi_edit, gap=7)
+        images = ttk.LabelFrame(moke, text="Images", padding=7)
+        images.grid(row=0, column=1, sticky="nsew")
+        self.cidwm_save_images_button = ttk.Button(
+            images, text="Save images", command=self.save_cidwm_images
+        )
+        self.cidwm_save_images_button.grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            images,
+            text="The current display (8-bit PNG), the raw 16-bit TIFF and the "
+                 "difference raw image (float32 TIFF), into the folder you choose",
+            style="Muted.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self._arrange_pair_by_width(moke, difference_box, images, gap=7)
         self._build_moke_display_controls(outer).grid(
             row=3, column=0, sticky="ew", pady=(0, 4)
         )
-        live = ttk.LabelFrame(outer, text="ROI mean intensity vs time (live)", padding=6)
-        live.grid(row=4, column=0, sticky="nsew")
-        live.rowconfigure(0, weight=1)
-        live.columnconfigure(0, weight=1)
-        self.k6221_intensity_canvas = tk.Canvas(
-            live, bg="#fbfcfd", highlightthickness=1,
-            highlightbackground="#cfd6dd",
-            height=self._ui_px(200, 120, canvas=True),
-        )
-        self.k6221_intensity_canvas.grid(row=0, column=0, sticky="nsew")
-        # Also on <Map>: a <Configure> while the page is hidden is skipped by
-        # the visibility check, which left the plot blank until new data.
-        for sequence in ("<Configure>", "<Map>"):
-            self.k6221_intensity_canvas.bind(
-                sequence, lambda _event: self._redraw_live_intensity_plots(), add="+"
-            )
+        # Spare height below the controls, so the status line stays at the
+        # bottom of the page.
+        outer.rowconfigure(4, weight=1)
         ttk.Label(
             outer,
             textvariable=self.k6221_status_var,
@@ -25085,7 +25078,6 @@ class CombinedControlApp:
         for attribute in (
             "moke_intensity_canvas",
             "keithley_intensity_canvas",
-            "k6221_intensity_canvas",
         ):
             canvas = getattr(self, attribute, None)
             if self._canvas_is_visible(canvas):
@@ -27796,6 +27788,71 @@ class CombinedControlApp:
                 )
         self._update_k6221_controls()
 
+    def save_cidwm_images(self) -> None:
+        """Save images (user, 2026-10-12): the current Camera Live display
+        (8-bit PNG, no overlays), the raw 16-bit TIFF and the difference raw
+        image (float32 TIFF) of the same moment, into the folder chosen.
+        Without a difference image (difference off) the other two are saved."""
+        export_key = "cidwm-images"
+        if export_key in self.active_file_exports:
+            self.k6221_status_var.set("The images are still being saved; please wait")
+            return
+        camera = self.pause_camera_rendering("Saving CIDWM images")
+        try:
+            display = self.latest_display_image_snapshot()
+            raw = self.latest_raw_image_snapshot()
+        except BaseException as error:
+            self.resume_camera_rendering(camera)
+            messagebox.showwarning("Save images", str(error), parent=self.root)
+            return
+        try:
+            processed, settings = self.latest_processed_image_snapshot()
+        except RuntimeError:
+            processed = settings = None
+        folder = filedialog.askdirectory(
+            parent=self.root,
+            title="Select the folder for the CIDWM images",
+            initialdir=str(
+                self.cidwm_image_directory if Path(self.cidwm_image_directory).is_dir()
+                else Path(__file__).resolve().parent
+            ),
+        )
+        if not folder:
+            self.resume_camera_rendering(camera)
+            return
+        self.cidwm_image_directory = Path(folder)
+        stamp = datetime_module.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        paths = [Path(folder) / f"CIDWM_{stamp}_display8.png",
+                 Path(folder) / f"CIDWM_{stamp}_raw16.tiff"]
+        if processed is not None:
+            paths.append(
+                Path(folder) / f"CIDWM_{stamp}_{self.processed_image_settings_suffix(settings)}_float32.tiff"
+            )
+        self.k6221_status_var.set("Saving the images in the background…")
+
+        def work():
+            save_display_u8_png(display, paths[0])
+            save_raw_u16_tiff(raw, paths[1])
+            if processed is not None:
+                save_processed_f32_tiff(processed, paths[2])
+            return paths
+
+        def failed(error: BaseException) -> None:
+            self.k6221_status_var.set(f"Saving the images failed: {short_status_error(error)}")
+            self._update_k6221_controls()
+            messagebox.showerror("Save images failed", str(error), parent=self.root)
+
+        def saved(written) -> None:
+            self.k6221_status_var.set(
+                f"Saved {len(written)} images in {folder}: " + ", ".join(path.name for path in written)
+                + ("" if processed is not None
+                   else "; no difference image (enable plain or drift-tracking difference)")
+            )
+            self._update_k6221_controls()
+
+        self.submit_file_export(export_key, camera, work, saved, failed)
+        self._update_k6221_controls()  # held while it saves
+
     # ---- CIDWM pulse sign scan (user, 2026-10-12) ----------------------------
 
     def _cidwm_snapshot(self, frame=None) -> tuple[object, object, dict, float]:
@@ -28079,20 +28136,6 @@ class CombinedControlApp:
         self._update_keithley_controls()
         self._update_magnet_scan_controls()
 
-    def edit_k6221_roi(self, action: str) -> None:
-        if self.camera_window is None or self.k6221_roi is None:
-            self.k6221_status_var.set("Hold Shift and drag in the camera window to select an ROI first")
-            return
-        if self.k6221_scan_running or self.keithley_scan_running or self.magnet_scan_running:
-            self.k6221_status_var.set("The ROI cannot be edited during a scan")
-            return
-        try:
-            steps = self.roi_edit_steps()
-        except ValueError as error:
-            messagebox.showerror("ROI edit step", str(error), parent=self.root)
-            return
-        self.camera_window.edit_roi(action, steps)
-
     def stop_k6221(self) -> None:
         if not self.k6221_controller.connected:
             return
@@ -28305,13 +28348,10 @@ class CombinedControlApp:
             self.cidwm_scan_start_button.configure(state="normal" if can_operate else "disabled")
             self.cidwm_scan_stop_button.configure(state="normal" if running else "disabled")
         self.k6221_off_button.configure(state="normal" if connected else "disabled")
-        edit_state = (
-            "normal"
-            if self.k6221_roi is not None and idle and not blocked
-            else "disabled"
-        )
-        for button in self.k6221_roi_edit_buttons:
-            button.configure(state=edit_state)
+        if "cidwm_save_images_button" in self.__dict__:
+            self.cidwm_save_images_button.configure(
+                state="disabled" if "cidwm-images" in self.active_file_exports else "normal"
+            )
 
     def _draw_nonlocal_series(
         self,

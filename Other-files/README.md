@@ -1,5 +1,25 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## CIDWM: no ROI editing or live ROI plot; one Save images button (2026-10-12)
+
+- **Removed:** the "MOKE ROI editing" box and the live "ROI mean intensity
+  vs time" plot (user). MOKE magnet keeps its ROI editing.
+- **Save images:** an "Images" box beside the difference display holds one
+  button.
+  - **What it saves:** in the folder you choose, from the same moment:
+    - the current Camera Live display, 8-bit PNG without overlays
+      (`CIDWM_<time>_display8.png`);
+    - the raw 16-bit TIFF (`…_raw16.tiff`);
+    - the difference raw image, float32 TIFF
+      (`…_TrackingDiff_Avg4_Bin2x2_Mean1x1_float32.tiff`).
+  - **Without difference on:** it saves the other two and says so.
+  - **Feedback:** it reports in the status line, with no pop-up unless the
+    save fails, and is held while saving.
+- **Scan:** the pulse sign scan still records the ROI mean of each
+  processed image when an ROI is selected (on MOKE magnet or in the camera
+  window).
+- **Tests:** `test_cidwm_pulse_scan.py`: 14 tests (3 for Save images).
+
 ## CIDWM pulse sign scan; every dialog and label in English (2026-10-12)
 
 ### Pulse sign scan (CIDWM)

@@ -416,27 +416,26 @@ class FieldOutputTests(unittest.TestCase):
     # ------------------------------------------------------------ CIDWM
     def test_cidwm_sections_pair_up_and_the_plot_takes_the_height(self):
         """2026-10-12: MOKE-6221 is CIDWM: the pulse output beside the
-        connection, then MOKE magnet's difference display beside its ROI
-        editing, the display rows and the live ROI plot (no pulse scan)."""
+        connection, the pulse sign scan, then MOKE magnet's difference
+        display beside Save images, and the display rows."""
         self.arranged(LAB_WIDE, "CIDWM", self.a.stfmr_lockin_resource_widgets)
         frames = self.page_frames(self.a.k6221_tab)
         connection = frames["Keithley 6221 / VISA"]
         pulse = frames["DC unipolar pulse output (0 A ↔ ±I, 50% duty)"]
         difference = frames["MOKE difference display"]
-        roi = frames["MOKE ROI editing"]
+        images = frames["Images"]
         for gone in ("AC/DC continuous output and live readback",
-                     "Pulse current scan and ROI acquisition", "ROI editing",
+                     "Pulse current scan and ROI acquisition", "ROI editing", "MOKE ROI editing",
+                     "ROI mean intensity vs time (live)",
                      "Pulse current vs ROI mean intensity (current round-trip scan)"):
             self.assertNotIn(gone, frames)
         self.assertIs(connection.master, pulse.master)
-        self.assertIs(difference.master, roi.master)
+        self.assertIs(difference.master, images.master)
         self.assertLess(connection.winfo_rootx(), pulse.winfo_rootx(), "connection on the left")
-        self.assertLess(difference.winfo_rootx(), roi.winfo_rootx(), "difference display on the left")
+        self.assertLess(difference.winfo_rootx(), images.winfo_rootx(), "difference display on the left")
         outer = connection.master.master
         self.assertIn("Pulse sign scan (raw + processed TIFF after each pulse)", frames)
-        self.assertEqual(int(outer.rowconfigure(4)["weight"]), 1, "the plot row takes spare height")
-        canvas = self.a.k6221_intensity_canvas
-        self.assertGreater(canvas.winfo_height(), canvas.winfo_reqheight())
+        self.assertEqual(int(outer.rowconfigure(4)["weight"]), 1, "spare height below the controls")
 
     def test_cidwm_red_stop_button_is_never_clipped(self):
         """At narrow widths it used to extend 62 px past the window edge."""

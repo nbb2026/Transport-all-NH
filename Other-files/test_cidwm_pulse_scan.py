@@ -216,3 +216,72 @@ class WindowStartTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SaveImagesTests(unittest.TestCase):
+    """Save images (user, 2026-10-12): the display, the raw 16-bit and the
+    difference raw image of the same moment, in one folder."""
+
+    def setUp(self):
+        for name, module in (("np", np), ("Image", Image)):
+            patcher = mock.patch.object(app, name, module)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.folder = Path(tempfile.mkdtemp())
+        a = self.app = bare_app()
+        a.camera_window = types.SimpleNamespace(
+            latest_frame=frame(0.0), latest_display_image=np.full((3, 4), 7, dtype=np.uint8),
+            latest_display_geometry=(0, 0, 4, 3), pause_rendering=mock.Mock(),
+            resume_rendering=mock.Mock(),
+        )
+        a.root, a.closing = None, False  # the dialogs are mocked
+        a.active_file_exports = set()
+        a._refresh_file_export_controls = mock.Mock()
+        a._update_k6221_controls = mock.Mock()
+        a.k6221_status_var = Var()
+        a.cidwm_image_directory = self.folder
+        a.post_ui = lambda callback: callback()
+        a.file_executor = mock.Mock()
+        a.file_executor.submit.side_effect = self.run_now
+
+    @staticmethod
+    def run_now(work):
+        future = mock.Mock()
+        result = work()
+        future.result.return_value = result
+        future.add_done_callback.side_effect = lambda callback: callback(future)
+        return future
+
+    def save(self):
+        with mock.patch.object(app.filedialog, "askdirectory", return_value=str(self.folder)):
+            self.app.save_cidwm_images()
+        return sorted(path.name for path in self.folder.iterdir())
+
+    def test_the_three_images(self):
+        names = self.save()
+        by_kind = {name.split("_", 4)[4]: name for name in names}
+        self.assertEqual(set(by_kind), {"display8.png", "raw16.tiff",
+                                        "TrackingDiff_Avg4_Bin2x2_Mean1x1_float32.tiff"})
+        self.assertTrue(all(name.startswith("CIDWM_") for name in names))
+        self.assertEqual(len({"_".join(name.split("_")[1:4]) for name in names}), 1, "one time stamp")
+        np.testing.assert_array_equal(np.asarray(Image.open(self.folder / by_kind["raw16.tiff"])),
+                                      frame(0.0).raw)
+        np.testing.assert_allclose(
+            np.asarray(Image.open(self.folder / by_kind["TrackingDiff_Avg4_Bin2x2_Mean1x1_float32.tiff"])),
+            frame(0.0).display_difference)
+        np.testing.assert_array_equal(np.asarray(Image.open(self.folder / by_kind["display8.png"])),
+                                      np.full((3, 4), 7, dtype=np.uint8))
+        self.assertTrue(self.app.k6221_status_var.get().startswith("Saved 3 images in "))
+        self.app.camera_window.resume_rendering.assert_called_once()
+
+    def test_without_a_difference_image_the_other_two(self):
+        self.app.camera_window.latest_frame.display_difference = None
+        names = self.save()
+        self.assertEqual(sorted(name.split("_", 4)[4] for name in names), ["display8.png", "raw16.tiff"])
+        self.assertIn("no difference image", self.app.k6221_status_var.get())
+
+    def test_cancelling_the_folder_saves_nothing(self):
+        with mock.patch.object(app.filedialog, "askdirectory", return_value=""):
+            self.app.save_cidwm_images()
+        self.assertEqual(list(self.folder.iterdir()), [])
+        self.app.camera_window.resume_rendering.assert_called_once()
