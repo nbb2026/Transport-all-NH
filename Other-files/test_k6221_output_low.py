@@ -35,7 +35,7 @@ class FakeK6221:
 
 
 class ControllerTests(unittest.TestCase):
-    """The MOKE-6221 page, which resets the instrument before configuring."""
+    """The CIDWM (MOKE-6221) page, which resets the instrument before configuring."""
 
     def controller(self, fake):
         made = app.Keithley6221Controller.__new__(app.Keithley6221Controller)

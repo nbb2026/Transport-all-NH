@@ -1107,7 +1107,7 @@ K6221_MIN_PULSE_WIDTH_S = 5e-6
 K6221_MAX_PULSE_WIDTH_S = 500.0
 K6221_MIN_COMPLIANCE_V = 0.1
 K6221_MAX_COMPLIANCE_V = 105.0
-# MOKE-6221 pulse output defaults (user's figure, 2026-10-12; were 1 mA,
+# CIDWM (was MOKE-6221) pulse output defaults (user's figure, 2026-10-12; were 1 mA,
 # 10 us and 50 V).  The controller's own start values stay as they were:
 # MS-fourState.py copies them.
 K6221_DEFAULT_CURRENT_MA = 2.0
@@ -1123,16 +1123,9 @@ K6221_DEFAULT_PULSE_COUNT = 1
 K6221_MAX_PULSE_COUNT = 99_999_999_900
 K6221_MAX_WAVEFORM_TIME_S = 999_999.999
 K6221_DEFAULT_COMPLIANCE_V = 50.0
-K6221_DEFAULT_START_MA = 0.1
-K6221_DEFAULT_END_MA = 3.0
-K6221_DEFAULT_STEP_MA = 0.1
-K6221_DEFAULT_SCAN_INTERVAL_S = 1.0
 K6221_READBACK_WINDOW_S = 20.0
 K6221_PULSE_READBACK_INTERVAL_S = 0.25
 K6221_READBACK_MAX_POINTS = 2000
-K6221_RESULTS_DIRECTORY = (
-    Path(__file__).resolve().parent / f"{Path(__file__).stem}_6221_Results"
-)
 
 # 6221 + SR830 non-local AC transport measurement.  User-facing currents are
 # RMS values; the 6221 sine-wave generator itself is programmed in peak A.
@@ -4869,26 +4862,6 @@ def format_voltage(voltage_v: float) -> str:
 def format_current(current_a: float) -> str:
     scale, unit = current_unit(current_a)
     return f"{float(current_a) / scale:.4g} {unit}"
-
-
-def build_6221_current_sequence(start_ma: float, end_ma: float, step_ma: float):
-    """Build an endpoint-inclusive outward-and-return 6221 current sequence."""
-    values = (float(start_ma), float(end_ma), abs(float(step_ma)))
-    if not all(math.isfinite(value) for value in values):
-        raise ValueError("6221 scan current must be a finite value")
-    start_ma, end_ma, step_ma = values
-    limit_ma = K6221_MAX_ABS_CURRENT_A * 1000.0
-    if step_ma <= 0.0:
-        raise ValueError("6221 current step must be greater than 0")
-    if abs(start_ma) > limit_ma or abs(end_ma) > limit_ma:
-        raise ValueError(f"6221 start/end current must be within ±{limit_ma:g} mA")
-    return build_round_trip_values(
-        start_ma,
-        end_ma,
-        step_ma,
-        decimals=12,
-        too_many_message="Total 6221 current scan points exceed 100000; please increase the step",
-    )
 
 
 def build_current_scan_sequence(
@@ -12022,7 +11995,6 @@ class TkCameraWindow:
                 if not self.selecting_roi and fresh:
                     self.app.ingest_moke_roi_sample(mean_value)
                     self.app.ingest_2410_roi_sample(mean_value)
-                    self.app.ingest_6221_roi_sample(mean_value)
             else:
                 label = "ROI outside image"
         return label
@@ -12514,7 +12486,9 @@ class CombinedControlApp:
         self.difference_mode_var = tk.StringVar(value="off")
         self.difference_mode_buttons = []
         self.objective_100x_marker_visible = False
-        self.objective_100x_marker_button = None
+        # Every page's Recapture BG and 100× marker buttons (MOKE magnet, CIDWM).
+        self.difference_capture_buttons: list[ttk.Button] = []
+        self.objective_100x_marker_buttons: list[ttk.Button] = []
         self.difference_clim_low_var = tk.StringVar(value="-2")
         self.difference_clim_high_var = tk.StringVar(value="2")
         self.difference_clim_status_var = tk.StringVar(value="Auto")
@@ -12710,27 +12684,19 @@ class CombinedControlApp:
         )
         self.k6221_stop_event = threading.Event()
         self.k6221_data_lock = threading.Lock()
+        # CIDWM has no pulse current scan (user, 2026-10-12); this stays False,
+        # so the other pages' "a scan is running" checks are unchanged.
         self.k6221_scan_running = False
         self.k6221_busy = False
         self.k6221_closed = False
-        self.k6221_pulse_active = False
-        self.k6221_scan_start_time = None
-        self.k6221_scan_kind = "current_sweep"
-        self.k6221_active_pulse_index = 0
-        self.k6221_scan_command_ma = 0.0
         self.k6221_roi = None
         self.k6221_current_ma = 0.0
-        self.k6221_raw_rows = []
-        self.k6221_step_rows = []
-        self.k6221_train_raw_rows = []
-        self.k6221_train_step_rows = []
         self.k6221_readback_rows: list[
             tuple[float, float, str, bool, bool]
         ] = []
         self.k6221_readback_start_monotonic = time.monotonic()
         self.k6221_readback_canvas = None
         self.k6221_intensity_canvas = None
-        self.k6221_plot_frame = None
         self.k6221_resource_var = tk.StringVar(value=K6221_DEFAULT_RESOURCE)
         self.k6221_readback_output_var = tk.StringVar(value="OUTP：OFF")
         self.k6221_compliance_state_var = tk.StringVar(value="Compliance state: --")
@@ -12744,36 +12710,12 @@ class CombinedControlApp:
         self.k6221_compliance_var = tk.StringVar(
             value=f"{K6221_OUTPUT_COMPLIANCE_V:g}"
         )
-        self.k6221_start_var = tk.StringVar(value=f"{K6221_DEFAULT_START_MA:g}")
-        self.k6221_end_var = tk.StringVar(value=f"{K6221_DEFAULT_END_MA:g}")
-        self.k6221_step_var = tk.StringVar(value=f"{K6221_DEFAULT_STEP_MA:g}")
-        self.k6221_scan_width_var = tk.StringVar(
-            value=f"{K6221_DEFAULT_PULSE_WIDTH_US:g}"
-        )
-        self.k6221_scan_interval_var = tk.StringVar(
-            value=f"{K6221_DEFAULT_SCAN_INTERVAL_S:g}"
-        )
-        self.k6221_train_current_var = tk.StringVar(value="1")
-        self.k6221_train_count_var = tk.StringVar(value="10")
-        self.k6221_train_width_var = tk.StringVar(
-            value=f"{K6221_DEFAULT_PULSE_WIDTH_US:g}"
-        )
-        self.k6221_train_interval_var = tk.StringVar(
-            value=f"{K6221_DEFAULT_SCAN_INTERVAL_S:g}"
-        )
         self.k6221_connection_var = tk.StringVar(value="Not connected")
         self.k6221_output_var = tk.StringVar(value="Output: 0 mA / OFF")
         self.k6221_status_var = tk.StringVar(value="Ready")
         self.k6221_roi_var = tk.StringVar(value="ROI: none selected")
         self.k6221_roi_mean_var = tk.StringVar(value="ROI mean：--")
         self.k6221_safety_var = tk.BooleanVar(value=False)
-        self.k6221_save_images_var = tk.BooleanVar(value=False)
-        self.k6221_image_directory: Path | None = None
-        self.k6221_image_directory_var = tk.StringVar(
-            value="Post-pulse MOKE raw images: disabled"
-        )
-        self.k6221_scan_image_session_dir: Path | None = None
-        self.k6221_csv_directory = K6221_RESULTS_DIRECTORY
         self.k6221_roi_edit_buttons = []
         self.k6221_compliance_state_label = None
 
@@ -13468,8 +13410,10 @@ class CombinedControlApp:
         self.notebook.add(self.led_tab, text="MOKE light")
         self.notebook.add(self.motor_tab, text="MOKE motor")
         self.notebook.add(self.difference_tab, text="MOKE magnet")
+        # The 6221 pulse page with MOKE imaging: current-induced domain-wall
+        # motion (user, 2026-10-12; was "MOKE-6221", after MOKE-24).
+        self.notebook.add(self.k6221_tab, text="CIDWM")
         self.notebook.add(self.keithley_tab, text="MOKE-24")
-        self.notebook.add(self.k6221_tab, text="MOKE-6221")
         # Gate-VI, |R| vs time (from MOKE-24) and the I-V sweep, one rack.
         self.notebook.add(self.nonlocal_vi_tab, text="Non-local")
         # The PPMS page is an independent PPMSPanel instance (own controllers,
@@ -14702,7 +14646,7 @@ class CombinedControlApp:
         actions.grid(row=2, column=0, columnspan=9, sticky="w", pady=(3, 0))
         # Keyboard focus moves through siblings in stacking order, and the
         # button row was made before the fields.  Put it after the Step
-        # field, as on screen (as on the MOKE-6221 page), so Tab goes through
+        # field, as on screen, so Tab goes through
         # the parameters first instead of starting on "Start scan".
         actions.lift([w for w in scan.winfo_children() if w.winfo_class() == "TEntry"][-1])
         for col, (widget, width) in enumerate((
@@ -19505,23 +19449,12 @@ class CombinedControlApp:
             (relative_button, absolute_button, nudge_minus, nudge_plus, home_button)
         )
 
-    def build_difference_ui(self) -> None:
-        outer = ttk.Frame(self.difference_tab, padding=6)
-        outer.grid(row=0, column=0, sticky="nsew")
-        outer.columnconfigure(0, weight=1)
-        # Spare window height goes to the plots (row 4), as on the 6221 page,
-        # so they fill the page down to the status line.  In a short window
-        # the plots give way first and the status line stays on screen.
-        outer.rowconfigure(4, weight=1)
+    # The MOKE magnet page's difference display, ROI editing box and display
+    # rows, also on CIDWM (user, 2026-10-12).  Both pages' widgets share the
+    # variables and the lists the state updates walk (one camera, one ROI).
 
-        # The ports keep their natural width and the display box takes the
-        # rest, so the display box's width never depends on its own layout.
-        top_row = ttk.Frame(outer)
-        top_row.grid(row=0, column=0, sticky="ew", pady=(0, 3))
-        top_row.columnconfigure(0, weight=1)
-
-        mode_box = ttk.LabelFrame(top_row, text="MOKE difference display", padding=5)
-        mode_box.grid(row=0, column=0, sticky="nsew", padx=(0, 3))
+    def _build_moke_difference_box(self, parent) -> ttk.LabelFrame:
+        mode_box = ttk.LabelFrame(parent, text="MOKE difference display", padding=5)
         mode_box.columnconfigure(0, weight=1)
         ttk.Label(
             mode_box,
@@ -19554,24 +19487,24 @@ class CombinedControlApp:
             self.difference_mode_buttons.append(button)
         mode_actions = ttk.Frame(mode_row)
         mode_actions.grid(row=0, column=1, sticky="w")
-        self.difference_capture_button = ttk.Button(
+        capture_button = ttk.Button(
             mode_actions,
             text="Recapture BG",
             command=self.capture_difference_background,
             state="disabled",
         )
-        self.difference_capture_button.grid(row=0, column=0, sticky="w")
+        capture_button.grid(row=0, column=0, sticky="w")
+        self.difference_capture_buttons.append(capture_button)
         # Wide enough for "Hide 100× marker" too, so the toggle never resizes.
-        self.objective_100x_marker_button = ttk.Button(
+        marker_button = ttk.Button(
             mode_actions,
             text="Add 100× marker",
             command=self.toggle_100x_marker,
             state="disabled",
             width=15,
         )
-        self.objective_100x_marker_button.grid(
-            row=0, column=1, sticky="w", padx=(6, 0)
-        )
+        marker_button.grid(row=0, column=1, sticky="w", padx=(6, 0))
+        self.objective_100x_marker_buttons.append(marker_button)
         self._arrange_pair_by_width(
             mode_row, mode_choices, mode_actions, gap=0, stack_gap=3
         )
@@ -19582,6 +19515,305 @@ class CombinedControlApp:
             foreground="#9a4d00",
             wraplength=380,
         ).grid(row=2, column=0, sticky="w", pady=(3, 0))
+        return mode_box
+
+    def _build_moke_roi_edit_box(self, parent, page: str) -> ttk.LabelFrame:
+        """"MOKE ROI editing": page "MOKE" (MOKE magnet, with the magnet
+        scan's Clear curve and Field) or "CIDWM"."""
+        moke = page == "MOKE"
+        roi_edit = ttk.LabelFrame(parent, text="MOKE ROI editing", padding=4)
+        roi_edit.columnconfigure(0, weight=1)
+        roi_top = ttk.Frame(roi_edit)
+        roi_top.grid(row=0, column=0, sticky="ew")
+        # The ROI is one, shared by the pages; each page shows it with its
+        # own labels (the 6221 page's report to its own status line).
+        ttk.Label(
+            roi_top, textvariable=self.moke_roi_var if moke else self.k6221_roi_var
+        ).pack(side="left")
+        ttk.Label(
+            roi_top,
+            textvariable=self.moke_roi_mean_var if moke else self.k6221_roi_mean_var,
+            style="Metric.TLabel",
+        ).pack(side="left", padx=(8, 0))
+        # Buttons at natural width, so no label is cut.  Clear curve clears
+        # the magnet scan's curve: MOKE magnet only.
+        if moke:
+            self.moke_clear_plot_button = ttk.Button(
+                roi_top,
+                text="Clear curve",
+                command=self.clear_moke_plot,
+                state="disabled",
+            )
+            self.moke_clear_plot_button.pack(side="right", padx=(4, 0))
+        ttk.Button(
+            roi_top,
+            text="Save difference raw image",
+            command=lambda: self.save_current_processed_image(page),
+        ).pack(side="right", padx=(4, 0))
+        ttk.Button(
+            roi_top,
+            text="Save raw 16-bit",
+            command=lambda: self.save_current_raw_image(page),
+        ).pack(side="right", padx=(4, 0))
+        ttk.Button(
+            roi_top,
+            text="Save current display",
+            command=lambda: self.save_current_display_image(page),
+        ).pack(side="right", padx=(4, 0))
+
+        roi_actions = ttk.Frame(roi_edit)
+        roi_actions.grid(row=1, column=0, sticky="ew", pady=(3, 0))
+        roi_toolbar = ttk.Frame(roi_actions)
+        roi_toolbar.pack(side="left")
+        self._populate_roi_nudge_toolbar(
+            roi_toolbar,
+            self.edit_moke_roi if moke else self.edit_k6221_roi,
+            self.moke_roi_edit_buttons if moke else self.k6221_roi_edit_buttons,
+            initial_state="disabled",
+        )
+        live_settings = ttk.Frame(roi_actions)
+        live_settings.pack(side="right")
+        ttk.Label(live_settings, text="Refresh s:").pack(side="left")
+        ttk.Spinbox(
+            live_settings,
+            from_=0.05,
+            to=3600.0,
+            increment=0.1,
+            textvariable=self.roi_live_interval_var,
+            width=5,
+        ).pack(side="left")
+        ttk.Label(live_settings, text="Points:").pack(side="left", padx=(4, 1))
+        ttk.Spinbox(
+            live_settings,
+            from_=10,
+            to=10000,
+            increment=10,
+            textvariable=self.roi_live_max_points_var,
+            width=6,
+        ).pack(side="left")
+        ttk.Button(
+            live_settings,
+            text="Apply",
+            command=self.apply_roi_live_settings,
+            width=5,
+        ).pack(side="left", padx=(4, 0))
+
+        roi_steps = ttk.Frame(roi_edit)
+        roi_steps.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        ttk.Label(roi_steps, text="Edit step:").pack(side="left")
+        for key, unit in (("A", "°"), ("W", "px"), ("H", "px"), ("X", "px"), ("Y", "px")):
+            ttk.Label(roi_steps, text=f"{key}=").pack(side="left", padx=(5, 1))
+            ttk.Entry(
+                roi_steps,
+                textvariable=self.roi_edit_step_vars[key],
+                width=5,
+            ).pack(side="left")
+            ttk.Label(roi_steps, text=unit).pack(side="left", padx=(1, 0))
+        if moke:
+            # The field source for the scan plot's top axis sits at the right
+            # of this shorter line, which leaves the image buttons room above
+            # and shows "Unconfirmed" whole.  The magnet scan's: MOKE magnet only.
+            self.moke_field_source_combo = ttk.Combobox(
+                roi_steps,
+                textvariable=self.moke_field_source_var,
+                values=("Unconfirmed", "Out-of-plane", "In-plane"),
+                state="disabled",
+                width=12,
+            )
+            self.moke_field_source_combo.pack(side="right")
+            ttk.Label(roi_steps, text="Field：").pack(side="right", padx=(6, 1))
+        return roi_edit
+
+    def _build_moke_display_controls(self, parent) -> ttk.Frame:
+        """Difference CLim, temporal average, binning, mean filter, exposure
+        and the Camera Live recording."""
+        display_controls = ttk.Frame(parent, padding=(5, 2, 5, 0))
+        display_controls.columnconfigure(0, weight=1)
+        clim_row = ttk.Frame(display_controls)
+        clim_row.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+
+        clim_bar = ttk.Frame(clim_row)
+        clim_bar.grid(row=0, column=0, sticky="w")
+        ttk.Label(clim_bar, text="Difference CLim:").pack(side="left")
+        low_entry = ttk.Entry(
+            clim_bar,
+            textvariable=self.difference_clim_low_var,
+            width=6,
+        )
+        low_entry.pack(side="left")
+        ttk.Label(clim_bar, text="～").pack(side="left", padx=2)
+        high_entry = ttk.Entry(
+            clim_bar,
+            textvariable=self.difference_clim_high_var,
+            width=6,
+        )
+        high_entry.pack(side="left")
+        manual_button = ttk.Button(
+            clim_bar,
+            text="Manual",
+            command=self.apply_difference_clim,
+            state="disabled",
+        )
+        manual_button.pack(side="left", padx=(5, 2))
+        auto_button = ttk.Button(
+            clim_bar,
+            text="Auto",
+            command=self.clear_difference_clim,
+            state="disabled",
+        )
+        auto_button.pack(side="left")
+        histogram_button = ttk.Button(
+            clim_bar,
+            text="Histogram",
+            command=self.show_difference_histogram,
+            state="disabled",
+        )
+        histogram_button.pack(side="left", padx=(3, 0))
+        self.difference_clim_buttons.extend(
+            (manual_button, auto_button, histogram_button)
+        )
+        # Room for "Fixed (waiting for a difference frame)".
+        ttk.Label(
+            clim_bar,
+            textvariable=self.difference_clim_status_var,
+            style="Muted.TLabel",
+            width=30,
+            anchor="w",
+        ).pack(side="left", padx=(5, 0))
+        low_entry.bind("<Return>", lambda _event: self.apply_difference_clim())
+        high_entry.bind("<Return>", lambda _event: self.apply_difference_clim())
+
+        average_bar = ttk.Frame(clim_row)
+        average_bar.grid(row=0, column=1, sticky="w")
+        ttk.Label(average_bar, text="Difference temporal average:").pack(side="left")
+        for count in (1, 2, 4, 8):
+            button = ttk.Radiobutton(
+                average_bar,
+                text=f"{count} frames",
+                value=count,
+                variable=self.difference_temporal_average_var,
+                command=self.apply_difference_display_average,
+                state="disabled",
+            )
+            button.pack(side="left", padx=(0, 4))
+            self.difference_clim_buttons.append(button)
+        ttk.Label(average_bar, text="Binning：").pack(
+            side="left", padx=(5, 1)
+        )
+        for factor in (1, 2, 4, 8):
+            button = ttk.Radiobutton(
+                average_bar,
+                text=f"{factor}×{factor}",
+                value=factor,
+                variable=self.difference_spatial_binning_var,
+                command=self.apply_difference_display_average,
+                state="disabled",
+            )
+            button.pack(side="left", padx=(0, 3))
+            self.difference_clim_buttons.append(button)
+        self._arrange_pair_by_width(
+            clim_row, clim_bar, average_bar, gap=12, stack_gap=4
+        )
+
+        filter_row = ttk.Frame(display_controls)
+        filter_row.grid(row=1, column=0, sticky="ew", pady=(0, 4))
+        filter_bar = ttk.Frame(filter_row)
+        filter_bar.grid(row=0, column=0, sticky="w")
+        ttk.Label(filter_bar, text="Mean filter：").pack(side="left")
+        for filter_size, label in ((1, "Off"), (2, "2×2"), (4, "4×4")):
+            button = ttk.Radiobutton(
+                filter_bar,
+                text=label,
+                value=filter_size,
+                variable=self.difference_mean_filter_var,
+                command=self.apply_difference_display_average,
+                state="disabled",
+            )
+            button.pack(side="left", padx=(0, 4))
+            self.difference_clim_buttons.append(button)
+        ttk.Label(
+            filter_bar,
+            text="Sliding-window mean (applies to ROI, scans and processed images)",
+            style="Muted.TLabel",
+        ).pack(side="left", padx=(5, 0))
+
+        exposure_bar = ttk.Frame(filter_row)
+        exposure_bar.grid(row=0, column=1, sticky="w")
+        ttk.Label(exposure_bar, text="Exposure ms:").pack(
+            side="left", padx=(0, 2)
+        )
+        exposure_entry = ttk.Entry(
+            exposure_bar,
+            textvariable=self.camera_exposure_ms_var,
+            width=7,
+        )
+        exposure_entry.pack(side="left")
+        exposure_button = ttk.Button(
+            exposure_bar,
+            text="Apply exposure",
+            command=self.apply_camera_exposure,
+            state="disabled",
+        )
+        exposure_button.pack(side="left", padx=(3, 2))
+        self.difference_clim_buttons.append(exposure_button)
+        exposure_entry.bind(
+            "<Return>", lambda _event: self.apply_camera_exposure()
+        )
+        ttk.Label(
+            exposure_bar,
+            textvariable=self.camera_exposure_status_var,
+            style="Muted.TLabel",
+        ).pack(side="left", padx=(2, 0))
+        self._arrange_pair_by_width(
+            filter_row, filter_bar, exposure_bar, gap=12, stack_gap=4
+        )
+
+        # Its own line, with room for the recording statistics.
+        video_bar = ttk.Frame(display_controls)
+        video_bar.grid(row=2, column=0, sticky="ew")
+        ttk.Label(video_bar, text="Camera Live 8-bit recording: FPS").pack(side="left")
+        ttk.Entry(
+            video_bar,
+            textvariable=self.camera_video_fps_var,
+            width=5,
+        ).pack(side="left", padx=(3, 4))
+        # Fits "Start recording" and "Stop recording", so the toggle never
+        # resizes the button.
+        video_button = ttk.Button(
+            video_bar,
+            text="Start recording",
+            command=self.toggle_camera_video_recording,
+            state="disabled",
+            width=13,
+        )
+        video_button.pack(side="left")
+        self.camera_video_buttons.append(video_button)
+        if self.camera_video_button is None:
+            self.camera_video_button = video_button
+        ttk.Label(
+            video_bar,
+            textvariable=self.camera_video_status_var,
+            style="Muted.TLabel",
+        ).pack(side="left", padx=(7, 0))
+        return display_controls
+
+    def build_difference_ui(self) -> None:
+        outer = ttk.Frame(self.difference_tab, padding=6)
+        outer.grid(row=0, column=0, sticky="nsew")
+        outer.columnconfigure(0, weight=1)
+        # Spare window height goes to the plots (row 4), as on the 6221 page,
+        # so they fill the page down to the status line.  In a short window
+        # the plots give way first and the status line stays on screen.
+        outer.rowconfigure(4, weight=1)
+
+        # The ports keep their natural width and the display box takes the
+        # rest, so the display box's width never depends on its own layout.
+        top_row = ttk.Frame(outer)
+        top_row.grid(row=0, column=0, sticky="ew", pady=(0, 3))
+        top_row.columnconfigure(0, weight=1)
+
+        mode_box = self._build_moke_difference_box(top_row)
+        mode_box.grid(row=0, column=0, sticky="nsew", padx=(0, 3))
 
         connection = ttk.LabelFrame(top_row, text="KEPCO and gaussmeter ports", padding=5)
         connection.grid(row=0, column=1, sticky="nsew", padx=(3, 0))
@@ -19890,101 +20122,8 @@ class CombinedControlApp:
 
         scan_box.bind("<Configure>", wrap_scan_notes, add="+")
 
-        roi_edit = ttk.LabelFrame(outer, text="MOKE ROI editing", padding=4)
+        roi_edit = self._build_moke_roi_edit_box(outer, "MOKE")
         roi_edit.grid(row=3, column=0, sticky="ew", pady=(0, 3))
-        roi_edit.columnconfigure(0, weight=1)
-        roi_top = ttk.Frame(roi_edit)
-        roi_top.grid(row=0, column=0, sticky="ew")
-        ttk.Label(roi_top, textvariable=self.moke_roi_var).pack(side="left")
-        ttk.Label(
-            roi_top,
-            textvariable=self.moke_roi_mean_var,
-            style="Metric.TLabel",
-        ).pack(side="left", padx=(8, 0))
-        # Buttons at natural width, so no label is cut.
-        self.moke_clear_plot_button = ttk.Button(
-            roi_top,
-            text="Clear curve",
-            command=self.clear_moke_plot,
-            state="disabled",
-        )
-        self.moke_clear_plot_button.pack(side="right", padx=(4, 0))
-        ttk.Button(
-            roi_top,
-            text="Save difference raw image",
-            command=lambda: self.save_current_processed_image("MOKE"),
-        ).pack(side="right", padx=(4, 0))
-        ttk.Button(
-            roi_top,
-            text="Save raw 16-bit",
-            command=lambda: self.save_current_raw_image("MOKE"),
-        ).pack(side="right", padx=(4, 0))
-        ttk.Button(
-            roi_top,
-            text="Save current display",
-            command=lambda: self.save_current_display_image("MOKE"),
-        ).pack(side="right", padx=(4, 0))
-
-        roi_actions = ttk.Frame(roi_edit)
-        roi_actions.grid(row=1, column=0, sticky="ew", pady=(3, 0))
-        roi_toolbar = ttk.Frame(roi_actions)
-        roi_toolbar.pack(side="left")
-        self._populate_roi_nudge_toolbar(
-            roi_toolbar,
-            self.edit_moke_roi,
-            self.moke_roi_edit_buttons,
-            initial_state="disabled",
-        )
-        live_settings = ttk.Frame(roi_actions)
-        live_settings.pack(side="right")
-        ttk.Label(live_settings, text="Refresh s:").pack(side="left")
-        ttk.Spinbox(
-            live_settings,
-            from_=0.05,
-            to=3600.0,
-            increment=0.1,
-            textvariable=self.roi_live_interval_var,
-            width=5,
-        ).pack(side="left")
-        ttk.Label(live_settings, text="Points:").pack(side="left", padx=(4, 1))
-        ttk.Spinbox(
-            live_settings,
-            from_=10,
-            to=10000,
-            increment=10,
-            textvariable=self.roi_live_max_points_var,
-            width=6,
-        ).pack(side="left")
-        ttk.Button(
-            live_settings,
-            text="Apply",
-            command=self.apply_roi_live_settings,
-            width=5,
-        ).pack(side="left", padx=(4, 0))
-
-        roi_steps = ttk.Frame(roi_edit)
-        roi_steps.grid(row=2, column=0, sticky="ew", pady=(4, 0))
-        ttk.Label(roi_steps, text="Edit step:").pack(side="left")
-        for key, unit in (("A", "°"), ("W", "px"), ("H", "px"), ("X", "px"), ("Y", "px")):
-            ttk.Label(roi_steps, text=f"{key}=").pack(side="left", padx=(5, 1))
-            ttk.Entry(
-                roi_steps,
-                textvariable=self.roi_edit_step_vars[key],
-                width=5,
-            ).pack(side="left")
-            ttk.Label(roi_steps, text=unit).pack(side="left", padx=(1, 0))
-        # The field source for the scan plot's top axis sits at the right of
-        # this shorter line, which leaves the image buttons room above and
-        # shows "Unconfirmed" whole.
-        self.moke_field_source_combo = ttk.Combobox(
-            roi_steps,
-            textvariable=self.moke_field_source_var,
-            values=("Unconfirmed", "Out-of-plane", "In-plane"),
-            state="disabled",
-            width=12,
-        )
-        self.moke_field_source_combo.pack(side="right")
-        ttk.Label(roi_steps, text="Field：").pack(side="right", padx=(6, 1))
 
         data_frame = ttk.Frame(outer)
         data_frame.grid(row=4, column=0, sticky="nsew")
@@ -20008,181 +20147,17 @@ class CombinedControlApp:
         # by itself when the window is too narrow.  Status texts that change
         # sit at the end of a line or in a fixed-width box, so they never
         # push other controls.
-        display_controls = ttk.Frame(data_frame, padding=(5, 2, 5, 0))
+        display_controls = self._build_moke_display_controls(data_frame)
         display_controls.grid(
             row=0, column=0, columnspan=2, sticky="ew", pady=(0, 4)
         )
-        display_controls.columnconfigure(0, weight=1)
-        clim_row = ttk.Frame(display_controls)
-        clim_row.grid(row=0, column=0, sticky="ew", pady=(0, 4))
-
-        clim_bar = ttk.Frame(clim_row)
-        clim_bar.grid(row=0, column=0, sticky="w")
-        ttk.Label(clim_bar, text="Difference CLim:").pack(side="left")
-        low_entry = ttk.Entry(
-            clim_bar,
-            textvariable=self.difference_clim_low_var,
-            width=6,
-        )
-        low_entry.pack(side="left")
-        ttk.Label(clim_bar, text="～").pack(side="left", padx=2)
-        high_entry = ttk.Entry(
-            clim_bar,
-            textvariable=self.difference_clim_high_var,
-            width=6,
-        )
-        high_entry.pack(side="left")
-        manual_button = ttk.Button(
-            clim_bar,
-            text="Manual",
-            command=self.apply_difference_clim,
-            state="disabled",
-        )
-        manual_button.pack(side="left", padx=(5, 2))
-        auto_button = ttk.Button(
-            clim_bar,
-            text="Auto",
-            command=self.clear_difference_clim,
-            state="disabled",
-        )
-        auto_button.pack(side="left")
-        histogram_button = ttk.Button(
-            clim_bar,
-            text="Histogram",
-            command=self.show_difference_histogram,
-            state="disabled",
-        )
-        histogram_button.pack(side="left", padx=(3, 0))
-        self.difference_clim_buttons.extend(
-            (manual_button, auto_button, histogram_button)
-        )
-        # Room for "Fixed (waiting for a difference frame)".
-        ttk.Label(
-            clim_bar,
-            textvariable=self.difference_clim_status_var,
-            style="Muted.TLabel",
-            width=30,
-            anchor="w",
-        ).pack(side="left", padx=(5, 0))
-        low_entry.bind("<Return>", lambda _event: self.apply_difference_clim())
-        high_entry.bind("<Return>", lambda _event: self.apply_difference_clim())
+        # Once, for every page's CLim boxes (they share the variables).
         self.difference_clim_low_var.trace_add(
             "write", self._schedule_difference_clim_live_update
         )
         self.difference_clim_high_var.trace_add(
             "write", self._schedule_difference_clim_live_update
         )
-
-        average_bar = ttk.Frame(clim_row)
-        average_bar.grid(row=0, column=1, sticky="w")
-        ttk.Label(average_bar, text="Difference temporal average:").pack(side="left")
-        for count in (1, 2, 4, 8):
-            button = ttk.Radiobutton(
-                average_bar,
-                text=f"{count} frames",
-                value=count,
-                variable=self.difference_temporal_average_var,
-                command=self.apply_difference_display_average,
-                state="disabled",
-            )
-            button.pack(side="left", padx=(0, 4))
-            self.difference_clim_buttons.append(button)
-        ttk.Label(average_bar, text="Binning：").pack(
-            side="left", padx=(5, 1)
-        )
-        for factor in (1, 2, 4, 8):
-            button = ttk.Radiobutton(
-                average_bar,
-                text=f"{factor}×{factor}",
-                value=factor,
-                variable=self.difference_spatial_binning_var,
-                command=self.apply_difference_display_average,
-                state="disabled",
-            )
-            button.pack(side="left", padx=(0, 3))
-            self.difference_clim_buttons.append(button)
-        self._arrange_pair_by_width(
-            clim_row, clim_bar, average_bar, gap=12, stack_gap=4
-        )
-
-        filter_row = ttk.Frame(display_controls)
-        filter_row.grid(row=1, column=0, sticky="ew", pady=(0, 4))
-        filter_bar = ttk.Frame(filter_row)
-        filter_bar.grid(row=0, column=0, sticky="w")
-        ttk.Label(filter_bar, text="Mean filter：").pack(side="left")
-        for filter_size, label in ((1, "Off"), (2, "2×2"), (4, "4×4")):
-            button = ttk.Radiobutton(
-                filter_bar,
-                text=label,
-                value=filter_size,
-                variable=self.difference_mean_filter_var,
-                command=self.apply_difference_display_average,
-                state="disabled",
-            )
-            button.pack(side="left", padx=(0, 4))
-            self.difference_clim_buttons.append(button)
-        ttk.Label(
-            filter_bar,
-            text="Sliding-window mean (applies to ROI, scans and processed images)",
-            style="Muted.TLabel",
-        ).pack(side="left", padx=(5, 0))
-
-        exposure_bar = ttk.Frame(filter_row)
-        exposure_bar.grid(row=0, column=1, sticky="w")
-        ttk.Label(exposure_bar, text="Exposure ms:").pack(
-            side="left", padx=(0, 2)
-        )
-        exposure_entry = ttk.Entry(
-            exposure_bar,
-            textvariable=self.camera_exposure_ms_var,
-            width=7,
-        )
-        exposure_entry.pack(side="left")
-        exposure_button = ttk.Button(
-            exposure_bar,
-            text="Apply exposure",
-            command=self.apply_camera_exposure,
-            state="disabled",
-        )
-        exposure_button.pack(side="left", padx=(3, 2))
-        self.difference_clim_buttons.append(exposure_button)
-        exposure_entry.bind(
-            "<Return>", lambda _event: self.apply_camera_exposure()
-        )
-        ttk.Label(
-            exposure_bar,
-            textvariable=self.camera_exposure_status_var,
-            style="Muted.TLabel",
-        ).pack(side="left", padx=(2, 0))
-        self._arrange_pair_by_width(
-            filter_row, filter_bar, exposure_bar, gap=12, stack_gap=4
-        )
-
-        # Its own line, with room for the recording statistics.
-        video_bar = ttk.Frame(display_controls)
-        video_bar.grid(row=2, column=0, sticky="ew")
-        ttk.Label(video_bar, text="Camera Live 8-bit recording: FPS").pack(side="left")
-        ttk.Entry(
-            video_bar,
-            textvariable=self.camera_video_fps_var,
-            width=5,
-        ).pack(side="left", padx=(3, 4))
-        # Fits "Start recording" and "Stop recording", so the toggle never
-        # resizes the button.
-        self.camera_video_button = ttk.Button(
-            video_bar,
-            text="Start recording",
-            command=self.toggle_camera_video_recording,
-            state="disabled",
-            width=13,
-        )
-        self.camera_video_button.pack(side="left")
-        self.camera_video_buttons.append(self.camera_video_button)
-        ttk.Label(
-            video_bar,
-            textvariable=self.camera_video_status_var,
-            style="Muted.TLabel",
-        ).pack(side="left", padx=(7, 0))
 
         intensity_box = ttk.LabelFrame(
             data_frame, text="ROI mean intensity vs time (live)", padding=6
@@ -20506,8 +20481,8 @@ class CombinedControlApp:
             ),
         )
 
-        # As on the MOKE-6221 page: the voltage scan beside ROI editing in a
-        # wide window, stacked in the default one.
+        # The voltage scan beside ROI editing in a wide window, stacked in
+        # the default one.
         acquisition = ttk.Frame(outer)
         acquisition.grid(row=2, column=0, sticky="ew", pady=(0, 7))
         acquisition.columnconfigure(1, weight=1)
@@ -20760,9 +20735,9 @@ class CombinedControlApp:
         outer = ttk.Frame(self.k6221_tab, padding=7)
         outer.grid(row=0, column=0, sticky="nsew")
         outer.columnconfigure(0, weight=1)
-        # Spare window height goes to the plots (row 2), so they fill the page
-        # down to the status line instead of an empty row below it.
-        outer.rowconfigure(2, weight=1)
+        # Spare window height goes to the live ROI plot (row 3), so it fills
+        # the page down to the status line instead of an empty row below it.
+        outer.rowconfigure(3, weight=1)
 
         # Compact, as on the STFMR page: the connection beside the pulse
         # output, and the pulse scan beside ROI editing.  Each pair stacks by
@@ -20867,157 +20842,23 @@ class CombinedControlApp:
         ).grid(row=0, column=4, sticky="e", padx=(12, 0))
         self._arrange_pair_by_width(top, connection, output, gap=7)
 
-        bottom = ttk.Frame(outer)
-        bottom.grid(row=1, column=0, sticky="ew", pady=(7, 7))
-        bottom.columnconfigure(1, weight=1)
-        scan = ttk.LabelFrame(bottom, text="Pulse current scan and ROI acquisition", padding=7)
-        scan.grid(row=0, column=0, sticky="nsew")
-        # Under the parameter table rather than beside it, which kept the scan
-        # box too wide for narrow windows.
-        scan_buttons = ttk.Frame(scan)
-        scan_buttons.grid(row=2, column=0, columnspan=12, sticky="w", pady=(7, 0))
-        for column, (label, variable, width) in enumerate(
-            (
-                ("Start mA:", self.k6221_start_var, 8),
-                ("End mA:", self.k6221_end_var, 8),
-                ("Step mA:", self.k6221_step_var, 8),
-                ("Width us:", self.k6221_scan_width_var, 8),
-                ("Acquire/interval s:", self.k6221_scan_interval_var, 7),
-            )
-        ):
-            ttk.Label(scan, text=label).grid(row=0, column=column * 2, sticky="e", padx=(0, 3))
-            ttk.Entry(scan, textvariable=variable, width=width).grid(
-                row=0, column=column * 2 + 1, sticky="ew", padx=(0, 8)
-            )
-        self.k6221_start_button = ttk.Button(
-            scan_buttons, text="Start current round-trip scan", command=self.start_k6221_scan
-        )
-        self.k6221_start_button.grid(row=0, column=0, padx=(0, 6))
-
-        for column, (label, variable, width) in enumerate(
-            (
-                ("Fixed pulse mA:", self.k6221_train_current_var, 8),
-                ("Pulses:", self.k6221_train_count_var, 8),
-                ("Width us:", self.k6221_train_width_var, 8),
-                ("Acquire/interval s:", self.k6221_train_interval_var, 7),
-            )
-        ):
-            ttk.Label(scan, text=label).grid(
-                row=1, column=column * 2, sticky="e", padx=(0, 3), pady=(7, 0)
-            )
-            ttk.Entry(scan, textvariable=variable, width=width).grid(
-                row=1, column=column * 2 + 1, sticky="ew", padx=(0, 8), pady=(7, 0)
-            )
-        self.k6221_train_start_button = ttk.Button(
-            scan_buttons,
-            text="Start fixed-current pulse acquisition",
-            command=self.start_k6221_pulse_train,
-        )
-        self.k6221_train_start_button.grid(row=0, column=1, padx=(0, 6))
-        # Keyboard focus moves through siblings in stacking order, and the
-        # button row was created before the parameter fields.  Put it back
-        # after them, as it appears on screen, so Tab from the pulse output
-        # reaches "Start mA" rather than a start button a space bar can press.
-        scan_buttons.lift(
-            [w for w in scan.winfo_children() if w.winfo_class() == "TEntry"][-1]
-        )
-        ttk.Label(scan, textvariable=self.k6221_roi_var).grid(
-            row=3, column=0, columnspan=6, sticky="w", pady=(7, 0)
-        )
-        self.k6221_save_images_check = ttk.Checkbutton(
-            scan,
-            text="Save MOKE raw 16-bit images too",
-            variable=self.k6221_save_images_var,
-            command=self.configure_k6221_image_saving,
-        )
-        self.k6221_save_images_check.grid(
-            row=3, column=6, columnspan=4, sticky="e", pady=(7, 0)
-        )
-        self.k6221_save_button = ttk.Button(
-            scan_buttons, text="Save CSV", command=self.save_k6221_csv
-        )
-        self.k6221_save_button.grid(row=0, column=2, padx=(0, 6))
-        ttk.Label(
-            scan, textvariable=self.k6221_image_directory_var, foreground="#555555"
-        ).grid(row=4, column=0, columnspan=12, sticky="w", pady=(5, 0))
-
-        roi_edit = ttk.LabelFrame(bottom, text="ROI editing", padding=7)
+        # CIDWM (user, 2026-10-12): under the 6221 pulse output, the MOKE
+        # magnet page's difference display and ROI editing (side by side when
+        # both fit), its display rows and the live ROI plot; no pulse current
+        # scan.  They share the camera settings with MOKE magnet.
+        moke = ttk.Frame(outer)
+        moke.grid(row=1, column=0, sticky="ew", pady=(7, 3))
+        moke.columnconfigure(1, weight=1)
+        difference_box = self._build_moke_difference_box(moke)
+        difference_box.grid(row=0, column=0, sticky="nsew")
+        roi_edit = self._build_moke_roi_edit_box(moke, "CIDWM")
         roi_edit.grid(row=0, column=1, sticky="nsew")
-        actions = ttk.Frame(roi_edit)
-        actions.grid(row=0, column=0, columnspan=10, sticky="ew")
-        toolbar = ttk.Frame(actions)
-        toolbar.pack(side="left")
-        self._populate_roi_nudge_toolbar(
-            toolbar,
-            self.edit_k6221_roi,
-            self.k6221_roi_edit_buttons,
+        self._arrange_pair_by_width(moke, difference_box, roi_edit, gap=7)
+        self._build_moke_display_controls(outer).grid(
+            row=2, column=0, sticky="ew", pady=(0, 4)
         )
-        # Wide enough for "ROI mean: waiting for the next frame", so a reading
-        # never widens the box and flips the scan/ROI pair.
-        ttk.Label(
-            actions,
-            textvariable=self.k6221_roi_mean_var,
-            style="Metric.TLabel",
-            width=36,
-            anchor="e",
-        ).pack(side="right", padx=(8, 2))
-        steps = ttk.Frame(roi_edit)
-        steps.grid(row=1, column=0, columnspan=10, sticky="w", pady=(6, 0))
-        ttk.Label(steps, text="Step:", style="Muted.TLabel").pack(side="left")
-        for key, unit in (("A", "°"), ("W", "px"), ("H", "px"), ("X", "px"), ("Y", "px")):
-            ttk.Label(steps, text=f"{key}=").pack(side="left", padx=(5, 1))
-            ttk.Entry(steps, textvariable=self.roi_edit_step_vars[key], width=5).pack(
-                side="left"
-            )
-            ttk.Label(steps, text=unit).pack(side="left", padx=(1, 0))
-        ttk.Label(roi_edit, text="Live refresh (s/point):").grid(
-            row=2, column=0, columnspan=2, sticky="e", pady=(6, 0)
-        )
-        ttk.Spinbox(
-            roi_edit, from_=0.05, to=3600, increment=0.1,
-            textvariable=self.roi_live_interval_var, width=8,
-        ).grid(row=2, column=2, sticky="w", pady=(6, 0))
-        ttk.Label(roi_edit, text="Max points:").grid(
-            row=2, column=3, columnspan=2, sticky="e", pady=(6, 0)
-        )
-        ttk.Spinbox(
-            roi_edit, from_=10, to=10000, increment=10,
-            textvariable=self.roi_live_max_points_var, width=8,
-        ).grid(row=2, column=5, sticky="w", pady=(6, 0))
-        # The buttons have their own row.  Beside the two spinboxes they made
-        # this box so wide that, at the 2000 px window on Windows, it no
-        # longer fitted beside the scan box and the pair stacked.
-        image_buttons = ttk.Frame(roi_edit)
-        image_buttons.grid(row=3, column=0, columnspan=10, sticky="w", pady=(6, 0))
-        ttk.Button(
-            image_buttons, text="Apply live settings", command=self.apply_roi_live_settings
-        ).pack(side="left", padx=(0, 6))
-        ttk.Button(
-            image_buttons,
-            text="Save processed image",
-            command=lambda: self.save_current_processed_image("6221"),
-        ).pack(side="left", padx=(0, 3))
-        ttk.Button(
-            image_buttons,
-            text="Raw 16-bit",
-            command=lambda: self.save_current_raw_image("6221"),
-        ).pack(side="left")
-
-        self._arrange_pair_by_width(bottom, scan, roi_edit, gap=7)
-
-        data = ttk.Frame(outer)
-        data.grid(row=2, column=0, sticky="nsew")
-        data.rowconfigure(0, weight=1)
-        # Keep the live ROI trace as the primary plot, matching the MOKE page,
-        # while reserving a narrower column for the scan-only relation plot.
-        data.columnconfigure(0, weight=2, uniform="k6221_bottom_plots")
-        data.columnconfigure(1, weight=1, uniform="k6221_bottom_plots")
-        live = ttk.LabelFrame(
-            data,
-            text="ROI mean intensity vs time (live)",
-            padding=6,
-        )
-        live.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        live = ttk.LabelFrame(outer, text="ROI mean intensity vs time (live)", padding=6)
+        live.grid(row=3, column=0, sticky="nsew")
         live.rowconfigure(0, weight=1)
         live.columnconfigure(0, weight=1)
         self.k6221_intensity_canvas = tk.Canvas(
@@ -21032,28 +20873,12 @@ class CombinedControlApp:
             self.k6221_intensity_canvas.bind(
                 sequence, lambda _event: self._redraw_live_intensity_plots(), add="+"
             )
-        self.k6221_plot_frame = ttk.LabelFrame(
-            data, text="Pulse current vs ROI mean intensity (current scan only)", padding=6
-        )
-        self.k6221_plot_frame.grid(row=0, column=1, sticky="nsew")
-        self.k6221_plot_frame.rowconfigure(0, weight=1)
-        self.k6221_plot_frame.columnconfigure(0, weight=1)
-        self.k6221_plot_canvas = tk.Canvas(
-            self.k6221_plot_frame, bg="#fbfcfd", highlightthickness=1,
-            highlightbackground="#cfd6dd",
-            height=self._ui_px(200, 120, canvas=True),
-        )
-        self.k6221_plot_canvas.grid(row=0, column=0, sticky="nsew")
-        for sequence in ("<Configure>", "<Map>"):
-            self.k6221_plot_canvas.bind(
-                sequence, lambda _event: self._redraw_k6221_plot(), add="+"
-            )
         ttk.Label(
             outer,
             textvariable=self.k6221_status_var,
             style="Status.TLabel",
             anchor="w",
-        ).grid(row=3, column=0, sticky="ew", pady=(7, 0))
+        ).grid(row=4, column=0, sticky="ew", pady=(7, 0))
         self._update_k6221_controls()
 
     def build_nonlocal_vi_ui(self) -> None:
@@ -22310,9 +22135,8 @@ class CombinedControlApp:
             button.configure(state=state)
         for button in self.difference_clim_buttons:
             button.configure(state=state)
-        self.difference_capture_button.configure(state=state)
-        if self.objective_100x_marker_button is not None:
-            self.objective_100x_marker_button.configure(state=state)
+        for button in (*self.difference_capture_buttons, *self.objective_100x_marker_buttons):
+            button.configure(state=state)
         for button in self.camera_video_buttons:
             button.configure(state=state)
 
@@ -22498,8 +22322,6 @@ class CombinedControlApp:
             self._redraw_moke_plot()
         elif selected is self.keithley_tab:
             self._redraw_keithley_plot()
-        elif selected is self.k6221_tab:
-            self._redraw_k6221_plot()
         elif selected is self.nonlocal_vi_tab:
             self._redraw_nonlocal_vi_plots()
             self._redraw_nonlocal_resistance_plot()
@@ -22895,29 +22717,6 @@ class CombinedControlApp:
         }
         return array.copy(), settings
 
-    def latest_k6221_moke_snapshot(self) -> tuple[object, float]:
-        """Atomically copy one raw frame and its matching difference-ROI mean."""
-        camera = self.camera_window
-        frame = None if camera is None else camera.latest_frame
-        roi = self.k6221_roi
-        if frame is None or frame.raw is None or frame.display_difference is None:
-            raise RuntimeError("No valid MOKE raw frame and difference image yet")
-        if roi is None:
-            raise RuntimeError("No 6221 scan ROI selected yet")
-        raw = np.asarray(frame.raw)
-        if raw.dtype != np.uint16 or raw.ndim != 2:
-            raise RuntimeError(
-                f"Unexpected camera raw frame format: dtype={raw.dtype}, shape={raw.shape}"
-            )
-        difference = np.asarray(frame.display_difference, dtype=np.float32)
-        roi_values = values_inside_rotated_roi(difference, roi)
-        if not roi_values.size:
-            raise RuntimeError("The 6221 scan ROI lies outside the current MOKE image")
-        mean_value = float(np.mean(roi_values))
-        if not math.isfinite(mean_value):
-            raise RuntimeError("The current MOKE difference ROI intensity is not a finite value")
-        return raw.copy(), mean_value
-
     @staticmethod
     def processed_image_settings_suffix(settings) -> str:
         mode = "TrackingDiff" if settings["mode"] == "tracking" else "PlainDiff"
@@ -22978,7 +22777,7 @@ class CombinedControlApp:
         self.submit_file_export(export_key, camera, work, saved, failed)
 
     def save_current_processed_image(self, source: str) -> None:
-        image_label = "difference raw image" if source == "MOKE" else "processed image"
+        image_label = "difference raw image" if source in ("MOKE", "CIDWM") else "processed image"
         export_key = f"processed-image:{source}"
         if export_key in self.active_file_exports:
             self.operation_var.set(f"{source} {image_label} is still being saved; please wait")
@@ -23164,27 +22963,6 @@ class CombinedControlApp:
             return
         self.keithley_image_directory = Path(selected)
         self.keithley_image_directory_var.set(f"Scan image folder: {selected}")
-
-    def configure_k6221_image_saving(self) -> None:
-        with self.camera_render_paused("Selecting the 6221 scan image folder"):
-            self._configure_k6221_image_saving()
-
-    def _configure_k6221_image_saving(self) -> None:
-        if not self.k6221_save_images_var.get():
-            self.k6221_image_directory = None
-            self.k6221_image_directory_var.set("Post-pulse MOKE raw images: disabled")
-            return
-        selected = filedialog.askdirectory(
-            parent=self.root,
-            title="Select the folder for MOKE raw 16-bit images after each Keithley 6221 current pulse",
-        )
-        if not selected:
-            self.k6221_save_images_var.set(False)
-            self.k6221_image_directory = None
-            self.k6221_image_directory_var.set("Post-pulse MOKE raw images: disabled")
-            return
-        self.k6221_image_directory = Path(selected)
-        self.k6221_image_directory_var.set(f"Post-pulse MOKE raw 16-bit image folder: {selected}")
 
     @staticmethod
     def create_scan_image_session(base: Path, prefix: str) -> Path:
@@ -23580,8 +23358,8 @@ class CombinedControlApp:
         self.camera_window.set_100x_marker_visible(
             self.objective_100x_marker_visible
         )
-        if self.objective_100x_marker_button is not None:
-            self.objective_100x_marker_button.configure(
+        for button in self.objective_100x_marker_buttons:
+            button.configure(
                 text=(
                     "Hide 100× marker"
                     if self.objective_100x_marker_visible
@@ -25262,7 +25040,7 @@ class CombinedControlApp:
             return
         if self.keithley_scan_running or self.k6221_scan_running:
             messagebox.showwarning(
-                "MOKE current scan", "A MOKE-24 or MOKE-6221 scan is running", parent=self.root
+                "MOKE current scan", "A MOKE-24 scan is running", parent=self.root
             )
             return
         if not self.magnet_safety_var.get():
@@ -26281,7 +26059,8 @@ class CombinedControlApp:
             )
             for button in self.difference_mode_buttons:
                 button.configure(state=difference_state)
-            self.difference_capture_button.configure(state=difference_state)
+            for button in self.difference_capture_buttons:
+                button.configure(state=difference_state)
         self._update_magnet_scan_controls()
         self._update_moke_roi_controls()
 
@@ -26597,7 +26376,7 @@ class CombinedControlApp:
             f"angle {self.k6221_roi['angle']:g}°"
         )
         self.keithley_status_var.set("ROI updated; scan parameters can be set")
-        self.k6221_status_var.set("ROI updated; pulse or scan parameters can be set")
+        self.k6221_status_var.set("ROI updated")
         self._update_keithley_controls()
         self._update_k6221_controls()
         self._update_moke_roi_controls()
@@ -27235,59 +27014,6 @@ class CombinedControlApp:
             current_a, pulse_width_s, compliance_v, pulse_count
         )
 
-    def _parse_k6221_scan(self):
-        try:
-            start_ma = float(self.k6221_start_var.get())
-            end_ma = float(self.k6221_end_var.get())
-            step_ma = abs(float(self.k6221_step_var.get()))
-            width_s = float(self.k6221_scan_width_var.get()) / 1_000_000.0
-            interval_s = float(self.k6221_scan_interval_var.get())
-            compliance_v = float(self.k6221_compliance_var.get())
-        except ValueError as error:
-            raise ValueError(
-                "6221 scan current, step, pulse width, interval and compliance must be numbers"
-            ) from error
-        if not math.isfinite(interval_s) or not 0.0 <= interval_s <= 3600.0:
-            raise ValueError("6221 pulse interval must be within 0–3600 s")
-        # One current point means exactly one unipolar pulse.  The standalone
-        # manual pulse-count setting intentionally does not leak into a scan.
-        self.k6221_controller._validate(0.0, width_s, compliance_v, 1)
-        sequence = build_6221_current_sequence(start_ma, end_ma, step_ma)
-        for current_ma in sequence:
-            self.k6221_controller._validate(
-                current_ma / 1000.0, width_s, compliance_v, 1
-            )
-        return sequence, width_s, compliance_v, interval_s
-
-    def _parse_k6221_pulse_train(self):
-        """Validate one fixed-current pulse per ROI acquisition window."""
-        try:
-            current_ma = float(self.k6221_train_current_var.get())
-            pulse_count = int(self.k6221_train_count_var.get())
-            width_s = float(self.k6221_train_width_var.get()) / 1_000_000.0
-            interval_s = float(self.k6221_train_interval_var.get())
-            compliance_v = float(self.k6221_compliance_var.get())
-        except ValueError as error:
-            raise ValueError(
-                "6221 fixed pulse current, count, width, acquisition interval and compliance must be numbers"
-            ) from error
-        if not 1 <= pulse_count <= K6221_MAX_PULSE_COUNT:
-            raise ValueError(
-                f"6221 fixed pulse count must be within 1–{K6221_MAX_PULSE_COUNT}"
-            )
-        if not math.isfinite(interval_s) or not 0.0 <= interval_s <= 3600.0:
-            raise ValueError("6221 post-pulse acquisition/interval time must be within 0–3600 s")
-        # Pulses are issued individually so that the camera can acquire during
-        # every zero-current interval.  Validate one pulse here; pulse_count is
-        # bounded separately above rather than programmed as one WAVE sequence.
-        self.k6221_controller._validate(
-            current_ma / 1000.0,
-            width_s,
-            compliance_v,
-            1,
-        )
-        return current_ma, pulse_count, width_s, compliance_v, interval_s
-
     @staticmethod
     def _format_duration(seconds: float) -> str:
         total = max(0, int(math.ceil(seconds)))
@@ -27619,7 +27345,6 @@ class CombinedControlApp:
     def _finish_k6221_disconnect(self, error) -> None:
         self.k6221_busy = False
         self.k6221_scan_running = False
-        self.k6221_pulse_active = False
         self.k6221_connection_var.set("Not connected")
         self.k6221_output_var.set("Output: 0 mA / OFF")
         self._reset_k6221_readback()
@@ -27786,493 +27511,6 @@ class CombinedControlApp:
             return
         self.camera_window.edit_roi(action, steps)
 
-    def ingest_6221_roi_sample(self, mean_value: float) -> None:
-        with self.k6221_data_lock:
-            if not self.k6221_scan_running or self.k6221_scan_start_time is None:
-                return
-            phase = "pulse" if self.k6221_pulse_active else "interval"
-            elapsed = time.time() - self.k6221_scan_start_time
-            if self.k6221_scan_kind == "pulse_train":
-                self.k6221_train_raw_rows.append(
-                    (
-                        elapsed,
-                        self.k6221_active_pulse_index,
-                        self.k6221_scan_command_ma,
-                        float(mean_value),
-                        phase,
-                    )
-                )
-                if len(self.k6221_train_raw_rows) > 30000:
-                    self.k6221_train_raw_rows = self.k6221_train_raw_rows[-30000:]
-            else:
-                self.k6221_raw_rows.append(
-                    (
-                        elapsed,
-                        self.k6221_scan_command_ma,
-                        float(mean_value),
-                        phase,
-                    )
-                )
-                if len(self.k6221_raw_rows) > 30000:
-                    self.k6221_raw_rows = self.k6221_raw_rows[-30000:]
-
-    def _k6221_roi_scan_ready(self) -> bool:
-        if self.magnet_scan_running or self.keithley_scan_running:
-            messagebox.showwarning(
-                "Keithley 6221", "Another field/voltage scan is running", parent=self.root
-            )
-            return False
-        if self.k6221_scan_running or self.k6221_busy:
-            return False
-        if not self.k6221_controller.connected:
-            messagebox.showwarning("Keithley 6221", "Connect the instrument first", parent=self.root)
-            return False
-        if self.k6221_roi is None:
-            messagebox.showwarning(
-                "Keithley 6221",
-                "Hold Shift and drag in the camera window to select an ROI first",
-                parent=self.root,
-            )
-            return False
-        camera = self.camera_window
-        if camera is None or not camera.worker.background_enabled:
-            messagebox.showwarning("Keithley 6221", "Enable difference mode first", parent=self.root)
-            return False
-        try:
-            self.latest_k6221_moke_snapshot()
-        except RuntimeError as error:
-            messagebox.showwarning("Keithley 6221", str(error), parent=self.root)
-            return False
-        if not self.k6221_safety_var.get():
-            messagebox.showwarning(
-                "Keithley 6221", "Tick the 6221 safety confirmation first", parent=self.root
-            )
-            return False
-        return True
-
-    def _prepare_k6221_scan_image_session(self, prefix: str) -> Path | None:
-        if not self.k6221_save_images_var.get():
-            return None
-        if self.k6221_image_directory is None:
-            raise RuntimeError("Re-select the image saving folder")
-        self.latest_k6221_moke_snapshot()
-        return self.create_scan_image_session(
-            self.k6221_image_directory,
-            prefix,
-        )
-
-    def _collect_k6221_post_pulse_roi(self, interval_s: float):
-        """Average every camera ROI sample acquired during the zero-current gap."""
-        interval_start = time.time() - float(self.k6221_scan_start_time)
-        if self.k6221_stop_event.wait(interval_s):
-            return None
-        raw_snapshot, fallback_mean = self.latest_k6221_moke_snapshot()
-        interval_end = time.time() - float(self.k6221_scan_start_time)
-        with self.k6221_data_lock:
-            if self.k6221_scan_kind == "pulse_train":
-                pulse_index = self.k6221_active_pulse_index
-                interval_values = [
-                    float(row[3])
-                    for row in self.k6221_train_raw_rows
-                    if row[1] == pulse_index
-                    and row[4] == "interval"
-                    and interval_start <= row[0] <= interval_end
-                ]
-            else:
-                interval_values = [
-                    float(row[2])
-                    for row in self.k6221_raw_rows
-                    if row[3] == "interval"
-                    and interval_start <= row[0] <= interval_end
-                ]
-        used_fallback = not interval_values
-        values = interval_values or [float(fallback_mean)]
-        mean_value = statistics.fmean(values)
-        std_value = statistics.pstdev(values) if len(values) > 1 else 0.0
-        return raw_snapshot, mean_value, std_value, len(values), used_fallback
-
-    def start_k6221_scan(self) -> None:
-        if not self._k6221_roi_scan_ready():
-            return
-        try:
-            sequence, width_s, compliance_v, interval_s = self._parse_k6221_scan()
-        except ValueError as error:
-            messagebox.showwarning("Keithley 6221", str(error), parent=self.root)
-            return
-        estimated_s = len(sequence) * (2.0 * width_s + interval_s)
-        if not messagebox.askyesno(
-            "Keithley 6221 scan",
-            f"About to run a round-trip scan over {len(sequence)} pulse-current points.\n"
-            f"Range: {sequence[0]:g} mA → {sequence[len(sequence)//2]:g} mA "
-            f"→ {sequence[-1]:g} mA\n"
-            f"One pulse per current point, high-level width "
-            f"{width_s * 1_000_000:g} us, pulse interval {interval_s:g} s, "
-            f"compliance {compliance_v:g} V;\n"
-            "after each pulse the difference ROI is averaged over the acquisition/interval time.\n"
-            f"Estimated at least: {self._format_duration(estimated_s)}"
-            " (plus some instrument communication overhead)"
-            "\n\nStart?",
-            icon="warning",
-            parent=self.root,
-        ):
-            return
-        try:
-            image_session = self._prepare_k6221_scan_image_session(
-                "Keithley6221_pulse_MOKE_raw16_scan"
-            )
-        except BaseException as error:
-            messagebox.showerror("6221 scan images", str(error), parent=self.root)
-            return
-        self.k6221_scan_image_session_dir = image_session
-        if image_session is not None:
-            self.k6221_image_directory_var.set(
-                f"Post-pulse MOKE raw 16-bit images for this run: {image_session}"
-            )
-        self.k6221_stop_event.clear()
-        with self.k6221_data_lock:
-            self.k6221_raw_rows = []
-            self.k6221_step_rows = []
-            self.k6221_train_raw_rows = []
-            self.k6221_train_step_rows = []
-            self.k6221_scan_start_time = time.time()
-            self.k6221_scan_running = True
-            self.k6221_scan_kind = "current_sweep"
-            self.k6221_active_pulse_index = 0
-            self.k6221_scan_command_ma = 0.0
-            self.k6221_pulse_active = False
-        self._redraw_k6221_plot()
-        self.k6221_status_var.set("Starting the pulse current scan…")
-        self._update_k6221_controls()
-        self._update_keithley_controls()
-        self._update_magnet_scan_controls()
-        future = self.k6221_executor.submit(
-            self._k6221_scan_worker,
-            sequence,
-            width_s,
-            compliance_v,
-            interval_s,
-            image_session,
-        )
-        future.add_done_callback(
-            lambda completed: self.post_ui(
-                lambda: self._finish_k6221_scan(completed.exception())
-            )
-        )
-
-    def start_k6221_pulse_train(self) -> None:
-        if not self._k6221_roi_scan_ready():
-            return
-        try:
-            (
-                current_ma,
-                pulse_count,
-                width_s,
-                compliance_v,
-                interval_s,
-            ) = self._parse_k6221_pulse_train()
-        except ValueError as error:
-            messagebox.showwarning("Keithley 6221", str(error), parent=self.root)
-            return
-        estimated_s = pulse_count * (width_s + interval_s)
-        if not messagebox.askyesno(
-            "Keithley 6221 fixed-current pulse acquisition",
-            f"Fixed pulse current: {current_ma:+g} mA\n"
-            f"Pulse count: {pulse_count}\n"
-            f"High-level width: {width_s * 1_000_000:g} us\n"
-            f"ROI acquisition/interval after each pulse: {interval_s:g} s\n"
-            f"Estimated at least: {self._format_duration(estimated_s)}\n\n"
-            "After each pulse ends and the output is zeroed, the difference ROI is acquired for that interval "
-            "and its time-window average is plotted as the Pulse number–ROI curve.\n\nStart?",
-            icon="warning",
-            parent=self.root,
-        ):
-            return
-        try:
-            image_session = self._prepare_k6221_scan_image_session(
-                "Keithley6221_fixed_pulse_MOKE_raw16_scan"
-            )
-        except BaseException as error:
-            messagebox.showerror("6221 pulse images", str(error), parent=self.root)
-            return
-        self.k6221_scan_image_session_dir = image_session
-        if image_session is not None:
-            self.k6221_image_directory_var.set(
-                f"MOKE raw 16-bit images at the end of each acquisition window for this run: {image_session}"
-            )
-        self.k6221_stop_event.clear()
-        with self.k6221_data_lock:
-            self.k6221_raw_rows = []
-            self.k6221_step_rows = []
-            self.k6221_train_raw_rows = []
-            self.k6221_train_step_rows = []
-            self.k6221_scan_start_time = time.time()
-            self.k6221_scan_running = True
-            self.k6221_scan_kind = "pulse_train"
-            self.k6221_active_pulse_index = 0
-            self.k6221_scan_command_ma = current_ma
-            self.k6221_pulse_active = False
-        self._redraw_k6221_plot()
-        self.k6221_status_var.set("Starting the fixed-current multi-pulse ROI acquisition…")
-        self._update_k6221_controls()
-        self._update_keithley_controls()
-        self._update_magnet_scan_controls()
-        future = self.k6221_executor.submit(
-            self._k6221_pulse_train_worker,
-            current_ma,
-            pulse_count,
-            width_s,
-            compliance_v,
-            interval_s,
-            image_session,
-        )
-        future.add_done_callback(
-            lambda completed: self.post_ui(
-                lambda: self._finish_k6221_scan(completed.exception())
-            )
-        )
-
-    def _k6221_scan_worker(
-        self,
-        sequence,
-        width_s: float,
-        compliance_v: float,
-        interval_s: float,
-        image_session: Path | None,
-    ) -> None:
-        try:
-            for index, current_ma in enumerate(sequence, start=1):
-                if self.k6221_stop_event.is_set():
-                    break
-                with self.k6221_data_lock:
-                    self.k6221_scan_kind = "current_sweep"
-                    self.k6221_active_pulse_index = index
-                    self.k6221_scan_command_ma = float(current_ma)
-                    self.k6221_current_ma = float(current_ma)
-                    self.k6221_pulse_active = True
-                actual = self.k6221_controller.set_dc_pulse(
-                    current_ma / 1000.0,
-                    width_s,
-                    compliance_v,
-                    1,
-                )
-                actual_ma = actual["current_a"] * 1000.0
-                with self.k6221_data_lock:
-                    self.k6221_scan_command_ma = actual_ma
-                    self.k6221_current_ma = actual_ma
-                self.post_ui(
-                    lambda i=index, total=len(sequence), value=actual_ma: (
-                        self.k6221_output_var.set(
-                            f"Running: 0 ↔ {value:+.6g} mA; "
-                            f"single pulse {width_s * 1_000_000:.6g} us"
-                        ),
-                        self.k6221_status_var.set(
-                            f"Current point {i}/{total}: outputting a single current pulse"
-                        ),
-                    )
-                )
-                if self._wait_k6221_pulse_with_readback(actual):
-                    self.k6221_controller.output_off()
-                    self.post_ui(self._publish_k6221_off_state)
-                    break
-                self.k6221_controller.output_off()
-                with self.k6221_data_lock:
-                    self.k6221_pulse_active = False
-                    self.k6221_current_ma = 0.0
-                collected = self._collect_k6221_post_pulse_roi(interval_s)
-                if collected is None:
-                    break
-                (
-                    raw_snapshot,
-                    mean_value,
-                    std_value,
-                    sample_count,
-                    used_fallback,
-                ) = collected
-                elapsed = time.time() - float(self.k6221_scan_start_time)
-                row = (
-                    actual_ma,
-                    mean_value,
-                    std_value,
-                    sample_count,
-                    width_s * 1_000_000.0,
-                    interval_s,
-                )
-                with self.k6221_data_lock:
-                    if used_fallback:
-                        self.k6221_raw_rows.append(
-                            (elapsed, actual_ma, mean_value, "after_pulse")
-                        )
-                    self.k6221_step_rows.append(row)
-                self.post_ui(
-                    lambda i=index, total=len(sequence), value=mean_value: (
-                        self._publish_k6221_off_state(),
-                        self.k6221_output_var.set("Output: 0 mA / OFF"),
-                        self.k6221_status_var.set(
-                            f"Current point {i}/{total}: pulse done, "
-                            f"window-average ROI={value:.6g}, "
-                            f"acquisition/interval {interval_s:g} s"
-                        ),
-                        self._redraw_k6221_plot(),
-                    )
-                )
-                if image_session is not None:
-                    stamp = datetime_module.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                    filename = (
-                        f"Keithley6221_P{index:04d}_"
-                        f"Ipulse_{actual_ma:+.9f}mA_"
-                        f"Width_{width_s * 1_000_000:.9f}us_"
-                        f"Interval_{interval_s:.9f}s_MOKE_raw16_"
-                        f"{stamp}.tiff"
-                    )
-                    save_raw_u16_tiff(raw_snapshot, image_session / filename)
-        finally:
-            with self.k6221_data_lock:
-                self.k6221_pulse_active = False
-                self.k6221_current_ma = 0.0
-                self.k6221_scan_command_ma = 0.0
-            self.k6221_controller.output_off()
-
-    def _k6221_pulse_train_worker(
-        self,
-        current_ma: float,
-        pulse_count: int,
-        width_s: float,
-        compliance_v: float,
-        interval_s: float,
-        image_session: Path | None,
-    ) -> None:
-        try:
-            for pulse_index in range(1, pulse_count + 1):
-                if self.k6221_stop_event.is_set():
-                    break
-                with self.k6221_data_lock:
-                    self.k6221_scan_kind = "pulse_train"
-                    self.k6221_active_pulse_index = pulse_index
-                    self.k6221_scan_command_ma = float(current_ma)
-                    self.k6221_current_ma = float(current_ma)
-                    self.k6221_pulse_active = True
-                actual = self.k6221_controller.set_dc_pulse(
-                    current_ma / 1000.0,
-                    width_s,
-                    compliance_v,
-                    1,
-                )
-                actual_ma = actual["current_a"] * 1000.0
-                with self.k6221_data_lock:
-                    self.k6221_scan_command_ma = actual_ma
-                    self.k6221_current_ma = actual_ma
-                self.post_ui(
-                    lambda index=pulse_index, value=actual_ma: (
-                        self.k6221_output_var.set(
-                            f"Running: pulse {index}/{pulse_count}, "
-                            f"0 ↔ {value:+.6g} mA"
-                        ),
-                        self.k6221_status_var.set(
-                            f"Fixed-current pulse {index}/{pulse_count}: outputting"
-                        ),
-                    )
-                )
-                if self._wait_k6221_pulse_with_readback(actual):
-                    self.k6221_controller.output_off()
-                    self.post_ui(self._publish_k6221_off_state)
-                    break
-                self.k6221_controller.output_off()
-                with self.k6221_data_lock:
-                    self.k6221_pulse_active = False
-                    self.k6221_current_ma = 0.0
-                collected = self._collect_k6221_post_pulse_roi(interval_s)
-                if collected is None:
-                    break
-                (
-                    raw_snapshot,
-                    mean_value,
-                    std_value,
-                    sample_count,
-                    used_fallback,
-                ) = collected
-                elapsed = time.time() - float(self.k6221_scan_start_time)
-                row = (
-                    pulse_index,
-                    mean_value,
-                    std_value,
-                    sample_count,
-                    actual_ma,
-                    width_s * 1_000_000.0,
-                    interval_s,
-                )
-                with self.k6221_data_lock:
-                    if used_fallback:
-                        self.k6221_train_raw_rows.append(
-                            (
-                                elapsed,
-                                pulse_index,
-                                actual_ma,
-                                mean_value,
-                                "after_pulse",
-                            )
-                        )
-                    self.k6221_train_step_rows.append(row)
-                self.post_ui(
-                    lambda index=pulse_index, value=mean_value, count=sample_count: (
-                        self._publish_k6221_off_state(),
-                        self.k6221_output_var.set("Output: 0 mA / OFF"),
-                        self.k6221_status_var.set(
-                            f"Fixed-current pulse {index}/{pulse_count}: "
-                            f"window-average ROI={value:.6g} ({count} frames)"
-                        ),
-                        self._redraw_k6221_plot(),
-                    )
-                )
-                if image_session is not None:
-                    stamp = datetime_module.datetime.now().strftime(
-                        "%Y%m%d_%H%M%S_%f"
-                    )
-                    filename = (
-                        f"Keithley6221_Pulse_{pulse_index:05d}_"
-                        f"I_{actual_ma:+.9f}mA_"
-                        f"Width_{width_s * 1_000_000:.9f}us_"
-                        f"Acquire_{interval_s:.9f}s_MOKE_raw16_"
-                        f"{stamp}.tiff"
-                    )
-                    save_raw_u16_tiff(raw_snapshot, image_session / filename)
-        finally:
-            with self.k6221_data_lock:
-                self.k6221_pulse_active = False
-                self.k6221_current_ma = 0.0
-                self.k6221_scan_command_ma = 0.0
-            self.k6221_controller.output_off()
-
-    def _finish_k6221_scan(self, error) -> None:
-        stopped = self.k6221_stop_event.is_set()
-        scan_label = (
-            "Fixed-current multi-pulse acquisition"
-            if self.k6221_scan_kind == "pulse_train"
-            else "Pulse current round-trip scan"
-        )
-        with self.k6221_data_lock:
-            self.k6221_scan_running = False
-            self.k6221_pulse_active = False
-            self.k6221_current_ma = 0.0
-            self.k6221_active_pulse_index = 0
-            self.k6221_scan_command_ma = 0.0
-        self.k6221_output_var.set("Output: 0 mA / OFF")
-        self._reset_k6221_readback()
-        if error is not None:
-            self.k6221_status_var.set(f"Scan error, pulses stopped: {error}")
-            if not self.closing:
-                messagebox.showerror("Keithley 6221", str(error), parent=self.root)
-        elif stopped:
-            self.k6221_status_var.set(
-                f"{scan_label} stopped; current zeroed and output off"
-            )
-        else:
-            self.k6221_status_var.set(
-                f"{scan_label} complete; current zeroed and output off"
-            )
-        self._update_k6221_controls()
-        self._update_keithley_controls()
-        self._update_magnet_scan_controls()
-
     def stop_k6221(self) -> None:
         if not self.k6221_controller.connected:
             return
@@ -28300,110 +27538,6 @@ class CombinedControlApp:
             if not self.closing:
                 messagebox.showerror("Keithley 6221", str(error), parent=self.root)
         self._update_k6221_controls()
-
-    def _redraw_k6221_plot(self) -> None:
-        canvas = getattr(self, "k6221_plot_canvas", None)
-        if canvas is None:
-            return
-        with self.k6221_data_lock:
-            scan_kind = self.k6221_scan_kind
-            source_rows = (
-                list(self.k6221_train_step_rows)
-                if scan_kind == "pulse_train"
-                else list(self.k6221_step_rows)
-            )
-        pulse_train = scan_kind == "pulse_train"
-        x_axis_label = "Pulse number" if pulse_train else "Pulse current (mA)"
-        if self.k6221_plot_frame is not None:
-            self.k6221_plot_frame.configure(
-                text=(
-                    "Pulse number vs ROI mean intensity (fixed-current multi-pulse)"
-                    if pulse_train
-                    else "Pulse current vs ROI mean intensity (current round-trip scan)"
-                )
-            )
-        canvas.delete("all")
-        width = max(canvas.winfo_width(), 280)
-        height = max(canvas.winfo_height(), 170)
-        left, right, top, bottom = 82, 32, 18, 52
-        plot_width = max(1, width - left - right)
-        plot_height = max(1, height - top - bottom)
-        self._draw_plot_grid(canvas, left, top, plot_width, plot_height)
-        canvas.create_rectangle(
-            left, top, left + plot_width, top + plot_height, outline="#444444"
-        )
-        canvas.create_text(
-            left + plot_width / 2, height - 12, text=x_axis_label
-        )
-        canvas.create_text(
-            14, top + plot_height / 2, text="ROI intensity", angle=90
-        )
-        rows = [
-            row for row in source_rows
-            if np.isfinite(row[0]) and np.isfinite(row[1])
-        ]
-        if not rows:
-            canvas.create_text(
-                left + plot_width / 2,
-                top + plot_height / 2,
-                text=(
-                    "Pulse number–ROI data is recorded once a fixed-current multi-pulse acquisition starts"
-                    if pulse_train
-                    else "Current–ROI data is recorded once a pulse current scan starts"
-                ),
-                fill="#666666",
-            )
-            return
-        x_values = np.asarray([row[0] for row in rows], dtype=np.float64)
-        intensities = np.asarray([row[1] for row in rows], dtype=np.float64)
-        x_min, x_max, x_ticks, x_tick_step = nice_linear_ticks(
-            float(np.min(x_values)),
-            float(np.max(x_values)),
-        )
-        y_min, y_max, y_ticks, y_tick_step = nice_linear_ticks(
-            float(np.min(intensities)),
-            float(np.max(intensities)),
-        )
-        for tick_index, x_value in enumerate(x_ticks):
-            x = left + (x_value - x_min) / (x_max - x_min) * plot_width
-            canvas.create_line(x, top + plot_height, x, top + plot_height + 4)
-            canvas.create_text(
-                x,
-                top + plot_height + 15,
-                text=format_nice_tick(x_value, x_tick_step),
-                anchor=(
-                    "w"
-                    if tick_index == 0
-                    else "e"
-                    if tick_index == len(x_ticks) - 1
-                    else "center"
-                ),
-            )
-        for intensity in reversed(y_ticks):
-            y = top + (y_max - intensity) / (y_max - y_min) * plot_height
-            canvas.create_line(left - 4, y, left, y)
-            canvas.create_text(
-                left - 7,
-                y,
-                text=format_nice_tick(intensity, y_tick_step),
-                anchor="e",
-            )
-        points = [
-            (
-                left + (x_value - x_min) / (x_max - x_min) * plot_width,
-                top + plot_height
-                - (intensity - y_min) / (y_max - y_min) * plot_height,
-            )
-            for x_value, intensity in zip(x_values, intensities)
-        ]
-        if len(points) >= 2:
-            canvas.create_line(
-                *[coordinate for point in points for coordinate in point],
-                fill="#7a3db8",
-                width=2,
-            )
-        for x, y in points:
-            canvas.create_oval(x - 3, y - 3, x + 3, y + 3, fill="#7a3db8", outline="")
 
     def _redraw_k6221_readback_plot(self) -> None:
         canvas = getattr(self, "k6221_readback_canvas", None)
@@ -28547,142 +27681,6 @@ class CombinedControlApp:
             font=(self.ui_font_family, self.ui_font_size, "bold"),
         )
 
-    def save_k6221_csv(self) -> None:
-        export_key = "keithley-6221-csv"
-        if export_key in self.active_file_exports:
-            self.k6221_status_var.set("Keithley 6221 data is being saved in the background")
-            return
-        camera = self.pause_camera_rendering("Saving 6221 CSV and plot snapshot")
-        with self.k6221_data_lock:
-            scan_kind = self.k6221_scan_kind
-            if scan_kind == "pulse_train":
-                raw_rows = list(self.k6221_train_raw_rows)
-                step_rows = list(self.k6221_train_step_rows)
-            else:
-                raw_rows = list(self.k6221_raw_rows)
-                step_rows = list(self.k6221_step_rows)
-        if not raw_rows and not step_rows:
-            self.resume_camera_rendering(camera)
-            self.k6221_status_var.set("No 6221 scan data to save")
-            return
-        save_directory = self.select_csv_save_directory(
-            (
-                "Select the folder for the Keithley 6221 CSV and Pulse number–ROI plot snapshot"
-                if scan_kind == "pulse_train"
-                else "Select the folder for the Keithley 6221 CSV and Pulse current–ROI plot snapshot"
-            ),
-            self.k6221_csv_directory,
-        )
-        if save_directory is None:
-            self.resume_camera_rendering(camera)
-            self.k6221_status_var.set("Saving Keithley 6221 scan data cancelled")
-            return
-        self.k6221_csv_directory = save_directory
-        save_directory.mkdir(parents=True, exist_ok=True)
-        stamp = datetime_module.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        if scan_kind == "pulse_train":
-            time_path = save_directory / f"Pulse_train_ROI_samples_{stamp}.csv"
-            curve_path = save_directory / f"Pulse_number_vs_ROI_{stamp}.csv"
-            snapshot_path = (
-                save_directory
-                / f"Pulse_number_vs_ROI_intensity_snapshot_{stamp}.png"
-            )
-            raw_header = [
-                "time_s",
-                "pulse_number",
-                "pulse_current_mA",
-                "roi_mean_intensity",
-                "phase",
-            ]
-            curve_header = [
-                "pulse_number",
-                "mean_roi_intensity",
-                "std_roi_intensity",
-                "sample_count",
-                "pulse_current_mA",
-                "pulse_width_us",
-                "acquisition_interval_s",
-            ]
-        else:
-            time_path = save_directory / f"ROI_intensity_vs_time_{stamp}.csv"
-            curve_path = save_directory / f"Pulse_current_vs_ROI_{stamp}.csv"
-            snapshot_path = (
-                save_directory
-                / f"Pulse_current_vs_ROI_intensity_snapshot_{stamp}.png"
-            )
-            raw_header = [
-                "time_s",
-                "pulse_current_mA",
-                "roi_mean_intensity",
-                "phase",
-            ]
-            curve_header = [
-                "pulse_current_mA",
-                "mean_roi_intensity",
-                "std_roi_intensity",
-                "sample_count",
-                "pulse_width_us",
-                "acquisition_interval_s",
-            ]
-        exports = (
-            (
-                time_path,
-                raw_header,
-                raw_rows,
-            ),
-            (
-                curve_path,
-                curve_header,
-                step_rows,
-            ),
-        )
-        self.k6221_status_var.set(
-            "Saving Keithley 6221 CSV in the background; instrument control remains available"
-        )
-
-        def work():
-            self.write_csv_exports(exports)
-            return time_path, curve_path
-
-        def failed(error: BaseException) -> None:
-            self.k6221_status_var.set(f"Keithley 6221 CSV save failed: {error}")
-            messagebox.showerror("Keithley 6221", str(error), parent=self.root)
-
-        def saved(_result) -> None:
-            try:
-                self._redraw_k6221_plot()
-                self.save_plot_canvas_snapshot(
-                    self.k6221_plot_canvas, snapshot_path
-                )
-            except BaseException as error:
-                self.k6221_status_var.set(
-                    f"CSV saved; 6221 pulse–ROI plot snapshot failed: {error}"
-                )
-                messagebox.showwarning(
-                    "Keithley 6221",
-                    f"CSV saved:\n{time_path.name}\n{curve_path.name}\n\n"
-                    f"6221 pulse–ROI plot snapshot save failed:\n{error}",
-                    parent=self.root,
-                )
-                return
-            self.k6221_status_var.set(
-                f"CSV and 6221 pulse–ROI plot snapshot saved: {save_directory}"
-            )
-            messagebox.showinfo(
-                "Keithley 6221",
-                f"Saved:\n{time_path.name}\n{curve_path.name}\n{snapshot_path.name}"
-                f"\n\nFolder:\n{save_directory}",
-                parent=self.root,
-            )
-
-        self.submit_file_export(
-            export_key,
-            camera,
-            work,
-            saved,
-            failed,
-        )
-
     def _update_k6221_controls(self) -> None:
         if not hasattr(self, "k6221_connect_button"):
             return
@@ -28718,31 +27716,9 @@ class CombinedControlApp:
             and idle
             and not blocked
             and self.k6221_safety_var.get()
-            and "keithley-6221-csv" not in self.active_file_exports
         )
         self.k6221_apply_button.configure(state="normal" if can_operate else "disabled")
-        self.k6221_start_button.configure(state="normal" if can_operate else "disabled")
-        self.k6221_train_start_button.configure(
-            state="normal" if can_operate else "disabled"
-        )
         self.k6221_off_button.configure(state="normal" if connected else "disabled")
-        self.k6221_save_button.configure(
-            state=(
-                "normal"
-                if idle
-                and "keithley-6221-csv" not in self.active_file_exports
-                and (
-                    self.k6221_raw_rows
-                    or self.k6221_step_rows
-                    or self.k6221_train_raw_rows
-                    or self.k6221_train_step_rows
-                )
-                else "disabled"
-            )
-        )
-        self.k6221_save_images_check.configure(
-            state="normal" if idle and not blocked else "disabled"
-        )
         edit_state = (
             "normal"
             if self.k6221_roi is not None and idle and not blocked
@@ -35377,7 +34353,7 @@ class CombinedControlApp:
             source.instrument.write("*RST")
             source.instrument.write("*CLS")
         # *RST earths the output low again: back to floating, as the
-        # MOKE-6221 path does after its reset (review, 2026-10-09).
+        # CIDWM (MOKE-6221) path does after its reset (review, 2026-10-09).
         self._initialize_ppms_6221()
         if 'continuous_sweep_peak_a' in settings:
             # Select range while output is off; never source the maximum target

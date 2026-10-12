@@ -413,30 +413,35 @@ class FieldOutputTests(unittest.TestCase):
         canvas = self.a.stfmr_fmr_canvas
         self.assertGreater(canvas.winfo_height(), canvas.winfo_reqheight(), "plots should take the spare height")
 
-    # ------------------------------------------------------------ MOKE-6221
-    def test_moke_6221_sections_pair_up_and_plots_take_the_height(self):
-        self.arranged(LAB_WIDE, "MOKE-6221", self.a.stfmr_lockin_resource_widgets)
+    # ------------------------------------------------------------ CIDWM
+    def test_cidwm_sections_pair_up_and_the_plot_takes_the_height(self):
+        """2026-10-12: MOKE-6221 is CIDWM: the pulse output beside the
+        connection, then MOKE magnet's difference display beside its ROI
+        editing, the display rows and the live ROI plot (no pulse scan)."""
+        self.arranged(LAB_WIDE, "CIDWM", self.a.stfmr_lockin_resource_widgets)
         frames = self.page_frames(self.a.k6221_tab)
         connection = frames["Keithley 6221 / VISA"]
-        # 2026-10-12: the pulse output beside the connection (no AC/DC output).
         pulse = frames["DC unipolar pulse output (0 A ↔ setpoint, 50% duty)"]
-        scan = frames["Pulse current scan and ROI acquisition"]
-        roi = frames["ROI editing"]
-        self.assertNotIn("AC/DC continuous output and live readback", frames)
+        difference = frames["MOKE difference display"]
+        roi = frames["MOKE ROI editing"]
+        for gone in ("AC/DC continuous output and live readback",
+                     "Pulse current scan and ROI acquisition", "ROI editing",
+                     "Pulse current vs ROI mean intensity (current round-trip scan)"):
+            self.assertNotIn(gone, frames)
         self.assertIs(connection.master, pulse.master)
-        self.assertIs(scan.master, roi.master)
+        self.assertIs(difference.master, roi.master)
         self.assertLess(connection.winfo_rootx(), pulse.winfo_rootx(), "connection on the left")
-        self.assertLess(scan.winfo_rootx(), roi.winfo_rootx(), "scan on the left")
+        self.assertLess(difference.winfo_rootx(), roi.winfo_rootx(), "difference display on the left")
         outer = connection.master.master
-        self.assertEqual(int(outer.rowconfigure(2)["weight"]), 1, "the plots row takes spare height")
-        canvas = self.a.k6221_plot_canvas
+        self.assertEqual(int(outer.rowconfigure(3)["weight"]), 1, "the plot row takes spare height")
+        canvas = self.a.k6221_intensity_canvas
         self.assertGreater(canvas.winfo_height(), canvas.winfo_reqheight())
 
-    def test_moke_6221_red_stop_button_is_never_clipped(self):
+    def test_cidwm_red_stop_button_is_never_clipped(self):
         """At narrow widths it used to extend 62 px past the window edge."""
         try:
             for width in (self.LAB_DEFAULT, 1500, LAB_WIDE):  # the lab's real widths
-                self.arranged(width, "MOKE-6221", self.a.stfmr_lockin_resource_widgets)
+                self.arranged(width, "CIDWM", self.a.stfmr_lockin_resource_widgets)
                 tab = self.a.k6221_tab
                 right = tab.winfo_rootx() + tab.winfo_width()
                 over = [w for w in descendants(tab)
@@ -483,31 +488,6 @@ class FieldOutputTests(unittest.TestCase):
         self.a._label_field_at_zero_current(canvas, series)
         text = [canvas.itemcget(i, "text") for i in canvas.find_all() if canvas.type(i) == "text"]
         self.assertEqual(text, ["Field at 0 A: +255.0 to +270.0 G"])
-
-    def test_tab_from_the_pulse_output_reaches_scan_parameters_before_start_buttons(self):
-        """A space bar on a focused start button would begin a scan."""
-        buttons = (self.a.k6221_start_button, self.a.k6221_train_start_button, self.a.k6221_save_button)
-        try:
-            for button in buttons:   # as when connected; disabled buttons are skipped anyway
-                button.configure(state="normal")
-            self.arranged(LAB_WIDE, "MOKE-6221", self.a.stfmr_lockin_resource_widgets)
-            nxt = self.a.k6221_off_button.tk_focusNext()
-            self.assertEqual(str(nxt.cget("textvariable")), str(self.a.k6221_start_var),
-                             f"Tab went to {nxt.winfo_class()} {nxt.cget('text') if 'text' in nxt.keys() else ''}")
-            seen = []
-            widget = nxt
-            for _ in range(40):
-                widget = widget.tk_focusNext()
-                if widget in buttons:
-                    break
-                seen.append(widget)
-            self.assertTrue(any(str(w.cget("textvariable")) == str(self.a.k6221_train_interval_var)
-                                for w in seen if "textvariable" in w.keys()),
-                            "every parameter field comes before the first start button")
-        finally:
-            for button in buttons:
-                button.configure(state="disabled")
-            self.a._update_k6221_controls()
 
     def test_tab_visits_connections_before_the_output_panel(self):
         for widgets in (self.a.stfmr_lockin_resource_widgets, self.a.stfmr_device_resource_widgets):

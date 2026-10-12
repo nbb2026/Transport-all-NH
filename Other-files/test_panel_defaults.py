@@ -141,7 +141,7 @@ class PanelDefaultTests(unittest.TestCase):
                           a.nonlocal_frequency_var.get()), ("17.3", "17.3", "17.3"))
 
     def test_moke_6221_has_no_continuous_output_and_the_pulse_defaults(self):
-        """2026-10-12: no AC/DC continuous output on MOKE-6221; the pulse
+        """2026-10-12: no AC/DC continuous output on CIDWM (MOKE-6221); the pulse
         output at the user's figure (2 mA, 50 us, 1 pulse, 100 V)."""
         a = self.app
         titles = set()
@@ -153,6 +153,23 @@ class PanelDefaultTests(unittest.TestCase):
                 titles.add(str(widget.cget("text")))
         self.assertNotIn("AC/DC continuous output and live readback", titles)
         self.assertIn("DC unipolar pulse output (0 A ↔ setpoint, 50% duty)", titles)
+        # 2026-10-12, CIDWM: MOKE magnet's difference display and ROI editing
+        # (one set of variables: one camera), no pulse current scan.
+        self.assertTrue({"MOKE difference display", "MOKE ROI editing",
+                         "ROI mean intensity vs time (live)"} <= titles)
+        self.assertNotIn("Pulse current scan and ROI acquisition", titles)
+        self.assertEqual((len(a.difference_capture_buttons), len(a.objective_100x_marker_buttons)), (2, 2))
+        self.assertEqual(len(a.difference_mode_buttons), 6)
+        texts = []
+        pending = [a.k6221_tab]
+        while pending:
+            widget = pending.pop()
+            pending.extend(widget.winfo_children())
+            if widget.winfo_class() == "TButton":
+                texts.append(str(widget.cget("text")))
+        self.assertNotIn("Clear curve", texts, "the magnet scan's curve: MOKE magnet only")
+        self.assertIn("Save difference raw image", texts)
+        self.assertTrue(set(a.k6221_roi_edit_buttons), "the ROI nudges report to the CIDWM status")
         self.assertFalse(hasattr(a, "apply_k6221_continuous_output"))
         self.assertEqual((a.k6221_current_var.get(), a.k6221_width_var.get(), a.k6221_count_var.get(),
                           a.k6221_compliance_var.get()), ("2", "50", "1", "100"))
@@ -394,8 +411,8 @@ class NotebookTabTests(unittest.TestCase):
             titles = [notebook.tab(index, "text")
                       for index in range(notebook.index("end"))]
             self.assertEqual(titles, [
-                "MOKE light", "MOKE motor", "MOKE magnet", "MOKE-24",
-                "MOKE-6221", "Non-local", "PPMS", "RT-E", "FMR", "STFMR"])
+                "MOKE light", "MOKE motor", "MOKE magnet", "CIDWM",
+                "MOKE-24", "Non-local", "PPMS", "RT-E", "FMR", "STFMR"])
         finally:
             built.closing = True
             built.safe_close_hardware()

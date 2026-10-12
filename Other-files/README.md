@@ -1,5 +1,47 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## CIDWM: MOKE-6221 renamed and moved, MOKE imaging from MOKE magnet, no pulse current scan (2026-10-12)
+
+The user asked to rename MOKE-6221 as CIDWM, put it between MOKE magnet and
+MOKE-24, delete its pulse current scan, ROI editing and both plots, and add
+MOKE magnet's difference display and ROI editing.
+
+- **Tabs:** MOKE light, MOKE motor, MOKE magnet, **CIDWM**, MOKE-24,
+  Non-local, PPMS, RT-E, FMR, STFMR.
+- **CIDWM, top to bottom:**
+  - The Keithley 6221 / VISA box beside the DC unipolar pulse output (as
+    before).
+  - "MOKE difference display" beside "MOKE ROI editing".
+  - The display rows: Difference CLim, temporal average, binning, mean
+    filter, exposure, Camera Live recording.
+  - "ROI mean intensity vs time (live)".
+- **Shared with MOKE magnet:** both pages' widgets use the same variables
+  and state lists, because there is one camera and one ROI. Changing the
+  CLim, averaging or exposure on either page changes both.
+- **Not on CIDWM:**
+  - MOKE ROI editing's "Clear curve" and "Field" belong to the magnet scan's
+    plot, so they stay on MOKE magnet only.
+  - The ROI nudges report to the CIDWM status line.
+  - The saved images are named `CIDWM_…`.
+- **Removed:**
+  - The "Pulse current scan and ROI acquisition" box: the current
+    round-trip scan, the fixed-current pulse acquisition, Save CSV and the
+    post-pulse raw images.
+  - The 6221 page's own ROI editing box and the pulse-current-vs-ROI plot.
+  - The scan's methods, state, constants and `build_6221_current_sequence`.
+  - Three scan tests in `test/test_instrument_safety_logic.py`.
+  - `k6221_scan_running` stays, always False, so the other pages' "a scan
+    is running" checks are unchanged.
+- **Refactor:** `_build_moke_difference_box`, `_build_moke_roi_edit_box` and
+  `_build_moke_display_controls` build the panels for both pages. Recapture
+  BG and the 100× marker button are now lists
+  (`difference_capture_buttons`, `objective_100x_marker_buttons`).
+- **Tests:**
+  - `test_panel_defaults.py`: the tab order and the CIDWM panels.
+  - `test_stfmr_field_output.py`: the CIDWM layout, and the red stop button
+    is never clipped.
+  - `ci/gui_checks.py` checks CIDWM as a compact page.
+
 ## MOKE-6221: no AC/DC continuous output; pulse defaults from the user's figure (2026-10-12)
 
 - **Removed:** the "AC/DC continuous output and live readback" box and its

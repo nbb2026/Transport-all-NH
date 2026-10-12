@@ -13,7 +13,7 @@ pages end in the same layout whatever the resize history, and it saves a
 screenshot of each page at the lab's 2000 px window.
 
 Exit status is 1 if, on the lab PC's 2560x1440 screen, a compact page
-(MOKE-6221, STFMR, FMR) clips or cuts anything, if STFMR or FMR do not sit
+(CIDWM, STFMR, FMR) clips or cuts anything, if STFMR or FMR do not sit
 side by side at the 2000 px window, or if a layout depends on resize history.
 Other screens and the other pages are reported only.
 """
@@ -27,7 +27,7 @@ import types
 from pathlib import Path
 
 PROGRAM = Path(__file__).resolve().parents[2] / "Transport_all_NH_dev.py"
-COMPACT = ("MOKE-6221", "STFMR", "FMR")
+COMPACT = ("CIDWM", "STFMR", "FMR")
 REPORTED = ("MOKE light", "MOKE motor", "MOKE magnet", "MOKE-24", "Non-local", "PPMS", "RT-E")
 SCREENS = (  # (screen width, height, window width or 0 for the program's own)
     (2560, 1440, 2000),  # the lab PC, window widened by hand
@@ -35,7 +35,7 @@ SCREENS = (  # (screen width, height, window width or 0 for the program's own)
     (1920, 1080, 0),
     (1600, 1586, 0),
 )
-SHOT_PAGES = ("MOKE light", "MOKE motor", "MOKE magnet", "MOKE-24", "MOKE-6221",
+SHOT_PAGES = ("MOKE light", "MOKE motor", "MOKE magnet", "CIDWM", "MOKE-24",
               "Non-local", "PPMS", "RT-E", "FMR", "STFMR")
 # The Non-local page's measurements are sub-tabs; each is checked and shot.
 SUB_TABS = {"Non-local": ("nonlocal_measurements", ("resistance", "iv", "iv6221", "gate"))}
