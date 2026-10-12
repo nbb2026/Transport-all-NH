@@ -86,8 +86,11 @@ def english_message_box(title=None, message=None, _icon=None, _type=None, **opti
         if _NATIVE_MESSAGE_SHOW is None:
             raise RuntimeError("A message box needs a Tk window")
         return _NATIVE_MESSAGE_SHOW(title, message, _icon, _type, **options)
+    # "parent" is the first argument already (2026-10-12: passed twice, every
+    # box with a parent raised TypeError).
+    rest = {key: value for key, value in options.items() if key != "parent"}
     try:
-        return _english_message_box(parent, title, message, _icon, _type, **options)
+        return _english_message_box(parent, title, message, _icon, _type, **rest)
     except tk.TclError:
         return _NATIVE_MESSAGE_SHOW(title, message, _icon, _type, **options)
 

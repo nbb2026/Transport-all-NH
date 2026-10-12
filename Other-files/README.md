@@ -1,5 +1,32 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Start-up hang fixed (2026-10-12)
+
+- **Symptom:** from `66f807b` on, the program never opened its window on
+  the lab PCs; the main thread sat in Tk's main loop. CI hung the same way
+  (`root.update()` in `test_panel_defaults.py` never returned).
+- **Cause:** on CIDWM, the "MOKE difference display" box sits beside the
+  Images box, and the spare width went to the Images side. The display's
+  width then followed its own mode row (Off / Plain difference / Drift
+  tracking beside Recapture BG / 100× marker). That row flipped between
+  side by side and stacked at every `<Configure>`, thousands of times a
+  second, so the window never finished drawing. A CI probe that counted
+  Tk callbacks found it (one row, 628 px needed, given 628 and 379 in turn).
+- **Fix:** the difference display takes the spare width, as on MOKE magnet
+  (`moke.columnconfigure(0, weight=1)`).
+- **Guard for every page:** a side-by-side pair that flips more than
+  `PAIR_FLIP_LIMIT` (8) times within a second at one window width stays
+  stacked (never clipped) until the window is resized.
+- **Also:** `main()` is as it was before (no start-up watchdog: dumping a
+  running thread from `faulthandler` crashed Python 3.11 on the lab PC).
+  The English message box falls back to the standard one for a parent that
+  is not a Tk window or if the box cannot be built. CI prints each test's
+  name and stops a test that hangs for 5 min with its stack
+  (`Other-files/ci/run_suite.py`).
+- **Test:** `test_pair_layout_loop.py`: no pair needs the guard on any page
+  at 2000, 1101, 826 and 1574 px; with the old CIDWM weights the window
+  still finishes drawing, the looping row held stacked.
+
 ## CIDWM: the scan's own pulse size, the display saved too; "Camera settings" (2026-10-12)
 
 - **Pulse size:** the pulse sign scan has its own "|I| mA:" box (default
