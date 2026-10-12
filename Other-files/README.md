@@ -15,6 +15,9 @@
     output set.
   - That keeps the two boxes side by side at the lab's 2000 px window with
     the Windows fonts.
+- **Plots:** both MOKE-6221 plots now also redraw when the page is shown
+  (`<Map>`). The live ROI plot had stayed blank until data arrived when the
+  window's last resize came while the page was hidden.
 - **Pulse output defaults:** 2 mA, 50 µs high-level width, 1 pulse,
   compliance 100 V (were 1 mA, 10 µs, 50 V).
   - New constants: `K6221_OUTPUT_PULSE_WIDTH_US`, `K6221_OUTPUT_COMPLIANCE_V`.

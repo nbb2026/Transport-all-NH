@@ -21026,9 +21026,12 @@ class CombinedControlApp:
             height=self._ui_px(200, 120, canvas=True),
         )
         self.k6221_intensity_canvas.grid(row=0, column=0, sticky="nsew")
-        self.k6221_intensity_canvas.bind(
-            "<Configure>", lambda _event: self._redraw_live_intensity_plots()
-        )
+        # Also on <Map>: a <Configure> while the page is hidden is skipped by
+        # the visibility check, which left the plot blank until new data.
+        for sequence in ("<Configure>", "<Map>"):
+            self.k6221_intensity_canvas.bind(
+                sequence, lambda _event: self._redraw_live_intensity_plots(), add="+"
+            )
         self.k6221_plot_frame = ttk.LabelFrame(
             data, text="Pulse current vs ROI mean intensity (current scan only)", padding=6
         )
@@ -21041,9 +21044,10 @@ class CombinedControlApp:
             height=self._ui_px(200, 120, canvas=True),
         )
         self.k6221_plot_canvas.grid(row=0, column=0, sticky="nsew")
-        self.k6221_plot_canvas.bind(
-            "<Configure>", lambda _event: self._redraw_k6221_plot()
-        )
+        for sequence in ("<Configure>", "<Map>"):
+            self.k6221_plot_canvas.bind(
+                sequence, lambda _event: self._redraw_k6221_plot(), add="+"
+            )
         ttk.Label(
             outer,
             textvariable=self.k6221_status_var,
