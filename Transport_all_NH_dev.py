@@ -67,6 +67,11 @@ _ENGLISH_MESSAGE_ICONS = {"error": "error", "warning": "warning", "info": "infor
                           "question": "question"}
 
 
+# tkinter.messagebox's own _show, kept for anything the English box cannot
+# take (a parent that is not a Tk window, a failure building the box).
+_NATIVE_MESSAGE_SHOW = None
+
+
 def english_message_box(title=None, message=None, _icon=None, _type=None, **options) -> str:
     """tkinter.messagebox's boxes, in English, each its own window with its
     own answer (review, 2026-10-12: Tk's own message box shares one window
@@ -74,15 +79,26 @@ def english_message_box(title=None, message=None, _icon=None, _type=None, **opti
     first the second's answer).  The buttons sit at the bottom, so a long
     message never pushes them off the screen.  Returns what tk_messageBox
     returns ("yes", "no", "ok", "cancel" ...)."""
+    parent = options.get("parent") or getattr(tk, "_default_root", None)
+    if not isinstance(parent, tk.Misc) or _NATIVE_MESSAGE_SHOW is None:
+        # Not a Tk window (a stand-in in the tests, or no window yet): the
+        # standard box.  Walking a stand-in's masters never ends (2026-10-12).
+        if _NATIVE_MESSAGE_SHOW is None:
+            raise RuntimeError("A message box needs a Tk window")
+        return _NATIVE_MESSAGE_SHOW(title, message, _icon, _type, **options)
+    try:
+        return _english_message_box(parent, title, message, _icon, _type, **options)
+    except tk.TclError:
+        return _NATIVE_MESSAGE_SHOW(title, message, _icon, _type, **options)
+
+
+def _english_message_box(parent, title, message, _icon, _type, **options) -> str:
     kind = str(options.get("type") or _type or "ok")
     buttons = _ENGLISH_MESSAGE_BUTTONS.get(kind, _ENGLISH_MESSAGE_BUTTONS["ok"])
     names = [name for name, _text in buttons]
     default = str(options.get("default") or names[0])
     # Closing the window or Escape: the safe answer.
     cancel = next((name for name in ("cancel", "no", "abort", "ok") if name in names), names[-1])
-    parent = options.get("parent") or getattr(tk, "_default_root", None)
-    if parent is None:
-        raise RuntimeError("A message box needs a Tk window")
     top = tk.Toplevel(parent, class_="EnglishMessageBox")
     top.withdraw()
     top.title(str(title or ""))
@@ -152,6 +168,15 @@ def english_message_box(title=None, message=None, _icon=None, _type=None, **opti
     except tk.TclError:
         pass
     top.deiconify()
+    # In front of every window (the program's own and others, e.g. VS Code)
+    # while it waits: a box opened during start-up, before the main window
+    # is up, was easy to lose behind them.
+    try:
+        top.lift()
+        top.attributes("-topmost", True)
+        top.focus_force()
+    except tk.TclError:
+        pass
     previous_grab = top.grab_current()
     try:
         top.grab_set()
@@ -186,7 +211,10 @@ def use_english_tk_dialogs(root: tk.Misc) -> bool:
     # its own window (english_message_box).  Tcl's own tk_messageBox (the
     # file dialogs' "overwrite?") is Tk's English one, below.
     import tkinter.messagebox as tk_messagebox
+    global _NATIVE_MESSAGE_SHOW
     if hasattr(tk_messagebox, "_show"):
+        if tk_messagebox._show is not english_message_box:
+            _NATIVE_MESSAGE_SHOW = tk_messagebox._show
         tk_messagebox._show = english_message_box
     try:
         system = str(root.tk.call("tk", "windowingsystem"))
@@ -39870,7 +39898,18 @@ def maximize_main_window(root: tk.Tk) -> None:
 
 
 def main() -> None:
+    # If the window is not up within a minute, write where the program is to
+    # the terminal, every minute until it is (2026-10-12: a start-up that
+    # seemed stuck on the lab PC left nothing to go on).
+    import faulthandler
+    faulthandler.dump_traceback_later(60, repeat=True)
+    print("Transport: starting...", flush=True)
     root = tk.Tk()
+
+    def started() -> None:
+        faulthandler.cancel_dump_traceback_later()
+        print("Transport: window ready", flush=True)
+
     app = CombinedControlApp(root)
     app.update_raw_state()
 
@@ -39878,6 +39917,7 @@ def main() -> None:
     motor_self_test()
     app.attach_motor(MotorAppClass)
     root.after_idle(lambda: maximize_main_window(root))
+    root.after(500, started)
 
     if serial is None:
         root.after(

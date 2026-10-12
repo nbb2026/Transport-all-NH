@@ -30,7 +30,7 @@ jobs:
         run: python -m pip install numpy pillow opencv-python-headless pyvisa pyserial
       - name: Other-files suite
         working-directory: Other-files
-        run: xvfb-run -a -s "-screen 0 2560x1440x24 -dpi 96" python -m unittest discover -s . -p "test_*.py"
+        run: xvfb-run -a -s "-screen 0 2560x1440x24 -dpi 96" python ci/run_suite.py
       - name: Microwave test program, offline tests
         if: success() || failure()
         working-directory: Other-files/microwave_test_support
@@ -73,7 +73,7 @@ jobs:
         run: python -m pip install numpy pillow opencv-python pyvisa pyserial
       - name: Other-files suite
         working-directory: Other-files
-        run: python -m unittest discover -s . -p "test_*.py"
+        run: python ci/run_suite.py
       - name: Microwave test program, offline tests
         if: success() || failure()
         working-directory: Other-files/microwave_test_support
