@@ -433,7 +433,8 @@ class FieldOutputTests(unittest.TestCase):
         self.assertLess(connection.winfo_rootx(), pulse.winfo_rootx(), "connection on the left")
         self.assertLess(difference.winfo_rootx(), roi.winfo_rootx(), "difference display on the left")
         outer = connection.master.master
-        self.assertEqual(int(outer.rowconfigure(3)["weight"]), 1, "the plot row takes spare height")
+        self.assertIn("Pulse sign scan (raw + processed TIFF after each pulse)", frames)
+        self.assertEqual(int(outer.rowconfigure(4)["weight"]), 1, "the plot row takes spare height")
         canvas = self.a.k6221_intensity_canvas
         self.assertGreater(canvas.winfo_height(), canvas.winfo_reqheight())
 

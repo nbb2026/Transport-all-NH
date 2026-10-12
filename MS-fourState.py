@@ -58,7 +58,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 # The instrument code MS-fourState shares with the main program, copied so
 # this file runs on its own.  Do not edit here: fix the main program and run
 # Other-files/tools/ms_fourstate_copy_core.py.
-# Copied from Transport_all_NH_dev.py, SHA-256 d09734a93ba3…
+# Copied from Transport_all_NH_dev.py, SHA-256 b51419731627…
 import importlib
 
 
@@ -1304,7 +1304,7 @@ class PPMSQDInstrumentReadbackController:
             )
             self.logger(
                 f"PPMS field setpoint: {target_oe:+g} Oe, "
-                f"{rate_oe_s:g} Oe/s，mode={int(mode_code)}"
+                f"{rate_oe_s:g} Oe/s, mode={int(mode_code)}"
             )
             return self.read_environment()
 

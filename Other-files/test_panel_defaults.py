@@ -140,6 +140,47 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertEqual((a.nonlocal_vi_frequency_var.get(), a.nonlocal_iv6221_frequency_var.get(),
                           a.nonlocal_frequency_var.get()), ("17.3", "17.3", "17.3"))
 
+    def test_cidwm_pulse_sign_scan_row(self):
+        """2026-10-12: Pulses, Signs and Wait after pulse s, with its own
+        start and stop buttons (disabled until the 6221 is connected)."""
+        a = self.app
+        self.assertEqual((a.cidwm_scan_pulses_var.get(), a.cidwm_scan_signs_var.get(),
+                          a.cidwm_scan_wait_var.get()), ("10", "+-", "1"))
+        self.assertEqual(str(a.cidwm_scan_start_button.cget("state")), "disabled")
+        self.assertEqual(str(a.cidwm_scan_stop_button.cget("state")), "disabled")
+        self.assertEqual(str(a.cidwm_scan_start_button.cget("text")), "Choose folder and start scan")
+
+    def test_message_boxes_and_file_dialogs_are_tks_own_in_english(self):
+        """2026-10-12: Yes/No, not the Chinese Windows' buttons: Tk's own
+        dialogs, their text in English."""
+        root = self.app.root
+        if str(root.tk.call("tk", "windowingsystem")) != "x11":
+            for command, target in (
+                ("::tk_messageBox", "::tk::MessageBox"),
+                ("::tk_getOpenFile", "::tk::dialog::file:: open"),
+                ("::tk_getSaveFile", "::tk::dialog::file:: save"),
+                ("::tk_chooseDirectory", "::tk::dialog::file::chooseDir::"),
+            ):
+                alias = root.tk.splitlist(root.tk.call("interp", "alias", "", command))
+                self.assertEqual(" ".join(map(str, alias)), target, command)
+        self.assertEqual(str(root.tk.call("::msgcat::mclocale")), "en")
+        seen, tries = [], [0]
+        box = ".__tk__messagebox"
+
+        def answer():
+            if int(root.tk.call("winfo", "exists", box + ".no")):
+                seen.extend(str(root.tk.call(box + "." + name, "cget", "-text")) for name in ("yes", "no"))
+                root.tk.call(box + ".no", "invoke")
+            elif tries[0] < 50:
+                tries[0] += 1
+                root.after(100, answer)
+            else:
+                root.tk.call("set", "::tk::Priv(button)", "no")  # never leave the box waiting
+
+        root.after(100, answer)
+        self.assertFalse(app.messagebox.askyesno("English dialogs", "Is this box in English?", parent=root))
+        self.assertEqual(seen, ["Yes", "No"])
+
     def test_moke_6221_has_no_continuous_output_and_the_pulse_defaults(self):
         """2026-10-12: no AC/DC continuous output on CIDWM (MOKE-6221); the pulse
         output at the user's figure (2 mA, 50 us, 1 pulse, 100 V)."""
@@ -177,7 +218,7 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertEqual((a.k6221_current_var.get(), a.k6221_width_var.get(), a.k6221_count_var.get(),
                           a.k6221_compliance_var.get()), ("2", "50", "1", "100"))
         # The live readback stays, in the pulse box.
-        self.assertEqual(a.k6221_readback_output_var.get(), "OUTP：OFF")
+        self.assertEqual(a.k6221_readback_output_var.get(), "OUTP: OFF")
         self.assertIsNotNone(a.k6221_compliance_state_label)
 
     def test_frequency_scan_rows_on_6221_iv_and_gate_vi(self):

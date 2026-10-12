@@ -25,6 +25,55 @@ from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 from typing import Callable
 
 
+# Tk's own message boxes and file dialogs in place of the Windows ones (user,
+# 2026-10-12: every window in English).  The Windows dialogs take their
+# buttons and labels from the language of Windows (是/否 on a Chinese
+# Windows); Tk's own read theirs through msgcat, set to English here.
+_ENGLISH_TK_DIALOGS = r"""
+package require msgcat
+::msgcat::mclocale en
+foreach {name file} {
+    ::tk::MessageBox msgbox.tcl
+    ::tk::dialog::file:: tkfbox.tcl
+    ::tk::dialog::file::chooseDir:: choosedir.tcl
+} {
+    if {[info commands $name] eq ""} { catch {auto_load $name} }
+    if {[info commands $name] eq ""} {
+        uplevel #0 [list source [file join $::tk_library $file]]
+    }
+}
+foreach {command target} {
+    ::tk_messageBox {::tk::MessageBox}
+    ::tk_getOpenFile {::tk::dialog::file:: open}
+    ::tk_getSaveFile {::tk::dialog::file:: save}
+    ::tk_chooseDirectory {::tk::dialog::file::chooseDir::}
+} {
+    if {[interp alias {} $command] ne ""} { continue }
+    if {[info commands ${command}_native] eq ""} { rename $command ${command}_native }
+    interp alias {} $command {} {*}$target
+}
+"""
+
+
+def use_english_tk_dialogs(root: tk.Misc) -> bool:
+    """Message boxes (Yes/No, OK) and the open, save and folder dialogs in
+    English, whatever the language of Windows.  tkinter's messagebox and
+    filedialog call the Tk commands replaced here, so every call site is
+    covered.  On X11 Tk's own dialogs are already used.  Returns whether
+    Tk's own dialogs are in use."""
+    try:
+        system = str(root.tk.call("tk", "windowingsystem"))
+        if system == "x11":
+            root.tk.call("package", "require", "msgcat")
+            root.tk.call("::msgcat::mclocale", "en")
+            return True
+        root.tk.eval(_ENGLISH_TK_DIALOGS)
+        return True
+    except tk.TclError as error:
+        print(f"Tk's own dialogs are not available; the system's are used: {error}", file=sys.stderr)
+        return False
+
+
 def configure_tk_font_system(root: tk.Misc) -> tuple[str, str]:
     """Apply one predictable font system to every Tk/ttk window.
 
@@ -903,6 +952,29 @@ def save_processed_f32_tiff(image_processed, path: Path) -> None:
     Image.fromarray(array).save(destination, format="TIFF", compression="raw")
 
 
+def cidwm_sign_sequence(count, signs) -> tuple[int, ...]:
+    """The CIDWM pulse sign scan's signs, +1 or -1 per pulse: ``signs`` as
+    "+" and "-" ("−" too; spaces and commas ignored), repeated until there
+    are ``count`` of them ("+-" alternates, "++--" goes in pairs)."""
+    try:
+        value = float(count)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Pulses must be a whole number") from error
+    if not (math.isfinite(value) and value.is_integer() and 1 <= value <= CIDWM_SCAN_MAX_PULSES):
+        raise ValueError(f"Pulses must be a whole number from 1 to {CIDWM_SCAN_MAX_PULSES}")
+    pattern = []
+    for character in str(signs):
+        if character == "+":
+            pattern.append(1)
+        elif character in "-−":
+            pattern.append(-1)
+        elif not (character.isspace() or character == ","):
+            raise ValueError(f"Signs may only hold + and -, not {character!r}")
+    if not pattern:
+        raise ValueError("Signs must hold at least one + or -")
+    return tuple(pattern[index % len(pattern)] for index in range(int(value)))
+
+
 def save_display_u8_png(image_display, path: Path) -> None:
     """Save the marker-free 8-bit image currently mapped into Camera Live."""
     if np is None or Image is None:
@@ -1124,6 +1196,18 @@ K6221_MAX_PULSE_COUNT = 99_999_999_900
 K6221_MAX_WAVEFORM_TIME_S = 999_999.999
 K6221_DEFAULT_COMPLIANCE_V = 50.0
 K6221_READBACK_WINDOW_S = 20.0
+# CIDWM pulse sign scan (user, 2026-10-12): Pulses pulses, each with its sign
+# from Signs (repeated to fill the count), each followed by the raw 16-bit
+# and the processed (difference) TIFF of a camera frame taken after it.
+CIDWM_SCAN_PULSES = 10
+CIDWM_SCAN_SIGNS = "+-"
+CIDWM_SCAN_WAIT_S = 1.0
+CIDWM_SCAN_MAX_PULSES = 100_000
+# After the wait, at most this long for a camera frame newer than the pulse.
+CIDWM_SCAN_FRAME_TIMEOUT_S = 10.0
+CIDWM_SCAN_DIRECTORY = (
+    Path(__file__).resolve().parent / f"{Path(__file__).stem}_CIDWM_Results"
+)
 K6221_PULSE_READBACK_INTERVAL_S = 0.25
 K6221_READBACK_MAX_POINTS = 2000
 
@@ -2353,7 +2437,7 @@ class STFMRSR830Controller(SafeVisaIdentityController):
     ) -> dict[str, object]:
         reference_input = str(reference_input).strip()
         if reference_input not in STFMR_LOCKIN_SR830_REFERENCE_INPUTS:
-            choices = "、".join(STFMR_LOCKIN_SR830_REFERENCE_INPUTS)
+            choices = ", ".join(STFMR_LOCKIN_SR830_REFERENCE_INPUTS)
             raise ValueError(f"SR830 REF IN must be one of: {choices}")
         reference_slope = STFMR_LOCKIN_SR830_REFERENCE_INPUTS[reference_input]
         with self.lock:
@@ -3623,7 +3707,7 @@ class PPMSQDInstrumentReadbackController:
             )
             self.logger(
                 f"PPMS field setpoint: {target_oe:+g} Oe, "
-                f"{rate_oe_s:g} Oe/s，mode={int(mode_code)}"
+                f"{rate_oe_s:g} Oe/s, mode={int(mode_code)}"
             )
             return self.read_environment()
 
@@ -7182,11 +7266,11 @@ def _find_mfli_legacy_python() -> Path:
             if check.returncode == 0:
                 return candidate
             detail = (check.stderr or check.stdout or "verification failed").strip()
-            rejected.append(f"{candidate}（{short_status_error(detail, 160)}）")
+            rejected.append(f"{candidate} ({short_status_error(detail, 160)})")
         except (OSError, subprocess.SubprocessError) as error:
-            rejected.append(f"{candidate}（{short_status_error(error, 160)}）")
+            rejected.append(f"{candidate} ({short_status_error(error, 160)})")
             continue
-    searched = "；".join(str(path) for path in candidates)
+    searched = "; ".join(str(path) for path in candidates)
     rejected_text = "; ".join(rejected) if rejected else "none"
     raise RuntimeError(
         "No verified Python 3.7 + zhinst 18.12.59443 environment was found. Please run "
@@ -7870,7 +7954,7 @@ class NonLocalACController:
             # LabOne Data Server is listening.  Neither a pip install nor a
             # legacy interpreter can repair a disconnected USB/RNDIS link.
             if not reachable_servers:
-                diagnostic_text = "；".join(tcp_diagnostics)
+                diagnostic_text = "; ".join(tcp_diagnostics)
                 if server_override is not None:
                     checks = '\n'.join(
                         f'Test-NetConnection {host} -Port {port}'
@@ -7893,7 +7977,7 @@ class NonLocalACController:
                     "Please check in order:\n"
                     "1. The MFLI is powered on and connected to the PC via the rear-panel USB Device port;\n"
                     "2. The Windows USB/RNDIS network adapter is enabled and the PC address should be "
-                    "192.168.69.77；\n"
+                    "192.168.69.77;\n"
                     "3. Run in PowerShell: ping 192.168.69.78;\n"
                     "4. Run: Test-NetConnection 192.168.69.78 -Port 8004.\n\n"
                     "Only after TcpTestSucceeded=True can the Python API connect.\n\n"
@@ -7988,13 +8072,13 @@ class NonLocalACController:
                             self.mfli_identity = identity
                             self.logger(
                                 "Non-local Zurich MFLI loaded by the current Python "
-                                f"{adapter_label}：{identity} @ "
+                                f"{adapter_label}: {identity} @ "
                                 f"{server_host}:{server_port}"
                             )
                             return identity
                         except BaseException as error:
                             direct_errors.append(
-                                f"{adapter_label} {server_host}:{server_port}："
+                                f"{adapter_label} {server_host}:{server_port}: "
                                 f"{error}"
                             )
                             if daq is not None:
@@ -8090,7 +8174,7 @@ class NonLocalACController:
                         return identity
                     except BaseException as error:
                         direct_errors.append(
-                            f"Core {server_host}:{server_port}：{error}"
+                            f"Core {server_host}:{server_port}: {error}"
                         )
                         if daq is not None:
                             try:
@@ -8129,7 +8213,7 @@ class NonLocalACController:
                 direct_errors.append(f"18.12 Python 3.7 bridge: {bridge_error}")
                 self.logger(
                     "The legacy LabOne 18.12 bridge is unavailable, continuing to try "
-                    f"Discovery：{bridge_error}"
+                    f"Discovery: {bridge_error}"
                 )
 
             # Discovery is only worth attempting after a server endpoint has
@@ -8180,7 +8264,7 @@ class NonLocalACController:
                     )
                     return identity
                 except BaseException as error:
-                    direct_errors.append(f"Discovery：{error}")
+                    direct_errors.append(f"Discovery: {error}")
                     if daq is not None:
                         try:
                             daq.disconnect()
@@ -8234,10 +8318,10 @@ class NonLocalACController:
         device" from "no API could complete the handshake".  Full diagnostics
         follow for the log and the error dialog.
         """
-        servers_text = "、".join(
+        servers_text = ", ".join(
             f"{host}:{port}" for host, port in reachable_servers
         ) or "8004"
-        reports_text = "；".join(
+        reports_text = "; ".join(
             f"{host}:{port} → {report}"
             for (host, port), report in server_reports.items()
             if report
@@ -8336,7 +8420,7 @@ class NonLocalACController:
         if channel not in {"X", "Y", "R"}:
             raise ValueError("MFLI read channel can only be X, Y or R")
         if reference_source not in NONLOCAL_MFLI_REFERENCE_INPUTS:
-            choices = "、".join(NONLOCAL_MFLI_REFERENCE_INPUTS)
+            choices = ", ".join(NONLOCAL_MFLI_REFERENCE_INPUTS)
             raise ValueError(f"MFLI external reference input must be one of: {choices}")
         impedance_choices = {"10 MΩ": 0, "50 Ω": 1}
         if input_impedance not in impedance_choices:
@@ -11348,6 +11432,9 @@ class TkCameraWindow:
 
         self.worker = CameraAcquisitionWorker(self.app.thread_log)
         self.latest_frame: CameraFrame | None = None
+        # Counts the frames shown, so a scan can wait for one newer than its
+        # pulse (CIDWM pulse sign scan).
+        self.latest_frame_serial = 0
         # Marker-free copy of the most recently rendered image plus its Canvas
         # placement.  The black letterbox is assembled only when Save is
         # clicked, avoiding a full-Canvas allocation on every live frame.
@@ -11513,6 +11600,7 @@ class TkCameraWindow:
                 break
         if newest is not None:
             self.latest_frame = newest
+            self.latest_frame_serial = getattr(self, "latest_frame_serial", 0) + 1
             if not self.connection_announced:
                 self.connection_announced = True
                 self.app.camera_connection_ready()
@@ -12594,7 +12682,7 @@ class CombinedControlApp:
         self.magnet_scan_settings: dict[str, object] = {}
         self.moke_roi = None
         self.moke_roi_var = tk.StringVar(value="ROI: none selected")
-        self.moke_roi_mean_var = tk.StringVar(value="ROI mean：--")
+        self.moke_roi_mean_var = tk.StringVar(value="ROI mean: --")
         self.led_roi_mean_var = tk.StringVar(value="Raw ROI mean: --")
         self.moke_field_source_var = tk.StringVar(value="Unconfirmed")
         self.moke_latest_roi_mean = None
@@ -12670,7 +12758,7 @@ class CombinedControlApp:
         self.keithley_collect_var = tk.StringVar(value=f"{KEITHLEY_DEFAULT_COLLECT_S:g}")
         self.keithley_connection_var = tk.StringVar(value="Not connected")
         self.keithley_roi_var = tk.StringVar(value="ROI: none selected")
-        self.keithley_roi_mean_var = tk.StringVar(value="ROI mean：--")
+        self.keithley_roi_mean_var = tk.StringVar(value="ROI mean: --")
         self.keithley_status_var = tk.StringVar(value="Ready")
         self.keithley_voltage_var = tk.StringVar(value="Output: 0 V")
         self.keithley_safety_var = tk.BooleanVar(value=False)
@@ -12698,7 +12786,7 @@ class CombinedControlApp:
         self.k6221_readback_canvas = None
         self.k6221_intensity_canvas = None
         self.k6221_resource_var = tk.StringVar(value=K6221_DEFAULT_RESOURCE)
-        self.k6221_readback_output_var = tk.StringVar(value="OUTP：OFF")
+        self.k6221_readback_output_var = tk.StringVar(value="OUTP: OFF")
         self.k6221_compliance_state_var = tk.StringVar(value="Compliance state: --")
         self.k6221_monitor_inflight = False
         self.k6221_monitor_after_id = None
@@ -12713,8 +12801,14 @@ class CombinedControlApp:
         self.k6221_connection_var = tk.StringVar(value="Not connected")
         self.k6221_output_var = tk.StringVar(value="Output: 0 mA / OFF")
         self.k6221_status_var = tk.StringVar(value="Ready")
+        # The pulse sign scan (user, 2026-10-12).
+        self.cidwm_scan_pulses_var = tk.StringVar(value=str(CIDWM_SCAN_PULSES))
+        self.cidwm_scan_signs_var = tk.StringVar(value=CIDWM_SCAN_SIGNS)
+        self.cidwm_scan_wait_var = tk.StringVar(value=f"{CIDWM_SCAN_WAIT_S:g}")
+        self.cidwm_scan_status_var = tk.StringVar(value="Pulse sign scan: not started")
+        self.cidwm_scan_directory = CIDWM_SCAN_DIRECTORY
         self.k6221_roi_var = tk.StringVar(value="ROI: none selected")
-        self.k6221_roi_mean_var = tk.StringVar(value="ROI mean：--")
+        self.k6221_roi_mean_var = tk.StringVar(value="ROI mean: --")
         self.k6221_safety_var = tk.BooleanVar(value=False)
         self.k6221_roi_edit_buttons = []
         self.k6221_compliance_state_label = None
@@ -13910,7 +14004,7 @@ class CombinedControlApp:
         self.ppms_backend_combo.bind(
             "<<ComboboxSelected>>", self._on_ppms_backend_changed, add="+"
         )
-        ttk.Label(environment, text="PPMS IP：").grid(row=0, column=2, sticky="w")
+        ttk.Label(environment, text="PPMS IP:").grid(row=0, column=2, sticky="w")
         self.ppms_host_entry = ttk.Combobox(
             environment,
             textvariable=self.ppms_host_var,
@@ -14113,7 +14207,7 @@ class CombinedControlApp:
         self.ppms_temperature_set_button.grid(row=1, column=2, columnspan=2, sticky="w")
         ttk.Label(
             temperature_control,
-            text="5–10 K：≤1 K/min；10–380 K：≤10 K/min",
+            text="5–10 K: ≤1 K/min; 10–380 K: ≤10 K/min",
             style="Warning.TLabel",
         ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(5, 0))
 
@@ -14183,7 +14277,7 @@ class CombinedControlApp:
             ("End Oe:", self.ppms_field_scan_end_var, 2),
             ("Step Oe:", self.ppms_field_scan_step_var, 4),
             ("Rate Oe/s:", self.ppms_field_rate_var, 6),
-            ("Loop：", self.ppms_field_scan_loop_var, 8),
+            ("Loop:", self.ppms_field_scan_loop_var, 8),
             ("Settle s:", self.ppms_field_scan_stable_var, 10),
         )
         self.ppms_field_scan_entries = []
@@ -14382,7 +14476,7 @@ class CombinedControlApp:
             cell = ttk.Frame(instruments)
             cell.grid(row=cell_row, column=cell_column, sticky="ew", padx=2)
             row = 0
-            ttk.Label(cell, text=f"{labels[key]}：").grid(
+            ttk.Label(cell, text=f"{labels[key]}:").grid(
                 row=row, column=0, sticky="e", pady=2
             )
             if key in PPMS_SR830_KEYS:
@@ -16298,7 +16392,7 @@ class CombinedControlApp:
                 and sr830_reference_input
                 not in STFMR_LOCKIN_SR830_REFERENCE_INPUTS
             ):
-                choices = "、".join(STFMR_LOCKIN_SR830_REFERENCE_INPUTS)
+                choices = ", ".join(STFMR_LOCKIN_SR830_REFERENCE_INPUTS)
                 raise ValueError(f"SR830 REF IN must be one of: {choices}")
             if meter in ("MFLI", "MFLI + SR830"):
                 mfli_timeconstant_s = float(
@@ -16335,7 +16429,7 @@ class CombinedControlApp:
             f"{len(points)} points per frequency (start→stop), "
             f"first two points of each loop discarded, about {estimated_saved} points saved\n"
             + (
-                f"SR830 REF IN：{sr830_reference_input}；"
+                f"SR830 REF IN: {sr830_reference_input}; "
                 f"Autorange: {'on' if sr830_auto_range else 'off'}\n"
                 if meter == "SR830"
                 else f"MFLI autorange: {'on' if mfli_auto_range else 'off'}\n"
@@ -16795,7 +16889,7 @@ class CombinedControlApp:
                         error=RuntimeError(
                             "SR830 reference unlocked or input overload; current point not saved: "
                             f"REF={float(sample.get('reference_frequency_hz', math.nan)):.6g} "
-                            f"Hz，LIAS={status}"
+                            f"Hz, LIAS={status}"
                         )
                     )
                     return
@@ -16930,7 +17024,7 @@ class CombinedControlApp:
                 self.stfmr_lockin_status_var.set(
                     f"{frequency_ghz:g} GHz discarded start-transition point "
                     f"{index + 1}/2: "
-                    f"I={current:+.5g} A，B={field_g:+.6g} G；"
+                    f"I={current:+.5g} A, B={field_g:+.6g} G; "
                     + (
                         "moving to the second current point"
                         if index == 0
@@ -16940,7 +17034,7 @@ class CombinedControlApp:
             else:
                 self.stfmr_lockin_status_var.set(
                     f"{frequency_ghz:g} GHz; scanning {completed}/{total}; "
-                    f"I={current:+.5g} A；"
+                    f"I={current:+.5g} A; "
                     f"remaining about {remaining:.1f} s"
                 )
             if done_in_frequency >= len(self.stfmr_lockin_points):
@@ -17759,7 +17853,7 @@ class CombinedControlApp:
         if not messagebox.askyesno(
             "Start STFMR FMR scan",
             (
-                f"PNA：{frequencies[0] / 1e9:g} → "
+                f"PNA: {frequencies[0] / 1e9:g} → "
                 f"{frequencies[-1] / 1e9:g} GHz, {len(frequencies)} frequencies\n"
                 f"PNA stimulus power: {power_dbm:g} dBm\n"
                 f"Current: {currents[0]:g} → {currents[-1]:g} A, {len(currents)} points\n"
@@ -17902,7 +17996,7 @@ class CombinedControlApp:
                     )
                     break
         self.stfmr_fmr_status_var.set(
-            f"{self.stfmr_fmr_frequencies[self.stfmr_fmr_frequency_index] / 1e9:g} GHz；"
+            f"{self.stfmr_fmr_frequencies[self.stfmr_fmr_frequency_index] / 1e9:g} GHz; "
             f"Waiting for the 475 to settle, point {self.stfmr_fmr_index + 1}/"
             f"{len(self.stfmr_fmr_frequencies) * len(self.stfmr_fmr_currents)}: "
             f"{current:+.6g} A"
@@ -18163,7 +18257,7 @@ class CombinedControlApp:
             "Start fixed-field frequency sweep",
             (
                 f"Target field: {target_field:+g} G (tolerance ±{tolerance:g} G)\n"
-                f"PNA：{frequencies[0] / 1e9:g} → "
+                f"PNA: {frequencies[0] / 1e9:g} → "
                 f"{frequencies[-1] / 1e9:g} GHz, {len(frequencies)} points\n"
                 f"PNA stimulus power: {power_dbm:g} dBm\n"
                 f"S-parameters: {', '.join(selected)}\n"
@@ -18341,7 +18435,7 @@ class CombinedControlApp:
 
         self.stfmr_frequency_status_var.set(
             f"Frequency sweep {self.stfmr_frequency_index + 1}/"
-            f"{len(self.stfmr_frequency_points)}：{frequency_hz / 1e9:g} GHz"
+            f"{len(self.stfmr_frequency_points)}: {frequency_hz / 1e9:g} GHz"
         )
         self.stfmr_frequency_future = self.stfmr_executor.submit(work)
 
@@ -19141,6 +19235,8 @@ class CombinedControlApp:
         self.ui_font_family, self.mono_font_family = configure_tk_font_system(
             self.root
         )
+        # Every message box and file dialog in English (user, 2026-10-12).
+        use_english_tk_dialogs(self.root)
         style = ttk.Style(self.root)
         if sys.platform == "darwin" and "clam" in style.theme_names():
             style.theme_use("clam")
@@ -19269,7 +19365,7 @@ class CombinedControlApp:
         frame.columnconfigure(2, weight=1)
         row_pad = (5, 0)
 
-        ttk.Label(frame, text="S/N：").grid(row=0, column=0, sticky="e", padx=(0, 4))
+        ttk.Label(frame, text="S/N:").grid(row=0, column=0, sticky="e", padx=(0, 4))
         self.stage_serial_entry = ttk.Entry(
             frame, textvariable=self.stage_serial_var, width=10
         )
@@ -19621,7 +19717,7 @@ class CombinedControlApp:
                 width=12,
             )
             self.moke_field_source_combo.pack(side="right")
-            ttk.Label(roi_steps, text="Field：").pack(side="right", padx=(6, 1))
+            ttk.Label(roi_steps, text="Field:").pack(side="right", padx=(6, 1))
         return roi_edit
 
     def _build_moke_display_controls(self, parent) -> ttk.Frame:
@@ -19641,7 +19737,7 @@ class CombinedControlApp:
             width=6,
         )
         low_entry.pack(side="left")
-        ttk.Label(clim_bar, text="～").pack(side="left", padx=2)
+        ttk.Label(clim_bar, text="~").pack(side="left", padx=2)
         high_entry = ttk.Entry(
             clim_bar,
             textvariable=self.difference_clim_high_var,
@@ -19697,7 +19793,7 @@ class CombinedControlApp:
             )
             button.pack(side="left", padx=(0, 4))
             self.difference_clim_buttons.append(button)
-        ttk.Label(average_bar, text="Binning：").pack(
+        ttk.Label(average_bar, text="Binning:").pack(
             side="left", padx=(5, 1)
         )
         for factor in (1, 2, 4, 8):
@@ -19719,7 +19815,7 @@ class CombinedControlApp:
         filter_row.grid(row=1, column=0, sticky="ew", pady=(0, 4))
         filter_bar = ttk.Frame(filter_row)
         filter_bar.grid(row=0, column=0, sticky="w")
-        ttk.Label(filter_bar, text="Mean filter：").pack(side="left")
+        ttk.Label(filter_bar, text="Mean filter:").pack(side="left")
         for filter_size, label in ((1, "Off"), (2, "2×2"), (4, "4×4")):
             button = ttk.Radiobutton(
                 filter_bar,
@@ -19825,7 +19921,7 @@ class CombinedControlApp:
                 ("In-plane magnet", "IN_BOP", "In-plane gaussmeter", "IN_GAUSS"),
             )
         ):
-            ttk.Label(connection, text=f"{bop_label}：").grid(
+            ttk.Label(connection, text=f"{bop_label}:").grid(
                 row=row, column=0, sticky="e", padx=(0, 2), pady=1
             )
             self._create_connection_indicator(
@@ -19839,7 +19935,7 @@ class CombinedControlApp:
             )
             bop_box.grid(row=row, column=2, sticky="ew", padx=(0, 5), pady=1)
             self.magnet_port_combos[bop_key] = bop_box
-            ttk.Label(connection, text=f"{gauss_label}：").grid(
+            ttk.Label(connection, text=f"{gauss_label}:").grid(
                 row=row, column=3, sticky="e", padx=(0, 2), pady=1
             )
             self._create_connection_indicator(
@@ -20015,7 +20111,7 @@ class CombinedControlApp:
         ttk.Entry(
             scan_params, textvariable=self.magnet_scan_step_current_var, width=7
         ).grid(row=1, column=1, sticky="ew", padx=(0, 8), pady=(3, 0))
-        ttk.Label(scan_params, text="Loop：").grid(
+        ttk.Label(scan_params, text="Loop:").grid(
             row=1, column=2, sticky="e", padx=(0, 3), pady=(3, 0)
         )
         ttk.Spinbox(
@@ -20261,13 +20357,13 @@ class CombinedControlApp:
             "flip": flip_button,
             "zero": zero_button,
         }
-        ttk.Label(panel, text="I：").grid(row=1, column=0, sticky="e", pady=(2, 0))
+        ttk.Label(panel, text="I:").grid(row=1, column=0, sticky="e", pady=(2, 0))
         ttk.Label(
             panel,
             textvariable=self.magnet_current_vars[key],
             style="Metric.TLabel",
         ).grid(row=1, column=1, sticky="w", pady=(2, 0))
-        ttk.Label(panel, text="Field：").grid(
+        ttk.Label(panel, text="Field:").grid(
             row=1, column=2, sticky="e", pady=(2, 0)
         )
         ttk.Label(
@@ -20735,9 +20831,9 @@ class CombinedControlApp:
         outer = ttk.Frame(self.k6221_tab, padding=7)
         outer.grid(row=0, column=0, sticky="nsew")
         outer.columnconfigure(0, weight=1)
-        # Spare window height goes to the live ROI plot (row 3), so it fills
+        # Spare window height goes to the live ROI plot (row 4), so it fills
         # the page down to the status line instead of an empty row below it.
-        outer.rowconfigure(3, weight=1)
+        outer.rowconfigure(4, weight=1)
 
         # Compact, as on the STFMR page: the connection beside the pulse
         # output, and the pulse scan beside ROI editing.  Each pair stacks by
@@ -20848,12 +20944,48 @@ class CombinedControlApp:
         ).grid(row=0, column=5, sticky="e", padx=(12, 0))
         self._arrange_pair_by_width(top, connection, output, gap=7)
 
+        # The pulse sign scan (user, 2026-10-12): Pulses pulses at the pulse
+        # output's |I|, width and compliance, each with its sign from Signs,
+        # and after each the raw and processed TIFFs.
+        scan = ttk.LabelFrame(
+            outer, text="Pulse sign scan (raw + processed TIFF after each pulse)", padding=7
+        )
+        scan.grid(row=1, column=0, sticky="ew", pady=(7, 0))
+        scan.columnconfigure(9, weight=1)
+        for column, (label, variable, width) in enumerate((
+            ("Pulses:", self.cidwm_scan_pulses_var, 7),
+            ("Signs:", self.cidwm_scan_signs_var, 14),
+            ("Wait after pulse s:", self.cidwm_scan_wait_var, 6),
+        )):
+            ttk.Label(scan, text=label).grid(
+                row=0, column=2 * column, sticky="e", padx=(0 if column == 0 else 10, 3)
+            )
+            ttk.Entry(scan, textvariable=variable, width=width).grid(
+                row=0, column=2 * column + 1, sticky="w"
+            )
+        self.cidwm_scan_start_button = ttk.Button(
+            scan, text="Choose folder and start scan", command=self.start_cidwm_pulse_scan
+        )
+        self.cidwm_scan_start_button.grid(row=0, column=6, padx=(12, 3))
+        self.cidwm_scan_stop_button = ttk.Button(
+            scan, text="Stop", command=self.stop_k6221, state="disabled"
+        )
+        self.cidwm_scan_stop_button.grid(row=0, column=7, padx=(3, 0))
+        ttk.Label(
+            scan,
+            text="Signs: + and - per pulse, repeated to fill Pulses (+- alternates, ++-- goes in pairs)",
+            style="Muted.TLabel",
+        ).grid(row=1, column=0, columnspan=10, sticky="w", pady=(4, 0))
+        scan_status = ttk.Label(scan, width=1)
+        scan_status.grid(row=2, column=0, columnspan=10, sticky="ew", pady=(2, 0))
+        show_trimmed(scan_status, self.cidwm_scan_status_var)
+
         # CIDWM (user, 2026-10-12): under the 6221 pulse output, the MOKE
         # magnet page's difference display and ROI editing (side by side when
         # both fit), its display rows and the live ROI plot; no pulse current
         # scan.  They share the camera settings with MOKE magnet.
         moke = ttk.Frame(outer)
-        moke.grid(row=1, column=0, sticky="ew", pady=(7, 3))
+        moke.grid(row=2, column=0, sticky="ew", pady=(7, 3))
         moke.columnconfigure(1, weight=1)
         difference_box = self._build_moke_difference_box(moke)
         difference_box.grid(row=0, column=0, sticky="nsew")
@@ -20861,10 +20993,10 @@ class CombinedControlApp:
         roi_edit.grid(row=0, column=1, sticky="nsew")
         self._arrange_pair_by_width(moke, difference_box, roi_edit, gap=7)
         self._build_moke_display_controls(outer).grid(
-            row=2, column=0, sticky="ew", pady=(0, 4)
+            row=3, column=0, sticky="ew", pady=(0, 4)
         )
         live = ttk.LabelFrame(outer, text="ROI mean intensity vs time (live)", padding=6)
-        live.grid(row=3, column=0, sticky="nsew")
+        live.grid(row=4, column=0, sticky="nsew")
         live.rowconfigure(0, weight=1)
         live.columnconfigure(0, weight=1)
         self.k6221_intensity_canvas = tk.Canvas(
@@ -20884,7 +21016,7 @@ class CombinedControlApp:
             textvariable=self.k6221_status_var,
             style="Status.TLabel",
             anchor="w",
-        ).grid(row=4, column=0, sticky="ew", pady=(7, 0))
+        ).grid(row=5, column=0, sticky="ew", pady=(7, 0))
         self._update_k6221_controls()
 
     def build_nonlocal_vi_ui(self) -> None:
@@ -21712,7 +21844,7 @@ class CombinedControlApp:
                 )
             else:
                 self.nonlocal_vi_status_var.set(
-                    f"Zurich settings not applied: {short_status_error(error).rstrip(';；')}"
+                    f"Zurich settings not applied: {short_status_error(error).rstrip(';')}"
                 )
             self._refresh_nonlocal_vi_connection_summary()
 
@@ -23628,7 +23760,7 @@ class CombinedControlApp:
             f"{self.magnet_port_vars['OUT_GAUSS'].get()}; in-plane "
             f"{self.magnet_port_vars['IN_BOP'].get()}/"
             f"{self.magnet_port_vars['IN_GAUSS'].get()}"
-            f"（{switch_text}，{enable_text}）"
+            f" ({switch_text}, {enable_text})"
         )
 
     def _selected_magnet_switch_key(self, *, required: bool = False) -> str | None:
@@ -24317,7 +24449,7 @@ class CombinedControlApp:
                 raise MagnetProtocolError("Current or field readback is not a finite value")
             self.magnet_thread_log(
                 f"{MAGNET_CHANNEL_LABELS[key]} field-zero starting point: "
-                f"I={current:+.3f} A，B={field:+.2f} GS"
+                f"I={current:+.3f} A, B={field:+.2f} GS"
             )
             if abs(field) <= MAGNET_FIELD_ZERO_TOLERANCE_GS:
                 return {
@@ -24419,7 +24551,7 @@ class CombinedControlApp:
                         slope = new_slope
                 self.magnet_thread_log(
                     f"{MAGNET_CHANNEL_LABELS[key]} field-zero step {iteration}: "
-                    f"I={current:+.3f} A，B={field:+.2f} GS"
+                    f"I={current:+.3f} A, B={field:+.2f} GS"
                 )
 
             raise MagnetProtocolError(
@@ -24472,7 +24604,7 @@ class CombinedControlApp:
             else:
                 self.magnet_status_var.set(
                     f"{MAGNET_CHANNEL_LABELS[key]} field zeroed: "
-                    f"I={current:+.3f} A，Field={field:+.2f} GS"
+                    f"I={current:+.3f} A, Field={field:+.2f} GS"
                 )
             self.magnet_poll_failures = 0
             self.magnet_auto_poll_var.set(True)
@@ -24610,7 +24742,7 @@ class CombinedControlApp:
         raise MagnetProtocolError(
             f"{MAGNET_CHANNEL_LABELS[key]} write did not take effect: target {expected:+.3f} A, "
             f"readback {last_readback:+.3f} A, outside the allowed deviation "
-            f"±{max(MAGNET_CURRENT_READBACK_TOLERANCE_A, abs(expected) * MAGNET_CURRENT_READBACK_REL_TOLERANCE):.3f} A；"
+            f"±{max(MAGNET_CURRENT_READBACK_TOLERANCE_A, abs(expected) * MAGNET_CURRENT_READBACK_REL_TOLERANCE):.3f} A"
             "; attempted to write 0 A to the current channel"
         )
 
@@ -24653,9 +24785,9 @@ class CombinedControlApp:
         """Update the numeric value and aggregate one live-plot point per interval."""
         value = float(mean_value)
         self.moke_latest_roi_mean = value
-        self.moke_roi_mean_var.set(f"ROI mean：{value:.4f}")
-        self.keithley_roi_mean_var.set(f"ROI mean：{value:.4f}")
-        self.k6221_roi_mean_var.set(f"ROI mean：{value:.4f}")
+        self.moke_roi_mean_var.set(f"ROI mean: {value:.4f}")
+        self.keithley_roi_mean_var.set(f"ROI mean: {value:.4f}")
+        self.k6221_roi_mean_var.set(f"ROI mean: {value:.4f}")
         with self.magnet_scan_data_lock:
             if self.magnet_scan_running and self.magnet_scan_collecting:
                 self.magnet_scan_current_samples.append(value)
@@ -25419,7 +25551,7 @@ class CombinedControlApp:
         self.magnet_status_var.set(
             f"Loop {loop_index} · point {point_index}/{points_per_loop}: "
             f"target {target_current:+.4f} A, readback {read_current:+.4f} A, "
-            f"Field {actual_field:+.3f} GS，"
+            f"Field {actual_field:+.3f} GS, "
             f"ROI N={count}"
         )
         self._update_magnet_scan_controls()
@@ -26303,9 +26435,9 @@ class CombinedControlApp:
         self.moke_roi_var.set("ROI: none selected")
         self.keithley_roi_var.set("ROI: none selected")
         self.k6221_roi_var.set("ROI: none selected")
-        self.moke_roi_mean_var.set("ROI mean：--")
-        self.keithley_roi_mean_var.set("ROI mean：--")
-        self.k6221_roi_mean_var.set("ROI mean：--")
+        self.moke_roi_mean_var.set("ROI mean: --")
+        self.keithley_roi_mean_var.set("ROI mean: --")
+        self.k6221_roi_mean_var.set("ROI mean: --")
         self.led_roi_mean_var.set("Raw ROI mean: --")
 
         now = time.monotonic()
@@ -26346,7 +26478,7 @@ class CombinedControlApp:
         self.k6221_roi = dict(updated_roi)
         self.moke_roi_var.set(
             f"ROI: centre ({updated_roi['cx']:g}, {updated_roi['cy']:g}); "
-            f"W {updated_roi['w']:g}，H {updated_roi['h']:g}；"
+            f"W {updated_roi['w']:g}, H {updated_roi['h']:g}; "
             f"angle {updated_roi['angle']:g}°"
         )
         if roi_changed:
@@ -26373,12 +26505,12 @@ class CombinedControlApp:
             # each scan start clears them.
         self.keithley_roi_var.set(
             f"ROI: centre ({self.keithley_roi['cx']:g}, {self.keithley_roi['cy']:g}); "
-            f"W {self.keithley_roi['w']:g}，H {self.keithley_roi['h']:g}；"
+            f"W {self.keithley_roi['w']:g}, H {self.keithley_roi['h']:g}; "
             f"angle {self.keithley_roi['angle']:g}°"
         )
         self.k6221_roi_var.set(
             f"ROI: centre ({self.k6221_roi['cx']:g}, {self.k6221_roi['cy']:g}); "
-            f"W {self.k6221_roi['w']:g}，H {self.k6221_roi['h']:g}；"
+            f"W {self.k6221_roi['w']:g}, H {self.k6221_roi['h']:g}; "
             f"angle {self.k6221_roi['angle']:g}°"
         )
         self.keithley_status_var.set("ROI updated; scan parameters can be set")
@@ -27214,7 +27346,7 @@ class CombinedControlApp:
         )
 
     def _reset_k6221_readback(self, *, record_off: bool = True) -> None:
-        self.k6221_readback_output_var.set("OUTP：OFF")
+        self.k6221_readback_output_var.set("OUTP: OFF")
         self.k6221_compliance_state_var.set("Compliance state: --")
         if self.k6221_compliance_state_label is not None:
             self.k6221_compliance_state_label.configure(foreground="#666666")
@@ -27225,7 +27357,7 @@ class CombinedControlApp:
         output_on = bool(state.get("output_on"))
         in_compliance = bool(state.get("in_compliance"))
         self.k6221_readback_output_var.set(
-            f"OUTP：{'ON' if output_on else 'OFF'}"
+            f"OUTP: {'ON' if output_on else 'OFF'}"
         )
         if in_compliance:
             text_value, color = "✕ COMPLIANCE", "#d00018"
@@ -27500,13 +27632,269 @@ class CombinedControlApp:
             else:
                 self.k6221_output_var.set(
                     f"Done: {current_ma:+.6g} mA, {width_us:.6g} us "
-                    f"× {result['pulse_count']}；OFF"
+                    f"× {result['pulse_count']}; OFF"
                 )
                 self.k6221_status_var.set(
                     f"Pulse train complete; total waveform time about "
                     f"{result['total_time_s']:.6g} s, zeroed and output off"
                 )
         self._update_k6221_controls()
+
+    # ---- CIDWM pulse sign scan (user, 2026-10-12) ----------------------------
+
+    def _cidwm_snapshot(self) -> tuple[object, object, dict, float]:
+        """One camera frame's raw 16-bit image and processed (difference)
+        image, its processing settings and the ROI mean of the processed
+        image (NaN without an ROI), all from the same frame."""
+        camera = self.camera_window
+        frame = None if camera is None else camera.latest_frame
+        if frame is None or frame.raw is None or frame.display_difference is None:
+            raise RuntimeError(
+                "Start the camera and enable plain or drift-tracking difference first "
+                "(the processed image is the difference image)"
+            )
+        raw = np.asarray(frame.raw)
+        if raw.dtype != np.uint16 or raw.ndim != 2:
+            raise RuntimeError(
+                f"Unexpected camera raw frame format: dtype={raw.dtype}, shape={raw.shape}"
+            )
+        processed = np.asarray(frame.display_difference, dtype=np.float32)
+        if processed.ndim != 2 or not np.all(np.isfinite(processed)):
+            raise RuntimeError(f"Unexpected processed image: shape={processed.shape}")
+        settings = {
+            "mode": frame.background_mode,
+            "temporal_count": frame.temporal_average_count,
+            "spatial_binning": frame.spatial_binning,
+            "mean_filter_size": frame.mean_filter_size,
+        }
+        roi_mean = math.nan
+        if self.k6221_roi is not None:
+            values = values_inside_rotated_roi(processed, self.k6221_roi)
+            if values.size:
+                roi_mean = float(np.mean(values))
+        return raw.copy(), processed.copy(), settings, roi_mean
+
+    def _parse_cidwm_pulse_scan(self) -> dict:
+        current_a, width_s, compliance_v, _count = self._parse_k6221_output()
+        if not current_a:
+            raise ValueError("Pulse current |I| must be above 0 mA for the pulse sign scan")
+        signs = cidwm_sign_sequence(self.cidwm_scan_pulses_var.get(), self.cidwm_scan_signs_var.get())
+        try:
+            wait_s = float(self.cidwm_scan_wait_var.get())
+        except (TypeError, ValueError) as error:
+            raise ValueError("Wait after pulse s must be a number") from error
+        if not (math.isfinite(wait_s) and 0.0 <= wait_s <= 3600.0):
+            raise ValueError("Wait after pulse s must be within 0–3600 s")
+        return {
+            "current_ma": abs(current_a) * 1000.0, "width_s": width_s, "compliance_v": compliance_v,
+            "signs": signs, "wait_s": wait_s,
+            "signs_text": self.cidwm_scan_signs_var.get().strip(),
+        }
+
+    def start_cidwm_pulse_scan(self) -> None:
+        if not self.k6221_controller.connected:
+            messagebox.showwarning("CIDWM pulse sign scan", "Connect the 6221 first", parent=self.root)
+            return
+        if self.k6221_busy or self.k6221_scan_running:
+            return
+        if self.magnet_scan_running or self.keithley_scan_running:
+            messagebox.showwarning(
+                "CIDWM pulse sign scan", "A MOKE magnet or MOKE-24 scan is running", parent=self.root
+            )
+            return
+        if not self.k6221_safety_var.get():
+            messagebox.showwarning(
+                "CIDWM pulse sign scan", "Tick the 6221 safety confirmation first", parent=self.root
+            )
+            return
+        try:
+            settings = self._parse_cidwm_pulse_scan()
+            self._cidwm_snapshot()  # the camera and the difference image are ready
+        except (ValueError, RuntimeError) as error:
+            messagebox.showwarning("CIDWM pulse sign scan", str(error), parent=self.root)
+            return
+        signs = settings["signs"]
+        shown = "".join("+" if sign > 0 else "-" for sign in signs[:40]) + ("…" if len(signs) > 40 else "")
+        estimate = len(signs) * (2 * settings["width_s"] + settings["wait_s"] + 0.5)
+        if not messagebox.askyesno(
+            "Start the CIDWM pulse sign scan?",
+            f"{len(signs)} pulses of {settings['current_ma']:g} mA, "
+            f"{settings['width_s'] * 1e6:g} us, compliance {settings['compliance_v']:g} V\n"
+            f"Signs: {shown}\n"
+            f"After each pulse: wait {settings['wait_s']:g} s (at least the frames the processed image "
+            "averages), then save the raw 16-bit TIFF and the processed (difference) TIFF of the next "
+            "camera frame\n"
+            f"Estimated time: about {self._format_duration(estimate)}\n\n"
+            "The scan writes a run folder, with the images, a CSV and the parameter log, "
+            "in the folder you choose next. The 6221 is switched off after each pulse and at the end.",
+            icon="warning",
+            parent=self.root,
+        ):
+            return
+        folder = filedialog.askdirectory(
+            parent=self.root,
+            title="Select the folder for the CIDWM pulse sign scan",
+            initialdir=str(
+                self.cidwm_scan_directory if Path(self.cidwm_scan_directory).is_dir()
+                else Path(__file__).resolve().parent
+            ),
+        )
+        if not folder:
+            return
+        if self.k6221_busy or self.k6221_scan_running or not self.k6221_controller.connected:
+            return
+        self.cidwm_scan_directory = Path(folder)
+        try:
+            run_directory = self.create_scan_image_session(Path(folder), "CIDWM_pulse_sign_scan")
+            parameters = {
+                "pulses": len(signs), "signs_pattern": settings["signs_text"],
+                "signs": "".join("+" if sign > 0 else "-" for sign in signs),
+                "pulse_current_abs_mA": settings["current_ma"],
+                "pulse_width_us": settings["width_s"] * 1e6,
+                "compliance_V": settings["compliance_v"], "wait_after_pulse_s": settings["wait_s"],
+                "6221_resource": self.k6221_controller.resource_name,
+                "roi": self.k6221_roi,
+            }
+            self.write_parameter_log(
+                run_directory / f"{run_directory.name}_parameters.log",
+                self.format_parameter_log("CIDWM pulse sign scan parameter log", parameters),
+            )
+        except OSError as error:
+            messagebox.showerror("CIDWM pulse sign scan", f"Cannot create the run folder: {error}",
+                                 parent=self.root)
+            return
+        self.k6221_stop_event.clear()
+        self.k6221_scan_running = True
+        self.cidwm_scan_status_var.set(f"Pulse sign scan: {len(signs)} pulses; run folder {run_directory}")
+        self.k6221_status_var.set("CIDWM pulse sign scan running")
+        self._update_k6221_controls()
+        self._update_keithley_controls()
+        self._update_magnet_scan_controls()
+        future = self.k6221_executor.submit(self._cidwm_pulse_scan_worker, settings, run_directory)
+        future.add_done_callback(
+            lambda completed: self.post_ui(lambda: self._finish_cidwm_pulse_scan(completed))
+        )
+
+    def _cidwm_wait_s(self, settings: dict) -> float:
+        """Wait after pulse s, but at least the frames the processed image
+        averages (temporal average × exposure), so none of them is from
+        before the pulse ended."""
+        frame = getattr(self.camera_window, "latest_frame", None)
+        try:
+            averaged_s = float(frame.temporal_average_count) * float(frame.exposure_ms) / 1000.0
+        except (AttributeError, TypeError, ValueError):
+            averaged_s = 0.0
+        if not math.isfinite(averaged_s):
+            averaged_s = 0.0
+        return max(float(settings["wait_s"]), averaged_s)
+
+    def _cidwm_wait_for_new_frame(self, serial: int) -> bool:
+        """Until the camera shows a frame newer than ``serial`` (at most
+        CIDWM_SCAN_FRAME_TIMEOUT_S).  False if stopped."""
+        deadline = time.monotonic() + CIDWM_SCAN_FRAME_TIMEOUT_S
+        while getattr(self.camera_window, "latest_frame_serial", 0) <= serial:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"No new camera frame within {CIDWM_SCAN_FRAME_TIMEOUT_S:g} s after the pulse"
+                )
+            if self.k6221_stop_event.wait(0.05):
+                return False
+        return True
+
+    def _cidwm_pulse_scan_worker(self, settings: dict, run_directory: Path) -> dict:
+        """Each pulse: |I| with its sign (one pulse, the pulse output's width
+        and compliance), the 6221 off, Wait after pulse s, a camera frame
+        newer than the pulse, then its raw 16-bit and processed float32
+        TIFFs and a CSV row.  The 6221 ends off whatever happens."""
+        controller = self.k6221_controller
+        signs = settings["signs"]
+        done = 0
+        csv_path = Path(run_directory) / f"{Path(run_directory).name}.csv"
+        started = time.monotonic()
+        try:
+            with csv_path.open("x", newline="", encoding="utf-8-sig") as file:
+                writer = csv.writer(file)
+                writer.writerow((
+                    "pulse", "sign", "set_current_mA", "current_mA", "pulse_width_us",
+                    "compliance_V", "elapsed_s", "in_compliance", "roi_mean_processed",
+                    "processing", "raw_tiff", "processed_tiff",
+                ))
+                file.flush()
+                for index, sign in enumerate(signs, 1):
+                    if self.k6221_stop_event.is_set():
+                        break
+                    set_ma = sign * float(settings["current_ma"])
+                    label = "+" if sign > 0 else "-"
+                    self.post_ui(
+                        lambda n=index, text=label, value=set_ma: self.cidwm_scan_status_var.set(
+                            f"Pulse sign scan: pulse {n}/{len(signs)} ({text}), {value:+g} mA"
+                        )
+                    )
+                    try:
+                        actual = controller.set_dc_pulse(
+                            set_ma / 1000.0, settings["width_s"], settings["compliance_v"], 1
+                        )
+                        interrupted = self._wait_k6221_pulse_with_readback(actual)
+                    finally:
+                        controller.output_off()
+                    serial = getattr(self.camera_window, "latest_frame_serial", 0)
+                    self.post_ui(self._publish_k6221_off_state)
+                    if interrupted or self.k6221_stop_event.wait(self._cidwm_wait_s(settings)):
+                        break
+                    if not self._cidwm_wait_for_new_frame(serial):
+                        break
+                    raw, processed, processing, roi_mean = self._cidwm_snapshot()
+                    actual_ma = float(actual["current_a"]) * 1000.0
+                    stem = f"CIDWM_pulse{index:05d}_{'pos' if sign > 0 else 'neg'}_{actual_ma:+.6g}mA"
+                    raw_name = f"{stem}_raw16.tiff"
+                    processed_name = (
+                        f"{stem}_{self.processed_image_settings_suffix(processing)}_float32.tiff"
+                    )
+                    save_raw_u16_tiff(raw, Path(run_directory) / raw_name)
+                    save_processed_f32_tiff(processed, Path(run_directory) / processed_name)
+                    writer.writerow((
+                        index, label, f"{set_ma:.10g}", f"{actual_ma:.10g}",
+                        f"{settings['width_s'] * 1e6:.10g}", f"{settings['compliance_v']:.10g}",
+                        f"{time.monotonic() - started:.3f}", bool(actual.get("in_compliance")),
+                        "" if not math.isfinite(roi_mean) else f"{roi_mean:.10g}",
+                        self.processed_image_settings_suffix(processing), raw_name, processed_name,
+                    ))
+                    file.flush()
+                    done = index
+                    self.post_ui(
+                        lambda n=index, text=label, mean=roi_mean: self.cidwm_scan_status_var.set(
+                            f"Pulse sign scan: pulse {n}/{len(signs)} ({text}) saved"
+                            + (f"; ROI mean {mean:.6g}" if math.isfinite(mean) else "")
+                        )
+                    )
+        finally:
+            controller.output_off()
+        return {"done": done, "total": len(signs), "directory": str(run_directory)}
+
+    def _finish_cidwm_pulse_scan(self, future) -> None:
+        self.k6221_scan_running = False
+        self.k6221_current_ma = 0.0
+        self.k6221_output_var.set("Output: 0 mA / OFF")
+        self._reset_k6221_readback()
+        try:
+            result = future.result()
+        except BaseException as error:
+            self.cidwm_scan_status_var.set(f"Pulse sign scan failed: {short_status_error(error)}")
+            self.k6221_status_var.set("Pulse sign scan stopped by an error; 6221 output off")
+            if not self.closing:
+                messagebox.showerror("CIDWM pulse sign scan", str(error), parent=self.root)
+        else:
+            stopped = result["done"] < result["total"]
+            self.cidwm_scan_status_var.set(
+                f"Pulse sign scan {'stopped' if stopped else 'complete'}: "
+                f"{result['done']}/{result['total']} pulses saved in {result['directory']}"
+            )
+            self.k6221_status_var.set(
+                f"Pulse sign scan {'stopped' if stopped else 'complete'}; 6221 output off"
+            )
+        self._update_k6221_controls()
+        self._update_keithley_controls()
+        self._update_magnet_scan_controls()
 
     def edit_k6221_roi(self, action: str) -> None:
         if self.camera_window is None or self.k6221_roi is None:
@@ -27730,6 +28118,9 @@ class CombinedControlApp:
         )
         for button in (self.k6221_apply_button, self.k6221_apply_negative_button):
             button.configure(state="normal" if can_operate else "disabled")
+        if "cidwm_scan_start_button" in self.__dict__:
+            self.cidwm_scan_start_button.configure(state="normal" if can_operate else "disabled")
+            self.cidwm_scan_stop_button.configure(state="normal" if running else "disabled")
         self.k6221_off_button.configure(state="normal" if connected else "disabled")
         edit_state = (
             "normal"
@@ -28619,7 +29010,7 @@ class CombinedControlApp:
                 errors.append(str(error))
         self.nonlocal_vi_interlock.force_idle()
         if errors:
-            raise RuntimeError("；".join(errors))
+            raise RuntimeError("; ".join(errors))
 
     def _finish_nonlocal_vi_disconnect(self, error) -> None:
         self.nonlocal_vi_busy = bool(self.__dict__.get("nonlocal_vi_off_pending"))
@@ -29048,7 +29439,7 @@ class CombinedControlApp:
             )
             return
         orders = settings["lockin_orders"]
-        lockin_description = "；".join(
+        lockin_description = "; ".join(
             f"SR830 #{key}: {config['coupling']} coupling, "
             + (
                 f"{'ω, then '.join(map(str, orders[key]))}ω at each point "
@@ -29062,7 +29453,7 @@ class CombinedControlApp:
         if settings["mfli_config"]:
             config = settings["mfli_config"]
             lockin_description = (
-                (lockin_description + "；") if lockin_description else ""
+                (lockin_description + "; ") if lockin_description else ""
             ) + (
                 f"Zurich MFLI ({config['reference_source']} ext. ref): "
                 f"{config['coupling']} coupling, "
@@ -29071,14 +29462,14 @@ class CombinedControlApp:
                     if len(orders["mfli"]) > 1 else f"{config['harmonic']}ω"
                 )
                 + f", reading {config['channel']}, autorange, "
-                f"Signal Input 1：{config['input_impedance']}、"
-                f"Scaling {config['input_scaling']:g}，"
-                f"τ={config['timeconstant_s']:g} s (rack TC)，"
+                f"Signal Input 1: {config['input_impedance']}, "
+                f"Scaling {config['input_scaling']:g}, "
+                f"τ={config['timeconstant_s']:g} s (rack TC), "
                 f"{NONLOCAL_LOCKIN_FILTER_ORDER}th-order low-pass"
             )
         if settings["use_nanovoltmeter"]:
             lockin_description = (
-                (lockin_description + "；") if lockin_description else ""
+                (lockin_description + "; ") if lockin_description else ""
             ) + (
                 "Keithley 2182A: channel 1 DC reading (not a lock-in AC amplitude), "
                 "NPLC 1, Autozero + Front Autozero, autorange"
@@ -29098,13 +29489,13 @@ class CombinedControlApp:
                 + f" = {points * loops * len(frequencies)} points\n"
                 if loops > 1 or len(frequencies) > 1 else f"{points} points\n"
             )
-            + f"6221：{settings['current_rms_ma']:g} "
+            + f"6221: {settings['current_rms_ma']:g} "
             + (
                 f"mA RMS; frequency scan: {len(frequencies)} prime(s), "
                 f"{frequencies[0]:g}–{frequencies[-1]:g} Hz, the whole pulse scan at each "
                 "(6221 set up again in between)\n"
                 if settings["frequency_scan"]
-                else f"{'mA RMS，' + format(settings['frequency_hz'], 'g') + ' Hz' if settings['output_mode'] == 'AC' else 'mA DC'}\n"
+                else f"{'mA RMS, ' + format(settings['frequency_hz'], 'g') + ' Hz' if settings['output_mode'] == 'AC' else 'mA DC'}\n"
             )
             + 
             f"Resistance gate: {settings['gate_resistance_ohm'] / 1e6:g} MΩ\n"
@@ -29233,7 +29624,7 @@ class CombinedControlApp:
                 errors.append(str(error))
         self.nonlocal_vi_interlock.force_idle()
         if errors:
-            raise RuntimeError("；".join(errors))
+            raise RuntimeError("; ".join(errors))
         return tuple(confirmed)
 
     def _nonlocal_vi_record_pulse(
@@ -29940,7 +30331,7 @@ class CombinedControlApp:
         )
         if error is not None and not isinstance(error, NonLocalVIStopped):
             self.nonlocal_vi_status_var.set(
-                f"VI failed: {short_status_error(error).rstrip(';；')}"
+                f"VI failed: {short_status_error(error).rstrip(';')}"
                 + ("; all outputs off (read back)" if outputs_off else off_note)
                 + snapshot_note
             )
@@ -30830,7 +31221,7 @@ class CombinedControlApp:
             )
         except BaseException as error:
             self.nonlocal_vi_status_var.set(
-                f"Resistance measurement stopped by an error: {short_status_error(error).rstrip(';；')}"
+                f"Resistance measurement stopped by an error: {short_status_error(error).rstrip(';')}"
                 + self._nonlocal_output_warning()
             )
             if not self.closing:
@@ -31040,7 +31431,7 @@ class CombinedControlApp:
                 )
             else:
                 self.nonlocal_vi_status_var.set(
-                    f"Set {model} failed: {short_status_error(error).rstrip(';；')}"
+                    f"Set {model} failed: {short_status_error(error).rstrip(';')}"
                     + ("; output off (read back)" if off else "; check the output")
                     + self._nonlocal_output_warning()
                 )
@@ -31114,7 +31505,7 @@ class CombinedControlApp:
             )
         except BaseException as error:
             self.nonlocal_vi_status_var.set(
-                f"{model} pulse failed: {short_status_error(error).rstrip(';；')}"
+                f"{model} pulse failed: {short_status_error(error).rstrip(';')}"
                 + self._nonlocal_output_warning()
             )
             if not self.closing:
@@ -31349,7 +31740,7 @@ class CombinedControlApp:
             )
         except BaseException as error:
             self.nonlocal_vi_status_var.set(
-                f"2400-IV sweep stopped by an error after {done}/{total} points: {short_status_error(error).rstrip(';；')}"
+                f"2400-IV sweep stopped by an error after {done}/{total} points: {short_status_error(error).rstrip(';')}"
                 + self._nonlocal_output_warning() + "." + name
             )
             if not self.closing:
@@ -31815,7 +32206,7 @@ class CombinedControlApp:
                 )
             else:
                 self.nonlocal_vi_status_var.set(
-                    f"Set 6221 failed: {short_status_error(error).rstrip(';；')}"
+                    f"Set 6221 failed: {short_status_error(error).rstrip(';')}"
                     + ("; 6221 output off (read back)" if off else "; check the 6221 output")
                 )
             if not self.closing and not isinstance(error, InterruptedError):
@@ -32413,11 +32804,11 @@ class CombinedControlApp:
             )
         except BaseException as error:
             self.nonlocal_iv6221_status_var.set(
-                f"Failed: {short_status_error(error, 100).rstrip(';；')}"
+                f"Failed: {short_status_error(error, 100).rstrip(';')}"
             )
             self.nonlocal_vi_status_var.set(
                 f"6221-IV scan stopped by an error after {done}/{total} points: "
-                f"{short_status_error(error).rstrip(';；')}" + self._nonlocal_output_warning()
+                f"{short_status_error(error).rstrip(';')}" + self._nonlocal_output_warning()
             )
             if not self.closing:
                 messagebox.showerror("6221-IV scan failed", str(error), parent=self.root)
@@ -35554,7 +35945,7 @@ class CombinedControlApp:
                     ):
                         warning = "; reference WARNING"
                     self.ppms_transport_status_var.set(
-                        "；".join(
+                        "; ".join(
                             f"#{address} " + ("LOCK" if sample[f'sr830_{address}_reference_valid'] else "WARNING")
                             for address in addresses
                         ) + warning
@@ -35845,7 +36236,7 @@ class CombinedControlApp:
                 except BaseException as error:
                     errors.append(f"{key}: {error}")
             if errors:
-                raise RuntimeError("；".join(errors))
+                raise RuntimeError("; ".join(errors))
             return (" / ".join(confirmed) + " output OFF confirmed by readback"
                     if confirmed else "No source meter connected; output state cannot be confirmed")
 
@@ -35958,7 +36349,7 @@ class CombinedControlApp:
         try:
             self.stfmr_mfli_controller.disconnect_mfli()
         except BaseException as error:
-            errors.append(f"MFLI：{error}")
+            errors.append(f"MFLI: {error}")
         for controller in self.stfmr_controllers.values():
             try:
                 controller.disconnect()
@@ -35997,18 +36388,18 @@ class CombinedControlApp:
         try:
             self.stfmr_lockin_controllers["kepco"].zero_output()
         except BaseException as error:
-            errors.append(f"4886：{error}")
+            errors.append(f"4886: {error}")
         try:
             self.stfmr_lockin_controllers["smb"].rf_off()
         except BaseException as error:
-            errors.append(f"SMB100A：{error}")
+            errors.append(f"SMB100A: {error}")
         errors.extend(self._close_stfmr_lockin_recording(
             "closed", shutdown_errors=list(errors), outputs_off=not errors,
         ))
         try:
             self.stfmr_lockin_mfli_controller.disconnect_mfli()
         except BaseException as error:
-            errors.append(f"MFLI：{error}")
+            errors.append(f"MFLI: {error}")
         for controller in self.stfmr_lockin_controllers.values():
             try:
                 controller.disconnect()
@@ -36175,7 +36566,7 @@ class CombinedControlApp:
 
     def append_magnet_log(self, message: str) -> None:
         if message.startswith("ERROR") or "warning" in message.lower():
-            self.append_log("MOKE：" + message)
+            self.append_log("MOKE:" + message)
 
     def refresh_ports(self) -> None:
         ports = [] if list_ports is None else [port.device for port in list_ports.comports()]
@@ -37916,7 +38307,7 @@ class PPMSPanel(CombinedControlApp):
         self.zurich_values.set(
             f"X: {sample['X']:.7g} V    Y: {sample['Y']:.7g} V    R: {sample['R']:.7g} V    "
             f"θ: {sample['phase_deg']:.4f}°    Ref: {sample['reference_frequency_hz']:.4f} Hz")
-        self.zurich_status.set(("LOCK" if sample['reference_valid'] else "WARNING") + "；" + str(sample['status_text']))
+        self.zurich_status.set(("LOCK" if sample['reference_valid'] else "WARNING") + "; " + str(sample['status_text']))
         self._set_connection_indicator("zurich_reference", bool(sample['reference_valid']),
             fault=bool(sample.get('input_overload')))
         # One Signal Input 1 range serves every demodulator, so this is the

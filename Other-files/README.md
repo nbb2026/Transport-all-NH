@@ -1,5 +1,56 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## CIDWM pulse sign scan; every dialog and label in English (2026-10-12)
+
+### Pulse sign scan (CIDWM)
+
+The user asked for a scan that sets the pulse count and each pulse's sign,
+and saves the raw TIFF and the processed TIFF after each pulse.
+
+- **Row:** "Pulse sign scan (raw + processed TIFF after each pulse)" sits
+  under the pulse output. Its fields are Pulses (10), Signs (+-) and Wait
+  after pulse s (1).
+  - Signs holds + and − for each pulse and repeats to fill Pulses: +-
+    alternates, ++-- goes in pairs.
+  - Each pulse uses the pulse output's |I|, width and compliance.
+- **Each pulse:**
+  1. One pulse at ±|I|; then the 6221 is off.
+  2. Wait after pulse s, but at least as long as the frames the processed
+     image averages (temporal average × exposure).
+  3. Wait for a camera frame newer than the pulse (at most 10 s, else the
+     scan stops with an error).
+  4. Save that frame's raw 16-bit TIFF and its processed (difference)
+     float32 TIFF:
+     `CIDWM_pulse00001_pos_+2mA_raw16.tiff` and
+     `…_TrackingDiff_Avg4_Bin2x2_Mean1x1_float32.tiff`.
+  5. Write a CSV row: sign, current, time, compliance, the ROI mean of the
+     processed image, and the two file names.
+- **Before it starts:** it needs the camera running with plain or
+  drift-tracking difference on. The confirmation shows the signs and the
+  time. It writes a run folder `CIDWM_pulse_sign_scan_<time>` with a
+  parameter log.
+- **Stop:** Stop, or the red button, ends it after the current pulse. The
+  6221 is off after each pulse and at the end, whatever happens.
+- **Camera:** the camera window now counts its frames
+  (`latest_frame_serial`).
+- **Tests:**
+  - `test_cidwm_pulse_scan.py`: 8 tests, no Tk.
+  - `test_panel_defaults.py`: the row.
+
+### Every window in English
+
+- **Dialogs:** on Windows, Tk's message boxes and file dialogs were the
+  Windows ones, with buttons in the language of Windows (是/否 on the lab
+  PC). `use_english_tk_dialogs` points tk_messageBox, tk_getOpenFile,
+  tk_getSaveFile and tk_chooseDirectory at Tk's own dialogs and sets
+  msgcat to English. Every Yes/No, OK and open/save/folder dialog is now
+  in English, through the same tkinter calls.
+  - The file dialogs look like Tk's (not Explorer's).
+  - CI opens a real Yes/No box and checks it reads Yes / No.
+- **Punctuation:** about 80 texts used full-width Chinese punctuation, such
+  as "ROI mean：", "OUTP：OFF", "；", "，", "（）" and "～". They now use ASCII
+  punctuation. MS-fourState's copied code was refreshed with it.
+
 ## CIDWM: negative pulses (2026-10-12)
 
 - **The buttons:** "Apply +I pulse" and "Apply −I pulse" replace "Apply pulse
