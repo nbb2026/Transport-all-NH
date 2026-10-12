@@ -1,11 +1,13 @@
 """CIDWM pulse sign scan (user, 2026-10-12): Pulses pulses, each with its
 sign from Signs, and after each the raw 16-bit and the processed TIFF of a
-camera frame newer than the pulse.
+camera frame whose processed image holds only frames taken after the pulse.
 
 No Tk and no instrument: a stand-in 6221 and camera."""
 import csv
+import math
 import tempfile
 import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -18,24 +20,30 @@ from test_nonlocal_keithley import Var, bare_app
 from test_ppms_motor_debug import app
 
 
-class Camera:
-    """Each read of the serial is a newer frame, as when the camera runs."""
+def frame(window_start, value=0):
+    return types.SimpleNamespace(
+        raw=np.arange(12, dtype=np.uint16).reshape(3, 4) + value,
+        display_difference=np.linspace(-1.0, 1.0, 12, dtype=np.float32).reshape(3, 4) + value,
+        background_mode="tracking", temporal_average_count=4, spatial_binning=2,
+        mean_filter_size=1, exposure_ms=1.0, window_start_monotonic=window_start,
+    )
 
-    def __init__(self, frames=True):
-        self.serial = 0
-        self.frames = frames
-        self.latest_frame = types.SimpleNamespace(
-            raw=np.arange(12, dtype=np.uint16).reshape(3, 4),
-            display_difference=np.linspace(-1.0, 1.0, 12, dtype=np.float32).reshape(3, 4),
-            background_mode="tracking", temporal_average_count=4, spatial_binning=2,
-            mean_filter_size=1, exposure_ms=1.0,
-        )
+
+class Camera:
+    """The running camera: the latest frame's average began just now, after
+    any pulse.  ``stale`` reads first give a frame begun before the pulse."""
+
+    def __init__(self, frames=True, stale=0):
+        self.frames, self.stale = frames, stale
 
     @property
-    def latest_frame_serial(self):
-        if self.frames:
-            self.serial += 1
-        return self.serial
+    def latest_frame(self):
+        if not self.frames:
+            return frame(0.0)        # the average began long before any pulse
+        if self.stale:
+            self.stale -= 1
+            return frame(time.monotonic() - 10.0, value=100)
+        return frame(time.monotonic())
 
 
 class Source:
@@ -118,12 +126,13 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(rows[1]["processed_tiff"],
                          "CIDWM_pulse00002_neg_-2mA_TrackingDiff_Avg4_Bin2x2_Mean1x1_float32.tiff")
         self.assertTrue(rows[0]["roi_mean_processed"], "the ROI mean of the processed image")
-        frame = a.camera_window.latest_frame
+        expected = frame(0.0)
         raw = np.asarray(Image.open(self.folder / rows[0]["raw_tiff"]))
         processed = np.asarray(Image.open(self.folder / rows[0]["processed_tiff"]))
         self.assertEqual(raw.dtype, np.uint16)
-        np.testing.assert_array_equal(raw, frame.raw)
-        np.testing.assert_allclose(processed, frame.display_difference)
+        np.testing.assert_array_equal(raw, expected.raw)
+        np.testing.assert_allclose(processed, expected.display_difference)
+        self.assertEqual({r["note"] for r in rows}, {""})
         self.assertEqual(len(list(self.folder.glob("*.tiff"))), 6)
 
     def test_a_stop_ends_after_the_pulse_with_the_6221_off(self):
@@ -135,26 +144,74 @@ class WorkerTests(unittest.TestCase):
         result = a._cidwm_pulse_scan_worker(SETTINGS, self.folder)
         self.assertEqual(result["done"], 1)
         self.assertEqual([c[0] for c in source.calls], ["pulse", "off", "pulse", "off", "off"])
+        with (self.folder / "run.csv").open(encoding="utf-8-sig") as file:
+            rows = list(csv.DictReader(file))
+        # Review, 2026-10-12: the second pulse was applied, so it has its row.
+        self.assertEqual([(r["pulse"], r["note"], r["raw_tiff"]) for r in rows],
+                         [("1", "", rows[0]["raw_tiff"]), ("2", "stopped before the images were saved", "")])
+        self.assertTrue(a.cidwm_scan_off_confirmed)
 
-    def test_no_new_frame_fails_with_the_6221_off(self):
+    def test_no_frame_after_the_pulse_fails_with_a_row_and_the_6221_off(self):
         a = page(camera=Camera(frames=False))
         with mock.patch.object(app, "CIDWM_SCAN_FRAME_TIMEOUT_S", 0.1):
-            with self.assertRaisesRegex(RuntimeError, "No new camera frame"):
+            with self.assertRaisesRegex(RuntimeError, "No camera frame taken wholly after the pulse"):
                 a._cidwm_pulse_scan_worker(SETTINGS, self.folder)
         self.assertEqual(a.k6221_controller.calls[-1], ("off",))
+        with (self.folder / "run.csv").open(encoding="utf-8-sig") as file:
+            rows = list(csv.DictReader(file))
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["note"].startswith("images not saved: No camera frame"))
 
-    def test_the_wait_covers_the_averaged_frames(self):
-        a = page()
-        a.camera_window.latest_frame.temporal_average_count = 8
-        a.camera_window.latest_frame.exposure_ms = 100.0
-        self.assertAlmostEqual(a._cidwm_wait_s(dict(SETTINGS, wait_s=0.2)), 0.8)
-        self.assertAlmostEqual(a._cidwm_wait_s(dict(SETTINGS, wait_s=2.0)), 2.0)
+    def test_a_frame_begun_before_the_pulse_is_not_saved(self):
+        """Review, 2026-10-12: the processed image averages a block of
+        frames with a cross-fade, so the scan waits for a frame whose oldest
+        frame began after the pulse."""
+        a = page(camera=Camera(stale=3))
+        a._cidwm_pulse_scan_worker(dict(SETTINGS, signs=(1,)), self.folder)
+        raw = np.asarray(Image.open(next(self.folder.glob("*_raw16.tiff"))))
+        np.testing.assert_array_equal(raw, frame(0.0).raw, "not the stale frame (raw + 100)")
 
     def test_no_difference_image_is_refused(self):
         a = page()
-        a.camera_window.latest_frame.display_difference = None
+        stale = frame(0.0)
+        stale.display_difference = None
         with self.assertRaisesRegex(RuntimeError, "enable plain or drift-tracking difference"):
-            a._cidwm_snapshot()
+            a._cidwm_snapshot(stale)
+
+
+class WindowStartTests(unittest.TestCase):
+    """The camera's block average with its cross-fade: each displayed image
+    carries the exposure start of its oldest frame."""
+
+    def setUp(self):
+        patcher = mock.patch.object(app, "np", np)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.worker = app.CameraAcquisitionWorker.__new__(app.CameraAcquisitionWorker)
+        self.worker._reset_difference_display_average()
+
+    def starts(self, count, frames):
+        starts = []
+        for index in range(frames):
+            self.worker._difference_for_display(
+                np.full((2, 2), float(index), dtype=np.float32), count, 1, 1, False, float(index)
+            )
+            starts.append(self.worker.display_window_start)
+        return starts
+
+    def test_a_block_of_four_and_its_cross_fade(self):
+        # Frames 0-3 fill the first block (from 0); then each cross-faded
+        # image still holds that block (from 0) until frame 7 completes the
+        # next one (from 4).
+        self.assertEqual(self.starts(4, 12), [0, 0, 0, 0, 0, 0, 0, 4, 4, 4, 4, 8])
+
+    def test_no_average(self):
+        self.assertEqual(self.starts(1, 3), [0, 1, 2])
+
+    def test_a_reset_starts_afresh(self):
+        self.starts(4, 6)
+        self.worker._difference_for_display(np.zeros((2, 2), np.float32), 4, 1, 1, True, 50.0)
+        self.assertEqual(self.worker.display_window_start, 50.0)
 
 
 if __name__ == "__main__":

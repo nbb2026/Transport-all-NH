@@ -55,12 +55,139 @@ foreach {command target} {
 """
 
 
+_ENGLISH_MESSAGE_BUTTONS = {
+    "ok": (("ok", "OK"),),
+    "okcancel": (("ok", "OK"), ("cancel", "Cancel")),
+    "yesno": (("yes", "Yes"), ("no", "No")),
+    "yesnocancel": (("yes", "Yes"), ("no", "No"), ("cancel", "Cancel")),
+    "retrycancel": (("retry", "Retry"), ("cancel", "Cancel")),
+    "abortretryignore": (("abort", "Abort"), ("retry", "Retry"), ("ignore", "Ignore")),
+}
+_ENGLISH_MESSAGE_ICONS = {"error": "error", "warning": "warning", "info": "information",
+                          "question": "question"}
+
+
+def english_message_box(title=None, message=None, _icon=None, _type=None, **options) -> str:
+    """tkinter.messagebox's boxes, in English, each its own window with its
+    own answer (review, 2026-10-12: Tk's own message box shares one window
+    and one answer, so a box popping up over another closed it and gave the
+    first the second's answer).  The buttons sit at the bottom, so a long
+    message never pushes them off the screen.  Returns what tk_messageBox
+    returns ("yes", "no", "ok", "cancel" ...)."""
+    kind = str(options.get("type") or _type or "ok")
+    buttons = _ENGLISH_MESSAGE_BUTTONS.get(kind, _ENGLISH_MESSAGE_BUTTONS["ok"])
+    names = [name for name, _text in buttons]
+    default = str(options.get("default") or names[0])
+    # Closing the window or Escape: the safe answer.
+    cancel = next((name for name in ("cancel", "no", "abort", "ok") if name in names), names[-1])
+    parent = options.get("parent") or getattr(tk, "_default_root", None)
+    if parent is None:
+        raise RuntimeError("A message box needs a Tk window")
+    top = tk.Toplevel(parent, class_="EnglishMessageBox")
+    top.withdraw()
+    top.title(str(title or ""))
+    try:
+        owner = parent.winfo_toplevel()
+        if owner.winfo_viewable():
+            top.transient(owner)
+    except tk.TclError:
+        owner = None
+    answer = tk.StringVar(top, value=cancel)
+    bar = ttk.Frame(top, padding=(12, 0, 12, 12), name="buttons")
+    bar.pack(side="bottom", fill="x")
+    row = ttk.Frame(bar)
+    row.pack(side="right")
+    widgets = {}
+    for name, text in buttons:
+        button = ttk.Button(row, text=text, name=name, command=lambda value=name: answer.set(value))
+        button.pack(side="left", padx=(6, 0))
+        widgets[name] = button
+    body = ttk.Frame(top, padding=(12, 12, 12, 8))
+    body.pack(side="top", fill="both", expand=True)
+    icon = _ENGLISH_MESSAGE_ICONS.get(str(options.get("icon") or _icon or "info"), "information")
+    image = f"::tk::icons::{icon}"
+    try:
+        has_image = image in top.tk.splitlist(top.tk.call("image", "names"))
+    except tk.TclError:
+        has_image = False
+    if has_image:
+        ttk.Label(body, image=image).pack(side="left", anchor="n", padx=(0, 12))
+    else:
+        tk.Label(body, bitmap={"information": "info"}.get(icon, icon)).pack(
+            side="left", anchor="n", padx=(0, 12)
+        )
+    text = ttk.Frame(body)
+    text.pack(side="left", fill="both", expand=True)
+    try:
+        wrap = max(360, min(640, int(top.winfo_screenwidth() * 0.4)))
+    except tk.TclError:
+        wrap = 520
+    ttk.Label(text, text=str(message or ""), wraplength=wrap, justify="left").pack(anchor="w")
+    if options.get("detail"):
+        ttk.Label(text, text=str(options["detail"]), wraplength=wrap, justify="left").pack(
+            anchor="w", pady=(6, 0)
+        )
+    top.protocol("WM_DELETE_WINDOW", lambda: answer.set(cancel))
+    top.bind("<Escape>", lambda _event: answer.set(cancel))
+
+    def press(_event=None) -> None:
+        # Return presses the focused button, else the default one.
+        focused = top.focus_get()
+        target = focused if focused in widgets.values() else widgets.get(default, widgets[names[0]])
+        target.invoke()
+
+    top.bind("<Return>", press)
+    top.update_idletasks()
+    width, height = top.winfo_reqwidth(), top.winfo_reqheight()
+    try:
+        if owner is not None and owner.winfo_viewable():
+            x = owner.winfo_rootx() + (owner.winfo_width() - width) // 2
+            y = owner.winfo_rooty() + (owner.winfo_height() - height) // 3
+        else:
+            x = (top.winfo_screenwidth() - width) // 2
+            y = (top.winfo_screenheight() - height) // 3
+        x = max(0, min(x, top.winfo_screenwidth() - width))
+        y = max(0, min(y, top.winfo_screenheight() - height - 40))
+        top.geometry(f"+{x}+{y}")
+    except tk.TclError:
+        pass
+    top.deiconify()
+    previous_grab = top.grab_current()
+    try:
+        top.grab_set()
+    except tk.TclError:
+        pass
+    widgets.get(default, widgets[names[0]]).focus_set()
+    try:
+        top.wait_variable(answer)
+        value = answer.get()
+    finally:
+        try:
+            top.grab_release()
+            top.destroy()
+        except tk.TclError:
+            pass
+        if previous_grab is not None:
+            try:
+                if previous_grab.winfo_exists():
+                    previous_grab.grab_set()
+            except tk.TclError:
+                pass
+    return value
+
+
 def use_english_tk_dialogs(root: tk.Misc) -> bool:
     """Message boxes (Yes/No, OK) and the open, save and folder dialogs in
     English, whatever the language of Windows.  tkinter's messagebox and
     filedialog call the Tk commands replaced here, so every call site is
     covered.  On X11 Tk's own dialogs are already used.  Returns whether
     Tk's own dialogs are in use."""
+    # tkinter.messagebox's functions all go through _show: each box becomes
+    # its own window (english_message_box).  Tcl's own tk_messageBox (the
+    # file dialogs' "overwrite?") is Tk's English one, below.
+    import tkinter.messagebox as tk_messagebox
+    if hasattr(tk_messagebox, "_show"):
+        tk_messagebox._show = english_message_box
     try:
         system = str(root.tk.call("tk", "windowingsystem"))
         if system == "x11":
@@ -10727,6 +10854,15 @@ class CameraFrame:
     temporal_average_count: int
     spatial_binning: int
     mean_filter_size: int
+    # time.monotonic() when the oldest raw frame in display_difference began
+    # its exposure (NaN without a difference image), so a scan can tell when
+    # every frame in the average came after its pulse (CIDWM, 2026-10-12).
+    window_start_monotonic: float = math.nan
+
+
+# Margin on a frame's exposure start (the frame's arrival less its exposure):
+# readout and transfer make the true start earlier, never later.
+CAMERA_EXPOSURE_START_MARGIN_S = 0.05
 
 
 class CameraVideoRecorder:
@@ -11104,6 +11240,8 @@ class CameraAcquisitionWorker:
         self._difference_average_sum = None
         self._difference_average_samples = 0
         self._difference_average_previous = None
+        self._difference_average_start = math.nan
+        self._difference_average_previous_start = math.nan
 
     def _difference_for_display(
         self,
@@ -11112,12 +11250,17 @@ class CameraAcquisitionWorker:
         spatial_binning: int,
         mean_filter_size: int,
         reset: bool,
+        exposure_start: float = math.nan,
     ):
+        """The displayed difference; ``display_window_start`` is then the
+        exposure start of the oldest frame in it (``exposure_start`` of each
+        frame), the block average's cross-fade included."""
         if reset:
             self._reset_difference_display_average()
         source = np.asarray(difference, dtype=np.float32)
         if temporal_count <= 1:
             display = source
+            self.display_window_start = exposure_start
         else:
             if (
                 self._difference_average_sum is not None
@@ -11127,20 +11270,29 @@ class CameraAcquisitionWorker:
             if self._difference_average_sum is None:
                 self._difference_average_sum = source.copy()
                 self._difference_average_samples = 1
+                self._difference_average_start = exposure_start
             else:
                 self._difference_average_sum += source
                 self._difference_average_samples += 1
             samples = self._difference_average_samples
+            block_start = self.__dict__.get("_difference_average_start", math.nan)
             if samples >= temporal_count:
                 display = self._difference_average_sum / float(temporal_count)
                 self._difference_average_previous = display
+                self._difference_average_previous_start = block_start
+                self.display_window_start = block_start
                 self._difference_average_sum = None
                 self._difference_average_samples = 0
             elif self._difference_average_previous is None:
                 # Initial fill: progressively improve instead of showing a
                 # blank image while the first averaging block fills.
                 display = self._difference_average_sum / float(samples)
+                self.display_window_start = block_start
             else:
+                # The last completed block is part of it: it is the oldest.
+                self.display_window_start = self.__dict__.get(
+                    "_difference_average_previous_start", math.nan
+                )
                 # Cross-fade the last completed block into the accumulating
                 # block.  This updates every frame with only two full-size
                 # float arrays instead of retaining every frame in memory.
@@ -11272,6 +11424,10 @@ class CameraAcquisitionWorker:
                         )
                 camera.wait_for_new_image()
                 image_raw, _metadata = camera.image(0xFFFFFFFF)
+                # When this frame began its exposure, at the latest.
+                exposure_start = (
+                    time.monotonic() - self.active_exposure_s - CAMERA_EXPOSURE_START_MARGIN_S
+                )
                 image_raw = orient_camera_image(image_raw)
 
                 with self.settings_lock:
@@ -11321,7 +11477,9 @@ class CameraAcquisitionWorker:
                         spatial_binning,
                         mean_filter_size,
                         reset_display_average,
+                        exposure_start,
                     )
+                    window_start = self.display_window_start
                     # Display-side contrast needs the current viewport, which
                     # is owned by Tk.  Keep only a shape-compatible placeholder
                     # here; TkCameraWindow._draw builds the visible preview.
@@ -11329,6 +11487,7 @@ class CameraAcquisitionWorker:
                 else:
                     difference = None
                     display_difference = None
+                    window_start = math.nan
                     if reset_display_average:
                         self._reset_difference_display_average()
                     dx, dy, response = 0.0, 0.0, 0.0
@@ -11359,6 +11518,7 @@ class CameraAcquisitionWorker:
                     temporal_average_count=temporal_average_count,
                     spatial_binning=spatial_binning,
                     mean_filter_size=mean_filter_size,
+                    window_start_monotonic=window_start,
                 )
                 self._put_latest(frame)
         except BaseException as error:
@@ -11432,9 +11592,6 @@ class TkCameraWindow:
 
         self.worker = CameraAcquisitionWorker(self.app.thread_log)
         self.latest_frame: CameraFrame | None = None
-        # Counts the frames shown, so a scan can wait for one newer than its
-        # pulse (CIDWM pulse sign scan).
-        self.latest_frame_serial = 0
         # Marker-free copy of the most recently rendered image plus its Canvas
         # placement.  The black letterbox is assembled only when Save is
         # clicked, avoiding a full-Canvas allocation on every live frame.
@@ -11600,7 +11757,6 @@ class TkCameraWindow:
                 break
         if newest is not None:
             self.latest_frame = newest
-            self.latest_frame_serial = getattr(self, "latest_frame_serial", 0) + 1
             if not self.connection_announced:
                 self.connection_announced = True
                 self.app.camera_connection_ready()
@@ -27642,12 +27798,14 @@ class CombinedControlApp:
 
     # ---- CIDWM pulse sign scan (user, 2026-10-12) ----------------------------
 
-    def _cidwm_snapshot(self) -> tuple[object, object, dict, float]:
-        """One camera frame's raw 16-bit image and processed (difference)
-        image, its processing settings and the ROI mean of the processed
-        image (NaN without an ROI), all from the same frame."""
-        camera = self.camera_window
-        frame = None if camera is None else camera.latest_frame
+    def _cidwm_snapshot(self, frame=None) -> tuple[object, object, dict, float]:
+        """One camera frame's (the latest unless given) raw 16-bit image and
+        processed (difference) image, its processing settings and the ROI
+        mean of the processed image (NaN without an ROI), all from the same
+        frame."""
+        if frame is None:
+            camera = self.camera_window
+            frame = None if camera is None else camera.latest_frame
         if frame is None or frame.raw is None or frame.display_difference is None:
             raise RuntimeError(
                 "Start the camera and enable plain or drift-tracking difference first "
@@ -27721,9 +27879,9 @@ class CombinedControlApp:
             f"{len(signs)} pulses of {settings['current_ma']:g} mA, "
             f"{settings['width_s'] * 1e6:g} us, compliance {settings['compliance_v']:g} V\n"
             f"Signs: {shown}\n"
-            f"After each pulse: wait {settings['wait_s']:g} s (at least the frames the processed image "
-            "averages), then save the raw 16-bit TIFF and the processed (difference) TIFF of the next "
-            "camera frame\n"
+            f"After each pulse: wait {settings['wait_s']:g} s, then for a camera frame whose processed "
+            "image holds only frames taken after the pulse; save its raw 16-bit TIFF and its processed "
+            "(difference) TIFF\n"
             f"Estimated time: about {self._format_duration(estimate)}\n\n"
             "The scan writes a run folder, with the images, a CSV and the parameter log, "
             "in the folder you choose next. The 6221 is switched off after each pulse and at the end.",
@@ -27775,31 +27933,29 @@ class CombinedControlApp:
             lambda completed: self.post_ui(lambda: self._finish_cidwm_pulse_scan(completed))
         )
 
-    def _cidwm_wait_s(self, settings: dict) -> float:
-        """Wait after pulse s, but at least the frames the processed image
-        averages (temporal average × exposure), so none of them is from
-        before the pulse ended."""
+    def _cidwm_frame_after(self, pulse_end: float):
+        """The first camera frame whose processed image holds only frames
+        that began exposing after ``pulse_end`` (the oldest frame of its
+        average, cross-fade included).  None if stopped; raises if none
+        comes within CIDWM_SCAN_FRAME_TIMEOUT_S plus two averaging blocks."""
         frame = getattr(self.camera_window, "latest_frame", None)
         try:
-            averaged_s = float(frame.temporal_average_count) * float(frame.exposure_ms) / 1000.0
+            block_s = 2.0 * float(frame.temporal_average_count) * float(frame.exposure_ms) / 1000.0
         except (AttributeError, TypeError, ValueError):
-            averaged_s = 0.0
-        if not math.isfinite(averaged_s):
-            averaged_s = 0.0
-        return max(float(settings["wait_s"]), averaged_s)
-
-    def _cidwm_wait_for_new_frame(self, serial: int) -> bool:
-        """Until the camera shows a frame newer than ``serial`` (at most
-        CIDWM_SCAN_FRAME_TIMEOUT_S).  False if stopped."""
-        deadline = time.monotonic() + CIDWM_SCAN_FRAME_TIMEOUT_S
-        while getattr(self.camera_window, "latest_frame_serial", 0) <= serial:
+            block_s = 0.0
+        deadline = time.monotonic() + CIDWM_SCAN_FRAME_TIMEOUT_S + (block_s if math.isfinite(block_s) else 0.0)
+        while True:
+            frame = getattr(self.camera_window, "latest_frame", None)
+            start = float(getattr(frame, "window_start_monotonic", math.nan) or math.nan)
+            if frame is not None and math.isfinite(start) and start > pulse_end:
+                return frame
             if time.monotonic() >= deadline:
                 raise RuntimeError(
-                    f"No new camera frame within {CIDWM_SCAN_FRAME_TIMEOUT_S:g} s after the pulse"
+                    "No camera frame taken wholly after the pulse within "
+                    f"{deadline - pulse_end:.0f} s (is the camera running with difference on?)"
                 )
             if self.k6221_stop_event.wait(0.05):
-                return False
-        return True
+                return None
 
     def _cidwm_pulse_scan_worker(self, settings: dict, run_directory: Path) -> dict:
         """Each pulse: |I| with its sign (one pulse, the pulse output's width
@@ -27809,15 +27965,19 @@ class CombinedControlApp:
         controller = self.k6221_controller
         signs = settings["signs"]
         done = 0
+        self.cidwm_scan_off_confirmed = False
         csv_path = Path(run_directory) / f"{Path(run_directory).name}.csv"
         started = time.monotonic()
         try:
             with csv_path.open("x", newline="", encoding="utf-8-sig") as file:
                 writer = csv.writer(file)
+                # in_compliance_at_readback: the 6221's condition when read
+                # just after INIT (a µs pulse may have ended by then).  note:
+                # why a pulse that was applied has no images.
                 writer.writerow((
                     "pulse", "sign", "set_current_mA", "current_mA", "pulse_width_us",
-                    "compliance_V", "elapsed_s", "in_compliance", "roi_mean_processed",
-                    "processing", "raw_tiff", "processed_tiff",
+                    "compliance_V", "elapsed_s", "in_compliance_at_readback", "roi_mean_processed",
+                    "processing", "raw_tiff", "processed_tiff", "note",
                 ))
                 file.flush()
                 for index, sign in enumerate(signs, 1):
@@ -27830,6 +27990,7 @@ class CombinedControlApp:
                             f"Pulse sign scan: pulse {n}/{len(signs)} ({text}), {value:+g} mA"
                         )
                     )
+                    actual = None
                     try:
                         actual = controller.set_dc_pulse(
                             set_ma / 1000.0, settings["width_s"], settings["compliance_v"], 1
@@ -27837,29 +27998,44 @@ class CombinedControlApp:
                         interrupted = self._wait_k6221_pulse_with_readback(actual)
                     finally:
                         controller.output_off()
-                    serial = getattr(self.camera_window, "latest_frame_serial", 0)
+                    pulse_end = time.monotonic()
                     self.post_ui(self._publish_k6221_off_state)
-                    if interrupted or self.k6221_stop_event.wait(self._cidwm_wait_s(settings)):
-                        break
-                    if not self._cidwm_wait_for_new_frame(serial):
-                        break
-                    raw, processed, processing, roi_mean = self._cidwm_snapshot()
                     actual_ma = float(actual["current_a"]) * 1000.0
-                    stem = f"CIDWM_pulse{index:05d}_{'pos' if sign > 0 else 'neg'}_{actual_ma:+.6g}mA"
-                    raw_name = f"{stem}_raw16.tiff"
-                    processed_name = (
-                        f"{stem}_{self.processed_image_settings_suffix(processing)}_float32.tiff"
-                    )
-                    save_raw_u16_tiff(raw, Path(run_directory) / raw_name)
-                    save_processed_f32_tiff(processed, Path(run_directory) / processed_name)
-                    writer.writerow((
-                        index, label, f"{set_ma:.10g}", f"{actual_ma:.10g}",
-                        f"{settings['width_s'] * 1e6:.10g}", f"{settings['compliance_v']:.10g}",
-                        f"{time.monotonic() - started:.3f}", bool(actual.get("in_compliance")),
-                        "" if not math.isfinite(roi_mean) else f"{roi_mean:.10g}",
-                        self.processed_image_settings_suffix(processing), raw_name, processed_name,
-                    ))
-                    file.flush()
+
+                    def record(raw_name="", processed_name="", note="", roi_mean=math.nan,
+                               processing=None):
+                        # Every pulse applied has its row (review, 2026-10-12),
+                        # with or without its images.
+                        writer.writerow((
+                            index, label, f"{set_ma:.10g}", f"{actual_ma:.10g}",
+                            f"{settings['width_s'] * 1e6:.10g}", f"{settings['compliance_v']:.10g}",
+                            f"{time.monotonic() - started:.3f}", bool(actual.get("in_compliance")),
+                            "" if not math.isfinite(roi_mean) else f"{roi_mean:.10g}",
+                            "" if processing is None else self.processed_image_settings_suffix(processing),
+                            raw_name, processed_name, note,
+                        ))
+                        file.flush()
+
+                    if interrupted or self.k6221_stop_event.wait(float(settings["wait_s"])):
+                        record(note="stopped before the images were saved")
+                        break
+                    try:
+                        frame = self._cidwm_frame_after(pulse_end)
+                        if frame is None:
+                            record(note="stopped before the images were saved")
+                            break
+                        raw, processed, processing, roi_mean = self._cidwm_snapshot(frame)
+                        stem = f"CIDWM_pulse{index:05d}_{'pos' if sign > 0 else 'neg'}_{actual_ma:+.6g}mA"
+                        raw_name = f"{stem}_raw16.tiff"
+                        processed_name = (
+                            f"{stem}_{self.processed_image_settings_suffix(processing)}_float32.tiff"
+                        )
+                        save_raw_u16_tiff(raw, Path(run_directory) / raw_name)
+                        save_processed_f32_tiff(processed, Path(run_directory) / processed_name)
+                    except BaseException as error:
+                        record(note=f"images not saved: {short_status_error(error)}")
+                        raise
+                    record(raw_name, processed_name, roi_mean=roi_mean, processing=processing)
                     done = index
                     self.post_ui(
                         lambda n=index, text=label, mean=roi_mean: self.cidwm_scan_status_var.set(
@@ -27868,19 +28044,26 @@ class CombinedControlApp:
                         )
                     )
         finally:
+            # Read back as off, or the finish says to check the 6221 (review,
+            # 2026-10-12: it said "off" even when switching off had failed).
             controller.output_off()
+            self.cidwm_scan_off_confirmed = True
         return {"done": done, "total": len(signs), "directory": str(run_directory)}
 
     def _finish_cidwm_pulse_scan(self, future) -> None:
         self.k6221_scan_running = False
         self.k6221_current_ma = 0.0
-        self.k6221_output_var.set("Output: 0 mA / OFF")
+        off = bool(self.__dict__.get("cidwm_scan_off_confirmed"))
+        self.k6221_output_var.set("Output: 0 mA / OFF" if off else "Output: check the 6221")
         self._reset_k6221_readback()
         try:
             result = future.result()
         except BaseException as error:
             self.cidwm_scan_status_var.set(f"Pulse sign scan failed: {short_status_error(error)}")
-            self.k6221_status_var.set("Pulse sign scan stopped by an error; 6221 output off")
+            self.k6221_status_var.set(
+                "Pulse sign scan stopped by an error; "
+                + ("6221 output off" if off else "switching the 6221 off failed, check it")
+            )
             if not self.closing:
                 messagebox.showerror("CIDWM pulse sign scan", str(error), parent=self.root)
         else:
@@ -29010,7 +29193,8 @@ class CombinedControlApp:
                 errors.append(str(error))
         self.nonlocal_vi_interlock.force_idle()
         if errors:
-            raise RuntimeError("; ".join(errors))
+            # " | ": short_status_error ends a status line at "; ".
+            raise RuntimeError(" | ".join(errors))
 
     def _finish_nonlocal_vi_disconnect(self, error) -> None:
         self.nonlocal_vi_busy = bool(self.__dict__.get("nonlocal_vi_off_pending"))
@@ -29624,7 +29808,8 @@ class CombinedControlApp:
                 errors.append(str(error))
         self.nonlocal_vi_interlock.force_idle()
         if errors:
-            raise RuntimeError("; ".join(errors))
+            # " | ": short_status_error ends a status line at "; ".
+            raise RuntimeError(" | ".join(errors))
         return tuple(confirmed)
 
     def _nonlocal_vi_record_pulse(
@@ -36236,7 +36421,8 @@ class CombinedControlApp:
                 except BaseException as error:
                     errors.append(f"{key}: {error}")
             if errors:
-                raise RuntimeError("; ".join(errors))
+                # " | ": short_status_error ends a status line at "; ".
+                raise RuntimeError(" | ".join(errors))
             return (" / ".join(confirmed) + " output OFF confirmed by readback"
                     if confirmed else "No source meter connected; output state cannot be confirmed")
 

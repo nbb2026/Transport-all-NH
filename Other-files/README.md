@@ -15,41 +15,60 @@ and saves the raw TIFF and the processed TIFF after each pulse.
   - Each pulse uses the pulse output's |I|, width and compliance.
 - **Each pulse:**
   1. One pulse at ±|I|; then the 6221 is off.
-  2. Wait after pulse s, but at least as long as the frames the processed
-     image averages (temporal average × exposure).
-  3. Wait for a camera frame newer than the pulse (at most 10 s, else the
-     scan stops with an error).
+  2. Wait after pulse s.
+  3. Wait for the first camera frame whose processed image holds only
+     frames that began exposing after the pulse ended. The camera's block
+     average with its cross-fade can hold up to 2N−1 frames. Each frame now
+     carries `window_start_monotonic`, the exposure start of the oldest frame
+     in its average (arrival less exposure, less 50 ms). The wait lasts at
+     most 10 s plus two averaging blocks; otherwise the scan stops with an
+     error.
   4. Save that frame's raw 16-bit TIFF and its processed (difference)
      float32 TIFF:
      `CIDWM_pulse00001_pos_+2mA_raw16.tiff` and
      `…_TrackingDiff_Avg4_Bin2x2_Mean1x1_float32.tiff`.
-  5. Write a CSV row: sign, current, time, compliance, the ROI mean of the
-     processed image, and the two file names.
+  5. Write a CSV row: sign, current, time, compliance at readback, the ROI
+     mean of the processed image, the two file names, and a note.
+     - Every pulse applied has a row. A Stop or an error after a pulse
+       leaves a note ("stopped before the images were saved" or "images not
+       saved: …").
+     - `in_compliance_at_readback` is read just after INIT, by which time a
+       µs pulse may have ended.
 - **Before it starts:** it needs the camera running with plain or
   drift-tracking difference on. The confirmation shows the signs and the
   time. It writes a run folder `CIDWM_pulse_sign_scan_<time>` with a
   parameter log.
 - **Stop:** Stop, or the red button, ends it after the current pulse. The
-  6221 is off after each pulse and at the end, whatever happens.
-- **Camera:** the camera window now counts its frames
-  (`latest_frame_serial`).
+  6221 is off after each pulse and at the end, whatever happens. If switching
+  it off fails, the page says to check the 6221.
 - **Tests:**
-  - `test_cidwm_pulse_scan.py`: 8 tests, no Tk.
+  - `test_cidwm_pulse_scan.py`: 11 tests, no Tk, including the averaging's
+    window start.
   - `test_panel_defaults.py`: the row.
 
 ### Every window in English
 
 - **Dialogs:** on Windows, Tk's message boxes and file dialogs were the
   Windows ones, with buttons in the language of Windows (是/否 on the lab
-  PC). `use_english_tk_dialogs` points tk_messageBox, tk_getOpenFile,
-  tk_getSaveFile and tk_chooseDirectory at Tk's own dialogs and sets
-  msgcat to English. Every Yes/No, OK and open/save/folder dialog is now
-  in English, through the same tkinter calls.
-  - The file dialogs look like Tk's (not Explorer's).
-  - CI opens a real Yes/No box and checks it reads Yes / No.
+  PC). `use_english_tk_dialogs` changes that.
+  - **Message boxes:** every `messagebox.*` call goes through
+    `english_message_box` (it replaces `tkinter.messagebox._show`). Each box
+    is its own window with its own answer, and its buttons stay at the
+    bottom, so a long message cannot push them off the screen.
+    - Why not Tk's own box (review, 2026-10-12): it shares one window and
+      one answer, so a box popping up over another closed it and gave it
+      the second's answer.
+  - **File dialogs:** tk_getOpenFile, tk_getSaveFile and tk_chooseDirectory
+    (and Tcl's tk_messageBox, used by their "overwrite?") are Tk's own
+    dialogs, with msgcat in English. They look like Tk's, not Explorer's.
+  - **CI:** it opens a real Yes/No box and checks it reads Yes / No. It also
+    opens a box over an open one and checks that both answers are right.
 - **Punctuation:** about 80 texts used full-width Chinese punctuation, such
   as "ROI mean：", "OUTP：OFF", "；", "，", "（）" and "～". They now use ASCII
   punctuation. MS-fourState's copied code was refreshed with it.
+  - The output-off error lists are joined with " | ", because
+    `short_status_error` ends a status line at "; " and the status bar
+    would otherwise show only the first error.
 
 ## CIDWM: negative pulses (2026-10-12)
 

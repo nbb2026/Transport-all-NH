@@ -150,9 +150,49 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertEqual(str(a.cidwm_scan_stop_button.cget("state")), "disabled")
         self.assertEqual(str(a.cidwm_scan_start_button.cget("text")), "Choose folder and start scan")
 
-    def test_message_boxes_and_file_dialogs_are_tks_own_in_english(self):
-        """2026-10-12: Yes/No, not the Chinese Windows' buttons: Tk's own
-        dialogs, their text in English."""
+    def _boxes(self):
+        found, pending = [], list(self.app.root.winfo_children())
+        while pending:
+            widget = pending.pop()
+            if widget.winfo_class() == "EnglishMessageBox":
+                found.append(widget)
+            pending.extend(widget.winfo_children())
+        return found
+
+    @staticmethod
+    def _button(box, name):
+        pending = [box]
+        while pending:
+            widget = pending.pop()
+            if widget.winfo_class() == "TButton" and widget.winfo_name() == name:
+                return widget
+            pending.extend(widget.winfo_children())
+        return None
+
+    def _ask(self, function, title, message, steps):
+        """Run a message box with ``steps`` (ms, callback) scheduled, and a
+        last resort that answers every open box, so a test never waits."""
+        root = self.app.root
+        jobs = [root.after(ms, callback) for ms, callback in steps]
+
+        def answer_all():
+            for box in self._boxes():
+                for name in ("no", "cancel", "ok"):
+                    button = self._button(box, name)
+                    if button is not None:
+                        button.invoke()
+                        break
+
+        jobs.append(root.after(10000, answer_all))
+        try:
+            return function(title, message, parent=root)
+        finally:
+            for job in jobs:
+                root.after_cancel(job)
+
+    def test_message_boxes_and_file_dialogs_are_in_english(self):
+        """2026-10-12: Yes/No, not the Chinese Windows' buttons: our own
+        message boxes, and Tk's own file dialogs, their text in English."""
         root = self.app.root
         if str(root.tk.call("tk", "windowingsystem")) != "x11":
             for command, target in (
@@ -164,22 +204,39 @@ class PanelDefaultTests(unittest.TestCase):
                 alias = root.tk.splitlist(root.tk.call("interp", "alias", "", command))
                 self.assertEqual(" ".join(map(str, alias)), target, command)
         self.assertEqual(str(root.tk.call("::msgcat::mclocale")), "en")
-        seen, tries = [], [0]
-        box = ".__tk__messagebox"
+        seen = []
 
-        def answer():
-            if int(root.tk.call("winfo", "exists", box + ".no")):
-                seen.extend(str(root.tk.call(box + "." + name, "cget", "-text")) for name in ("yes", "no"))
-                root.tk.call(box + ".no", "invoke")
-            elif tries[0] < 50:
-                tries[0] += 1
-                root.after(100, answer)
-            else:
-                root.tk.call("set", "::tk::Priv(button)", "no")  # never leave the box waiting
+        def read_and_answer():
+            box = self._boxes()[0]
+            seen.extend(str(self._button(box, name).cget("text")) for name in ("yes", "no"))
+            self._button(box, "no").invoke()
 
-        root.after(100, answer)
-        self.assertFalse(app.messagebox.askyesno("English dialogs", "Is this box in English?", parent=root))
+        self.assertFalse(self._ask(app.messagebox.askyesno, "English dialogs",
+                                   "Is this box in English?", [(300, read_and_answer)]))
         self.assertEqual(seen, ["Yes", "No"])
+        self.assertEqual(self._boxes(), [], "closed")
+
+    def test_a_box_over_an_open_box_leaves_both_answers_right(self):
+        """Review, 2026-10-12: Tk's own box shares one window and one answer,
+        so a second box closed the first and gave it the second's answer."""
+        log = []
+
+        def open_inner():
+            log.append(("inner", app.messagebox.showinfo("Inner", "Over the open box",
+                                                         parent=self.app.root)))
+
+        def press(title, name):
+            box = next(box for box in self._boxes() if box.title() == title)
+            self._button(box, name).invoke()
+
+        answer = self._ask(app.messagebox.askyesno, "Outer", "Start?", [
+            (200, open_inner),
+            (700, lambda: log.append(("open", sorted(box.title() for box in self._boxes())))),
+            (800, lambda: press("Inner", "ok")),
+            (1300, lambda: press("Outer", "yes")),
+        ])
+        self.assertTrue(answer, "the outer box's own answer")
+        self.assertEqual(log, [("open", ["Inner", "Outer"]), ("inner", "ok")])
 
     def test_moke_6221_has_no_continuous_output_and_the_pulse_defaults(self):
         """2026-10-12: no AC/DC continuous output on CIDWM (MOKE-6221); the pulse
