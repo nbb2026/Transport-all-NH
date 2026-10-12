@@ -1,5 +1,16 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MOKE motor: a 6400 µm quick position; version 1.0.0 (2026-10-12)
+
+- **6400 µm button:** beside 7250 µm in "Position and step (µm)". Like
+  7250 µm, it fills in the absolute position and runs Go to absolute
+  position: the same ±100 mm range check, safety tick and Yes/No
+  confirmation, and it stays disabled until the stage is homed.
+  6400 µm is 655360 counts (×102.4).
+- **Version:** `APP_VERSION` is `1.0.0` (was `V1`); it is written into each
+  scan's settings as `software.version`.
+- **Test:** `test_motor_presets.py`: 3 tests, no window.
+
 ## Start-up hang fixed (2026-10-12)
 
 - **Symptom:** from `66f807b` on, the program never opened its window on

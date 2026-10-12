@@ -977,7 +977,7 @@ class LabOneCAPIAdapter:
             self._destroy()
 
 
-APP_VERSION = "V1"
+APP_VERSION = "1.0.0"
 APPLICATION_NAME = "Magneto-Electro-Optical-Microwave Transport"
 WINDOW_TITLE_SUFFIX = "-NH & Prof Chen's group"
 MAIN_WINDOW_TITLE = "Magneto_Electro_Optical_Microwave_Transport_NH"
@@ -37870,7 +37870,7 @@ def create_motor_subsystem():
     
             motion_box = ttk.LabelFrame(outer, text="Position and step (µm)", padding=10)
             motion_box.grid(row=4, column=0, sticky="ew", pady=(0, 8))
-            motion_box.columnconfigure(4, weight=1)
+            motion_box.columnconfigure(5, weight=1)
             ttk.Label(motion_box, text="Absolute position:").grid(row=0, column=0, sticky="e")
             ttk.Entry(motion_box, textvariable=self.absolute_var, width=14).grid(row=0, column=1, padx=5)
             self.goto_button = ttk.Button(
@@ -37881,8 +37881,13 @@ def create_motor_subsystem():
                 motion_box, text="7250 µm", command=self.goto_preset_7250
             )
             self.preset_7250_button.grid(row=0, column=3, padx=(0, 5))
+            # A second quick position (user, 2026-10-12), beside 7250 µm.
+            self.preset_6400_button = ttk.Button(
+                motion_box, text="6400 µm", command=self.goto_preset_6400
+            )
+            self.preset_6400_button.grid(row=0, column=4, padx=(0, 5))
             self.home_button = ttk.Button(motion_box, text="Home", command=self.home)
-            self.home_button.grid(row=0, column=5, padx=(12, 0))
+            self.home_button.grid(row=0, column=6, padx=(12, 0))
 
             ttk.Label(motion_box, text="Step:").grid(row=1, column=0, sticky="e", pady=(8, 0))
             ttk.Entry(motion_box, textvariable=self.step_var, width=14).grid(
@@ -37896,6 +37901,7 @@ def create_motor_subsystem():
                 [
                     self.goto_button,
                     self.preset_7250_button,
+                    self.preset_6400_button,
                     self.up_button,
                     self.down_button,
                     self.home_button,
@@ -37905,7 +37911,7 @@ def create_motor_subsystem():
             # The readout line has a frame of its own, so its long label does
             # not widen the label column of the two rows above.
             command_row = ttk.Frame(motion_box)
-            command_row.grid(row=2, column=0, columnspan=6, pady=(10, 0), sticky="w")
+            command_row.grid(row=2, column=0, columnspan=7, pady=(10, 0), sticky="w")
             ttk.Label(command_row, text="Software-tracked command position:").pack(
                 side="left"
             )
@@ -37918,7 +37924,7 @@ def create_motor_subsystem():
                 motion_box,
                 text="Capture scaling: absolute position ×102.4; step increment ×25.6. The command position is not encoder feedback.",
                 foreground="#a34b00",
-            ).grid(row=3, column=0, columnspan=6, sticky="w", pady=(8, 0))
+            ).grid(row=3, column=0, columnspan=7, sticky="w", pady=(8, 0))
     
             progress_box = ttk.Frame(outer)
             progress_box.grid(row=5, column=0, sticky="ew", pady=(0, 8))
@@ -38039,6 +38045,7 @@ def create_motor_subsystem():
                 elif widget in (
                     self.goto_button,
                     self.preset_7250_button,
+                    self.preset_6400_button,
                     self.up_button,
                     self.down_button,
                 ):
@@ -38247,6 +38254,10 @@ def create_motor_subsystem():
         def goto_preset_7250(self) -> None:
             self.absolute_var.set("7250")
             self.goto_absolute()
+
+        def goto_preset_6400(self) -> None:
+            self.absolute_var.set("6400")
+            self.goto_absolute()
     
         def step_move(self, direction: int) -> None:
             try:
@@ -38376,6 +38387,7 @@ def create_motor_subsystem():
         assert hex_frame(build_write_single(0, 0x0100)) == "01 06 00 00 01 00 88 5A"
         assert step_um_to_counts(2000) == 51200
         assert absolute_um_to_counts(7250) == 742400
+        assert absolute_um_to_counts(6400) == 655360
         assert (
             hex_frame(build_write_multiple(1, encode_int32_low_word_first(51200)))
             == "01 10 00 01 00 02 04 C8 00 00 00 0C 03"
