@@ -57,14 +57,21 @@ class EveryPageSettlesTests(Built, unittest.TestCase):
 
     def test_no_pair_needs_the_loop_guard(self):
         notebook = next(w for w in self.a.__dict__.values() if isinstance(w, tk.ttk.Notebook))
+        sub_pages = self.a.nonlocal_measurements  # 2400-IV, 6221-IV, Gate-VI, |R|
         for width in WIDTHS:
             for index in range(notebook.index("end")):
                 notebook.select(index)
-                self.show(width)
-                held = [str(w) for w in descendants(self.root)
-                        if getattr(w, "_pair_flip_guard", {}).get("held")]
-                with self.subTest(width=width, page=notebook.tab(index, "text")):
-                    self.assertEqual(held, [], "a pair flipped at every <Configure>")
+                page = notebook.tab(index, "text")
+                for sub_index in range(sub_pages.index("end") if page == "Non-local" else 1):
+                    sub_page = ""
+                    if page == "Non-local":
+                        sub_pages.select(sub_index)
+                        sub_page = sub_pages.tab(sub_index, "text")
+                    self.show(width)
+                    held = [str(w) for w in descendants(self.root)
+                            if getattr(w, "_pair_flip_guard", {}).get("held")]
+                    with self.subTest(width=width, page=page, sub_page=sub_page):
+                        self.assertEqual(held, [], "a pair flipped at every <Configure>")
 
     def test_cidwm_difference_display_takes_the_spare_width(self):
         notebook = next(w for w in self.a.__dict__.values() if isinstance(w, tk.ttk.Notebook))

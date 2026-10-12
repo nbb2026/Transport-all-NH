@@ -13713,6 +13713,26 @@ class CombinedControlApp:
             pending.extend(child.winfo_children())
         return section.winfo_reqwidth() + max(0, extra)
 
+    def _keep_pair_left_room(self, container, left, right, *, gap: int) -> None:
+        """While ``container``'s pair is side by side, its left column is at
+        least as wide as ``left`` needs with its own inner pair side by side
+        (RT-E's keep_settings_room).  Otherwise the left box is sized by its
+        own request, which changes with its inner pair's layout: the shape
+        that hung CIDWM at start-up on 2026-10-12.  Up to 4 px of slack, while
+        the right box still gets its own width; the right box takes the rest.
+        Call after _arrange_pair_by_width(container, left, right, gap=gap)."""
+        def keep(_event=None) -> None:
+            try:
+                room = 0
+                if getattr(container, "_pair_side_by_side", False) is True:
+                    room = self._pair_natural_width(left) + gap
+                    room = max(room, min(room + 4, container.winfo_width() - self._pair_natural_width(right)))
+                container.columnconfigure(0, minsize=room)
+            except tk.TclError:
+                pass  # the window is closing
+
+        container.bind("<Configure>", keep, add="+")
+
     def build_ui(self) -> None:
         self.root.rowconfigure(0, weight=1)
         self.root.columnconfigure(0, weight=1)
@@ -21601,6 +21621,7 @@ class CombinedControlApp:
         reference_readout.grid(row=1, column=2, sticky="new", pady=(3, 0))
         wrap_to_width(reference_readout)
         self._arrange_pair_by_width(controls, settings, scan, gap=6, stack_gap=4)
+        self._keep_pair_left_room(controls, settings, scan, gap=6)
 
         plots = ttk.Frame(gate_tab)
         self.nonlocal_vi_plot_container = plots
@@ -21931,6 +21952,7 @@ class CombinedControlApp:
         show_trimmed(point, self.nonlocal_iv6221_point_var)
         self._arrange_pair_by_width(body, params, lockins, gap=0, stack_gap=4)
         self._arrange_pair_by_width(controls, settings, scan, gap=6, stack_gap=4)
+        self._keep_pair_left_room(controls, settings, scan, gap=6)
 
         # One X / Y / θ row per measured harmonic order, meters overlaid, as
         # on RT-E.  Only the rows of measured orders are shown.
