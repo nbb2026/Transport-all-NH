@@ -758,7 +758,12 @@ class PngLegendTests(NoWindows):
 
     def test_carrier_and_modulation_labels_stay_apart(self):
         carriers, modulations = (5.5, 10.5, 12.5), (317.0, 1009.0)
-        for meter, columns in (("SR830", 4), ("MFLI", 4), ("MFLI + SR830", 3)):
+        # The column count depends on the font: Arial (the Mac and the lab
+        # PC) fits 4 / 4 / 3 here, the Linux CI's fallback font is wider and
+        # fits fewer (CI, 2026-10-14).  What matters is that the labels stay
+        # apart; the count follows the same rule as the exporter, from the
+        # font it drew with.
+        for meter, most in (("SR830", 5), ("MFLI", 5), ("MFLI + SR830", 3)):
             with self.subTest(meter=meter):
                 # X, Y, Theta, then field vs current.
                 for figure, legend in enumerate(self.export(meter, carriers, modulations)):
@@ -769,6 +774,8 @@ class PngLegendTests(NoWindows):
                         # Both meters' curves; field vs current is the MFLI's only.
                         names = {f"{n} {suffix}" for n in names for suffix in ("MFLI", "SR830")}
                     self.assertEqual(labels, names)
+                    widest = max(font.getlength(label) for _xy, label, font in legend)
+                    columns = max(1, min(most, int(5150 // (210 + widest + 60))))
                     first = sorted(rows[min(rows)])
                     self.assertEqual(len(first), columns, "fewer columns, the rest on the next rows")
                     self.assertEqual(len(rows), math.ceil(len(names) / columns))
