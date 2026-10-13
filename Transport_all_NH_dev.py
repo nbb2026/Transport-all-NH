@@ -6171,6 +6171,20 @@ class Keithley2410Controller:
             self.last_set_voltage = actual
             return actual
 
+    def zero_voltage(self) -> float | None:
+        """The MOKE-24 Zero button: 0 V on an output that is on, as before;
+        an output that is off gets 0 V and OUTP OFF again, never OUTP ON
+        (audit/review, 2026-10-13: Zero went through apply_manual_voltage,
+        which switched an OFF output on at 0 V without the safety tick).
+        Returns the 0 V readback, or None when the output is off."""
+        with self.lock:
+            if self.instrument is None:
+                raise RuntimeError(f"Keithley {self.model} is not connected")
+            if self.output_enabled:
+                return self.apply_manual_voltage(0.0)
+            self.output_off()
+            return None
+
     def initialize_resistance(self, source_current_a: float) -> None:
         current = float(source_current_a)
         if current <= 0.0 or current > max(KEITHLEY_RES_CURRENT_LEVELS_A):
@@ -27609,9 +27623,14 @@ class CombinedControlApp:
         self.keithley_manual_busy = True
         self.keithley_status_var.set(f"Manual {action} {target:+.6g} V…")
         self._update_keithley_controls()
-        future = self.keithley_executor.submit(
-            self.keithley_controller.apply_manual_voltage, target
-        )
+        if action == "zero":
+            # Zero needs no safety tick, so it never switches the output on
+            # (audit/review, 2026-10-13).
+            future = self.keithley_executor.submit(self.keithley_controller.zero_voltage)
+        else:
+            future = self.keithley_executor.submit(
+                self.keithley_controller.apply_manual_voltage, target
+            )
         future.add_done_callback(
             lambda completed: self.post_ui(
                 lambda: self._finish_keithley_manual_voltage(completed)
@@ -27625,6 +27644,13 @@ class CombinedControlApp:
             self.keithley_status_var.set(f"Manual voltage failed: {error}")
             if not self.closing:
                 messagebox.showerror("MOKE-24", str(error), parent=self.root)
+        elif completed.result() is None:
+            # Zero with the output off: 0 V and OUTP OFF were sent.
+            with self.keithley_data_lock:
+                self.keithley_current_voltage = 0.0
+            self.keithley_manual_voltage_var.set("0")
+            self.keithley_voltage_var.set("Output: 0 V / OFF")
+            self.keithley_status_var.set("Zero: 0 V; the output was off and stays off")
         else:
             actual = float(completed.result())
             with self.keithley_data_lock:
@@ -28406,6 +28432,30 @@ class CombinedControlApp:
             current_a, pulse_width_s, compliance_v, pulse_count
         )
 
+    # Connect uses only the box's compliance, and the CIDWM pulse sign scan
+    # only its width and compliance, so the box's |I| or Pulse count (say
+    # 150 mA or 1.5, meant for Apply ±I) must not refuse them (audit/review,
+    # 2026-10-13).  Apply ±I keeps the full _parse_k6221_output.
+    def _parse_k6221_compliance(self) -> float:
+        try:
+            compliance_v = float(self.k6221_compliance_var.get())
+        except (TypeError, ValueError) as error:
+            raise ValueError("6221 compliance must be a number") from error
+        controller = self.k6221_controller
+        # As the controller's connect checks it.
+        return controller._validate(0.0, controller.pulse_width_s, compliance_v, 1)[2]
+
+    def _parse_k6221_width_compliance(self) -> tuple[float, float]:
+        compliance_v = self._parse_k6221_compliance()
+        try:
+            width_s = float(self.k6221_width_var.get()) / 1_000_000.0
+        except (TypeError, ValueError) as error:
+            raise ValueError("6221 pulse width must be a number") from error
+        _current, width_s, compliance_v, _count = self.k6221_controller._validate(
+            0.0, width_s, compliance_v, 1
+        )
+        return width_s, compliance_v
+
     @staticmethod
     def _format_duration(seconds: float) -> str:
         total = max(0, int(math.ceil(seconds)))
@@ -28685,7 +28735,7 @@ class CombinedControlApp:
             messagebox.showwarning("Keithley 6221", "Enter a VISA resource name", parent=self.root)
             return
         try:
-            _current, _width, compliance, _count = self._parse_k6221_output()
+            compliance = self._parse_k6221_compliance()
         except ValueError as error:
             messagebox.showwarning("Keithley 6221", str(error), parent=self.root)
             return
@@ -29058,7 +29108,7 @@ class CombinedControlApp:
                 "source": "avtech", "amplitude_v": abs(amplitude_v), "width_s": width_s,
                 "signs": signs, "wait_s": wait_s, "signs_text": self.cidwm_scan_signs_var.get().strip(),
             }
-        _current_a, width_s, compliance_v, _count = self._parse_k6221_output()
+        width_s, compliance_v = self._parse_k6221_width_compliance()
         try:
             current_a = abs(float(self.cidwm_scan_current_var.get())) / 1000.0
         except (TypeError, ValueError) as error:
@@ -29311,12 +29361,31 @@ class CombinedControlApp:
                                   f"{float(actual['width_s']) * 1e9:.10g}")
                     else:
                         try:
-                            actual = controller.set_dc_pulse(
-                                set_value / 1000.0, settings["width_s"], settings["compliance_v"], 1
-                            )
-                            interrupted = self._wait_k6221_pulse_with_readback(actual)
-                        finally:
-                            controller.output_off()
+                            try:
+                                actual = controller.set_dc_pulse(
+                                    set_value / 1000.0, settings["width_s"], settings["compliance_v"], 1
+                                )
+                                interrupted = self._wait_k6221_pulse_with_readback(actual)
+                            finally:
+                                controller.output_off()
+                        except BaseException as error:
+                            # Every pulse applied has its row (audit/review,
+                            # 2026-10-13): set_dc_pulse sends OUTP ON and INIT
+                            # before its readback checks, so a failed check, or
+                            # a failed off after the pulse, lost the row of a
+                            # pulse that may have fired.
+                            writer.writerow((
+                                index, label, f"{set_value:.10g}",
+                                "" if actual is None else f"{float(actual['current_a']) * 1000.0:.10g}",
+                                f"{settings['width_s'] * 1e6:.10g}", f"{settings['compliance_v']:.10g}",
+                                f"{time.monotonic() - started:.3f}",
+                                "" if actual is None else bool(actual.get("in_compliance")),
+                                "", "", "", "", "",
+                                (f"the scan stopped (the pulse may have fired): {error}" if actual is None
+                                 else f"the scan stopped after the pulse: {error}"),
+                            ))
+                            file.flush()
+                            raise
                         pulse_end = time.monotonic()
                         self.post_ui(self._publish_k6221_off_state)
                         actual_value = float(actual["current_a"]) * 1000.0

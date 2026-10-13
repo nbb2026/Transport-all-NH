@@ -83,6 +83,46 @@
   the new flags, the recovery read and the shared camera-block helper.
   Every dialog is mocked.
 
+## CIDWM and MOKE-24: the row of a failed 6221 pulse, fields the scan and Connect do not use, Zero stays off (2026-10-13)
+
+- **CIDWM, a failed 6221 pulse had no row:** in a 6221 pulse sign scan,
+  `set_dc_pulse` sends OUTP ON and SOUR:WAVE:INIT before its readback
+  checks. When a check failed (or INIT's error check, or the off after the
+  pulse), the scan stopped without a CSV row for a pulse that may have
+  fired. Now that pulse gets its row, as the Avtech's does: the set value,
+  width, compliance and elapsed time, the readback when there is one, and
+  the note "the scan stopped (the pulse may have fired): …" (or "the scan
+  stopped after the pulse: …" when only the off failed). The 6221 is
+  still switched off and the error still stops the scan.
+- **CIDWM, refused by fields it does not use:** the 6221 scan's Start
+  and the 6221 Connect parsed the whole pulse output box, so an |I| of
+  150 mA or a Pulse count of 1.5 or empty (meant for Apply ±I) refused
+  them. Now the scan reads only the box's width and compliance and Connect
+  only its compliance, each still checked against the 6221's limits.
+  Apply ±I still reads and checks the whole box.
+- **MOKE-24, Zero switched the output on:** "Zero" needs no safety tick,
+  but it called `apply_manual_voltage(0.0)`, which sends :OUTP ON when the
+  output is off. So Zero after Connect (which clears the tick), after a
+  scan or after the red "zero / output off" button switched the output on
+  at 0 V without the tick. Now Zero on an output that is off sends 0 V
+  and :OUTP OFF again, never :OUTP ON, and shows "Output: 0 V / OFF" only
+  when that worked. On an output that is on it writes 0 V as before.
+- **Left for the user to decide** (not changed): the MOKE-24 software
+  limit equals the hardware OVP (200 V on a 2410, 160 V on a 2400), whose
+  levels have a ±5 % tolerance, so a scan near the limit could be clipped
+  by the OVP.
+- **Tests:** `test_cidwm_6221_row_and_fields.py` (the real controller and
+  scan worker with a stand-in 6221: a frequency mismatch after INIT, a
+  timed-out INIT and a failed off after the pulse each leave their row and
+  the 6221 off; the scan and Connect ignore the box's |I| and Pulse count
+  but still check width and compliance; Apply ±I still refuses a Pulse
+  count of 1.5); `test_moke24_zero_stays_off.py` (the real controller,
+  submit and finish: Zero on an off output sends no :OUTP ON and shows
+  OFF, a failed off is reported and not shown as OFF, Zero on an output
+  that is on writes 0 V, Write still needs the tick). All fail on 0ad6a97
+  except the three that guard unchanged behaviour (Apply ±I, Write needs
+  the tick, Zero on an output that is on).
+
 ## Camera: settings rows and saved images match the camera (2026-10-13)
 
 - **Refused click left the radio moved:** during a MOKE magnet, MOKE-24 or
