@@ -23149,6 +23149,33 @@ class CombinedControlApp:
 
     def attach_camera(self, camera_window) -> None:
         self.camera_window = camera_window
+        # A new camera (Connect after Disconnect or after a camera error)
+        # starts at 4 frames, 4×4, 2×2, 100 ms and no 100× marker, while the
+        # page keeps the operator's choices: give the camera those choices,
+        # so frames and scans use what the page shows (review, 2026-10-13).
+        # The worker's setters take its settings lock, so this is safe with
+        # its thread already running; no frame has been drawn yet.
+        try:
+            camera_window.worker.set_difference_display_average(
+                int(self.difference_temporal_average_var.get()),
+                int(self.difference_spatial_binning_var.get()),
+                int(self.difference_mean_filter_var.get()),
+            )
+        except (TypeError, ValueError, tk.TclError):
+            self._restore_difference_display_average_vars()
+        try:
+            exposure_ms = float(self.camera_exposure_ms_var.get().strip())
+            # Only a different exposure: a request restarts the recording.
+            if not math.isclose(
+                exposure_ms, camera_window.worker.active_exposure_ms(), rel_tol=1e-9
+            ):
+                camera_window.worker.request_exposure_ms(exposure_ms)
+        except (TypeError, ValueError, AttributeError, tk.TclError):
+            # Not a valid exposure: the entry shows what the camera uses.
+            self.camera_exposure_ms_var.set(
+                f"{camera_window.worker.active_exposure_ms():g}"
+            )
+        camera_window.set_100x_marker_visible(self.objective_100x_marker_visible)
         self.camera_connected = False
         self.camera_window_visible = False
         self._set_connection_indicator("camera", False)
@@ -23625,9 +23652,11 @@ class CombinedControlApp:
 
         future.add_done_callback(lambda _future: self.post_ui(completed))
 
-    def latest_raw_image_snapshot(self):
-        camera = self.camera_window
-        frame = None if camera is None else camera.latest_frame
+    def latest_raw_image_snapshot(self, frame=None):
+        """The raw 16-bit image of ``frame`` (the latest frame if not given)."""
+        if frame is None:
+            camera = self.camera_window
+            frame = None if camera is None else camera.latest_frame
         if frame is None or frame.raw is None:
             raise RuntimeError("The camera has not produced a raw frame to save yet")
         array = np.asarray(frame.raw)
@@ -23637,12 +23666,28 @@ class CombinedControlApp:
             )
         return array.copy()
 
-    def latest_display_image_snapshot(self):
-        """Return the marker-free 8-bit Camera Live viewport as displayed."""
+    def latest_display_image_snapshot(self, frame=None):
+        """Return the marker-free 8-bit Camera Live viewport as displayed,
+        only if it shows ``frame`` (the latest frame if not given). Hidden
+        (or paused), Camera Live does not draw new frames, so its display is
+        an older moment than the raw and processed images (review,
+        2026-10-13)."""
         camera = self.camera_window
-        array = None if camera is None else camera.latest_display_image
-        geometry = None if camera is None else camera.latest_display_geometry
-        return self._compose_display_snapshot(array, geometry)
+        if camera is None:
+            raise RuntimeError("The camera is not connected")
+        if frame is None:
+            frame = camera.latest_frame
+        displayed = getattr(camera, "latest_display", None)
+        if displayed is None:
+            raise RuntimeError(
+                "Camera Live has not drawn a frame yet; show Camera Live first"
+            )
+        if frame is None or displayed[2] is not frame:
+            raise RuntimeError(
+                "Camera Live has not drawn the newest frame (it is hidden, or "
+                "paused while a file is saved); show Camera Live first"
+            )
+        return self._compose_display_snapshot(displayed[0], displayed[1])
 
     @staticmethod
     def _compose_display_snapshot(array, geometry):
@@ -23666,10 +23711,12 @@ class CombinedControlApp:
         ] = array[:paste_height, :paste_width]
         return snapshot
 
-    def latest_processed_image_snapshot(self):
-        """Return the exact signed difference image used by ROI measurement."""
-        camera = self.camera_window
-        frame = None if camera is None else camera.latest_frame
+    def latest_processed_image_snapshot(self, frame=None):
+        """Return the exact signed difference image used by ROI measurement,
+        of ``frame`` (the latest frame if not given)."""
+        if frame is None:
+            camera = self.camera_window
+            frame = None if camera is None else camera.latest_frame
         if frame is None or frame.display_difference is None:
             raise RuntimeError("Enable plain or drift-tracking difference first and wait for one processed frame")
         array = np.asarray(frame.display_difference, dtype=np.float32)
@@ -23703,6 +23750,8 @@ class CombinedControlApp:
             self.operation_var.set(f"{source} display image is still being saved; please wait")
             return
         camera = self.pause_camera_rendering(f"Saving {source} display image")
+        # Refused when Camera Live has not drawn the newest frame (hidden or
+        # paused): its display is an older moment (review, 2026-10-13).
         try:
             snapshot = self.latest_display_image_snapshot()
         except BaseException as error:
@@ -24012,13 +24061,27 @@ class CombinedControlApp:
             self.keithley_scan_running or self.magnet_scan_running or self.k6221_scan_running
         )
 
+    def _restore_difference_display_average_vars(self) -> None:
+        """Show the camera's averaging, binning and mean filter again: a
+        radio has already moved to its value when its click is refused
+        (review, 2026-10-13)."""
+        temporal_count, spatial_binning, mean_filter_size = (
+            self.camera_window.worker.difference_display_average_state()
+        )
+        self.difference_temporal_average_var.set(temporal_count)
+        self.difference_spatial_binning_var.set(spatial_binning)
+        self.difference_mean_filter_var.set(mean_filter_size)
+
     def apply_difference_display_average(self) -> None:
         if self.camera_window is None:
             self.magnet_status_var.set("The camera has not started yet")
             return
         # A change mid-scan would process later points differently from the
         # earlier ones (review, 2026-10-09), as background changes are blocked.
+        # The clicked radio is put back first, so it does not show a value the
+        # camera never got (review, 2026-10-13).
         if self._moke_scan_running():
+            self._restore_difference_display_average_vars()
             messagebox.showwarning(
                 "Difference processing",
                 "Stop the running scan before changing the averaging; "
@@ -24036,6 +24099,7 @@ class CombinedControlApp:
                 mean_filter_size,
             )
         except (TypeError, ValueError, tk.TclError) as error:
+            self._restore_difference_display_average_vars()
             messagebox.showerror("Difference processing", str(error), parent=self.root)
             return
         spatial_text = (
@@ -28493,21 +28557,29 @@ class CombinedControlApp:
         """Save images (user, 2026-10-12): the current Camera Live display
         (8-bit PNG, no overlays), the raw 16-bit TIFF and the difference raw
         image (float32 TIFF) of the same moment, into the folder chosen.
-        Without a difference image (difference off) the other two are saved."""
+        Without a difference image (difference off) the other two are saved.
+        All three come from one frame; when Camera Live has not drawn that
+        frame (hidden or paused, so its display is an older moment) the
+        display is left out and the status says why (review, 2026-10-13)."""
         export_key = "cidwm-images"
         if export_key in self.active_file_exports:
             self.k6221_status_var.set("The images are still being saved; please wait")
             return
         camera = self.pause_camera_rendering("Saving CIDWM images")
+        frame = None if camera is None else camera.latest_frame
         try:
-            display = self.latest_display_image_snapshot()
-            raw = self.latest_raw_image_snapshot()
+            raw = self.latest_raw_image_snapshot(frame)
         except BaseException as error:
             self.resume_camera_rendering(camera)
             messagebox.showwarning("Save images", str(error), parent=self.root)
             return
         try:
-            processed, settings = self.latest_processed_image_snapshot()
+            display = self.latest_display_image_snapshot(frame)
+            no_display = ""
+        except RuntimeError as error:
+            display, no_display = None, str(error)
+        try:
+            processed, settings = self.latest_processed_image_snapshot(frame)
         except RuntimeError:
             processed = settings = None
         folder = filedialog.askdirectory(
@@ -28523,19 +28595,22 @@ class CombinedControlApp:
             return
         self.cidwm_image_directory = Path(folder)
         stamp = datetime_module.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        paths = [Path(folder) / f"CIDWM_{stamp}_display8.png",
-                 Path(folder) / f"CIDWM_{stamp}_raw16.tiff"]
-        if processed is not None:
-            paths.append(
-                Path(folder) / f"CIDWM_{stamp}_{self.processed_image_settings_suffix(settings)}_float32.tiff"
-            )
+        display_path = Path(folder) / f"CIDWM_{stamp}_display8.png"
+        raw_path = Path(folder) / f"CIDWM_{stamp}_raw16.tiff"
+        processed_path = (
+            None if processed is None
+            else Path(folder) / f"CIDWM_{stamp}_{self.processed_image_settings_suffix(settings)}_float32.tiff"
+        )
+        paths = [path for path in (display_path if display is not None else None,
+                                   raw_path, processed_path) if path is not None]
         self.k6221_status_var.set("Saving the images in the background…")
 
         def work():
-            save_display_u8_png(display, paths[0])
-            save_raw_u16_tiff(raw, paths[1])
+            if display is not None:
+                save_display_u8_png(display, display_path)
+            save_raw_u16_tiff(raw, raw_path)
             if processed is not None:
-                save_processed_f32_tiff(processed, paths[2])
+                save_processed_f32_tiff(processed, processed_path)
             return paths
 
         def failed(error: BaseException) -> None:
@@ -28548,6 +28623,7 @@ class CombinedControlApp:
                 f"Saved {len(written)} images in {folder}: " + ", ".join(path.name for path in written)
                 + ("" if processed is not None
                    else "; no difference image (enable plain or drift-tracking difference)")
+                + ("" if display is not None else f"; no display image: {no_display}")
             )
             self._update_k6221_controls()
 

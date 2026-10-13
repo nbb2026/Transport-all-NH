@@ -362,16 +362,22 @@ class SaveImagesTests(unittest.TestCase):
     difference raw image of the same moment, in one folder."""
 
     def setUp(self):
-        for name, module in (("np", np), ("Image", Image)):
+        # No real dialog can open (Tk-free), whatever the code does; the tests
+        # patch the dialog they expect on top of these stand-ins.
+        for name, module in (("np", np), ("Image", Image), ("messagebox", mock.Mock()),
+                             ("filedialog", mock.Mock())):
             patcher = mock.patch.object(app, name, module)
             patcher.start()
             self.addCleanup(patcher.stop)
         self.folder = Path(tempfile.mkdtemp())
         a = self.app = bare_app()
+        # Camera Live drew the latest frame (latest_display is the matching
+        # (image, geometry, frame) set the real _draw keeps).
+        shown = frame(0.0)
         a.camera_window = types.SimpleNamespace(
-            latest_frame=frame(0.0), latest_display_image=np.full((3, 4), 7, dtype=np.uint8),
-            latest_display_geometry=(0, 0, 4, 3), pause_rendering=mock.Mock(),
-            resume_rendering=mock.Mock(),
+            latest_frame=shown,
+            latest_display=(np.full((3, 4), 7, dtype=np.uint8), (0, 0, 4, 3), shown),
+            pause_rendering=mock.Mock(), resume_rendering=mock.Mock(),
         )
         a.root, a.closing = None, False  # the dialogs are mocked
         a.active_file_exports = set()
@@ -424,3 +430,98 @@ class SaveImagesTests(unittest.TestCase):
             self.app.save_cidwm_images()
         self.assertEqual(list(self.folder.iterdir()), [])
         self.app.camera_window.resume_rendering.assert_called_once()
+
+    # Camera Live hidden (review, 2026-10-13): it draws no new frames, so its
+    # display is an older moment than the raw and processed images.
+
+    def test_a_display_of_an_older_frame_is_left_out(self):
+        camera = self.app.camera_window
+        camera.latest_display = (np.full((3, 4), 25, dtype=np.uint8), (0, 0, 4, 3), frame(0.0, value=100))
+        names = self.save()
+        self.assertEqual(sorted(name.split("_", 4)[4] for name in names),
+                         ["TrackingDiff_Avg4_Bin2x2_Mean1x1_float32.tiff", "raw16.tiff"])
+        by_kind = {name.split("_", 4)[4]: name for name in names}
+        # Both from the latest frame, not from the one Camera Live last drew.
+        np.testing.assert_array_equal(np.asarray(Image.open(self.folder / by_kind["raw16.tiff"])),
+                                      camera.latest_frame.raw)
+        np.testing.assert_allclose(
+            np.asarray(Image.open(self.folder / by_kind["TrackingDiff_Avg4_Bin2x2_Mean1x1_float32.tiff"])),
+            camera.latest_frame.display_difference)
+        status = self.app.k6221_status_var.get()
+        self.assertTrue(status.startswith("Saved 2 images in "), status)
+        self.assertIn("no display image: Camera Live has not drawn the newest frame (it is hidden", status)
+        camera.resume_rendering.assert_called_once()
+
+    def test_never_shown_still_saves_raw_and_processed(self):
+        self.app.camera_window.latest_display = None   # Camera Live starts hidden
+        names = self.save()
+        self.assertEqual(sorted(name.split("_", 4)[4] for name in names),
+                         ["TrackingDiff_Avg4_Bin2x2_Mean1x1_float32.tiff", "raw16.tiff"])
+        self.assertIn("no display image: Camera Live has not drawn a frame yet",
+                      self.app.k6221_status_var.get())
+        raw_name = next(name for name in names if name.endswith("raw16.tiff"))
+        np.testing.assert_array_equal(np.asarray(Image.open(self.folder / raw_name)),
+                                      self.app.camera_window.latest_frame.raw)
+
+    def test_hidden_camera_live_poll_then_save(self):
+        """The real TkCameraWindow._poll with the window hidden: a new frame
+        replaces latest_frame but is not drawn, so the save leaves the
+        display (still of the old frame) out and takes the new frame's raw."""
+        camera = self.app.camera_window
+        newer = frame(1.0, value=4000)
+        newer.drift_dx = newer.drift_dy = newer.drift_response = 0.0
+        frames = mock.Mock()
+        frames.get_nowait.side_effect = [newer, app.queue.Empty()]
+        errors = mock.Mock()
+        errors.get_nowait.side_effect = app.queue.Empty()
+        camera.worker = types.SimpleNamespace(frames=frames, errors=errors)
+        camera.error_shown, camera.connection_announced = False, True
+        camera.window_visible, camera.video_recorder = False, None
+        camera.selecting_roi, camera.rendering_paused = False, False
+        camera._draw, camera._ingest_roi_values = mock.Mock(), mock.Mock()
+        camera._poll = mock.Mock()     # only rescheduled, never run here
+        camera.app = mock.Mock()
+        camera.window = mock.Mock()
+        app.TkCameraWindow._poll(camera)
+        self.assertIs(camera.latest_frame, newer)
+        camera._draw.assert_not_called()
+        camera._ingest_roi_values.assert_called_once_with(newer)
+        names = self.save()
+        self.assertFalse(any(name.endswith("display8.png") for name in names), names)
+        raw_name = next(name for name in names if name.endswith("raw16.tiff"))
+        np.testing.assert_array_equal(np.asarray(Image.open(self.folder / raw_name)), newer.raw)
+
+    def save_display(self):
+        destination = self.folder / "display.png"
+        a = self.app
+        a.operation_var = Var()
+        with mock.patch.object(app.filedialog, "asksaveasfilename",
+                               return_value=str(destination)) as ask, \
+                mock.patch.object(app.messagebox, "showwarning") as warning, \
+                mock.patch.object(app.messagebox, "showerror"), \
+                mock.patch.object(app.messagebox, "showinfo"):
+            a.save_current_display_image("MOKE")
+        return destination, ask, warning
+
+    def test_save_current_display_refuses_an_older_frame(self):
+        camera = self.app.camera_window
+        camera.latest_display = (np.full((3, 4), 25, dtype=np.uint8), (0, 0, 4, 3), frame(0.0, value=100))
+        destination, ask, warning = self.save_display()
+        warning.assert_called_once()
+        self.assertIn("(it is hidden, or paused while a file is saved)", warning.call_args.args[1])
+        ask.assert_not_called()
+        self.assertFalse(destination.exists())
+        camera.resume_rendering.assert_called_once()
+
+    def test_save_current_display_refuses_when_never_drawn(self):
+        self.app.camera_window.latest_display = None   # Camera Live starts hidden
+        destination, ask, warning = self.save_display()
+        self.assertIn("has not drawn a frame yet", warning.call_args.args[1])
+        ask.assert_not_called()
+        self.assertFalse(destination.exists())
+
+    def test_save_current_display_of_the_latest_frame(self):
+        destination, ask, warning = self.save_display()
+        warning.assert_not_called()
+        np.testing.assert_array_equal(np.asarray(Image.open(destination)),
+                                      np.full((3, 4), 7, dtype=np.uint8))

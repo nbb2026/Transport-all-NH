@@ -1,5 +1,33 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Camera: settings rows and saved images match the camera (2026-10-13)
+
+- **Refused click left the radio moved:** during a MOKE magnet, MOKE-24 or
+  CIDWM pulse scan a click on "Difference temporal average", "Binning" or
+  "Mean filter" was refused, but the radio had already moved, so the page
+  showed a value the camera never got, and the next click applied it. Now
+  the three radios are set back to the camera's values before the warning
+  opens (also after an invalid value).
+- **Reconnect reset the camera, not the page:** after Disconnect/Connect
+  or a camera error, the new camera started at 4 frames, 4×4, 2×2, 100 ms
+  and no 100× marker, while the page still showed the operator's choices
+  (and the first marker click did nothing). Now Connect gives the new
+  camera the page's averaging, binning, mean filter, exposure (only when
+  it differs; an invalid entry shows the camera's) and marker.
+- **Saved display of an older moment:** with Camera Live hidden (it starts
+  hidden) or paused, CIDWM "Save images" saved the last drawn display
+  (minutes old, or nothing at all, refusing the raw and float32 too) under
+  the same stamp as the current raw and float32. Now all files come from
+  one frame; the display PNG is left out, with the reason in the status,
+  when Camera Live has not drawn that frame. MOKE "Save current display"
+  refuses a stale display with a warning.
+- **Tests:** `test_camera_settings_rows.py` (each scan and each radio row;
+  the next click after a refusal; disconnect and camera error, then
+  connect, with the real worker; page defaults request nothing);
+  `test_cidwm_pulse_scan.SaveImagesTests` (an older display, never drawn,
+  the real `_poll` with Camera Live hidden, Save current display). Both
+  classes mock every dialog, so no window can open.
+
 ## MOKE magnet: Start scan says why it does not start (2026-10-13)
 
 - **User:** "the start scan cannot be used".
