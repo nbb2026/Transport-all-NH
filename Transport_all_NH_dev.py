@@ -11654,8 +11654,15 @@ class TkCameraWindow:
         self.window.bind("<KeyPress-M>", lambda _event: self.app.toggle_100x_marker())
         self.window.bind("<KeyPress-q>", lambda _event: self.app.request_close())
         self.window.bind("<Escape>", lambda _event: self.app.request_close())
+        # A click in the picture (Shift-drag for an ROI too) also gives Camera
+        # Live the keyboard, in English input mode, so its keys reach it
+        # (user, 2026-10-13: [C] did nothing on the lab PC).
+        self.window.bind("<ButtonPress>", self._take_keyboard, add="+")
         self.window.focus_set()
         self.window.after_idle(lambda: force_english_input_mode(self.window))
+        # What the last key did, shown in the picture for a moment: (text,
+        # until, colour).
+        self.key_feedback = None
 
         self.worker = CameraAcquisitionWorker(self.app.thread_log)
         self.latest_frame: CameraFrame | None = None
@@ -12071,6 +12078,7 @@ class TkCameraWindow:
         self._draw_roi(frame)
         self._draw_100x_marker()
         self._draw_measurement_marker()
+        self._draw_key_feedback()
         self.app.update_difference_status(
             frame.background_mode,
             frame.drift_dx,
@@ -12542,8 +12550,46 @@ class TkCameraWindow:
         self.panning = False
 
     def _clear_roi(self, _event=None) -> None:
-        """Clear the shared ROI through the app-level safety interlock."""
+        """Clear the shared ROI through the app-level safety interlock, and
+        show in the picture whether it was cleared."""
+        had_roi = self.roi is not None
         self.app.clear_camera_roi()
+        if self.roi is not None:
+            self.show_key_feedback("[C] ROI not cleared: a scan is running", "#ff8a80")
+        else:
+            self.show_key_feedback("[C] ROI cleared" if had_roi else "[C] no ROI to clear", "#7cff7c")
+
+    def _take_keyboard(self, _event=None) -> None:
+        try:
+            focused = self.window.focus_get()
+        except (tk.TclError, KeyError):  # focus in a window tkinter did not make
+            focused = None
+        try:
+            if focused is None or focused.winfo_toplevel() is not self.window:
+                self.window.focus_force()
+        except tk.TclError:
+            return
+        force_english_input_mode(self.window)
+
+    def show_key_feedback(self, text: str, colour: str, seconds: float = 2.5) -> None:
+        self.key_feedback = (text, time.monotonic() + seconds, colour)
+        self.app.append_log(f"Camera Live: {text}")
+        if self.latest_frame is not None and not self.rendering_paused:
+            self._draw(self.latest_frame)
+        self._draw_key_feedback()
+
+    def _draw_key_feedback(self) -> None:
+        self.canvas.delete("key_feedback")
+        feedback = self.__dict__.get("key_feedback")
+        if not feedback or time.monotonic() > feedback[1]:
+            self.key_feedback = None
+            return
+        text, _until, colour = feedback
+        self.canvas.create_text(
+            max(1, self.canvas.winfo_width()) / 2, 68, text=text, fill=colour,
+            font=(self.app.ui_font_family, self.app.ui_font_size + 2, "bold"),
+            anchor="n", tags=("key_feedback",),
+        )
 
     def clear_roi_selection(self) -> None:
         """Remove only the Camera Live ROI state and its Canvas overlay."""

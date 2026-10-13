@@ -1,5 +1,19 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Camera Live: [C] and the other keys after a click; what [C] did, in the picture (2026-10-13)
+
+- **User:** [C] (clear ROI) did nothing on the lab PC.
+- **Checked on CI** (Linux and Windows, a stand-in camera): [C] clears the
+  ROI, also after a Tk folder dialog and a message box. So on the lab PC the
+  key did not reach Camera Live: the keyboard was still in the main window,
+  or the Chinese input method took the letter.
+- **Fix:** a click in the picture (Shift-drag for an ROI too) gives Camera
+  Live the keyboard and English input mode, so [A] [B] [N] [C] [R] [M] [Q]
+  reach it.
+- **Shown in the picture for 2.5 s:** "[C] ROI cleared", "[C] no ROI to
+  clear", or "[C] ROI not cleared: a scan is running" (also in the log).
+- **Test:** `test_camera_live_keys.py` (needs a display: CI).
+
 ## English Tk dialogs in MS-fourState and the microwave program (2026-10-13)
 
 - **User:** the CIDWM folder chooser (Tk's own dialog) in the other programs too.
