@@ -1298,6 +1298,18 @@ DIFFERENCE_EXPAND_SMOOTHING = 0.10
 DIFFERENCE_CONTRACT_SMOOTHING = 0.28
 DRIFT_DOWNSAMPLE = 4
 MAX_DRIFT_PIXELS = 80.0
+# Drift tracking (2026-10-13): the fine step's full-resolution centre window
+# (px), and the band-pass both images go through: Gaussian sigmas (px) of
+# the noise removed above and of the illumination, vignetting and slowly
+# varying domain contrast removed below.  The coarse search is
+# DRIFT_DOWNSAMPLE times smaller, so its noise sigma is its own.
+DRIFT_FINE_SIZE = 768
+DRIFT_NOISE_SIGMA_PX = 1.0
+DRIFT_COARSE_NOISE_SIGMA_PX = 0.5
+DRIFT_ILLUMINATION_SIGMA_PX = 24.0
+# Below this coarse match (a correct match on noisy frames is about 0.6, an
+# unrelated or dark frame under 0.1) the frame is not shifted.
+DRIFT_MIN_MATCH = 0.1
 ROI_LIVE_DEFAULT_INTERVAL_S = 0.2
 ROI_LIVE_DEFAULT_MAX_POINTS = 100
 
@@ -4316,42 +4328,143 @@ def _parabolic_peak_offset(left: float, center: float, right: float) -> float:
     return float(np.clip(0.5 * (left - right) / denominator, -0.5, 0.5))
 
 
-class DriftBackground:
-    """A captured background plus the derived arrays drift tracking reuses.
+def _peak_offset(left: float, center: float, right: float) -> float:
+    """Sub-pixel offset of a correlation peak from its three samples: a
+    Gaussian fit (unbiased for the band-passed peaks here), else a parabola."""
+    if left > 0.0 and center > 0.0 and right > 0.0:
+        log_left, log_center, log_right = math.log(left), math.log(center), math.log(right)
+        denominator = log_left - 2.0 * log_center + log_right
+        if denominator < -1e-12:
+            return float(np.clip(0.5 * (log_left - log_right) / denominator, -0.5, 0.5))
+    return _parabolic_peak_offset(left, center, right)
 
-    ``subtract_background_after_drift`` used to convert the (static)
-    background to float32, downsample it and remove its mean on every camera
-    frame.  Preparing those once per captured background removes that work
-    from the acquisition thread; the raw uint16 frame is kept for identity
-    checks and for callers that still want the original array.
+
+def _drift_downsample(image_f32):
+    if DRIFT_DOWNSAMPLE <= 1:
+        return image_f32
+    if cv2 is not None:
+        scale = 1.0 / DRIFT_DOWNSAMPLE
+        return cv2.resize(image_f32, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    return _block_mean_downsample(image_f32, DRIFT_DOWNSAMPLE)
+
+
+def _drift_spectrum(image_f32, window):
+    """Complex spectrum of the mean-removed, windowed image."""
+    windowed = (image_f32 - float(np.mean(image_f32))) * window
+    if cv2 is not None:
+        spectrum = cv2.dft(np.ascontiguousarray(windowed, dtype=np.float32),
+                           flags=cv2.DFT_COMPLEX_OUTPUT)
+        return spectrum.view(np.complex64)[..., 0]
+    return np.fft.fft2(windowed)
+
+
+def _drift_correlation(spectrum, reference_spectrum, transfer):
+    """Phase correlation weighted by the band-pass: every frequency counts by
+    its phase only, so one strong straight edge cannot outweigh the many
+    particles (unweighted correlation slid along such an edge by pixels)."""
+    cross = spectrum * np.conj(reference_spectrum)
+    cross /= np.maximum(np.abs(cross), 1e-30)
+    cross *= transfer
+    if cv2 is not None:
+        cross = np.ascontiguousarray(cross, dtype=np.complex64)
+        return cv2.idft(cross.view(np.float32).reshape(cross.shape + (2,)),
+                        flags=cv2.DFT_SCALE | cv2.DFT_REAL_OUTPUT)
+    return np.fft.ifft2(cross).real
+
+
+class _DriftScale:
+    """One scale of the drift search, prepared once per background: the
+    window, the band-pass weights and the background's spectrum."""
+
+    __slots__ = ("origin", "size", "window", "transfer", "spectrum", "identical")
+
+    def __init__(self, image_f32, origin, size, noise_sigma, illumination_sigma) -> None:
+        x0, y0 = origin
+        width, height = size
+        self.origin = origin
+        self.size = size
+        # A Hann window on both paths (cv2.createHanningWindow is the square
+        # root of one, a sine window: the paths would differ; review,
+        # 2026-10-13).  Made once per background.
+        self.window = np.outer(np.hanning(height), np.hanning(width)).astype(np.float32)
+        # Difference of Gaussians on both images: noise above, illumination,
+        # vignetting and the slowly varying domain contrast below.
+        fy = np.fft.fftfreq(height).astype(np.float32)[:, None]
+        fx = np.fft.fftfreq(width).astype(np.float32)[None, :]
+        radius2 = fx * fx + fy * fy
+        band = (np.exp(-2.0 * math.pi ** 2 * noise_sigma ** 2 * radius2)
+                - np.exp(-2.0 * math.pi ** 2 * illumination_sigma ** 2 * radius2))
+        self.transfer = (band * band).astype(np.float32)
+        self.spectrum = _drift_spectrum(image_f32[y0:y0 + height, x0:x0 + width], self.window)
+        # The correlation peak of two identical windows: match 1.
+        self.identical = float(np.mean(self.transfer))
+
+    def match(self, image_f32, offset_x: int, offset_y: int, radius: int):
+        """(shift x, shift y, match) of the image's window at the origin plus
+        the offset, against the background's: the correlation peak within
+        ``radius`` px, fitted to a fraction of a pixel; match is that peak
+        as a fraction of two identical windows' (1)."""
+        x0, y0 = self.origin[0] + offset_x, self.origin[1] + offset_y
+        width, height = self.size
+        spectrum = _drift_spectrum(image_f32[y0:y0 + height, x0:x0 + width], self.window)
+        correlation = _drift_correlation(spectrum, self.spectrum, self.transfer)
+        # radius None: the whole plane (the coarse step; a peak beyond
+        # MAX_DRIFT_PIXELS is then found there and rejected, not replaced by
+        # a smaller wrong one, as with cv2.phaseCorrelate before).
+        if radius is None:
+            radius = max(height, width)
+        radius_y = max(1, min(radius, (height - 1) // 2))
+        radius_x = max(1, min(radius, (width - 1) // 2))
+        offsets_y = np.arange(-radius_y, radius_y + 1)
+        offsets_x = np.arange(-radius_x, radius_x + 1)
+        near = correlation[np.ix_(offsets_y % height, offsets_x % width)]
+        row, column = np.unravel_index(int(np.argmax(near)), near.shape)
+        peak_y, peak_x = int(offsets_y[row]), int(offsets_x[column])
+        peak = float(near[row, column])
+        shift_x = peak_x + _peak_offset(
+            float(correlation[peak_y % height, (peak_x - 1) % width]), peak,
+            float(correlation[peak_y % height, (peak_x + 1) % width]))
+        shift_y = peak_y + _peak_offset(
+            float(correlation[(peak_y - 1) % height, peak_x % width]), peak,
+            float(correlation[(peak_y + 1) % height, peak_x % width]))
+        quality = peak / self.identical if self.identical > 0.0 else 0.0
+        return shift_x, shift_y, float(np.clip(quality, 0.0, 1.0))
+
+
+class DriftBackground:
+    """A captured background plus what drift tracking reuses for every frame.
+
+    Prepared once per captured background, off the per-frame path: the
+    float32 copy, and the background's windowed, band-passed spectra for the
+    coarse search (the whole frame, downsampled) and the fine step (a
+    full-resolution centre crop).  ``raw`` is the original frame.
     """
 
-    __slots__ = ("raw", "float32", "template")
+    __slots__ = ("raw", "float32", "coarse", "fine", "shape")
 
     def __init__(self, background_u16) -> None:
         self.raw = background_u16
         self.float32 = np.asarray(background_u16).astype(np.float32)
-        self.template = _drift_template(self.float32)
-
-
-def _drift_template(background_f32):
-    """Downsampled, zero-mean float32 array used for phase correlation."""
-    if cv2 is not None:
-        if DRIFT_DOWNSAMPLE > 1:
-            scale = 1.0 / DRIFT_DOWNSAMPLE
-            template = cv2.resize(
-                background_f32,
-                None,
-                fx=scale,
-                fy=scale,
-                interpolation=cv2.INTER_AREA,
+        self.shape = self.float32.shape
+        small = _drift_downsample(self.float32)
+        self.coarse = None
+        if min(small.shape) >= 8:
+            self.coarse = _DriftScale(
+                small, (0, 0), (small.shape[1], small.shape[0]),
+                DRIFT_COARSE_NOISE_SIGMA_PX, DRIFT_ILLUMINATION_SIGMA_PX / DRIFT_DOWNSAMPLE,
             )
-        else:
-            template = background_f32.copy()
-        template -= float(np.mean(template))
-        return template
-    template = _block_mean_downsample(background_f32, DRIFT_DOWNSAMPLE)
-    return template - float(np.mean(template))
+        # The fine window stays inside the frame for any shift the coarse
+        # search can return.
+        height, width = self.shape
+        margin = int(math.ceil(MAX_DRIFT_PIXELS)) + 2
+        size = min(DRIFT_FINE_SIZE, width - 2 * margin, height - 2 * margin)
+        size -= size % 2
+        self.fine = None
+        if size >= 64:
+            self.fine = _DriftScale(
+                self.float32, ((width - size) // 2, (height - size) // 2), (size, size),
+                DRIFT_NOISE_SIGMA_PX, DRIFT_ILLUMINATION_SIGMA_PX,
+            )
 
 
 def _as_drift_background(background) -> DriftBackground:
@@ -4361,75 +4474,49 @@ def _as_drift_background(background) -> DriftBackground:
 
 
 def estimate_drift_shift(background_u16, image_u16):
-    """Estimate current-frame translation relative to the background.
+    """(dx, dy, match): the current frame's translation relative to the
+    background, in full-resolution pixels (the frame shows the background
+    moved by dx, dy), and the match (0..1: 1 for identical images, near 0
+    for unrelated ones).
 
-    ``background_u16`` may be a raw array or a prepared ``DriftBackground``.
+    Both steps: phase correlation of the windowed images, weighted by a
+    band-pass.  Coarse: the whole frame downsampled DRIFT_DOWNSAMPLE times;
+    a peak beyond MAX_DRIFT_PIXELS, or a match under DRIFT_MIN_MATCH, gives
+    no shift.  Fine (2026-10-13; the
+    shift had been the coarse one times 4, its error too, and the border of
+    an unwindowed frame pulled it towards zero): a DRIFT_FINE_SIZE
+    full-resolution centre window at the coarse shift, its peak fitted to a
+    fraction of a pixel.  ``background_u16`` may be a raw array or a
+    prepared ``DriftBackground``.
     """
-    background = _as_drift_background(background_u16).template
-    if cv2 is not None:
-        if DRIFT_DOWNSAMPLE > 1:
-            scale = 1.0 / DRIFT_DOWNSAMPLE
-            image = cv2.resize(
-                np.asarray(image_u16).astype(np.float32, copy=False),
-                None,
-                fx=scale,
-                fy=scale,
-                interpolation=cv2.INTER_AREA,
-            )
-        else:
-            image = np.asarray(image_u16).astype(np.float32)
-        image -= float(np.mean(image))
-        shift, response = cv2.phaseCorrelate(background, image)
-        dx = float(shift[0] * DRIFT_DOWNSAMPLE)
-        dy = float(shift[1] * DRIFT_DOWNSAMPLE)
-        response = float(response)
-        if (
-            not np.isfinite(dx)
-            or not np.isfinite(dy)
-            or abs(dx) > MAX_DRIFT_PIXELS
-            or abs(dy) > MAX_DRIFT_PIXELS
-        ):
-            return 0.0, 0.0, response
-        return dx, dy, response
-
-    image = _block_mean_downsample(image_u16, DRIFT_DOWNSAMPLE)
-    image = image - float(np.mean(image))
-
-    height, width = background.shape
-    if height < 2 or width < 2:
+    prepared = _as_drift_background(background_u16)
+    image = np.asarray(image_u16).astype(np.float32, copy=False)
+    if prepared.coarse is None or image.shape != prepared.shape:
         return 0.0, 0.0, 0.0
-    window = np.outer(np.hanning(height), np.hanning(width)).astype(np.float32)
-    background_fft = np.fft.fft2(background * window)
-    image_fft = np.fft.fft2(image * window)
-    cross_power = image_fft * np.conj(background_fft)
-    magnitude = np.abs(cross_power)
-    cross_power /= np.maximum(magnitude, 1e-12)
-    correlation = np.abs(np.fft.ifft2(cross_power))
-
-    peak_y, peak_x = np.unravel_index(np.argmax(correlation), correlation.shape)
-    sub_x = _parabolic_peak_offset(
-        float(correlation[peak_y, (peak_x - 1) % width]),
-        float(correlation[peak_y, peak_x]),
-        float(correlation[peak_y, (peak_x + 1) % width]),
-    )
-    sub_y = _parabolic_peak_offset(
-        float(correlation[(peak_y - 1) % height, peak_x]),
-        float(correlation[peak_y, peak_x]),
-        float(correlation[(peak_y + 1) % height, peak_x]),
-    )
-    shift_x = float(peak_x if peak_x <= width // 2 else peak_x - width) + sub_x
-    shift_y = float(peak_y if peak_y <= height // 2 else peak_y - height) + sub_y
-    dx = shift_x * DRIFT_DOWNSAMPLE
-    dy = shift_y * DRIFT_DOWNSAMPLE
-    response = float(correlation[peak_y, peak_x])
+    small = _drift_downsample(image)
+    coarse_width, coarse_height = prepared.coarse.size
+    if small.shape[0] < coarse_height or small.shape[1] < coarse_width:
+        return 0.0, 0.0, 0.0
+    coarse_x, coarse_y, match = prepared.coarse.match(small, 0, 0, None)
+    dx, dy = coarse_x * DRIFT_DOWNSAMPLE, coarse_y * DRIFT_DOWNSAMPLE
     if (
         not np.isfinite(dx)
         or not np.isfinite(dy)
         or abs(dx) > MAX_DRIFT_PIXELS
         or abs(dy) > MAX_DRIFT_PIXELS
+        or match < DRIFT_MIN_MATCH  # dark, or not the background's scene
     ):
-        return 0.0, 0.0, response
-    return dx, dy, response
+        return 0.0, 0.0, match
+    if prepared.fine is not None:
+        step_x, step_y = int(round(dx)), int(round(dy))
+        fine_x, fine_y, fine_match = prepared.fine.match(image, step_x, step_y, 3)
+        # The coarse step is good to about a full-resolution pixel; a fine
+        # peak far from it is not this shift.
+        if abs(fine_x) <= 2.5 and abs(fine_y) <= 2.5:
+            dx, dy, match = step_x + fine_x, step_y + fine_y, fine_match
+    if abs(dx) > MAX_DRIFT_PIXELS or abs(dy) > MAX_DRIFT_PIXELS:
+        return 0.0, 0.0, match
+    return float(dx), float(dy), float(match)
 
 
 def _reflect_coordinates(coordinates, length: int):
@@ -12026,7 +12113,7 @@ class TkCameraWindow:
         if frame.background_mode == "tracking":
             camera_status = (
                 f"Tracking subtraction ON   dx {frame.drift_dx:+.2f}   "
-                f"dy {frame.drift_dy:+.2f}   {exposure_text}   "
+                f"dy {frame.drift_dy:+.2f}   match {frame.drift_response:.2f}   {exposure_text}   "
                 f"{average_text}   Contrast {contrast}"
             )
             status_color = "#6dff6d"
@@ -24015,7 +24102,7 @@ class CombinedControlApp:
         if mode == "tracking":
             self.difference_status_var.set("Drift-tracking difference mode")
             self.difference_detail_var.set(
-                f"Drift dx={dx:+.2f} px, dy={dy:+.2f} px; match response={response:.3f}"
+                f"Drift dx={dx:+.2f} px, dy={dy:+.2f} px; match {response:.2f} (1 = identical)"
             )
         elif mode == "plain":
             self.difference_status_var.set("Plain difference mode")

@@ -1,5 +1,49 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Drift tracking: two steps, windowed, band-passed, to a few hundredths of a pixel (2026-10-13)
+
+- **User:** "the drift tracking seems not working very well": in the
+  difference, every particle was a bright/dark pair and the device edges
+  light/dark lines (a residual shift), with "match response=0.298".
+- **The old estimate:** `cv2.phaseCorrelate` on the 4x-downsampled frames,
+  no window, the result times 4. The frame border and the vignetting (fixed
+  to the optics, not moving with the sample) pulled it towards zero, and its
+  sub-pixel error was multiplied by 4. On simulated 2048 x 2048 frames
+  (`Other-files/ci/drift_benchmark.py`, run on CI) it was off by up to
+  0.51 px.
+- **Now** (`estimate_drift_shift`):
+  1. Coarse: the whole frame, 4x downsampled, Hann-windowed, phase
+     correlation weighted by a band-pass (noise above, illumination,
+     vignetting and slowly varying domain contrast below), within ±80 px.
+  2. Fine: a 768 x 768 full-resolution centre window at the coarse shift,
+     the same correlation within ±3 px, the peak fitted (Gaussian) to a
+     fraction of a pixel.
+  - Phase correlation, not plain correlation: plain correlation slid by
+    pixels along one strong straight edge (every frequency now counts by its
+    phase only, so the many particles count).
+  - Simulated frames: worst error 0.026 px (old 0.51 px); 26 ms per frame
+    on the Windows CI machine (old 19 ms).
+  - The background's spectra are prepared once per captured background
+    (`DriftBackground`), off the per-frame path.
+- **Match** (status line and Camera Live overlay): 1 for identical frames,
+  about 0.6 for a correct match on noisy frames, near 0 for unrelated ones.
+  A frame whose coarse match is under `DRIFT_MIN_MATCH` (0.1: dark, or not
+  the background's scene), or whose drift is beyond ±80 px, is not shifted,
+  as before.
+- **Review** (three reviewers, each finding checked by a second): no defect
+  confirmed. Taken from it: a true Hann window on both paths
+  (`cv2.createHanningWindow` is a sine window), the coarse peak searched
+  over the whole plane (as `cv2.phaseCorrelate` did), the match floor.
+  Not taken: a fine-versus-coarse match gate (it helps only a centre with a
+  single straight edge and nothing else, unlike the CIDWM view), temporal
+  smoothing of the shift (errors at 100 ms are about 0.03 px).
+- **Shift of the frame:** bilinear, as before (cubic left more noise in the
+  difference on the simulated frames).
+- **Tests:** `test_drift_tracking.py` (no window): sub-pixel shifts within
+  0.05 px with fixed vignetting, a 39 px shift, OpenCV and NumPy agree, the
+  match tells a good frame from an unrelated one, a 100 px drift or a dark
+  frame is not shifted.
+
 ## Camera Live: [C] and the other keys after a click; what [C] did, in the picture (2026-10-13)
 
 - **User:** [C] (clear ROI) did nothing on the lab PC.
