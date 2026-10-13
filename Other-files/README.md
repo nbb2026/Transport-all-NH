@@ -40,6 +40,31 @@
   the polarity refusals, an output left on, overload, limits, connecting);
   `test_cidwm_pulse_scan.py` (the scan on the Avtech, an overload);
   `test_panel_defaults.py`, `test_stfmr_field_output.py` (the box, CI).
+- **Review** (three reviewers, each finding checked by a second; all
+  confirmed findings fixed):
+  - the off path sends "output off" even when the hold write fails (each
+    command on its own, a device clear and one retry), then reads it back;
+  - the 6221 and the Avtech never pulse together: each waits for the other
+    to be idle (box buttons and the scan); a 6221 Disconnect no longer ends
+    an Avtech scan's state; the 6221's red button switches the 6221 off
+    during an Avtech scan too;
+  - a pulse that fired and then failed (a timeout, an error after it, the
+    output not reading back off) is "pulse fired, then: ...", and a scan
+    writes its CSV row before stopping; error 1001 after the pulse is an
+    overload, not a failure;
+  - `pulse:delay 0` read back before the output goes on (a front-panel delay
+    of up to 1 s would come after the output went off);
+  - `*CLS` at connect and before each pulse; no `SYST:LOC` on disconnect
+    (not an Avtech command: it queued an error that refused the next pulse);
+  - a NaN read-back is refused; the polarity is read from the model field
+    of `*IDN?` only; the scan takes only the box's width; the safety tick
+    refreshes Start; the red button is off during a connect/disconnect;
+  - overload means a short or too-low load impedance; a missing load is not
+    detected (said in the tick and here).
+- **This unit's polarity:** Avtech's ed9 manual says -PN is not offered on
+  -W3 units, so this generator very likely gives one polarity only. A pulse
+  of the other sign is refused before anything is fired; for ± pulses use a
+  reversing switch, or the 6221.
 - **Not tried on the instrument yet.**
 
 ## Drift tracking: two steps, windowed, band-passed, to a few hundredths of a pixel (2026-10-13)

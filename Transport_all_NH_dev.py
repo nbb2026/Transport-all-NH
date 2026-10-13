@@ -2287,16 +2287,35 @@ class SafeVisaIdentityController:
                 raise shutdown_error
 
 
+class AvtechPulseError(RuntimeError):
+    """A single pulse that failed; ``fired`` says whether the trigger had
+    been sent (the sample may have had the pulse), with what was read back."""
+
+    def __init__(self, message: str, *, fired: bool = False, amplitude_v: float = math.nan,
+                 width_s: float = math.nan, overload: bool = False) -> None:
+        super().__init__(message)
+        self.fired = fired
+        self.amplitude_v = amplitude_v
+        self.width_s = width_s
+        self.overload = overload
+
+
 class AvtechPulserController(SafeVisaIdentityController):
     """Avtech AVR-E3-B pulse generator over GPIB (CIDWM, user 2026-10-13).
 
     One pulse is Avtech's own "single non-repetitive event" sequence: trigger
-    on hold, width and amplitude set and read back, output on, "trigger:source
-    immediate" (the remote Single Pulse button), then hold and the output off,
-    read back.  Connecting, disconnecting and every stop leave the trigger on
-    hold and the output off.  The polarity is the unit's (-P, -N or -PN): the
-    amplitude read back must have the sign asked for, or no pulse is fired.
+    on hold, the error queue cleared, delay 0, width and amplitude set and
+    read back, output on, "trigger:source immediate" (the remote Single Pulse
+    button), then hold and the output off, read back.  Connecting,
+    disconnecting and every stop leave the trigger on hold and the output
+    off.  The polarity is the unit's (-P, -N or -PN; Avtech: no -PN on -W3
+    units): the amplitude read back must have the sign asked for, or no
+    pulse is fired.
     """
+
+    # The instrument's own overload error ("1001, Device-specific error;
+    # Overload condition detected!", programming manual 3.2.4).
+    OVERLOAD_ERROR = 1001
 
     def __init__(self, logger: Callable[[str], None]) -> None:
         super().__init__(
@@ -2307,11 +2326,52 @@ class AvtechPulserController(SafeVisaIdentityController):
             owner_scope="CIDWM",
         )
 
+    def connect(self, resource_name: str) -> str:
+        identity = super().connect(resource_name)
+        with self.lock:
+            try:
+                # Errors left by an earlier session would refuse the first
+                # pulse (review, 2026-10-13).
+                self.instrument.write("*CLS")
+            except BaseException as error:
+                try:
+                    self.disconnect()
+                finally:
+                    raise RuntimeError(f"{self.label}: *CLS after connecting failed: {error}") from error
+        return identity
+
+    def disconnect(self) -> None:
+        """As the base class, without its "SYST:LOC": this instrument has no
+        such command and would queue an error (review, 2026-10-13)."""
+        with self.lock:
+            instrument = self.instrument
+            manager = self.resource_manager
+            resource_name = self.resource_name
+            if instrument is None and manager is None:
+                return
+            problem = self._off_problem() if instrument is not None else None
+            if instrument is not None:
+                try:
+                    instrument.close()
+                except BaseException:
+                    pass
+            release_shared_visa_manager(manager)
+            self.instrument = None
+            self.resource_manager = None
+            self.resource_name = ""
+            self.identity = ""
+            release_instrument_lease(resource_name, self)
+            self.logger(f"{self.owner_scope} {self.label} disconnected")
+            if problem is not None:
+                raise RuntimeError(f"{self.label}: {problem}; check the generator")
+
     @property
     def polarities(self) -> tuple[int, ...] | None:
-        """(1,), (-1,) or (1, -1) from the model in *IDN? (-P, -N, -PN);
-        None when it does not say."""
-        match = re.search(r"-(PN|P|N)(?=-|,|\s|$)", self.identity.upper())
+        """(1,), (-1,) or (1, -1) from the model field of *IDN? (-P, -N,
+        -PN); None when it does not say."""
+        fields = self.identity.split(",")
+        model = fields[1].strip().upper() if len(fields) > 1 else ""
+        match = re.search(r"-(PN|P|N)(?=-|$)", model)
         if match is None:
             return None
         return {"PN": (1, -1), "P": (1,), "N": (-1,)}[match.group(1)]
@@ -2323,41 +2383,70 @@ class AvtechPulserController(SafeVisaIdentityController):
             raise ValueError(
                 f"The Avtech amplitude must be above 0 and at most {AVTECH_MAX_AMPLITUDE_V:g} V"
             )
+        AvtechPulserController.validate_width(width_s)
+        return amplitude_v, width_s
+
+    @staticmethod
+    def validate_width(width_s) -> float:
+        width_s = float(width_s)
         if not (math.isfinite(width_s) and AVTECH_MIN_WIDTH_S * 0.999 <= width_s <= AVTECH_MAX_WIDTH_S * 1.001):
             raise ValueError("The Avtech pulse width must be within 1 ns - 5 us")
-        return amplitude_v, width_s
+        return width_s
 
     def _number(self, query: str) -> float:
         reply = str(self.instrument.query(query)).strip()
         try:
-            return float(reply)
+            value = float(reply)
         except ValueError as error:
             raise RuntimeError(f"{self.label}: {query} returned {reply!r}") from error
+        if not math.isfinite(value):
+            raise RuntimeError(f"{self.label}: {query} returned {reply!r}")
+        return value
 
-    def _check_errors(self, step: str) -> None:
-        reply = str(self.instrument.query("syst:err?")).strip()
-        try:
-            clean = int(float(reply.split(",", 1)[0])) == 0
-        except ValueError:
-            clean = False
-        if not clean:
-            raise RuntimeError(f"{self.label} reported an error after {step}: {reply}")
+    def _errors(self) -> list[tuple[int, str]]:
+        """The error queue, read until empty (at most 32 entries)."""
+        found = []
+        for _ in range(32):
+            reply = str(self.instrument.query("syst:err?")).strip()
+            try:
+                code = int(float(reply.split(",", 1)[0]))
+            except ValueError:
+                found.append((-1, reply))
+                break
+            if code == 0:
+                break
+            found.append((code, reply))
+        return found
 
     def _off_problem(self) -> str | None:
-        """Trigger on hold and the output off, read back; None, or what went wrong."""
+        """Trigger on hold and the output off, each sent even if the other
+        failed (after a device clear), and the output read back; None when it
+        reads back off, else what went wrong (review, 2026-10-13: a failed
+        hold had skipped the output off)."""
+        failures = []
+        for command in ("trigger:source hold", "output off"):
+            try:
+                self.instrument.write(command)
+            except BaseException as error:
+                try:
+                    self.instrument.clear()  # a partly received command
+                    self.instrument.write(command)
+                except BaseException as again:
+                    failures.append(f"{command}: {error}; again: {again}")
         try:
-            self.instrument.write("trigger:source hold")
-            self.instrument.write("output off")
-            if self._number("output?") != 0:
-                return "its output did not read back off"
+            if self._number("output?") == 0:
+                if failures:
+                    self.logger(f"{self.label}: output read back off, but " + "; ".join(failures))
+                return None
+            failures.append("its output did not read back off")
         except BaseException as error:
-            return f"switching it off failed: {error}"
-        return None
+            failures.append(f"output? failed: {error}")
+        return "; ".join(failures)
 
     def switch_off(self) -> None:
         with self.lock:
             if self.instrument is None:
-                return
+                raise RuntimeError(f"{self.label} is not connected; its output state is unknown")
             problem = self._off_problem()
             if problem is not None:
                 raise RuntimeError(f"{self.label}: {problem}; check the generator")
@@ -2365,56 +2454,75 @@ class AvtechPulserController(SafeVisaIdentityController):
     def single_pulse(self, amplitude_v: float, width_s: float) -> dict:
         """One pulse of ``amplitude_v`` (signed) and ``width_s``.  Returns the
         amplitude and width read back, whether the output protection tripped
-        (overload) and ``pulse_end`` (time.monotonic(), after the pulse)."""
+        (overload) and ``pulse_end`` (time.monotonic(), after the pulse).
+        Raises AvtechPulseError; its ``fired`` says whether the trigger went."""
         amplitude_v, width_s = self.validate(amplitude_v, width_s)
         sign = 1 if amplitude_v > 0 else -1
         with self.lock:
             if self.instrument is None:
-                raise RuntimeError(f"{self.label} is not connected")
+                raise AvtechPulseError(f"{self.label} is not connected; no pulse fired")
             allowed = self.polarities
             if allowed is not None and sign not in allowed:
-                raise RuntimeError(
+                raise AvtechPulseError(
                     f"This {self.label} gives {'positive' if allowed == (1,) else 'negative'} "
                     "pulses only (its polarity option); no pulse fired"
                 )
             failure = None
+            fired = False
+            overload = False
             amplitude_read = width_read = math.nan
+            after = []
             try:
                 self.instrument.write("trigger:source hold")
                 self.instrument.write("output off")
+                self.instrument.write("*CLS")
+                # No delay: a front-panel delay (0 - 1 s) would put the pulse
+                # after the output went off (review, 2026-10-13).
+                self.instrument.write("pulse:delay 0")
+                if not abs(self._number("pulse:delay?")) <= 1e-9:
+                    raise RuntimeError(f"{self.label} did not take a delay of 0")
                 self.instrument.write(f"pulse:width {width_s:.6g}")
                 width_read = self._number("pulse:width?")
                 if not abs(width_read - width_s) <= max(0.05 * width_s, 0.2e-9):
-                    raise RuntimeError(
-                        f"{self.label} took a width of {width_read:.4g} s for {width_s:.4g} s; no pulse fired"
-                    )
+                    raise RuntimeError(f"{self.label} took a width of {width_read:.4g} s for {width_s:.4g} s")
                 self.instrument.write(f"volt:ampl {amplitude_v:.6g}")
                 amplitude_read = self._number("volt:ampl?")
-                if amplitude_read * sign <= 0 or abs(amplitude_read - amplitude_v) > max(0.02 * abs(amplitude_v), 0.5):
+                tolerance = max(0.02 * abs(amplitude_v), 0.5)
+                if not (amplitude_read * sign > 0 and abs(amplitude_read - amplitude_v) <= tolerance):
                     raise RuntimeError(
-                        f"{self.label} took {amplitude_read:+g} V for {amplitude_v:+g} V "
-                        "(its polarity option?); no pulse fired"
+                        f"{self.label} took {amplitude_read:+g} V for {amplitude_v:+g} V (its polarity option?)"
                     )
-                self._check_errors("setting the pulse; no pulse fired")
+                errors = self._errors()
+                if errors:
+                    raise RuntimeError(f"{self.label} reported " + "; ".join(text for _code, text in errors))
                 self.instrument.write("output on")
                 if self._number("output?") != 1:
-                    raise RuntimeError(f"{self.label}'s output did not switch on; no pulse fired")
+                    raise RuntimeError(f"{self.label}'s output did not switch on")
+                fired = True
                 self.instrument.write("trigger:source immediate")  # the pulse
                 self.instrument.write("trigger:source hold")
-                self._check_errors("the pulse")  # also: the pulse is over by now
+                after = self._errors()  # also: the pulse is over by now
             except BaseException as error:
                 failure = error
             problem = self._off_problem()
-            if failure is not None:
-                if problem is not None:
-                    raise RuntimeError(f"{failure}; and {problem}; check the generator") from failure
-                raise failure
-            if problem is not None:
-                raise RuntimeError(f"{self.label} fired the pulse, but {problem}; check the generator")
+            overload = any(code == self.OVERLOAD_ERROR for code, _text in after)
+            others = [text for code, text in after if code != self.OVERLOAD_ERROR]
             try:
-                overload = self._number("output:protection:tripped?") != 0
+                overload = overload or self._number("output:protection:tripped?") != 0
             except BaseException as error:
-                raise RuntimeError(f"{self.label}: reading its overload state failed: {error}") from error
+                others.append(f"its overload state could not be read: {error}")
+            parts = []
+            if failure is not None:
+                parts.append(str(failure))
+            parts += [f"it reported {text}" for text in others]
+            if problem is not None:
+                parts.append(f"{problem}; check the generator")
+            if parts:
+                prefix = "pulse fired, then: " if fired else "no pulse fired: "
+                raise AvtechPulseError(
+                    prefix + "; ".join(parts), fired=fired, amplitude_v=amplitude_read,
+                    width_s=width_read, overload=overload,
+                ) from failure
             return {
                 "amplitude_v": amplitude_read, "width_s": width_read,
                 "overload": overload, "pulse_end": time.monotonic(),
@@ -21538,7 +21646,10 @@ class CombinedControlApp:
         self.avtech_disconnect_button.grid(row=0, column=3, padx=3)
         self._create_connection_indicator(avtech_connection, "avtech").grid(row=0, column=4, padx=(8, 1))
         ttk.Label(avtech_connection, textvariable=self.avtech_connection_var).grid(
-            row=0, column=5, sticky="w", padx=(1, 0)
+            row=0, column=5, sticky="w", padx=(1, 12)
+        )
+        ttk.Label(avtech_connection, textvariable=self.avtech_output_var, style="Metric.TLabel").grid(
+            row=0, column=6, sticky="w"
         )
         avtech_pulse = ttk.Frame(avtech)
         avtech_pulse.grid(row=1, column=0, sticky="w", pady=(6, 0))
@@ -21569,15 +21680,12 @@ class CombinedControlApp:
             padx=10,
             pady=3,
         )
-        self.avtech_off_button.grid(row=0, column=6, padx=(8, 12))
-        ttk.Label(avtech_pulse, textvariable=self.avtech_output_var, style="Metric.TLabel").grid(
-            row=0, column=7, sticky="w"
-        )
+        self.avtech_off_button.grid(row=0, column=6, padx=(8, 0))
         ttk.Checkbutton(
             avtech,
-            text="Avtech: 50 Ω load at the output, wiring and amplitude confirmed safe",
+            text="Avtech: 50 Ω load at the output (a missing load is not detected), wiring and amplitude confirmed safe",
             variable=self.avtech_safety_var,
-            command=self._update_avtech_controls,
+            command=self._update_k6221_controls,  # also the scan's Start
         ).grid(row=2, column=0, sticky="w", pady=(6, 0))
         avtech_status = ttk.Label(avtech, width=1)
         avtech_status.grid(row=3, column=0, sticky="ew", pady=(2, 0))
@@ -21629,12 +21737,16 @@ class CombinedControlApp:
         self.cidwm_scan_stop_button.grid(row=0, column=4, padx=(3, 0))
         ttk.Label(
             scan,
-            text="Signs: + and - per pulse, repeated to fill Pulses (+- alternates, ++-- goes in pairs). "
-                 "6221: |I| mA, width and compliance from its pulse output; Avtech: |V| V, width from its box",
+            text="Signs: + and - per pulse, repeated to fill Pulses (+- alternates, ++-- goes in pairs)",
             style="Muted.TLabel",
         ).grid(row=2, column=0, columnspan=12, sticky="w", pady=(4, 0))
+        ttk.Label(
+            scan,
+            text="6221: |I| mA, width and compliance from its pulse output; Avtech: |V| V, width from its box",
+            style="Muted.TLabel",
+        ).grid(row=3, column=0, columnspan=12, sticky="w")
         scan_status = ttk.Label(scan, width=1)
-        scan_status.grid(row=3, column=0, columnspan=12, sticky="ew", pady=(2, 0))
+        scan_status.grid(row=4, column=0, columnspan=12, sticky="ew", pady=(2, 0))
         show_trimmed(scan_status, self.cidwm_scan_status_var)
 
         # CIDWM: under the pulse sign scan, the MOKE magnet page's
@@ -28149,7 +28261,8 @@ class CombinedControlApp:
 
     def _finish_k6221_disconnect(self, error) -> None:
         self.k6221_busy = False
-        self.k6221_scan_running = False
+        if not (self.k6221_scan_running and self.__dict__.get("cidwm_scan_source") == "avtech"):
+            self.k6221_scan_running = False
         self.k6221_connection_var.set("Not connected")
         self.k6221_output_var.set("Output: 0 mA / OFF")
         self._reset_k6221_readback()
@@ -28170,6 +28283,8 @@ class CombinedControlApp:
         if not self.k6221_controller.connected:
             messagebox.showwarning("Keithley 6221", "Connect the instrument first", parent=self.root)
             return
+        if self.__dict__.get("avtech_busy", False):
+            return  # the Avtech is pulsing (review, 2026-10-13)
         if not self.k6221_safety_var.get():
             messagebox.showwarning("Keithley 6221", "Tick the 6221 safety confirmation first", parent=self.root)
             return
@@ -28414,7 +28529,10 @@ class CombinedControlApp:
                 amplitude_v = abs(float(self.cidwm_scan_amplitude_var.get()))
             except (TypeError, ValueError) as error:
                 raise ValueError("The scan's |V| V must be a number") from error
-            _box_amplitude, width_s = self._parse_avtech_pulse()
+            try:
+                width_s = float(self.avtech_width_var.get()) * 1e-9
+            except (TypeError, ValueError) as error:
+                raise ValueError("The Avtech box's Width (ns) must be a number") from error
             amplitude_v, width_s = AvtechPulserController.validate(amplitude_v, width_s)
             signs = cidwm_sign_sequence(self.cidwm_scan_pulses_var.get(), self.cidwm_scan_signs_var.get())
             try:
@@ -28457,9 +28575,13 @@ class CombinedControlApp:
         }
 
     def _cidwm_source_ready(self, source: str) -> bool:
+        # The 6221 and the Avtech never pulse the sample at the same time
+        # (review, 2026-10-13): each waits for the other to be idle.
+        if self.k6221_busy or self.__dict__.get("avtech_busy", False):
+            return False
         if source == "avtech":
-            return self.avtech_controller.connected and not self.avtech_busy
-        return self.k6221_controller.connected and not self.k6221_busy
+            return self.avtech_controller.connected
+        return self.k6221_controller.connected
 
     def start_cidwm_pulse_scan(self) -> None:
         source = self._cidwm_scan_source()
@@ -28657,7 +28779,22 @@ class CombinedControlApp:
                     if avtech:
                         # One pulse; the Avtech is off again (read back) when
                         # this returns, or it raises.
-                        actual = controller.single_pulse(set_value, settings["width_s"])
+                        try:
+                            actual = controller.single_pulse(set_value, settings["width_s"])
+                        except AvtechPulseError as error:
+                            if error.fired:
+                                # Every pulse applied has its row (review,
+                                # 2026-10-13: a failure after the trigger lost it).
+                                def shown(value, scale=1.0):
+                                    return f"{value * scale:.10g}" if math.isfinite(value) else ""
+                                writer.writerow((
+                                    index, label, f"{set_value:.10g}", shown(error.amplitude_v),
+                                    shown(error.width_s, 1e9), f"{time.monotonic() - started:.3f}",
+                                    bool(error.overload), "", "", "", "", "",
+                                    f"the scan stopped: {error}",
+                                ))
+                                file.flush()
+                            raise
                         interrupted = False
                         pulse_end = time.monotonic()
                         self.post_ui(self._publish_avtech_off_state)
@@ -28695,8 +28832,8 @@ class CombinedControlApp:
                     if avtech and actual.get("overload"):
                         record(note="overload: the Avtech's output protection tripped; scan stopped")
                         raise RuntimeError(
-                            "The Avtech's output protection tripped (overload: is the 50 Ω load "
-                            "there?); the scan stopped with the output off"
+                            "The Avtech's output protection tripped (overload: a short or too-low "
+                            "load impedance); the scan stopped with the output off"
                         )
 
                     if interrupted or self.k6221_stop_event.wait(float(settings["wait_s"])):
@@ -28816,7 +28953,7 @@ class CombinedControlApp:
             return
         self.avtech_busy = True
         self.avtech_status_var.set(f"Avtech: connecting to {resource}…")
-        self._update_avtech_controls()
+        self._update_k6221_controls()
         future = self.avtech_executor.submit(self.avtech_controller.connect, resource)
         future.add_done_callback(
             lambda completed: self.post_ui(lambda: self._finish_avtech_connect(completed))
@@ -28844,7 +28981,7 @@ class CombinedControlApp:
     def disconnect_avtech(self) -> None:
         self.avtech_busy = True
         self.avtech_status_var.set("Avtech: switching off and disconnecting…")
-        self._update_avtech_controls()
+        self._update_k6221_controls()
         future = self.avtech_executor.submit(self.avtech_controller.disconnect)
         future.add_done_callback(
             lambda completed: self.post_ui(lambda: self._finish_avtech_disconnect(completed.exception()))
@@ -28875,7 +29012,7 @@ class CombinedControlApp:
         if not self.avtech_safety_var.get():
             messagebox.showwarning("Avtech", "Tick the Avtech safety confirmation first", parent=self.root)
             return
-        if self.avtech_busy or self.k6221_scan_running:
+        if self.avtech_busy or self.k6221_busy or self.k6221_scan_running:
             return
         try:
             amplitude_v, width_s = self._parse_avtech_pulse()
@@ -28885,7 +29022,7 @@ class CombinedControlApp:
         signed = (1 if polarity >= 0 else -1) * amplitude_v
         self.avtech_busy = True
         self.avtech_status_var.set(f"Avtech: one pulse of {signed:+g} V, {width_s * 1e9:g} ns…")
-        self._update_avtech_controls()
+        self._update_k6221_controls()
         future = self.avtech_executor.submit(self.avtech_controller.single_pulse, signed, width_s)
         future.add_done_callback(
             lambda completed: self.post_ui(lambda: self._finish_avtech_pulse(completed, signed))
@@ -28898,7 +29035,10 @@ class CombinedControlApp:
         except BaseException as error:
             self.avtech_output_var.set("Output: OFF" if "check the generator" not in str(error)
                                        else "Output: check the Avtech")
-            self.avtech_status_var.set(f"Avtech: pulse failed: {short_status_error(error)}")
+            fired = bool(getattr(error, "fired", False))
+            text = f"Avtech: {'' if fired else 'pulse failed: '}{error}"
+            self.avtech_status_var.set(text)
+            self.append_log(text)
             if not self.closing:
                 messagebox.showerror("Avtech pulse", str(error), parent=self.root)
         else:
@@ -28906,12 +29046,12 @@ class CombinedControlApp:
             text = (f"Avtech: pulse {result['amplitude_v']:+g} V, {result['width_s'] * 1e9:g} ns "
                     "(read back); output off")
             if result["overload"]:
-                text += " | OVERLOAD: output protection tripped (is the 50 Ω load there?)"
+                text += " | OVERLOAD: output protection tripped (short or too-low load impedance)"
             self.avtech_status_var.set(text)
             self.append_log(text)
             if result["overload"] and not self.closing:
                 messagebox.showwarning("Avtech pulse", text, parent=self.root)
-        self._update_avtech_controls()
+        self._update_k6221_controls()
 
     def avtech_output_off(self) -> None:
         """The red button: the trigger on hold and the output off, read back.
@@ -28923,9 +29063,11 @@ class CombinedControlApp:
             self.k6221_stop_event.set()
             self.avtech_status_var.set("Avtech: stopping the scan; the output goes off after this pulse")
             return
+        if self.avtech_busy:
+            return  # a pulse (off after it), or a connect/disconnect (off in it)
         self.avtech_busy = True
         self.avtech_status_var.set("Avtech: trigger on hold, output off…")
-        self._update_avtech_controls()
+        self._update_k6221_controls()
         future = self.avtech_executor.submit(self.avtech_controller.switch_off)
         future.add_done_callback(
             lambda completed: self.post_ui(lambda: self._finish_avtech_off(completed.exception()))
@@ -28941,7 +29083,7 @@ class CombinedControlApp:
             self.avtech_status_var.set(f"Avtech: {short_status_error(error)}")
             if not self.closing:
                 messagebox.showerror("Avtech", str(error), parent=self.root)
-        self._update_avtech_controls()
+        self._update_k6221_controls()
 
     def _publish_avtech_off_state(self) -> None:
         self.avtech_output_var.set("Output: OFF")
@@ -28964,20 +29106,22 @@ class CombinedControlApp:
         self.avtech_connect_button.configure(state="normal" if not connected and idle else "disabled")
         self.avtech_disconnect_button.configure(state="normal" if connected and idle else "disabled")
         can_pulse = (
-            connected and idle and self.avtech_safety_var.get()
+            connected and idle and self.avtech_safety_var.get() and not self.k6221_busy
             and not self.magnet_scan_running and not self.keithley_scan_running
         )
         allowed = self.avtech_controller.polarities or (1, -1)
         for button, sign in ((self.avtech_apply_button, 1), (self.avtech_apply_negative_button, -1)):
             button.configure(state="normal" if can_pulse and sign in allowed else "disabled")
-        self.avtech_off_button.configure(state="normal" if connected or scanning else "disabled")
+        self.avtech_off_button.configure(
+            state="normal" if scanning or (connected and not self.avtech_busy) else "disabled"
+        )
 
     def stop_k6221(self) -> None:
         if not self.k6221_controller.connected:
             return
         self.k6221_stop_event.set()
         self.k6221_status_var.set("Stopping output, zeroing and switching off…")
-        if not self.k6221_scan_running:
+        if not (self.k6221_scan_running and self.__dict__.get("cidwm_scan_source", "6221") == "6221"):
             self.k6221_busy = True
             self._update_k6221_controls()
             future = self.k6221_executor.submit(self.k6221_controller.output_off)
@@ -29177,6 +29321,7 @@ class CombinedControlApp:
             and idle
             and not blocked
             and self.k6221_safety_var.get()
+            and not self.__dict__.get("avtech_busy", False)
         )
         for button in (self.k6221_apply_button, self.k6221_apply_negative_button):
             button.configure(state="normal" if can_operate else "disabled")
@@ -29185,7 +29330,7 @@ class CombinedControlApp:
                 avtech = self.avtech_controller
                 can_start = (
                     avtech.connected and not self.avtech_busy and not running
-                    and self.avtech_safety_var.get()
+                    and not self.k6221_busy and self.avtech_safety_var.get()
                     and not self.magnet_scan_running and not self.keithley_scan_running
                 )
             else:

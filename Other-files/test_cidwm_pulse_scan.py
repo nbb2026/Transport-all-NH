@@ -326,6 +326,24 @@ class AvtechWorkerTests(unittest.TestCase):
         self.assertEqual(rows[1]["display_png"], "CIDWM_pulse00002_neg_-20V_display8.png")
         self.assertTrue(a.cidwm_scan_off_confirmed)
 
+    def test_a_pulse_that_fired_then_failed_has_its_row(self):
+        """Review, 2026-10-13: a failure after the trigger lost the row."""
+        class Failing(AvtechSource):
+            def single_pulse(self, amplitude_v, width_s):
+                self.calls.append(("pulse", amplitude_v, width_s))
+                raise app.AvtechPulseError("pulse fired, then: output? failed", fired=True,
+                                           amplitude_v=amplitude_v, width_s=width_s)
+
+        avtech = Failing()
+        a = self.page(avtech)
+        with self.assertRaisesRegex(app.AvtechPulseError, "pulse fired"):
+            a._cidwm_pulse_scan_worker(AVTECH_SETTINGS, self.folder)
+        with (self.folder / "run.csv").open(encoding="utf-8-sig") as file:
+            rows = list(csv.DictReader(file))
+        self.assertEqual([(r["pulse"], r["amplitude_V"], r["pulse_width_ns"]) for r in rows], [("1", "20", "10")])
+        self.assertIn("pulse fired, then", rows[0]["note"])
+        self.assertEqual(avtech.calls[-1], ("off",))
+
     def test_an_overload_stops_the_scan_with_its_row(self):
         avtech = AvtechSource(trip_on=2)
         a = self.page(avtech)
