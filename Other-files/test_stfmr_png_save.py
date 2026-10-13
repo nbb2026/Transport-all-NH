@@ -24,6 +24,12 @@ from test_ppms_motor_debug import app
 
 SUFFIXES = ("X", "Y", "theta", "field_vs_current")
 
+# The status label is a ttk.Label of width=52 (in widths of "0"), and text
+# past that is cut off.  "Saved: STFMR_field_scan_<stamp>.csv" alone takes
+# about 47 of them, so what the save did must come within the first 40
+# characters or the operator never sees it (reviewer, 2026-10-13).
+VISIBLE = 40
+
 _no_tk = mock.patch.object(
     app.tk, "Tk", side_effect=AssertionError("a test reached a real Tk window"))
 
@@ -90,8 +96,9 @@ class SaveCsvWritesPngTests(unittest.TestCase):
             self.assertEqual(csv_path.stem, stem)
             with csv_path.open(encoding="utf-8-sig", newline="") as handle:
                 self.assertEqual(len(list(csv.DictReader(handle))), 12)
-            self.assertEqual(h.stfmr_lockin_status_var.get(),
-                             f"Saved: {csv_path.name}; Saving PNG…")
+            status = h.stfmr_lockin_status_var.get()
+            self.assertEqual(status, f"Saving PNG… (CSV saved: {csv_path.name})")
+            self.assertIn("Saving PNG…", status[:VISIBLE])
             h.root.update_idletasks.assert_called_once_with()
             order.append("png")
             return real_export(folder, stem)
@@ -108,15 +115,17 @@ class SaveCsvWritesPngTests(unittest.TestCase):
                 self.assertAlmostEqual(image.info["dpi"][0], 900, places=1)
                 # Something was drawn: not a blank white page.
                 self.assertLess(image.convert("L").getextrema()[0], 255)
-        self.assertEqual(h.stfmr_lockin_status_var.get(),
-                         f"Saved: {csv_path.name} + 4 PNG")
+        status = h.stfmr_lockin_status_var.get()
+        self.assertEqual(status, f"CSV + 4 PNG saved: {csv_path.name}")
+        self.assertIn("CSV + 4 PNG saved", status[:VISIBLE])
         self.error.assert_not_called()
         self.warning.assert_not_called()
 
     def test_png_failure_keeps_the_csv_and_is_reported_on_its_own(self):
         h = self.h
+        # A two-line error: the one-line status bar gets it on one line.
         h._export_stfmr_lockin_data_pngs = mock.Mock(
-            side_effect=OSError("PNG disk full"))
+            side_effect=OSError("PNG disk full\nwhile drawing the X figure"))
         h.save_stfmr_lockin_results()
         [csv_path] = self.csv_files()
         with csv_path.open(encoding="utf-8-sig", newline="") as handle:
@@ -131,9 +140,11 @@ class SaveCsvWritesPngTests(unittest.TestCase):
         title, text = self.warning.call_args.args
         self.assertIn("PNG", title)
         self.assertIn(str(csv_path), text)
-        self.assertIn("PNG disk full", text)
-        self.assertEqual(h.stfmr_lockin_status_var.get(),
-                         f"Saved: {csv_path.name}; PNG not saved: PNG disk full")
+        self.assertIn("PNG disk full\nwhile drawing the X figure", text)
+        status = h.stfmr_lockin_status_var.get()
+        self.assertEqual(
+            status, "CSV saved; PNG not saved: PNG disk full while drawing the X figure")
+        self.assertIn("PNG not saved: PNG disk full", status[:VISIBLE])
 
     def test_csv_failure_draws_no_png(self):
         # Guard of the CSV-first rule (passes before the change too): a CSV

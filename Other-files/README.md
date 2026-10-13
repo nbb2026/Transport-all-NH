@@ -114,18 +114,23 @@
   MFLI + SR830) at 900 DPI whether or not the plots are on screen, so the
   PNGs show what the CSV holds. The snapshot one would grab the screen and
   fails when a plot is hidden; it stays unused. The status line shows
-  "Saving PNG…" (redrawn before the figures are drawn on the Tk thread,
-  about a second; Stop waits that long if a sweep is running), then
-  "Saved: <csv> + 4 PNG". A PNG failure keeps the CSV and is reported on
-  its own: the status line reads "Saved: <csv>; PNG not saved: <error>" and
-  a "Save STFMR PNG" warning names the CSV and the PNG problem. The folder
+  "Saving PNG… (CSV saved: <csv>)" (redrawn before the figures are drawn on
+  the Tk thread, about a second; Stop waits that long if a sweep is
+  running), then "CSV + 4 PNG saved: <csv>". The news comes before the CSV
+  name because the status label is a fixed 52 characters wide and the name
+  alone fills most of it; only the end of the name may be cut off. A PNG
+  failure keeps the CSV and is reported on its own: the status line reads
+  "CSV saved; PNG not saved: <error, cut to one short line>" and a "Save STFMR
+  PNG" warning names the CSV and gives the full PNG error. The folder
   dialog's title now says CSV and PNG figures; the exporter's style and the
   button label are unchanged. README_STFMR_DUAL.md says so.
 - **Tests:** `test_stfmr_png_save.py` (the real Save CSV and the real
   exporter on dual-meter rows: the CSV is complete and the status says
   Saving PNG… before the first figure, four 900 DPI PNGs named after the
-  CSV; a PNG failure keeps all CSV rows, no error dialog, one warning naming
-  the CSV and the PNG error; a CSV that cannot be written shows the error
+  CSV; a PNG failure, with a two-line error, keeps all CSV rows, no error
+  dialog, one warning naming the CSV and the full error, a one-line status;
+  each status has its news within its first 40 characters, so the 52-wide
+  label shows it; a CSV that cannot be written shows the error
   and draws no PNG). `test/test_stfmr_realtime_recording.py`
   `test_manual_save_uses_data_export_without_imagegrab` now checks that the
   manual save calls the exporter once, after the CSV, without ImageGrab

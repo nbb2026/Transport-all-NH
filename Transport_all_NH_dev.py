@@ -18669,8 +18669,11 @@ class CombinedControlApp:
         # whether or not the plots are on screen, so the PNGs show what the
         # CSV holds.  The figures come only after the CSV is written, so a
         # PNG problem can neither lose the CSV nor report it as failed.
+        # The status label is a fixed 52 characters wide and the CSV name
+        # alone takes most of it, so the PNG news comes first and only the
+        # end of the file name may be cut off (user, 2026-10-13).
         self.stfmr_lockin_status_var.set(
-            f"Saved: {csv_path.name}; Saving PNG…"
+            f"Saving PNG… (CSV saved: {csv_path.name})"
         )
         # The large figures are drawn on this (Tk) thread, which holds the
         # page for a moment: show the status before it does.
@@ -18680,8 +18683,10 @@ class CombinedControlApp:
                 Path(folder), csv_path.stem
             )
         except BaseException as error:
+            # One short line, as the page's other failures: the warning
+            # below names the CSV and gives the full error.
             self.stfmr_lockin_status_var.set(
-                f"Saved: {csv_path.name}; PNG not saved: {error}"
+                f"CSV saved; PNG not saved: {short_status_error(error)}"
             )
             messagebox.showwarning(
                 "Save STFMR PNG",
@@ -18691,7 +18696,7 @@ class CombinedControlApp:
             )
             return
         self.stfmr_lockin_status_var.set(
-            f"Saved: {csv_path.name} + {len(png_paths)} PNG"
+            f"CSV + {len(png_paths)} PNG saved: {csv_path.name}"
         )
 
     def _on_stfmr_output_mode_changed(self, _event=None) -> None:

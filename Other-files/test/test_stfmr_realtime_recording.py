@@ -375,7 +375,8 @@ class StreamingTests(unittest.TestCase):
         def export(folder, stem):
             self.assertEqual(Path(folder), Path(self.tmp.name))
             self.assertEqual(len(read_csv(Path(folder) / (stem + '.csv'))), 1)
-            self.assertIn('Saving PNG', h.stfmr_lockin_status_var.get())
+            # The fixed-width status label shows the PNG news first.
+            self.assertTrue(h.stfmr_lockin_status_var.get().startswith('Saving PNG'))
             self.assertEqual(h.root.idle_updates, 1)
             return tuple(Path(folder) / (stem + '_' + suffix + '.png')
                          for suffix in ('X', 'Y', 'theta', 'field_vs_current'))
@@ -389,7 +390,7 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(h._export_stfmr_lockin_data_pngs.call_args.args[1], csv_path.stem)
         self.assertEqual(len(read_csv(csv_path)), 1)
         self.assertEqual(h.stfmr_lockin_status_var.get(),
-                         'Saved: ' + csv_path.name + ' + 4 PNG')
+                         'CSV + 4 PNG saved: ' + csv_path.name)
         warning.assert_not_called()
         self.error.assert_not_called()
 
