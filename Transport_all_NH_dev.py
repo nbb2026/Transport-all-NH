@@ -40983,7 +40983,8 @@ class PPMSPanel(CombinedControlApp):
 
 
 # ---- Newmark NSC-A1 rotation stage, for the RT-E Angle scan (user, 2026-10-13) ----
-# The reviewed driver core of Newmark_motor_test.py (999c1e2 + 164812f), copied
+# The reviewed driver core of Newmark_motor_test.py (999c1e2 + 164812f, with
+# 15b88a1's stop confirmed by three still reads and its error-126 text), copied
 # here so the program stays one file.  The stage (Newmark RM-5-110: 72:1 worm
 # gear, 1.8 deg stepper, home switch, no encoder, no limit switches) turns the
 # SAMPLE HOLDER, wires attached, inside the RT-E magnet; the NSC-A1 is a
@@ -41068,8 +41069,8 @@ class NewmarkRefused(NewmarkStageError):
 
 class NewmarkMotionError(NewmarkStageError):
     """A move that failed after it was sent.  ``stop_ran``: the STOP sequence
-    already ran for it (time-out, lost communication); otherwise the move had
-    ended (PX off the target, a limit error)."""
+    already ran for it (time-out, lost communication, a failed reply to X);
+    otherwise the move had ended (PX off the target, a limit error)."""
 
     def __init__(self, message, stopped, px=None, notes=(), stop_ran=False):
         super().__init__(message)
@@ -41203,7 +41204,12 @@ def newmark_dll_folder():
 
 def newmark_explain_load_error(path, error):
     """The Windows error code, from OSError.winerror or else its exact "[WinError N]"
-    text (not any "193" in the message, which also holds the path)."""
+    text (not any "193" in the message, which also holds the path).
+
+    Python 3.8+ reports a missing module (error 126) as a FileNotFoundError
+    "Could not find module ... (or one of its dependencies)", without
+    winerror or "[WinError 126]", as main's 15b88a1 found for the test
+    script (user, 2026-10-13)."""
     code = getattr(error, "winerror", None)
     if code is None:
         found = re.search(r"\[WinError (\d+)\]", str(error))
@@ -41212,10 +41218,10 @@ def newmark_explain_load_error(path, error):
         return (f"Could not load {path} (WinError 193): it is not a 64-bit DLL. This Python is 64-bit, so "
                 f"{NEWMARK_DLL_NAME} and {NEWMARK_SIUSB_NAME} must both be the 64-bit ones (Arcus \"USB 64-bit "
                 "DLL v2.06\"), side by side in the program's folder.")
-    if code == 126:
-        return (f"Could not load {path} (WinError 126): it, or the {NEWMARK_SIUSB_NAME} it needs, was not found. "
-                f"Put the 64-bit {NEWMARK_DLL_NAME} and {NEWMARK_SIUSB_NAME} together in the program's folder "
-                "(beside Transport_all_NH_dev.py).")
+    if code == 126 or isinstance(error, FileNotFoundError):
+        return (f"Could not load {path}: it, or a DLL it needs, was not found (Windows error 126). "
+                f"{NEWMARK_DLL_NAME} needs {NEWMARK_SIUSB_NAME}, and Python does not search PATH for them: put "
+                "both 64-bit DLLs together in the program's folder (beside Transport_all_NH_dev.py).")
     return f"Could not load {path}: {error}"
 
 
@@ -41649,7 +41655,20 @@ class NewmarkNSCA1Controller:
                 # Flagged before sending: a failed reply does not prove the
                 # move did not start, so it is never repeated, only stopped.
                 self.motion_may_run, self.stop_finished = True, False
-                self.set_ok(f"X{target}")
+                try:
+                    self.set_ok(f"X{target}")
+                except Exception as error:
+                    # No reply, an empty or a stale one: the controller may have
+                    # started the move all the same, so it is stopped here, for a
+                    # move by hand as for a scan's, as the reviewed script does
+                    # after any failure once a move was sent (user, 2026-10-13).
+                    stopped, px, notes = self._stop_motion()
+                    where = (f"STOP sent; stopped at {newmark_angle_text(px, spd)}" if stopped else
+                             "STOP and ABORT sent, but it could not be confirmed stopped: CHECK THE STAGE (switch "
+                             "the NSC-A1's 24 V off if it still turns)")
+                    raise NewmarkMotionError(f"{error}; the move may have started: {where}"
+                                             + (f" ({'; '.join(notes)})" if notes else ""),
+                                             stopped, px, notes, stop_ran=True) from error
                 end, mst = self._wait_motion(target, timeout, stop_event, on_progress)
                 if mst & NEWMARK_LIMIT_ERRORS:
                     raise NewmarkMotionError(f"the stage stopped with a limit error (MST {mst}: "
@@ -41725,24 +41744,35 @@ class NewmarkNSCA1Controller:
             notes.append(f"{command}: {error}")
 
     def _wait_until_still(self, wait_s, notes):
-        """(True, PX) once MST shows it not moving; (False, None) after wait_s."""
+        """(True, PX) once NEWMARK_IDLE_READS status reads in a row say it is not
+        moving, with PX the same at each; (False, None) after wait_s.
+
+        One read is not enough here either (see _wait_motion): a STOP that
+        lands just after X was answered, before the controller sets its moving
+        bits, does nothing, and the move would then go on to its target with
+        nothing watching it.  As main's 15b88a1 does for the test script
+        (user, 2026-10-13)."""
         deadline = self._now() + wait_s
+        idle, still_px = 0, None
         while True:
             try:
-                if not self.status() & NEWMARK_MOVING:
-                    break
+                if self.status() & NEWMARK_MOVING:
+                    idle = 0
+                else:
+                    px = self.number("PX")
+                    idle = idle + 1 if idle and px == still_px else 1
+                    still_px = px
+                    if idle >= NEWMARK_IDLE_READS:
+                        break
             except Exception as error:
+                idle = 0
                 if str(error) not in notes:
                     notes.append(str(error))
             if self._now() >= deadline:
                 return False, None
             self._sleep(NEWMARK_POLL_S)
         self.motion_may_run = False
-        try:
-            return True, self.number("PX")
-        except Exception as error:
-            notes.append(f"PX could not be read: {error}")
-            return True, None
+        return True, still_px
 
     def _stop_motion(self, wait_s=NEWMARK_STOP_WAIT_S):
         """STOP (decelerated); wait until it is not moving; ABORT if STOP did not
@@ -42293,21 +42323,46 @@ class RTEPanel(PPMSPanel):
             # only shows the result (it never calls the stage's DLL).
             def connect_stage():
                 stage.connect(resource)
-                return stage.read_state()
-            def connected(state):
+                try:
+                    return newmark_stage_text(stage.read_state())
+                except Exception as error:
+                    # Connected all the same (the handle is open, so the lamp,
+                    # Stop stage and Disconnect say so): the row says Connected
+                    # and the live line that the read failed (user, 2026-10-13).
+                    self.thread_log(f'RT-E {stage.label}: the first read after Connect failed: {error}')
+                    return f'Stage read failed: {short_status_error(error, 60)}'
+            def connected(text):
                 self.rte_connections[key].set('Connected')
-                self.rte_stage_live.set(newmark_stage_text(state))
+                self.rte_stage_live.set(text)
             self._rte_submit(connect_stage, connected)
             return
         self._rte_submit(lambda: self.rte_controllers[key].connect(resource),
                          lambda identity: self.rte_connections[key].set('Connected'))
 
     def _rte_disconnect(self, key):
-        def disconnected(_):
-            self.rte_connections[key].set('Not connected')
-            if key == 'newmark':
-                self.rte_stage_live.set('Stage: not connected')
-        self._rte_submit(self.rte_controllers[key].disconnect, disconnected)
+        if key == 'newmark':
+            stage = self.rte_controllers[key]
+            def disconnect_stage():
+                try:
+                    stage.disconnect()
+                except Exception as error:
+                    if stage.connected:
+                        raise       # still open: the row stays Connected
+                    return error    # closed, but its stop was not confirmed
+                return None
+            def stage_disconnected(failure):
+                # From the closed handle, not only on success: a disconnect that
+                # closed the handle and then raised (stop not confirmed) left the
+                # row "Connected" with the lamp off (user, 2026-10-13).
+                self.rte_connections[key].set('Not connected')
+                self.rte_stage_live.set('Stage: not connected' if failure is None
+                                        else 'Stage: closed, STOP not confirmed')
+                if failure is not None:
+                    raise failure   # _rte_submit logs it and shows it (CHECK THE STAGE)
+            self._rte_submit(disconnect_stage, stage_disconnected)
+            return
+        self._rte_submit(self.rte_controllers[key].disconnect,
+                         lambda _: self.rte_connections[key].set('Not connected'))
 
     # ---- the Newmark stage, by hand (user, 2026-10-13) -------------------------
     def _rte_stage_progress(self, _px, degrees):
@@ -42331,16 +42386,22 @@ class RTEPanel(PPMSPanel):
             messagebox.showerror('RT-E stage', str(error), parent=self.root)
             return
         self.rte_stage_stop_event.clear()
+        # KEPCO Zero / OFF and 6221 / 2400 OFF set the scan's stop event and
+        # queue their OFF on this same worker: the move watches that event as
+        # well, so it stops (STOP) and their OFF runs right after, not after
+        # the whole turn (user, 2026-10-13).  Cleared here as Set 6221 does.
+        self.ppms_field_scan_stop_event.clear()
+        stop = _EitherEvent(self.ppms_field_scan_stop_event, self.rte_stage_stop_event)
 
         def move():
             try:
-                state = stage.move_to_deg(target, self.rte_stage_stop_event, on_progress=self._rte_stage_progress)
+                state = stage.move_to_deg(target, stop, on_progress=self._rte_stage_progress)
             except NewmarkStopRequested as stopped:
                 if not stopped.stopped:
                     raise
                 where = ('not moved' if stopped.before else
                          f'stopped at {newmark_angle_text(stopped.px, stage.steps_per_degree)}')
-                return f'Stage: {where} (Stop)'
+                return f"Stage: {where} ({'Stop' if self.rte_stage_stop_event.is_set() else 'OFF'})"
             return newmark_stage_text(state)
         self._rte_submit(move, self.rte_stage_live.set)
 
@@ -42661,8 +42722,11 @@ class RTEPanel(PPMSPanel):
         if mode == 'Angle':
             self.rte_stage_stop_event.clear()
             self.rte_stage_where = 'stage not moved'
+            # Short enough for the status label at its narrowest (Windows CI, about
+            # 593 px): the Yes/No before the scan already said the stage turns
+            # the sample and its wires (user, 2026-10-13).
             self.ppms_field_scan_status_var.set(
-                f'RT-E Angle {first:g}° to {last:g}°, KEPCO {field_current:+g} A held; stage turns sample and wires; '
+                f'RT-E Angle {first:g}° to {last:g}°, KEPCO {field_current:+g} A held; '
                 f'{self.ppms_field_scan_total} points')
         self._update_ppms_control_ui()
         self._redraw_ppms_transport_plot()
@@ -42677,9 +42741,17 @@ class RTEPanel(PPMSPanel):
                 status = 'Stopped; outputs held unless OFF was requested'
             except Exception as error:
                 status = f'Failed: {short_status_error(error, 100)}'
-                self.thread_log('RT-E scan ' + status)
+                detail = str(error)
+                where = ''
+                if mode == 'Angle':
+                    # Where the stage is after a failure, "NOT confirmed stopped"
+                    # included, goes to the log and the dialog; the status line
+                    # keeps only the failure, to stay on one line (user, 2026-10-13).
+                    where = self.rte_stage_where or 'stage not moved'
+                    detail += f'\n\n{where[:1].upper()}{where[1:]}'
+                self.thread_log('RT-E scan ' + status + (f'; {where}' if where else ''))
                 if not self.closing and not self.rte_closed:
-                    messagebox.showerror('RT-E scan', str(error), parent=self.root)
+                    messagebox.showerror('RT-E scan', detail, parent=self.root)
             if mode == 'Angle' and not status.startswith('Failed'):
                 status += f'; {self.rte_stage_where}'     # where the stage is (user, 2026-10-13)
             self.ppms_field_scan_running = False
@@ -42878,10 +42950,13 @@ class RTEPanel(PPMSPanel):
                 result = stage.stop()
                 stopped, px = result['stopped'], result['px']
             self.rte_stage_where = (f'stage stopped at {newmark_angle_text(px, stage.steps_per_degree)}' if stopped
-                                    else 'stage NOT confirmed stopped: check it')
+                                    else 'stage NOT confirmed stopped: CHECK THE STAGE')
         except Exception as stop_error:
-            self.rte_stage_where = 'stage NOT confirmed stopped: check it'
+            self.rte_stage_where = 'stage NOT confirmed stopped: CHECK THE STAGE'
             self.thread_log(f'RT-E stage STOP after the failure failed: {stop_error}')
+        # Always logged, so an unconfirmed stop is never only worked out
+        # (user, 2026-10-13); finished() also puts it in the error dialog.
+        self.thread_log(f'RT-E Angle scan, after the stage failure: {self.rte_stage_where}')
 
     def _rte_show_point(self, row, progress):
         if self.rte_closed or self.closing:
@@ -42971,7 +43046,7 @@ class RTEPanel(PPMSPanel):
             return
         self.rte_closed = self.ppms_closed = self.zurich_closed = True
         self.ppms_field_scan_stop_event.set()
-        # A stage move by hand watches only this one; it sends STOP itself.
+        # A stage move by hand watches this one too (and the scan's); it sends STOP itself.
         self.rte_stage_stop_event.set()
         for name in ('ppms_poll_after_id', 'zurich_after_id'):
             timer = self.__dict__.get(name)

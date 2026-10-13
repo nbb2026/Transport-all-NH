@@ -135,6 +135,55 @@ class LosesOne(Sim):
         return super().send_recv(handle, data)
 
 
+class ReplyLost(Sim):
+    """The controller runs ``command`` once, but its reply is lost (the USB
+    transaction fails after it), as for an X whose move has started."""
+
+    def __init__(self, command, **options):
+        super().__init__(**options)
+        self.lose, self.lost = command, False
+
+    def send_recv(self, handle, data):
+        reply = super().send_recv(handle, data)
+        command = bytes(data).split(b"\0", 1)[0].decode("ascii")
+        if command == self.lose and not self.lost and reply is not None:
+            self.lost = True
+            return None
+        return reply
+
+
+class Runaway(Stuck):
+    """A move that never ends, and STOP and ABORT do nothing: the stage cannot
+    be confirmed stopped."""
+
+    def _stop(self, command, now):
+        pass
+
+
+class RunawayReplyLost(Runaway, ReplyLost):
+    """X runs, its reply is lost, and STOP and ABORT do nothing."""
+
+
+class StopLostInTheGap(LateMovingBits):
+    """main's 15b88a1 simulator: a STOP in the gap after X, while MST still
+    says "not moving", does nothing, and the move starts anyway.  ``on_x``
+    runs right after each X is answered (a Stop pressed in that gap)."""
+
+    def __init__(self, on_x=None, **options):
+        super().__init__(**options)
+        self.on_x = on_x
+
+    def reply(self, command):
+        text = super().reply(command)
+        if command.startswith("X") and self.on_x is not None:
+            self.on_x()
+        return text
+
+    def _stop(self, command, now):
+        if not (command == "STOP" and self.motion is not None and self.motion.get("idle")):
+            super()._stop(command, now)
+
+
 class RecordingDLL:
     """PerformaxCom.dll as the script's simulator answers it; every call is
     recorded with the thread it came from."""
@@ -379,6 +428,51 @@ class NewmarkDriverTests(StageBase):
         self.assertTrue(caught.exception.before)
         self.assertEqual(h.sim.moves, ["X900000"])
 
+    def test_a_stop_in_the_gap_after_x_is_confirmed_by_three_still_reads(self):
+        # Stop just after X was answered, before the moving bits: the STOP does
+        # nothing and the move then starts.  One "not moving" read would call it
+        # stopped at 0 deg while it turns on to 30 deg unwatched (user, 2026-10-13).
+        event = threading.Event()
+        h = self.make(StopLostInTheGap(on_x=event.set))
+        h.stage.connect("auto")
+        with self.assertRaises(app.NewmarkStopRequested) as caught:
+            h.stage.move_to_deg(30, event)
+        self.assertTrue(caught.exception.stopped)
+        self.assertIsNone(h.sim.motion, "watched until it really stopped")
+        self.assertEqual(h.sim.px, 300000)
+        self.assertEqual(caught.exception.px, 300000, "reported where it stopped, not at the start")
+        self.assertIn("stopped (Stop) at +30.000°", str(caught.exception))
+        self.assertFalse(h.stage.motion_may_run)
+        self.assertNotIn("ABORT", h.sim.received)
+        self.assertEqual(h.sim.received[-2 * app.NEWMARK_IDLE_READS:], ["MST", "PX"] * app.NEWMARK_IDLE_READS,
+                         "still: three reads in a row of MST not moving, each with the same PX")
+
+    def test_a_lost_reply_to_x_stops_the_move(self):
+        h = self.make(ReplyLost("X900000"))
+        h.stage.connect("auto")
+        with self.assertRaisesRegex(app.NewmarkMotionError, r"X900000: the USB transaction failed \(it is not "
+                                    r"repeated\); the move may have started: STOP sent; stopped at \+") as caught:
+            h.stage.move_to_deg(90, threading.Event())
+        error = caught.exception
+        self.assertTrue(error.stop_ran, "the page must not stop it again")
+        self.assertTrue(error.stopped)
+        self.assertIsNone(h.sim.motion)
+        self.assertTrue(0 < h.sim.px < 900000, h.sim.px)
+        self.assertEqual(error.px, h.sim.px)
+        self.assertEqual(h.sim.moves, ["X900000"], "never repeated")
+        rest = h.sim.received[h.sim.received.index("X900000") + 1:]
+        self.assertEqual(rest[:3], ["STOP", "ID", "VER"], "STOP first, then back in step")
+        self.assertFalse(h.stage.motion_may_run)
+        # STOP and ABORT do nothing: not confirmed, and the message says so.
+        h = self.make(RunawayReplyLost("X900000"))
+        h.stage.connect("auto")
+        with self.assertRaisesRegex(app.NewmarkMotionError, "could not be confirmed stopped: CHECK THE STAGE") as caught:
+            h.stage.move_to_deg(90, threading.Event())
+        self.assertFalse(caught.exception.stopped)
+        self.assertTrue(caught.exception.stop_ran)
+        rest = h.sim.received[h.sim.received.index("X900000") + 1:]
+        self.assertLess(rest.index("STOP"), rest.index("ABORT"))
+
     def test_a_time_out_stops_and_raises(self):
         h = self.make(Stuck())
         h.stage.connect("auto")
@@ -472,8 +566,17 @@ class NewmarkLoaderTests(unittest.TestCase):
         explain = app.newmark_explain_load_error
         self.assertIn("not a 64-bit DLL", explain("C:/lab/PerformaxCom.dll",
                                                   OSError("[WinError 193] %1 is not a valid Win32 application")))
-        self.assertIn("SiUSBXp.dll it needs, was not found",
-                      explain("PerformaxCom.dll", OSError("[WinError 126] The specified module could not be found")))
+        for error in (OSError("[WinError 126] The specified module could not be found"),
+                      # What Python 3.8+ raises for it on Windows: no winerror, no
+                      # "[WinError 126]" (user, 2026-10-13).
+                      FileNotFoundError("Could not find module 'C:\\lab\\run1930\\PerformaxCom.dll' (or one of its "
+                                        "dependencies). Try using the full path with constructor syntax.")):
+            with self.subTest(error=error):
+                text = explain("C:\\lab\\run1930\\PerformaxCom.dll", error)
+                self.assertIn("it, or a DLL it needs, was not found (Windows error 126)", text)
+                self.assertIn("PerformaxCom.dll needs SiUSBXp.dll, and Python does not search PATH", text)
+                self.assertIn("both 64-bit DLLs together in the program's folder", text)
+        self.assertNotIn("error 126", explain("PerformaxCom.dll", PermissionError("[WinError 5] Access is denied")))
         # A path holding "193" is not WinError 193.
         self.assertNotIn("64-bit", explain("C:/193/PerformaxCom.dll", OSError("[WinError 5] Access is denied")))
 
@@ -503,6 +606,17 @@ class NewmarkLoaderTests(unittest.TestCase):
             with patch.object(app.ctypes, "sizeof", lambda _type: 4):
                 with self.assertRaisesRegex(app.NewmarkStageError, "32-bit Python"):
                     REAL_LOADER()
+
+        def not_found(path):
+            raise FileNotFoundError(f"Could not find module '{path}' (or one of its dependencies). Try using the "
+                                    "full path with constructor syntax.")
+
+        # Not in the program's folder: the normal search, and Python 3.8+'s error 126.
+        with patch.object(app.ctypes, "WinDLL", not_found, create=True), \
+                patch.object(app, "newmark_dll_folder", return_value=None):
+            with self.assertRaisesRegex(app.NewmarkStageError, r"Could not load PerformaxCom\.dll: it, or a DLL it "
+                                        r"needs, was not found \(Windows error 126\)"):
+                REAL_LOADER()
 
 
 # ---- every DLL call on the RT-E worker -------------------------------------------
@@ -715,6 +829,49 @@ class AngleScanWorkerTests(StageBase):
         h.panel._stop_ppms_transport_source.assert_called_once()
         h.panel.rte_controllers["kepco"].safe_output_off.assert_not_called()
 
+    def test_a_stop_in_the_gap_after_x_ends_the_scan_where_the_stage_really_stopped(self):
+        sim = StopLostInTheGap()
+        h = self.make(sim)
+        sim.on_x = h.panel.ppms_field_scan_stop_event.set      # the scan's Stop, just after X
+        h.stage.connect("auto")
+        with self.assertRaisesRegex(app.PPMSScanCancelled, r"stage stopped at \+5\.000°"):
+            self.run_scan(h=h)
+        self.assertIsNone(sim.motion, "no move left running unwatched")
+        self.assertEqual(sim.px, 50000)
+        self.assertEqual(h.panel.rte_stage_where, "stage stopped at +5.000°")
+        self.assertEqual(sim.moves, ["X50000"])
+
+    def test_a_lost_reply_to_x_is_stopped_once_and_logged(self):
+        h = self.make(ReplyLost("X50000"))
+        with self.assertRaisesRegex(app.NewmarkMotionError, "X50000: the USB transaction failed"):
+            self.run_scan(h=h)
+        panel = h.panel
+        self.assertEqual(h.sim.received.count("STOP"), 1, "the driver's STOP; the page does not repeat it")
+        self.assertIsNone(h.sim.motion)
+        self.assertTrue(panel.rte_stage_where.startswith("stage stopped at +"), panel.rte_stage_where)
+        panel.thread_log.assert_any_call(f"RT-E Angle scan, after the stage failure: {panel.rte_stage_where}")
+        panel._stop_ppms_transport_source.assert_called_once()
+        panel.rte_controllers["kepco"].safe_output_off.assert_not_called()
+
+    def test_a_stop_that_is_not_confirmed_is_logged(self):
+        h = self.make(RunawayReplyLost("X50000"))
+        with self.assertRaisesRegex(app.NewmarkMotionError, "CHECK THE STAGE"):
+            self.run_scan(h=h)
+        panel = h.panel
+        self.assertEqual(panel.rte_stage_where, "stage NOT confirmed stopped: CHECK THE STAGE")
+        panel.thread_log.assert_any_call("RT-E Angle scan, after the stage failure: stage NOT confirmed stopped: "
+                                         "CHECK THE STAGE")
+        panel._stop_ppms_transport_source.assert_called_once()
+        # The page's own STOP (a failure before X, so the driver's did not run).
+        h = self.make(Runaway())
+        h.stage.connect("auto")
+        h.sim._start(3000000, script._now())        # turning, as after a lost stop
+        h.panel._rte_stop_stage_after_failure(app.NewmarkRefused("the stage is moving"))
+        self.assertEqual(h.panel.rte_stage_where, "stage NOT confirmed stopped: CHECK THE STAGE")
+        self.assertIn("ABORT", h.sim.received)
+        h.panel.thread_log.assert_any_call("RT-E Angle scan, after the stage failure: stage NOT confirmed stopped: "
+                                           "CHECK THE STAGE")
+
     def test_a_field_drift_switches_the_kepco_off(self):
         h = self.make()
         h.panel._rte_read_field.side_effect = [-2., -2., -2., 30.]
@@ -786,6 +943,124 @@ class ManualStageControlTests(StageBase):
         self.assertEqual(h.sim.moves, ["X-450000"])
         self.assertEqual(h.panel.rte_stage_live.get(), "Stage: -45.000° (10000 steps/°)")
         self.assertFalse(h.panel.ppms_environment_busy)
+
+    def test_a_lost_reply_to_x_by_hand_stops_the_move(self):
+        # X ran but its reply was lost: STOP, as in a scan (user, 2026-10-13).
+        h = self.make(ReplyLost("X900000"))
+        h.stage.connect("auto")
+        h.panel.rte_stage_target.set("90")
+        with patch.object(app.messagebox, "showerror") as showerror:
+            h.panel._rte_stage_move()
+            self.drain(h)
+        showerror.assert_called_once()
+        self.assertIn("X900000: the USB transaction failed", showerror.call_args.args[1])
+        self.assertIn("the move may have started: STOP sent; stopped at +", showerror.call_args.args[1])
+        self.assertIsNone(h.sim.motion, "not left turning")
+        self.assertEqual(h.sim.received.count("STOP"), 1)
+        self.assertEqual(h.sim.moves, ["X900000"])
+        self.assertFalse(h.stage.motion_may_run)
+        self.assertFalse(h.panel.ppms_environment_busy)
+
+    def test_off_buttons_during_a_move_by_hand_stop_it_and_run_next(self):
+        # KEPCO Zero / OFF and 6221 / 2400 OFF queue their OFF behind the move on
+        # the one worker: the move sees the scan's stop event and stops, so the OFF
+        # runs within a poll and a stop, not after a 72 s turn (user, 2026-10-13).
+        for button in ("KEPCO Zero / OFF", "6221 / 2400 OFF"):
+            with self.subTest(button=button):
+                executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rte-control")
+                self.addCleanup(executor.shutdown, wait=True)
+                h = self.make(executor=executor)
+                panel = h.panel
+                executor.submit(h.stage.connect, "auto").result(timeout=30)
+                seen = []
+
+                def off_runs(*_args, h=h, seen=seen):
+                    seen.append((h.clock.t, list(h.sim.received), h.sim.motion, h.sim.px))
+
+                if button.startswith("KEPCO"):
+                    panel.rte_controllers["kepco"].force_output_off.side_effect = off_runs
+                    press = panel._rte_zero
+                else:
+                    class Lock:
+                        def __enter__(self_, off_runs=off_runs):
+                            off_runs()
+                            return self_
+
+                        def __exit__(self_, *_exc):
+                            return False
+                    panel.ppms_instrument_controllers = {key: Mock(instrument=None, lock=Lock())
+                                                         for key in ("6221", "2400")}
+                    panel.ppms_connection_var, panel.ppms_current_live_var = Var(""), Var("")
+                    press = panel.ppms_sources_off
+                reached, proceed, pressed_at = threading.Event(), threading.Event(), []
+
+                def hold(h=h, reached=reached, proceed=proceed, pressed_at=pressed_at):
+                    pressed_at.append(h.clock.t)
+                    reached.set()
+                    proceed.wait(10)
+                h.clock.hooks.append((h.clock.t + 1.0, hold))   # 1 s into a 72 s turn
+                panel.rte_stage_target.set("360")
+                panel._rte_stage_move()
+                self.assertTrue(reached.wait(10))
+                press()                 # the Tk thread: sets the scan's stop event, queues OFF
+                proceed.set()
+                self.settle(h, executor)
+                self.assertTrue(seen, "the OFF ran")
+                off_time, received, motion, px = seen[0]
+                self.assertIn("STOP", received[received.index("X3600000"):], "STOP sent before the OFF")
+                self.assertIsNone(motion, "the stage had stopped when the OFF ran")
+                self.assertLess(off_time - pressed_at[0], 1.0, "the OFF ran within a poll and a stop")
+                self.assertTrue(0 < px < 100000, px)
+                self.assertNotIn("ABORT", h.sim.received)
+                self.assertTrue(panel.rte_stage_live.get().startswith("Stage: stopped at +"),
+                                panel.rte_stage_live.get())
+                self.assertTrue(panel.rte_stage_live.get().endswith("(OFF)"), panel.rte_stage_live.get())
+                self.assertFalse(panel.ppms_environment_busy)
+
+    def test_connect_with_a_failed_first_read_still_says_connected(self):
+        # RR's reply is lost after it ran: the scale is not read, and the first
+        # read falls in RR's 2 s blackout.  The handle is open, so the row says
+        # Connected, like the lamp (user, 2026-10-13).
+        h = self.make(ReplyLost("RR"))
+        with patch.object(app.messagebox, "showerror") as showerror:
+            h.panel._rte_connect("newmark")
+            self.drain(h)
+        showerror.assert_not_called()
+        self.assertTrue(h.stage.connected)
+        self.assertEqual(h.panel.rte_connections["newmark"].get(), "Connected")
+        self.assertTrue(h.panel.rte_stage_live.get().startswith("Stage read failed: ID: the USB transaction failed"),
+                        h.panel.rte_stage_live.get())
+        self.assertTrue(any("the first read after Connect failed" in str(call.args[0])
+                            for call in h.panel.thread_log.call_args_list))
+
+    def test_a_disconnect_that_closed_without_a_confirmed_stop_says_not_connected(self):
+        h = self.make(Runaway())
+        h.stage.connect("auto")
+        h.panel.rte_connections["newmark"].set("Connected")
+        h.panel.rte_stage_live.set("Stage: +0.000° (10000 steps/°)")
+        h.sim._start(3000000, script._now())        # turning, and STOP and ABORT do nothing
+        with patch.object(app.messagebox, "showerror") as showerror:
+            h.panel._rte_disconnect("newmark")
+            self.drain(h)
+        self.assertFalse(h.stage.connected)
+        self.assertEqual(h.panel.rte_connections["newmark"].get(), "Not connected")
+        self.assertEqual(h.panel.rte_stage_live.get(), "Stage: closed, STOP not confirmed")
+        showerror.assert_called_once()
+        self.assertIn("could not be confirmed stopped", showerror.call_args.args[1])
+        self.assertIn("CHECK THE STAGE", showerror.call_args.args[1])
+        self.assertLess(h.sim.received.index("STOP"), h.sim.received.index("ABORT"))
+        # Refused while still open (a call from another thread): the row stays Connected.
+        h = self.make()
+        with ThreadPoolExecutor(max_workers=1) as other:
+            other.submit(h.stage.connect, "auto").result(timeout=30)
+            h.panel.rte_connections["newmark"].set("Connected")
+            with patch.object(app.messagebox, "showerror") as showerror:
+                h.panel._rte_disconnect("newmark")
+                self.drain(h)
+            self.assertIn("another thread", showerror.call_args.args[1])
+            self.assertTrue(h.stage.connected)
+            self.assertEqual(h.panel.rte_connections["newmark"].get(), "Connected")
+            other.submit(h.stage.disconnect).result(timeout=30)
 
     def test_set_zero_asks_first(self):
         h = self.make()
@@ -941,8 +1216,10 @@ class AngleStartTests(unittest.TestCase):
         self.assertEqual((args[4], args[7]), (5., 1.5), "voltage limit, then the held KEPCO current")
         self.assertEqual(run.panel.ppms_plot_axis, "angle")
         self.assertFalse(run.panel.rte_stage_stop_event.is_set(), "an old Stop stage does not stop the new scan")
+        # Without "stage turns sample and wires" (the Yes/No says it): the full
+        # line did not fit the status label on the CI (user, 2026-10-13).
         self.assertEqual(run.panel.ppms_field_scan_status_var.get(),
-                         "RT-E Angle 0° to 10°, KEPCO +1.5 A held; stage turns sample and wires; 5 points")
+                         "RT-E Angle 0° to 10°, KEPCO +1.5 A held; 5 points")
 
     def test_field_and_current_starts_unchanged(self):
         for mode in ("Field", "Current"):
@@ -960,7 +1237,10 @@ class AngleStartTests(unittest.TestCase):
                 (app.PPMSScanCancelled("stop"), "stage stopped at +2.500°",
                  "Stopped; outputs held unless OFF was requested; stage stopped at +2.500°"),
                 (RuntimeError("Zurich reference unlocked"), "stage at +5.000°",
-                 "Failed: Zurich reference unlocked")):
+                 "Failed: Zurich reference unlocked"),
+                (app.NewmarkStageError("X50000: the USB transaction failed (it is not repeated)"),
+                 "stage NOT confirmed stopped: CHECK THE STAGE",
+                 "Failed: X50000: the USB transaction failed (it is not repeated)")):
             with self.subTest(expected=expected):
                 future = Future()
                 run = self.start(executor=Mock(**{"submit.return_value": future}))
@@ -973,8 +1253,14 @@ class AngleStartTests(unittest.TestCase):
                         future.set_exception(outcome)
                 self.assertEqual(run.panel.ppms_field_scan_status_var.get(), expected)
                 self.assertFalse(run.panel.ppms_field_scan_running)
-                self.assertEqual(showerror.call_count,
-                                 int(outcome is not None and not isinstance(outcome, app.PPMSScanCancelled)))
+                failed = outcome is not None and not isinstance(outcome, app.PPMSScanCancelled)
+                self.assertEqual(showerror.call_count, int(failed))
+                if failed:
+                    # The status line keeps only the failure; where the stage is
+                    # goes to the dialog and the log (user, 2026-10-13).
+                    self.assertEqual(showerror.call_args.args[1],
+                                     f"{outcome}\n\n{where[:1].upper()}{where[1:]}")
+                    run.panel.thread_log.assert_any_call(f"RT-E scan {expected}; {where}")
 
 
 class AnglePageTests(unittest.TestCase):

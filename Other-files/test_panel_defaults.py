@@ -594,8 +594,9 @@ class RTEStatusRowTests(unittest.TestCase):
         "RT-E Current: 3 harmonic pass(es), 300 points",
         "Stopping; completed CSV points and outputs kept",
         "Completed; 6221 current set to 0 (output OFF, read back)",
-        # The Angle scan's (2026-10-13), at their longest.
-        "RT-E Angle -360° to 360°, KEPCO -10 A held; stage turns sample and wires; 2890 points",
+        # The Angle scan's (2026-10-13), at their longest: six significant
+        # digits ({:g}) for the angles and the KEPCO current, 100000 points.
+        "RT-E Angle -359.995° to 359.995°, KEPCO -9.87654 A held; 100000 points",
         "Stopped; outputs held unless OFF was requested; stage stopped at -359.999°",
         "Completed; outputs held; stage at +360.000°",
     )

@@ -9,7 +9,9 @@
   Zurich) are read at each angle, as in the other RT-E scans.
 - **Driver:** `NewmarkNSCA1Controller` in `Transport_all_NH_dev.py` (the
   program stays one file) is the reviewed core of `Newmark_motor_test.py`
-  (999c1e2 + 164812f): `PerformaxCom.dll` over USB (never a COM port);
+  (999c1e2 + 164812f; this branch is cut from 164812f, with main's 15b88a1
+  stop check and error-126 text ported by hand, 2026-10-13):
+  `PerformaxCom.dll` over USB (never a COM port);
   "auto" takes the only Performax device, else the USB serial typed in its
   box; `ID` must name an ACE-SDE (and not be a device name like SDE01), then
   `VER`; the same allowlist without HL+/HL− (no homing in the program),
@@ -21,7 +23,13 @@
   error, a limit input on (the RM-5-110 has no limit switches) or the
   driver off (EO=0), ends after three "not moving" reads in a row and must
   read back PX exactly at the target; a time-out (3 × the expected time +
-  5 s) or a lost reply sends STOP (ABORT if STOP does not stop it). A scale
+  5 s), a lost reply during the move, or a failed reply to `X` itself (the
+  move may have started) sends STOP (ABORT if STOP does not stop it), for a
+  move by hand as for a scan's. A stop counts as done only after three
+  "not moving" reads in a row with PX unchanged: a STOP that lands just
+  after `X` was answered, before the moving bits are set, does nothing, and
+  one read would have called the stage stopped at its start while it went
+  on to its target unwatched. A scale
   that cannot be read (SL/EDIO on, moving) leaves the stage connected, so
   Stop works, with moves refused until it is read.
 - **One thread:** SiUSBXp.dll keeps its handles per thread, so every DLL
@@ -34,7 +42,12 @@
   "Connected"/"Not connected"; "Newmark NSC-A1" is wider than the
   13-character label column), and beside it the live line, e.g. "Stage:
   +12.345° (10000 steps/°)", ", moving", a limit warning or a read failure
-  (read, PX and MST only, by the idle poll when the rack is idle). Under
+  (read, PX and MST only, by the idle poll when the rack is idle). The row's
+  "Connected"/"Not connected" follows the USB handle, like the lamp: a
+  Connect whose first read fails still says "Connected", with "Stage read
+  failed: …"; a Disconnect that closed the handle but could not confirm the
+  stop says "Not connected", "Stage: closed, STOP not confirmed", and shows
+  the error (CHECK THE STAGE). Under
   the RT-E settings, a row "Stage °" [box] **Move stage** (needs the safety
   tick and an idle rack; the target within ±360° of the stage zero),
   **Stop stage** (usable whenever the stage is connected, even during a
@@ -43,7 +56,11 @@
   with no move or scan running it also queues STOP on the worker) and **Set stage 0°** (idle only; asks Yes/No first:
   the ±360° wire limit moves with the zero; PX=0 is lost when the NSC-A1 is
   powered off). Move and Set 0 are locked while the rack is busy, like the
-  other edit widgets. The scan mode list offers Field, Current, Angle;
+  other edit widgets. A move by hand also stops (STOP, "Stage: stopped at
+  … (OFF)") when **KEPCO Zero / OFF** or **6221 / 2400 OFF** is pressed:
+  their OFF is queued on the same worker, and runs right after the stop
+  instead of after the whole turn (up to 144 s for 720°). The scan mode
+  list offers Field, Current, Angle;
   Angle's defaults are Start 0, End 360, Step 5 (units "Stage °"), Round
   trip ticked (back toward the start, unwinding the wires).
 - **The Angle scan:** Start needs the stage (with its scale read), the
@@ -61,7 +78,13 @@
   programmed current and voltage limit; Field and Current rows and CSV
   columns are unchanged. Harmonic passes repeat the angle list without
   setting the field again. The plots' x axis is "Sample angle (°)".
-  "Completed" and "Stopped" status lines end with where the stage is.
+  The status line at Start is e.g. "RT-E Angle 0° to 360°, KEPCO +1.5 A
+  held; 145 points" (the Yes/No already said that the stage turns the
+  sample and its wires; with that said again the line did not fit the
+  label on the CI). "Completed" and "Stopped" status lines end with where
+  the stage is; after a failure the status line keeps only the failure, and
+  where the stage is ("stage stopped at …" or "stage NOT confirmed
+  stopped: CHECK THE STAGE") goes to the error dialog and the log.
 - **Safety:** the ±360° wire limit is checked at Start, at Move, in the
   driver and by the allowlist; moves are absolute, so 350 → 0 turns back
   −350°, never across 360. Stop (the scan's) or Stop stage during a move:
@@ -77,12 +100,20 @@
   `Newmark_motor_test.py`: the Performax USB driver, and the 64-bit
   `PerformaxCom.dll` and `SiUSBXp.dll` (Arcus "USB 64-bit DLL v2.06")
   together in the program's folder, beside `Transport_all_NH_dev.py` (else
-  the normal Windows DLL search). A 32-bit DLL (WinError 193), a missing
-  SiUSBXp.dll (WinError 126) and a 32-bit Python are reported in plain
-  words. Close QuickMotion and `Newmark_motor_test.py` first: one program at
-  a time on the USB device. Try the stage with `Newmark_motor_test.py`
+  the normal Windows DLL search, which in Python 3.8+ does not include
+  PATH). A 32-bit DLL (WinError 193), a missing DLL or SiUSBXp.dll (error
+  126, which Python 3.8+ raises as FileNotFoundError "Could not find module
+  …") and a 32-bit Python are reported in plain words. Close QuickMotion
+  and `Newmark_motor_test.py` first: one program at a time on the USB
+  device. Try the stage with `Newmark_motor_test.py`
   first (direction of +, the scale), set the zero where the wires hang free,
   and only then scan.
+- **Window height:** the window's height is fixed, so in the 1101 px wide
+  window the program opens with, the Newmark rack row and the stage row
+  (about 86 px together) come off the plots: with the Zurich reading 1+2+3
+  the third plot row may be only a few pixels tall there. Widen the window
+  (2000 px at the lab) for the plots; still to be checked on the next CI
+  screenshot `RT-E_1101px.png`.
 - **Not yet tried on the hardware.**
 - **Tests:** `test_rte_angle_scan.py` (Tk-free; the fake DLL is
   `Newmark_motor_test.py`'s simulated controller behind the same ctypes
@@ -91,19 +122,29 @@
   dialog fail a test that reaches them; a virtual clock). The driver: the
   device choice, the ID check, the allowlist, the scale (and one that cannot
   be read), absolute moves with the speeds read back, the idle reads, the
-  refusals, the wire limit, Stop during a move, the time-out, PX off the
+  refusals, the wire limit, Stop during a move, a Stop in the gap right
+  after `X` (main's StopLostInTheGap simulator: reported where it really
+  stopped, after three still reads), a lost reply to `X` (STOP, also when
+  it cannot be confirmed), the time-out, PX off the
   target, a lost reply (not repeated, then resynced), Set 0, disconnect
   stopping a turning stage first, a call from another thread, an old DLL
-  without flush, the loader's errors. Thread affinity with a real
+  without flush, the loader's errors (error 126 as FileNotFoundError
+  too). Thread affinity with a real
   single-worker executor: connect, the idle read, Move, Set 0, Stop, an
   Angle scan, disconnect and the close clean-up, with no DLL call on the
   test's thread. `rte_scan_plan` for Angle. The scan worker end to end
   (rows and columns, the KEPCO set once, harmonic passes, Stop during a
-  move, Stop stage between moves, a refused move, PX off the target and a
-  time-out keep the KEPCO and stop the 6221, drift, settle and read
-  failures switch the KEPCO off). Move, Stop and Set 0 by hand (refusals,
-  Yes/No, Stop from the Tk thread while a move runs on the worker); Start
-  (refusals, the confirmation, the submitted scan, the status lines); the
+  move, a Stop in the gap after `X`, Stop stage between moves, a refused
+  move, PX off the target, a time-out and a lost reply to `X` keep the
+  KEPCO and stop the 6221 with STOP sent once, an unconfirmed stop logged,
+  drift, settle and read failures switch the KEPCO off). Move, Stop and
+  Set 0 by hand (refusals, Yes/No, Stop from the Tk thread while a move
+  runs on the worker, a lost reply to `X` stopped, KEPCO Zero / OFF and
+  6221 / 2400 OFF during a 72 s move: STOP first and their OFF within a
+  poll and a stop); the rack row after a failed first read and after a
+  Disconnect that closed without a confirmed stop; Start (refusals, the
+  confirmation, the submitted scan, the status lines, the stage line in a
+  failure's dialog and log); the
   defaults, the plot axis and the page build on stand-in widgets.
   `test_rte_panel.py`'s removed-mode plan check now refuses an Angle range
   beyond ±360° instead of every Angle plan; the other Field and Current
