@@ -132,6 +132,10 @@ class OvpMarginTests(unittest.TestCase):
         self.assertIn("may act from 190 V", text)
         self.assertIn("may clip", text)
         self.assertIn("High-voltage scan", text, "the high-voltage warning stays")
+        # The high-voltage note comes first, then the OVP paragraph, then
+        # the scan summary (as the README describes).
+        self.assertLess(text.index("High-voltage scan"), text.index("Near the hardware OVP"))
+        self.assertLess(text.index("Near the hardware OVP"), text.index("About to run"))
         self.assertTrue(text.endswith("Start?"))
 
     def test_2410_at_the_limit_shows_a_zero_margin(self):

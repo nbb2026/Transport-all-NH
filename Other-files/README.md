@@ -7,10 +7,11 @@
   2400), and the OVP levels have a ±5 % tolerance, so a scan allowed near
   the limit could be clipped by the OVP. Now, when the scan's largest |V|
   is above 95 % of the connected model's OVP (190 V / 152 V), the Start
-  confirmation opens with "Near the hardware OVP": the |V| reached, the
-  margin to the OVP in V and %, and that the source may clip the top of the
-  scan. The OVP, the software limit and the scan are unchanged; Yes still
-  starts it.
+  confirmation adds a "Near the hardware OVP" paragraph (below the
+  "High-voltage scan" note, which such a scan always gets): the |V|
+  reached, the margin to the OVP in V and %, and that the source may clip
+  the top of the scan. The OVP, the software limit and the scan are
+  unchanged; Yes still starts it.
 - **Zero on an output that is on (the user's choice: 0 V only):** Zero
   went through `apply_manual_voltage(0.0)`; on the 1000 V range (2410) or
   200 V range (2400) that meant a range change, so it sent :OUTP OFF and
@@ -24,15 +25,18 @@
   is off is unchanged (0 V and :OUTP OFF, never :OUTP ON).
 - **Tests:** `test_moke24_ovp_margin_and_zero.py` (the real Start, submit,
   finish and red-button methods and the real controller with a stand-in
-  Keithley: the warning text and margin on a 2410 at 195 and 200 V, a
-  negative scan and a 2400 at 156 V; none at 190 V / 152 V, the warning at
-  191 V / 153 V; Yes goes on past the confirmation; Zero on the 1000 V and
-  20 V ranges sends only :SOUR:VOLT 0 and keeps range and output; a timed-out
-  write, a SCPI error, a failed, wrong, NaN or unparsable readback and the
-  current-source mode are never shown as 0 V, and a retry still sends only
-  :SOUR:VOLT 0; after the red button Zero keeps the output off). Every
-  dialog is mocked, and a real Tk root fails the test instead of opening a
-  window.
+  Keithley: the warning text and margin on a 2410 at 195 and 200 V (below
+  the high-voltage note, above the scan summary), a negative scan and a
+  2400 at 156 V; none at 190 V / 152 V, the warning at 191 V / 153 V; Yes
+  goes on past the confirmation; Zero on the 1000 V and 20 V ranges sends
+  only :SOUR:VOLT 0 and keeps range and output; a timed-out write, a SCPI
+  error, a failed, wrong, NaN or unparsable readback and the current-source
+  mode are never shown as 0 V, and a retry still sends only :SOUR:VOLT 0;
+  after the red button Zero keeps the output off). In
+  `test_moke24_zero_stays_off.py` the Zero-while-on test no longer says
+  "as before": it checks that only :SOUR:VOLT 0 is sent and the range is
+  kept. Every dialog is mocked, and a real Tk root fails the test instead
+  of opening a window.
 
 ## Settings audit: last review notes (2026-10-13)
 

@@ -4,7 +4,9 @@ safety tick, but it went through apply_manual_voltage(0.0), which sends
 the tick), after a scan or after the red 'zero / output off' button
 switched the output on at 0 V without the tick.  Now Zero on an output that
 is off sends 0 V and :OUTP OFF again, never :OUTP ON, and the page shows
-"0 V / OFF"; on an output that is on it writes 0 V as before.
+"0 V / OFF".  On an output that is on it writes 0 V only, keeping the
+range and the output (user, 2026-10-13; the high-range case and the
+failures are in test_moke24_ovp_margin_and_zero.py).
 
 No Tk and no instrument: the real controls, submit and finish methods and
 the real 2410 controller, with a stand-in 2410 and every dialog mocked."""
@@ -66,14 +68,14 @@ class ZeroTests(unittest.TestCase):
         self.assertIn("stays off", a.keithley_status_var.get())
         self.assertFalse(a.keithley_manual_busy)
 
-    def test_zero_on_an_output_that_is_on_writes_0_v_as_before(self):
+    def test_zero_on_an_output_that_is_on_writes_0_v_only(self):
         instrument = Keithley()
         instrument.voltage = "5"
         a = page(True, instrument)
         press_zero(a)
-        self.assertNotIn(":OUTP OFF", instrument.commands)
-        self.assertIn(":SOUR:VOLT 0", instrument.commands)
+        self.assertEqual(instrument.commands, [":SOUR:VOLT 0"], "no range or :OUTP command")
         self.assertTrue(a.keithley_controller.output_enabled)
+        self.assertEqual(a.keithley_controller.source_voltage_range_v, 20.0)
         self.assertEqual(a.keithley_voltage_var.get(), "Output: +0 V / ON")
 
     def test_a_failed_off_is_reported_not_shown_as_off(self):
