@@ -232,7 +232,7 @@ class GateWorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(
                 RuntimeError,
                 r"Pulse 1 blocked by the resistance gate: \|R\|≥4\.900000e\+09 Ω "
-                r"\(above the range at 1 nA, the most it can show\), must be >5\.000000e\+09 Ω"):
+                r"\(above the range at 1 nA\), must be >5\.000000e\+09 Ω"):
             a._nonlocal_vi_scan_worker(settings, directory)
         a.nonlocal_vi_2410_controller.apply_voltage_pulse.assert_not_called()
 

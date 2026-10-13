@@ -13726,6 +13726,9 @@ class CombinedControlApp:
         self.nonlocal_vi_data_lock = threading.Lock()
         self.nonlocal_vi_running = False
         self.nonlocal_vi_busy = False
+        # (rack row, "Connecting…" or "Disconnecting…") while that row's
+        # Connect or Disconnect runs.
+        self.nonlocal_vi_pending_row = None
         self.nonlocal_vi_closed = False
         self.nonlocal_vi_2410_resource_var = tk.StringVar(
             value=NONLOCAL_VI_2410_RESOURCE
@@ -30255,8 +30258,17 @@ class CombinedControlApp:
 
     def _refresh_nonlocal_vi_connection_summary(self) -> None:
         states = self._nonlocal_vi_connected_states()
+        # A row being connected or disconnected keeps saying so until it
+        # finishes: every controls update (this page's and other pages')
+        # wrote "Not connected" / "Connected" over it at once, so the
+        # Zurich's long connect or the Keithley's drain showed nothing
+        # (audit, 2026-10-13).
+        pending_key, pending_word = self.__dict__.get("nonlocal_vi_pending_row") or (None, "")
         for key, connected in states.items():
             self._set_nonlocal_vi_indicator(key, connected)
+            if key == pending_key:
+                self.nonlocal_vi_device_connection_vars[key].set(pending_word)
+                continue
             self.nonlocal_vi_device_connection_vars[key].set(
                 (
                     # The Zurich's lock state once read, as on RT-E.
@@ -30491,6 +30503,7 @@ class CombinedControlApp:
             )
             return
         self.nonlocal_vi_busy = True
+        self.nonlocal_vi_pending_row = (key, "Connecting…")
         self.nonlocal_vi_device_connection_vars[key].set("Connecting…")
         self.nonlocal_vi_status_var.set(f"Connecting {label}: {resource}…")
         self._update_nonlocal_vi_controls()
@@ -30508,6 +30521,7 @@ class CombinedControlApp:
     ) -> None:
         # Still busy while an OFF queued after this connection waits to run.
         self.nonlocal_vi_busy = bool(self.__dict__.get("nonlocal_vi_off_pending"))
+        self.nonlocal_vi_pending_row = None
         error = completed.exception()
         if key == "mfli":
             self._set_mfli_lock_state(None, vi=True)
@@ -30576,6 +30590,7 @@ class CombinedControlApp:
         else:
             return
         self.nonlocal_vi_busy = True
+        self.nonlocal_vi_pending_row = (key, "Disconnecting…")
         self.nonlocal_vi_device_connection_vars[key].set("Disconnecting…")
         self.nonlocal_vi_status_var.set(f"Safely disconnecting {label}…")
         self._update_nonlocal_vi_controls()
@@ -30593,6 +30608,7 @@ class CombinedControlApp:
     ) -> None:
         # Still busy while an OFF queued after this connection waits to run.
         self.nonlocal_vi_busy = bool(self.__dict__.get("nonlocal_vi_off_pending"))
+        self.nonlocal_vi_pending_row = None
         if key == "mfli":
             self._set_mfli_lock_state(None, vi=True)
             self.nonlocal_mfli_lock_word = None
@@ -30887,6 +30903,14 @@ class CombinedControlApp:
 
     def _parse_nonlocal_vi_settings(self) -> dict:
         try:
+            # Frequency Hz only when it is used, an AC read current without
+            # the frequency scan: an empty or old entry refused a frequency
+            # scan or a DC run, and the entry is disabled in DC, so it could
+            # not even be corrected there (audit, 2026-10-13).
+            frequency_used = (
+                self.nonlocal_vi_output_mode_var.get().strip().upper() == "AC"
+                and not self._nonlocal_fscan_ticked("nonlocal_vi")
+            )
             settings = {
                 "output_mode": self.nonlocal_vi_output_mode_var.get().strip().upper(),
                 "start_voltage_v": float(
@@ -30903,7 +30927,9 @@ class CombinedControlApp:
                 ),
                 "post_pulse_s": float(self.nonlocal_vi_post_pulse_var.get()),
                 "current_rms_ma": float(self.nonlocal_vi_current_var.get()),
-                "frequency_hz": float(self.nonlocal_vi_frequency_var.get()),
+                "frequency_hz": (
+                    float(self.nonlocal_vi_frequency_var.get()) if frequency_used else math.nan
+                ),
                 "sample_hz": float(self.nonlocal_vi_sample_hz_var.get()),
                 "settle_s": float(self.nonlocal_vi_settle_var.get()),
                 "measure_s": float(self.nonlocal_vi_measure_var.get()),
@@ -31002,7 +31028,7 @@ class CombinedControlApp:
         if not all(
             math.isfinite(value)
             for key, value in settings.items()
-            if key != "output_mode"
+            if key != "output_mode" and (frequency_used or key != "frequency_hz")
         ):
             raise ValueError("Non-local VI parameters must be finite values")
         # The frequency scan (user, 2026-10-10): the whole pulse scan at each
@@ -31282,7 +31308,8 @@ class CombinedControlApp:
                 f"Signal Input 1: {config['input_impedance']}, "
                 f"Scaling {config['input_scaling']:g}, "
                 f"τ={config['timeconstant_s']:g} s (rack TC), "
-                f"{NONLOCAL_LOCKIN_FILTER_ORDER}th-order low-pass"
+                # Not "{order}th-order": it read "2th-order" (audit, 2026-10-13).
+                f"low-pass filter order {NONLOCAL_LOCKIN_FILTER_ORDER}"
             )
         if settings["use_nanovoltmeter"]:
             lockin_description = (
@@ -31688,14 +31715,16 @@ class CombinedControlApp:
                         not math.isfinite(gate_resistance)
                         or gate_resistance <= settings["gate_resistance_ohm"]
                     ):
-                        # Above the range at 1 nA, |R| is only a lower bound:
-                        # a Pulse gate above it can never pass (review,
-                        # 2026-10-13), so the message says so.
+                        # Above the range at 1 nA, |R| is at least the value
+                        # shown (the V/I read at the 5 V limit, or 4.9 GΩ with
+                        # no current), so a Pulse gate above it may block a
+                        # sample that is in fact higher; the message says the
+                        # value is over range (review, 2026-10-13).
                         over = bool(gate_result.get("over_range"))
                         raise RuntimeError(
                             f"Pulse {point_index} blocked by the resistance gate: "
                             f"|R|{'≥' if over else '='}{gate_resistance:.6e} Ω"
-                            + (" (above the range at 1 nA, the most it can show)" if over else "")
+                            + (" (above the range at 1 nA)" if over else "")
                             + f", must be >{settings['gate_resistance_ohm']:.6e} Ω"
                         )
 
@@ -33744,7 +33773,12 @@ class CombinedControlApp:
         source = self.nonlocal_vi_ac_controller
         try:
             current_ma = float(self.nonlocal_iv6221_current_var.get())
-            frequency_hz = float(self.nonlocal_iv6221_frequency_var.get())
+            # Read only when used: a frequency scan was refused for an empty
+            # Frequency Hz it never uses (audit, 2026-10-13); the scan's
+            # settings then take the first frequency scanned.
+            frequency_hz = (
+                float(self.nonlocal_iv6221_frequency_var.get()) if check_frequency else math.nan
+            )
             compliance_v = float(self.nonlocal_iv6221_compliance_var.get())
             marker_line = int(self.nonlocal_vi_marker_line_var.get())
             measured = tuple(
@@ -33760,7 +33794,10 @@ class CombinedControlApp:
             raise ValueError("6221-IV settings must be valid numbers") from error
         except (TypeError, tk.TclError) as error:
             raise ValueError("6221-IV settings must be valid numbers") from error
-        if not all(math.isfinite(value) for value in (current_ma, frequency_hz, compliance_v)):
+        if not all(
+            math.isfinite(value)
+            for value in (current_ma, compliance_v) + ((frequency_hz,) if check_frequency else ())
+        ):
             raise ValueError("6221-IV settings must be finite values")
         if not measured:
             raise ValueError("Tick Measure for at least one lock-in")

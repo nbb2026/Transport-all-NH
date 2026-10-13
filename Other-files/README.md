@@ -123,6 +123,44 @@
   except the three that guard unchanged behaviour (Apply ±I, Write needs
   the tick, Zero on an output that is on).
 
+## Non-local: rack rows show Connecting…; Frequency Hz only when used; wording (2026-10-13)
+
+- **Rack rows never showed "Connecting…" / "Disconnecting…":** Connect or
+  Disconnect on a rack row wrote the word, and the controls update right
+  after it wrote "Not connected" / "Connected" over it, so the Zurich's
+  connect (tens of seconds) or the Keithley's drain after a Set above 20 V
+  (up to 30 s) showed the old state. Now the row keeps its word through
+  every refresh (this page's and other pages') until that Connect or
+  Disconnect finishes, then shows the result.
+- **An unused Frequency Hz refused the run:** a 6221-IV or Gate-VI
+  frequency scan, and a Gate-VI run with a DC read current (where the entry
+  is disabled), were refused ("must be valid numbers") when Frequency Hz was
+  empty or invalid. Now it is read only where it is used: Set 6221, and an
+  AC read current without the frequency scan. A frequency scan still takes
+  the first frequency scanned as its frequency; a DC run logs
+  `frequency_hz=nan`, as its CSVs already did.
+- **"2th-order low-pass":** the Gate-VI start confirmation now says
+  "low-pass filter order 2" for the Zurich. The 2026-10-09 entry below
+  said "the 4th-order filter"; every Zurich page sets and checks order 2
+  (`NONLOCAL_LOCKIN_FILTER_ORDER`), and that line now says so.
+- **Gate-VI gate wording:** the code comment, the block message ("the most
+  it can show") and the entry below said a Pulse gate above 4.9 GΩ can
+  never pass, but a V/I measured at the 5 V limit (2e10 Ω at 0.25 nA, say)
+  is kept and passes a 5000 MΩ gate. The behaviour is unchanged; the texts
+  now say |R| is then at least the value shown, so such a gate may block.
+  That entry's test count now says 10 of its 12 fail on the old code
+  (checked on c3271af); the other 2 guard what is unchanged.
+- **Tests:** `test_nonlocal_minor_review.py` (11; 8 fail on 0ad6a97, 3
+  guard what is unchanged): Connect and Disconnect with the job held
+  through the real controls update and a second update, then the finish
+  (also a failed connect); 6221-IV and Gate-VI frequency scans with
+  Frequency Hz '' or 'abc' give the settings of 17.3; a DC Gate-VI parse
+  and a DC worker run with it empty (one curve per plot, `nan` logged); an
+  AC run without the scan and Set 6221 still refuse it; the real start
+  confirmation (dialogs mocked, declined); a measured 2e10 Ω over range
+  passes a 5000 MΩ gate. `test_nonlocal_pulse_gate_6221.py`: the block
+  message.
+
 ## Camera: settings rows and saved images match the camera (2026-10-13)
 
 - **Refused click left the radio moved:** during a MOKE magnet, MOKE-24 or
@@ -232,8 +270,10 @@
   measurable range" and stopped the scan, although the gate's rule is "a
   pulse needs |R| above it". Now that reading is a lower bound (the measured
   V/I, or 4.9 GΩ with no current) marked over range; the status line shows
-  "|R|≥… (above the range at 1 nA)", and a Pulse gate above 4.9 GΩ blocks
-  with a message saying so. VI_resistance_gate.csv keeps its columns.
+  "|R|≥… (above the range at 1 nA)". |R| is then at least the value shown,
+  so a Pulse gate above it may block (the message says the value is over
+  range) although a measured V/I above the gate passes it.
+  VI_resistance_gate.csv keeps its columns.
 - **Set 6221 / 6221-IV:** with the sine on from Set 6221, a failed Keithley
   read-back (a GPIB timeout, or still on) at Set 6221 or 6221-IV Start
   stopped the task before the 6221 was switched off, and the page said
@@ -241,9 +281,9 @@
   Keithley check is inside the task's try, so the 6221 is switched off and
   read back in every case; "6221: OFF" only after that read-back ("6221:
   check the output" otherwise), and the Set status names the Keithley too.
-- **Tests:** `test_nonlocal_pulse_gate_6221.py` (12; all fail on the old
-  code): the 0 V right after the wait for -30 V / 0.01 s and 5 V / 0.1 s,
-  with simulated query delays, then the drain and the switch-off; a failed
+- **Tests:** `test_nonlocal_pulse_gate_6221.py` (12; 10 fail on the old
+  code, 2 guard what is unchanged): the 0 V right after the wait for
+  -30 V / 0.01 s and 5 V / 0.1 s, with simulated query delays, then the drain and the switch-off; a failed
   0 V still drains and switches off; 5 GΩ, 20 GΩ, 1 TΩ and an open gap
   give a finite |R| ≥ 4.9 GΩ, 3 and 4.8 GΩ unchanged; the Gate-VI worker
   pulses past the 100 MΩ gate and blocks a 5000 MΩ gate with the reason;
@@ -1165,7 +1205,9 @@ be set up as on PPMS.
   - Signal Input 1 at 10 MΩ, scaling 1. PPMS/RT-E, 6221-IV and Gate-VI all
     use this. 10 MΩ measures a voltage without loading the sample; 50 Ω would
     draw current through the voltage contacts.
-  - AC coupling, R, the 4th-order filter, and Ref. and TC from the Zurich row.
+  - AC coupling, R, the low-pass filter order 2 (`NONLOCAL_LOCKIN_FILTER_ORDER`;
+    this line said "4th-order" until 2026-10-13), and Ref. and TC from the
+    Zurich row.
 - **Reference demodulator:**
   - **Before:** for a single harmonic, Non-local used the Zurich's default
     routing, with the reference PLL on Demod 2.
