@@ -162,6 +162,8 @@ def harness(folder, meter='MFLI', stop='6', end_current='1'):
         'lfo': '317.3', 'delay': '0', 'limit': '10', 'loop': 1,
         'start': '-1', 'stop': end_current, 'step': '0.5',
         'sr830_reference': 'Sine', 'sr830_auto_range': True,
+        # The page's 'SR830 TC' default (user, 2026-10-13).
+        'sr830_time_constant': '1 s',
         'mfli_timeconstant': '0.1', 'mfli_auto_range': True, 'reference': 'Aux Input 1',
         'status': '', 'field': '', 'voltage': '', 'reference_status': '',
         'save_path': '',

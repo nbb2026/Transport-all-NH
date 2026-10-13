@@ -38,6 +38,65 @@
   kept. Every dialog is mocked, and a real Tk root fails the test instead
   of opening a window.
 
+## STFMR: SR830 time constant choice, fixed-current runs (2026-10-13)
+
+- **SR830 time constant:** a sweep set the SR830 to a fixed 1 s (OFLT 10,
+  12 dB/oct) while the default Wait/pt is 0.5 s, and the page had no
+  control for it, so each SR830 point was a lagged reading. The user chose an
+  "SR830 TC" dropdown (1 ms to 10 s, OFLT codes 4 to 12) in the MFLI TC row,
+  in the free cell under Loop and as wide as the Loop spinbox, so the table
+  keeps its width in the 1101 px window; its column gives way in a narrower
+  window only down to the dropdown's width. The default stays 1 s, so the
+  SR830 is set up exactly as before, still at 12 dB/oct. As for the MFLI TC,
+  Start reads it only when that lock-in is used; a value not in the list is
+  refused. The set-up reads OFLT back, as it does SENS (a mismatch stops the
+  sweep with the outputs off), and the dropdown is locked during a sweep.
+- **SR830 wait:** whenever the SR830 is read (SR830 alone or MFLI + SR830),
+  each point and each re-read after a range change waits the longer of
+  Wait/pt and 5 × TC (12 dB/oct settling). **With the default 1 s an SR830
+  point now waits 5 s instead of 0.5 s**, so an SR830 sweep takes about ten
+  times as long; a 100 ms TC keeps the 0.5 s pace. The Start confirmation
+  shows the TC and the wait, and the duration estimate uses the wait. The run
+  log records `sr830_time_constant_index`, `sr830_time_constant_s` and
+  `effective_point_wait_s`; the live CSV gains a last column,
+  `sr830_time_constant_s` (SR830 rows; `nan` on MFLI rows). The MFLI alone
+  is unchanged, and the start pre-read and the first point of each frequency
+  are still read at once (both are discarded).
+- **Fixed-current runs:** the first two points of every loop were discarded
+  (since ca5ee54: each loop starts with the jump from Stop A back to
+  Start A), so a fixed current (Start A = Stop A, one point per loop) saved
+  nothing and Start refused it (0e82358). The user chose to allow such runs.
+  Now only reads after a current jump are discarded: the first two of each
+  frequency (the 4886 has just gone from 0 to Start A, with a new carrier)
+  and the first two of each later loop of a sweep. A fixed current has no
+  jump between loops, so Loop is the number of readings at each frequency and
+  all but the first two are saved. Start refuses only a run that would save
+  nothing (two currents per loop, or a fixed current with Loop 1 or 2) and
+  says why; sweeps of 3 or more currents discard as before. The Start
+  confirmation, the saved-point estimate and the discarded-point status
+  (now 1/2 and 2/2 in every loop, where loop 2 showed 6/2) follow the rule,
+  and the plot legend names each frequency on its first saved loop (a
+  fixed-current run starts at loop 3, so its legend was empty).
+- **Docs:** README_STFMR_DUAL.md: the discard sentence, the SR830 wait and
+  the new CSV column.
+- **Tests:** `test_stfmr_sr830_tc_fixed_current.py` (the choices against
+  the SR830's OFLT table; the set-up's commands in the old order with the
+  chosen code, the OFLT read-back and a refused code; the waits of SR830,
+  dual and MFLI sweeps and of both kinds of re-read, the confirmation, the
+  log and the CSV column, all through the real sweep code on the STFMR
+  harness; the lock; the cell under Loop and its column floor, from the real
+  page build on stand-in widgets; the discard rule, a fixed-current run end
+  to end, alone and in dual mode, with the 4886 commands and statuses; the
+  refusals before any output or file; the legend).
+  `test_fmr_stfmr_minors.ShortLoopTests` now expects a fixed current to
+  start. The harness in `test/test_stfmr_realtime_recording.py` has the
+  SR830 TC box, and the fake SR830s in
+  `test/test_instrument_safety_logic.py` answer `OFLT?`. The CI GUI test
+  `test_stfmr_field_output.py` checks that the dropdown sits under Loop and
+  shows every choice in the 1101 px and wide windows and is whole in the
+  narrowest (not run here: it needs a display). Every dialog is mocked and a
+  real Tk root fails the new tests.
+
 ## Settings audit: last review notes (2026-10-13)
 
 - **LED boxes:** a number too large for an integer (e.g. "1e400") raised

@@ -396,11 +396,40 @@ class FieldOutputTests(unittest.TestCase):
             self.arranged(self.NARROWEST, "STFMR", self.a.stfmr_lockin_resource_widgets)
             combo = self.a.stfmr_lockin_meter_combo
             self.assertGreaterEqual(combo.winfo_width(), combo.winfo_reqwidth(), "MFLI + SR830 was cut")
+            # The SR830 TC dropdown (2026-10-13) shares a field column, which
+            # gives way only down to the dropdown's own width.
+            choice = self.a.stfmr_lockin_sr830_time_constant_combo
+            self.assertGreaterEqual(choice.winfo_width(), choice.winfo_reqwidth(), "the SR830 TC was cut")
             table = combo.master
             for column in (5, 7, 9, 11):
                 for field in table.grid_slaves(column=column):
                     if field.winfo_class() in ("TEntry", "TSpinbox"):
                         self.assertGreaterEqual(field.winfo_width(), font.measure("0" * 6))
+        finally:
+            self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
+
+    def test_sr830_time_constant_sits_under_loop_and_shows_every_choice(self):
+        """User, 2026-10-13: the 'SR830 TC' dropdown fills the free cell under
+        Loop, as wide as the Loop spinbox, so the table keeps its width in the
+        1101 px window, and "300 ms" is not cut."""
+        font = tkinter.font.nametofont("TkTextFont")
+        choice = self.a.stfmr_lockin_sr830_time_constant_combo
+        table = self.a.stfmr_lockin_meter_combo.master
+        (loop,) = table.grid_slaves(row=2, column=7)
+        try:
+            for width in (self.LAB_DEFAULT, LAB_WIDE):
+                with self.subTest(width=width):
+                    self.arranged(width, "STFMR", self.a.stfmr_lockin_resource_widgets)
+                    self.assertTrue(choice.winfo_ismapped())
+                    self.assertEqual((int(choice.grid_info()["row"]), int(choice.grid_info()["column"])), (3, 7))
+                    self.assertEqual(loop.winfo_class(), "TSpinbox")
+                    self.assertEqual((choice.winfo_x(), choice.winfo_width()), (loop.winfo_x(), loop.winfo_width()))
+                    # The text area: ttk sizes it as width x the width of "0";
+                    # the rest of the requested width is arrow, border, padding.
+                    room = choice.winfo_width() - (
+                        choice.winfo_reqwidth() - int(choice.cget("width")) * font.measure("0"))
+                    for value in choice.cget("values"):
+                        self.assertLessEqual(font.measure(str(value)), room, f"{value} is cut")
         finally:
             self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
 

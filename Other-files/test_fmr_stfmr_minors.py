@@ -254,14 +254,30 @@ def inputs_app(start="-1", stop="1", step="0.5", loop="1"):
 
 class ShortLoopTests(unittest.TestCase):
     """minor #26: one or two currents per loop switched the 4886 and the RF on
-    and saved nothing (the first two points of each loop are discarded)."""
+    and saved nothing (the first two points of each loop are discarded).
 
-    def test_one_or_two_currents_per_loop_are_refused(self):
-        for start, stop, count in (("2", "2", 1), ("-1", "-0.5", 2)):
-            with self.subTest(start=start, stop=stop):
-                a = inputs_app(start, stop, loop="3")
-                with self.assertRaisesRegex(ValueError, f"at least 3 current points.*gives {count}"):
+    User, 2026-10-13: a fixed current (Start A = Stop A) is allowed again; its
+    loops have no current jump, so only the first two readings of each
+    frequency are discarded, and only a run that would save nothing is
+    refused."""
+
+    def test_two_currents_per_loop_are_refused(self):
+        for loop in ("1", "3"):
+            with self.subTest(loop=loop):
+                a = inputs_app("-1", "-0.5", loop=loop)
+                with self.assertRaisesRegex(ValueError, "gives 2 current points.*at least 3 current points"):
                     a._stfmr_lockin_inputs()
+
+    def test_a_fixed_current_needs_three_readings(self):
+        for loop in ("1", "2"):
+            with self.subTest(loop=loop):
+                a = inputs_app("2", "2", loop=loop)
+                with self.assertRaisesRegex(ValueError, f"fixed current.*Loop {loop} would save nothing.*at least 3"):
+                    a._stfmr_lockin_inputs()
+        a = inputs_app("2", "2", loop="3")
+        points, *_rest = a._stfmr_lockin_inputs()
+        self.assertEqual(points, [2.0] * 3)
+        self.assertEqual(a.stfmr_lockin_points_per_loop, 1)
 
     def test_three_currents_per_loop_still_start(self):
         a = inputs_app("-1", "0", loop="2")
@@ -272,7 +288,7 @@ class ShortLoopTests(unittest.TestCase):
                          "each loop keeps its third point")
 
     def test_start_refuses_before_any_dialog_file_or_output(self):
-        a = inputs_app("2", "2", loop="3")
+        a = inputs_app("-1", "-0.5", loop="3")
         a.closing = a.stfmr_lockin_closed = a.stfmr_lockin_running = False
         a.root = None
         a.select_csv_save_directory = mock.Mock()

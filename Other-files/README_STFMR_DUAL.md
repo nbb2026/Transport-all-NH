@@ -13,7 +13,14 @@ The meter mode is locked during a scan; connecting an instrument in dual mode do
 - Each instrument runs its own reference configuration and autorange. If either range changes, both current
   readings are discarded and the same point is re-read after the wait. In dual mode, any read failure, reference loss,
   invalid SR830 status, MFLI overload or invalid X/Y/Theta aborts the scan through the existing output-off sequence.
-- The start pre-read and the first two points of each loop (at each frequency) are discarded for both meters.
+- The SR830 time constant is the "SR830 TC" choice (1 ms to 10 s, default 1 s as before; 12 dB/oct). Whenever the
+  SR830 is read, in dual mode too, each point and each re-read after a range change waits the longer of Wait/pt and
+  5 × the time constant, so with the default 1 s a point waits 5 s, not 0.5 s (2026-10-13).
+- Discarded for both meters: the start pre-read, the first two points of each frequency (the 4886 has just gone
+  from 0 to Start A, with a new carrier) and the first two points of each later loop, which starts with the jump
+  from Stop A back to Start A. A fixed current (Start A = Stop A) has no such jump: Loop is then the number of
+  readings at each frequency, and all but the first two are saved, so it needs a Loop of at least 3. Start refuses
+  a run that would save nothing (two currents per loop, or a fixed current with Loop 1 or 2) (2026-10-13).
 - X, Y and Theta show both curves in one plot: MFLI as filled circles, SR830 as thin-edged hollow circles; the legend names instrument and frequency.
   Hollow circles are slightly larger for legibility, with a 0.75 px edge in the GUI; the legend uses the same marker style.
   Voltage, phase and reference readings are shown per meter. Idle readings are not appended to the scan curves.
@@ -26,7 +33,8 @@ The meter mode is locked during a scan; connecting an instrument in dual mode do
 The live CSV keeps its column names; in dual mode each retained field point writes two rows with `meter`
 `MFLI` and `SR830`, sharing `index`, frequency, loop, current and field.
 **The unique record key is index + meter; do not de-duplicate on index alone.**
-Each row's X/Y/R/Theta and range parameters belong only to that instrument.
+Each row's X/Y/R/Theta and range parameters belong only to that instrument; the last column,
+`sr830_time_constant_s` (added 2026-10-13), is filled on SR830 rows and `nan` on MFLI rows.
 `timestamp_iso` is each instrument's read-completion time, not a hardware-synchronous sample time.
 The log's `expected_saved_points` / `saved_points` count CSV rows, twice the number of field points in dual mode;
 GUI progress still advances per field point. The field and the two meters are not sampled at the same instant; allow for settling time.

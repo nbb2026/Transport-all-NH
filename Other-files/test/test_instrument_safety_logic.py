@@ -954,8 +954,13 @@ class InstrumentSafetyTests(unittest.TestCase):
                 super().write(command)
                 if command.startswith("SENS "):
                     self.sensitivity = int(command.split()[1])
+                if command.startswith("OFLT "):
+                    # configure() reads the time constant back (2026-10-13).
+                    self.time_constant = int(command.split()[1])
 
             def query(self, command):
+                if command == "OFLT?":
+                    return str(self.time_constant)
                 if command == "SNAP? 1,2,3,4,9":
                     return "1e-6,-2e-6,2.2360679e-6,-63.4349,317.3"
                 if command == "LIAS?":
@@ -1004,8 +1009,13 @@ class InstrumentSafetyTests(unittest.TestCase):
                     self.sensitivity = int(command.split()[1])
                 if command.startswith("RSLP "):
                     self.reference_slope = int(command.split()[1])
+                if command.startswith("OFLT "):
+                    # configure() reads the time constant back (2026-10-13).
+                    self.time_constant = int(command.split()[1])
 
             def query(self, command):
+                if command == "OFLT?":
+                    return str(self.time_constant)
                 responses = {
                     "FMOD?": "0",
                     "HARM?": "1",

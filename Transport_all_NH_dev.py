@@ -1986,6 +1986,21 @@ STFMR_LOCKIN_DEFAULT_DELAY_S = 0.5
 STFMR_LOCKIN_MFLI_TIME_CONSTANT_S = 0.1
 STFMR_LOCKIN_SR830_SENSITIVITY_CODE = 13  # 50 uV full scale
 STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE = 10  # 1 s
+# The 'SR830 TC' choices and their OFLT codes (SR830 manual: OFLT 0 = 10 us,
+# stepping 1-3-10 up to 19 = 30 ks, so 10 = 1 s; see SR830_TIME_CONSTANTS_S).
+# Every sweep used 1 s, with no way to change it, so 1 s stays the default
+# and the SR830 set-up is unchanged unless another is picked; the slope
+# stays 12 dB/oct (OFSL 1) (user, 2026-10-13).
+STFMR_LOCKIN_SR830_TIME_CONSTANTS = {
+    "1 ms": 4, "3 ms": 5, "10 ms": 6, "30 ms": 7, "100 ms": 8,
+    "300 ms": 9, "1 s": 10, "3 s": 11, "10 s": 12,
+}
+STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT = "1 s"
+# At 12 dB/oct an SR830 output settles in about 5 time constants, so every
+# SR830 reading of a sweep waits at least this many, whatever Wait/pt says:
+# with the 1 s time constant the default 0.5 s wait read a lagged value
+# (user, 2026-10-13).
+STFMR_LOCKIN_SR830_SETTLE_TAUS = 5.0
 STFMR_LOCKIN_SR830_REFERENCE_INPUTS = {
     "Sine": 0,
     "TTL Rising": 1,
@@ -2966,12 +2981,18 @@ class STFMRSR830Controller(SafeVisaIdentityController):
         self,
         reference_input: str = STFMR_LOCKIN_SR830_DEFAULT_REFERENCE_INPUT,
         auto_range: bool = True,
+        time_constant_code: int = STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE,
     ) -> dict[str, object]:
         reference_input = str(reference_input).strip()
         if reference_input not in STFMR_LOCKIN_SR830_REFERENCE_INPUTS:
             choices = ", ".join(STFMR_LOCKIN_SR830_REFERENCE_INPUTS)
             raise ValueError(f"SR830 REF IN must be one of: {choices}")
         reference_slope = STFMR_LOCKIN_SR830_REFERENCE_INPUTS[reference_input]
+        # The page's 'SR830 TC' choice; the old fixed 1 s is the default
+        # (user, 2026-10-13).
+        if time_constant_code not in STFMR_LOCKIN_SR830_TIME_CONSTANTS.values():
+            raise ValueError(f"SR830 time constant code {time_constant_code!r} is not an 'SR830 TC' choice")
+        time_constant_code = int(time_constant_code)
         with self.lock:
             if self.instrument is None:
                 raise RuntimeError("SR830 is not connected")
@@ -2986,7 +3007,7 @@ class STFMRSR830Controller(SafeVisaIdentityController):
                 "ILIN 0",      # disable both line notch filters
                 "SYNC 0",      # disable optional synchronous filter
                 f"SENS {STFMR_LOCKIN_SR830_SENSITIVITY_CODE}",
-                f"OFLT {STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE}",
+                f"OFLT {time_constant_code}",
                 "OFSL 1",
                 "RMOD 1",
                 "DDEF 1,1,0",
@@ -3005,6 +3026,13 @@ class STFMRSR830Controller(SafeVisaIdentityController):
             actual_sensitivity = int(round(float(
                 self.instrument.query("SENS?").strip()
             )))
+            # The time constant is now a choice that sets each point's wait
+            # and is saved with the data, so it is read back like SENS: the
+            # SR830 replaces a time constant below the minimum for its
+            # reserve and slope with that minimum (user, 2026-10-13).
+            actual_time_constant = int(round(float(
+                self.instrument.query("OFLT?").strip()
+            )))
             if (
                 actual_reference_mode != 0
                 or actual_reference_slope != reference_slope
@@ -3021,6 +3049,12 @@ class STFMRSR830Controller(SafeVisaIdentityController):
                     f"requested SENS {STFMR_LOCKIN_SR830_SENSITIVITY_CODE}, "
                     f"readback {actual_sensitivity}"
                 )
+            if actual_time_constant != time_constant_code:
+                raise RuntimeError(
+                    "SR830 time constant readback mismatch: "
+                    f"requested OFLT {time_constant_code}, "
+                    f"readback {actual_time_constant}"
+                )
             self.reference_input = reference_input
             self.sensitivity_index = actual_sensitivity
             self.auto_range_enabled = bool(auto_range)
@@ -3031,6 +3065,7 @@ class STFMRSR830Controller(SafeVisaIdentityController):
                 "reference_input": reference_input,
                 "reference_slope": actual_reference_slope,
                 "sensitivity_index": actual_sensitivity,
+                "time_constant_index": actual_time_constant,
                 "auto_range": self.auto_range_enabled,
             }
 
@@ -13195,6 +13230,9 @@ class STFMRScanRecorder:
         "mfli_input_overload", "mfli_device_status_flags",
         "mfli_auto_range_enabled", "mfli_input_range_v",
         "mfli_input_utilization", "mfli_auto_range_action",
+        # The 'SR830 TC' choice, beside mfli_timeconstant_s in meaning; it is
+        # last so every older column keeps its place (user, 2026-10-13).
+        "sr830_time_constant_s",
     )
 
     def __init__(self, parent: Path, settings: dict[str, object]) -> None:
@@ -14135,6 +14173,9 @@ class CombinedControlApp:
         self.stfmr_lockin_mfli_timeconstant_var = tk.StringVar(
             value=f"{STFMR_LOCKIN_MFLI_TIME_CONSTANT_S:g}"
         )
+        self.stfmr_lockin_sr830_time_constant_var = tk.StringVar(
+            value=STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT
+        )
         self.stfmr_lockin_frequency_start_var = tk.StringVar(
             value=f"{STFMR_LOCKIN_DEFAULT_FREQUENCY_GHZ:g}"
         )
@@ -14195,6 +14236,10 @@ class CombinedControlApp:
         self.stfmr_lockin_power_dbm = STFMR_LOCKIN_DEFAULT_POWER_DBM
         self.stfmr_lockin_limit_v = 10.0
         self.stfmr_lockin_mfli_timeconstant_s = STFMR_LOCKIN_MFLI_TIME_CONSTANT_S
+        self.stfmr_lockin_sr830_time_constant_code = STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE
+        # Wait before each reading of the running sweep: Wait/pt, or 5 SR830
+        # time constants when longer and the SR830 is read (user, 2026-10-13).
+        self.stfmr_lockin_point_wait_s = STFMR_LOCKIN_DEFAULT_DELAY_S
         self.stfmr_lockin_sr830_reference_input = (
             STFMR_LOCKIN_SR830_DEFAULT_REFERENCE_INPUT
         )
@@ -16421,6 +16466,20 @@ class CombinedControlApp:
         self.stfmr_lockin_mfli_auto_range_check = option(
             3, 2, "MFLI autorange", self.stfmr_lockin_mfli_auto_range_var
         )
+        # The SR830 time constant sits in the row's free cell, under Loop, so
+        # the table keeps its width in the 1101 px window: it is as wide as
+        # the Loop spinbox (six characters, which "300 ms" fits) and its label
+        # is shorter than "Power dBm:" above.  Its column still gives way in
+        # a too-narrow window, but only down to this dropdown's width, so,
+        # like the others, it is never cut (user, 2026-10-13).
+        sr830_tc_combo = parameter(
+            3, 3, "SR830 TC:", self.stfmr_lockin_sr830_time_constant_var,
+            kind="combo", values=tuple(STFMR_LOCKIN_SR830_TIME_CONSTANTS), width=6,
+        )
+        params.columnconfigure(
+            7, minsize=max(field_floor, sr830_tc_combo.winfo_reqwidth())
+        )
+        self.stfmr_lockin_sr830_time_constant_combo = sr830_tc_combo
 
         # Right-hand column: sweep buttons, then the LS475 read controls, the
         # live values and the MFLI overload lamp.
@@ -16674,6 +16733,12 @@ class CombinedControlApp:
         if hasattr(self, "stfmr_lockin_mfli_auto_range_check"):
             self.stfmr_lockin_mfli_auto_range_check.configure(
                 state="disabled" if self.stfmr_lockin_running else "normal"
+            )
+        # The SR830 TC is read at Start and sets every wait of the sweep, so
+        # it is locked like the meter until the sweep ends (user, 2026-10-13).
+        if hasattr(self, "stfmr_lockin_sr830_time_constant_combo"):
+            self.stfmr_lockin_sr830_time_constant_combo.configure(
+                state="disabled" if self.stfmr_lockin_running else "readonly"
             )
         # The device rows follow the sweep too.  Only Connect / Disconnect
         # re-checked them, so during a sweep the unused lock-in's Connect (and
@@ -16967,12 +17032,39 @@ class CombinedControlApp:
 
     @staticmethod
     def _stfmr_should_discard_startup_point(index: int, points_per_loop: int | None = None) -> bool:
-        """Drop the first two transitional reads of each loop from plots and
-        saved rows: every loop starts with the jump from stop back to start
-        (review, 2026-10-09: loops 2 and on kept theirs)."""
-        if points_per_loop:
-            return int(index) % max(int(points_per_loop), 1) < 2
-        return int(index) < 2
+        """Drop the transitional reads that follow a current jump from plots
+        and saved rows: the first two of each frequency (the 4886 has just
+        gone from 0 to Start A, with a new carrier) and the first two of each
+        later loop, which starts with the jump from Stop A back to Start A
+        (review, 2026-10-09: loops 2 and on kept theirs).
+
+        A fixed current (Start A = Stop A, one point per loop) has no jump
+        between its loops, so only the first two reads of each frequency are
+        dropped; before, every read of such a run was (user, 2026-10-13)."""
+        index = int(index)
+        if index < 2:
+            return True
+        if points_per_loop and int(points_per_loop) > 1:
+            return index % int(points_per_loop) < 2
+        return False
+
+    @staticmethod
+    def _stfmr_saved_points_per_frequency(points_per_loop: int, loops: int) -> int:
+        """Field points one frequency saves under the rule above."""
+        points_per_loop, loops = int(points_per_loop), int(loops)
+        if points_per_loop <= 1:
+            return max(loops - 2, 0)
+        return loops * (points_per_loop - 2)
+
+    @staticmethod
+    def _stfmr_sr830_point_wait_s(meter: str, delay_s: float, time_constant_code: int) -> float:
+        """Wait before each reading: Wait/pt, but at least 5 SR830 time
+        constants (12 dB/oct settling) when the SR830 is read, so its point is
+        no longer a lagged reading (user, 2026-10-13)."""
+        if meter in ("SR830", "MFLI + SR830"):
+            settle_s = STFMR_LOCKIN_SR830_SETTLE_TAUS * SR830_TIME_CONSTANTS_S[int(time_constant_code)]
+            return max(float(delay_s), settle_s)
+        return float(delay_s)
 
     def _append_stfmr_lockin_live_sample(
         self,
@@ -17283,13 +17375,23 @@ class CombinedControlApp:
             self.stfmr_lockin_stop_var.get(),
             self.stfmr_lockin_step_var.get(),
         )
-        if len(forward) < 3:
-            # The first two points of every loop are discarded, so a loop of
-            # one current (Start A = Stop A) or two switched the 4886 and the
-            # RF on and saved no point at all (audit, 2026-10-13).
+        # A run that would save nothing switched the 4886 and the RF on for
+        # no data (audit, 2026-10-13), so it is refused.  A fixed current
+        # (Start A = Stop A) is allowed again: Loop is then the number of
+        # readings at each frequency, all but the first two saved
+        # (user, 2026-10-13; see _stfmr_should_discard_startup_point).
+        if not self._stfmr_saved_points_per_frequency(len(forward), loops):
+            if len(forward) == 1:
+                raise ValueError(
+                    f"A fixed current (Start A = Stop A) is read Loop times at each frequency and "
+                    f"the first two readings after each frequency change are discarded, so Loop "
+                    f"{loops} would save nothing: set Loop to at least 3"
+                )
             raise ValueError(
-                f"Each loop needs at least 3 current points (Start A to Stop A in Step A "
-                f"gives {len(forward)}): the first two points of every loop are discarded"
+                f"Start A to Stop A in Step A gives {len(forward)} current points per loop, and the "
+                "first two points of every loop are discarded (each loop starts with a jump to "
+                "Start A), so nothing would be saved: use at least 3 current points, or one fixed "
+                "current (Start A = Stop A)"
             )
         self.stfmr_lockin_points_per_loop = len(forward)
         points = forward * loops
@@ -17345,6 +17447,22 @@ class CombinedControlApp:
                     or mfli_timeconstant_s <= 0
                 ):
                     raise ValueError("MFLI time constant must be a finite positive number")
+            # Read, like the MFLI TC, only when its lock-in is used
+            # (user, 2026-10-13).
+            sr830_time_constant = STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT
+            if meter in ("SR830", "MFLI + SR830"):
+                sr830_time_constant = str(
+                    self.stfmr_lockin_sr830_time_constant_var.get()
+                ).strip()
+                if sr830_time_constant not in STFMR_LOCKIN_SR830_TIME_CONSTANTS:
+                    choices = ", ".join(STFMR_LOCKIN_SR830_TIME_CONSTANTS)
+                    raise ValueError(f"SR830 TC must be one of: {choices}")
+            sr830_time_constant_code = STFMR_LOCKIN_SR830_TIME_CONSTANTS[
+                sr830_time_constant
+            ]
+            point_wait_s = self._stfmr_sr830_point_wait_s(
+                meter, delay_s, sr830_time_constant_code
+            )
         except BaseException as error:
             messagebox.showerror("STFMR scan", str(error), parent=self.root)
             return
@@ -17355,26 +17473,45 @@ class CombinedControlApp:
         if folder is None or self.closing or self.stfmr_lockin_closed:
             return
         total_points = len(frequencies_ghz) * len(points)
-        # The first two points of every loop are discarded.
         loops_count = max(len(points) // max(self.stfmr_lockin_points_per_loop, 1), 1)
-        retained_per_frequency = max(len(points) - 2 * loops_count, 0)
+        # Counted by the discard rule, which a fixed current changes
+        # (user, 2026-10-13).
+        retained_per_frequency = self._stfmr_saved_points_per_frequency(
+            self.stfmr_lockin_points_per_loop, loops_count
+        )
         estimated_saved = len(frequencies_ghz) * retained_per_frequency
         if meter == "MFLI + SR830":
             estimated_saved *= 2
+        # Every reading after the first of each frequency waits the effective
+        # wait, 5 SR830 time constants when that is longer than Wait/pt
+        # (user, 2026-10-13).
         estimate = max(total_points - len(frequencies_ghz), 0) * max(
-            delay_s, 0.05
+            point_wait_s, 0.05
         )
+        fixed_current = self.stfmr_lockin_points_per_loop == 1
         if not messagebox.askyesno(
             "STFMR scan",
             f"Microwave: {frequencies_ghz[0]:g} → {frequencies_ghz[-1]:g} GHz, "
             f"{len(frequencies_ghz)} frequencies\n"
-            f"{len(points)} points per frequency (start→stop), "
-            f"first two points of each loop discarded, about {estimated_saved} points saved\n"
+            + (
+                f"{len(points)} readings per frequency at a fixed {points[0]:g} A, "
+                "first two readings of each frequency discarded, "
+                if fixed_current
+                else f"{len(points)} points per frequency (start→stop), "
+                "first two points of each loop discarded, "
+            )
+            + f"about {estimated_saved} points saved\n"
             + (
                 f"SR830 REF IN: {sr830_reference_input}; "
                 f"Autorange: {'on' if sr830_auto_range else 'off'}\n"
                 if meter == "SR830"
                 else f"MFLI autorange: {'on' if mfli_auto_range else 'off'}\n"
+            )
+            + (
+                f"SR830 TC: {sr830_time_constant} (12 dB/oct); each point waits "
+                f"{point_wait_s:g} s (Wait/pt {delay_s:g} s, at least 5 × TC)\n"
+                if meter in ("SR830", "MFLI + SR830")
+                else ""
             )
             + f"Estimated at least {estimate:.1f} s.\n"
             + f"Live CSV / log saved to: {folder}\n"
@@ -17408,7 +17545,11 @@ class CombinedControlApp:
             "sr830_ref_in": sr830_reference_input,
             "sr830_auto_range": sr830_auto_range,
             "sr830_initial_sensitivity_index": STFMR_LOCKIN_SR830_SENSITIVITY_CODE,
-            "sr830_time_constant_index": STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE,
+            "sr830_time_constant_index": sr830_time_constant_code,
+            "sr830_time_constant_s": SR830_TIME_CONSTANTS_S[sr830_time_constant_code],
+            # Wait/pt, or 5 SR830 time constants if longer when the SR830 is
+            # read (user, 2026-10-13).
+            "effective_point_wait_s": point_wait_s,
             "mfli_timeconstant_s": mfli_timeconstant_s,
             "mfli_auto_range": mfli_auto_range,
             "mfli_reference_source": reference_source,
@@ -17441,6 +17582,8 @@ class CombinedControlApp:
         self.stfmr_lockin_power_dbm = power_dbm
         self.stfmr_lockin_limit_v = limit_v
         self.stfmr_lockin_mfli_timeconstant_s = mfli_timeconstant_s
+        self.stfmr_lockin_sr830_time_constant_code = sr830_time_constant_code
+        self.stfmr_lockin_point_wait_s = point_wait_s
         self.stfmr_lockin_sr830_reference_input = sr830_reference_input
         self.stfmr_lockin_sr830_auto_range = sr830_auto_range
         self.stfmr_lockin_mfli_auto_range = mfli_auto_range
@@ -17513,6 +17656,7 @@ class CombinedControlApp:
                         self.stfmr_lockin_controllers["830"].configure(
                             self.stfmr_lockin_sr830_reference_input,
                             self.stfmr_lockin_sr830_auto_range,
+                            self.stfmr_lockin_sr830_time_constant_code,
                         )
                     with visa_operation("SR830", "waiting for the reference to lock"):
                         self.stfmr_lockin_controllers["830"].wait_for_reference(
@@ -17748,8 +17892,10 @@ class CombinedControlApp:
                             frequency_ghz=frequency_ghz, point_index=index + 1, dual=True, mfli_action=mfli_action):
                         return
                     self.stfmr_lockin_status_var.set("SR830 autorange; re-reading both lock-ins after the wait, current dual-meter data not saved")
+                    # At least 5 SR830 time constants after the SENS change,
+                    # in the effective wait (user, 2026-10-13).
                     self.stfmr_lockin_after_id = self.root.after(
-                        int(max(0.1, self.stfmr_lockin_delay_s, 10*self.stfmr_lockin_mfli_timeconstant_s) * 1000),
+                        int(max(0.1, self.stfmr_lockin_point_wait_s, 10*self.stfmr_lockin_mfli_timeconstant_s) * 1000),
                         self._read_next_stfmr_lockin_point)
                     return
                 if not secondary.get("measurement_valid", secondary.get("reference_valid", False)):
@@ -17766,8 +17912,11 @@ class CombinedControlApp:
                     self.stfmr_lockin_mfli_initial_range_pending = False
                     self.stfmr_lockin_mfli_range_attempts += 1
                     self.stfmr_lockin_mfli_range_actions.append(action)
+                    # In dual mode the re-read reads the SR830 too, so it
+                    # waits the effective wait; alone the MFLI waits Wait/pt
+                    # as before (user, 2026-10-13).
                     settle_s = max(
-                        self.stfmr_lockin_delay_s,
+                        self.stfmr_lockin_point_wait_s,
                         10.0 * self.stfmr_lockin_mfli_timeconstant_s, 0.2,
                     )
                     if not self._stfmr_lockin_log_event(
@@ -17817,10 +17966,12 @@ class CombinedControlApp:
                         f"SR830 autorange: {auto_range_action}; "
                         "old-range reading not saved, re-reading the current field point"
                     )
+                    # The re-read after a SENS change waits 5 time constants
+                    # too, in the effective wait (user, 2026-10-13).
                     self.stfmr_lockin_after_id = self.root.after(
                         max(
                             100,
-                            int(round(max(self.stfmr_lockin_delay_s, 0.1) * 1000)),
+                            int(round(max(self.stfmr_lockin_point_wait_s, 0.1) * 1000)),
                         ),
                         self._read_next_stfmr_lockin_point,
                     )
@@ -17890,6 +18041,12 @@ class CombinedControlApp:
                 "mfli_input_range_v": sample.get("input_range_v") if active_meter == "MFLI" else None,
                 "mfli_input_utilization": sample.get("input_utilization") if active_meter == "MFLI" else None,
                 "mfli_auto_range_action": " | ".join(self.stfmr_lockin_mfli_range_actions) if active_meter == "MFLI" else "",
+                # Recorded as mfli_timeconstant_s is (user, 2026-10-13).
+                "sr830_time_constant_s": (
+                    SR830_TIME_CONSTANTS_S[self.stfmr_lockin_sr830_time_constant_code]
+                    if meter == "SR830"
+                    else math.nan
+                ),
             }
             pair = [row]
             if dual:
@@ -17905,7 +18062,8 @@ class CombinedControlApp:
                     sr830_ref_in=self.stfmr_lockin_sr830_reference_input,
                     sr830_sensitivity_index=int(secondary.get("sensitivity_index", -1)),
                     sr830_sensitivity_full_scale_v=float(secondary.get("sensitivity_full_scale_v", math.nan)),
-                    sr830_auto_range_action=str(secondary.get("auto_range", "")))
+                    sr830_auto_range_action=str(secondary.get("auto_range", "")),
+                    sr830_time_constant_s=SR830_TIME_CONSTANTS_S[self.stfmr_lockin_sr830_time_constant_code])
                 for column in sr_row:
                     if column.startswith("mfli_"):
                         sr_row[column] = None
@@ -17963,14 +18121,24 @@ class CombinedControlApp:
                 total - completed, 0
             )
             if discard_startup_point:
+                # Which of the two discarded reads this is, counted in its
+                # loop, or in its frequency for a fixed current, whose next
+                # read is at the same current (user, 2026-10-13).
+                fixed_current = self.stfmr_lockin_points_per_loop <= 1
+                position = (
+                    index if fixed_current
+                    else index % self.stfmr_lockin_points_per_loop
+                )
                 self.stfmr_lockin_status_var.set(
                     f"{frequency_ghz:g} GHz discarded start-transition point "
-                    f"{index + 1}/2: "
+                    f"{position + 1}/2: "
                     f"I={current:+.5g} A, B={field_g:+.6g} G; "
                     + (
-                        "moving to the second current point"
-                        if index == 0
-                        else "saving from the third current point"
+                        ("taking the second reading" if fixed_current
+                         else "moving to the second current point")
+                        if position == 0
+                        else ("saving from the third reading" if fixed_current
+                              else "saving from the third current point")
                     )
                 )
             else:
@@ -18014,8 +18182,10 @@ class CombinedControlApp:
                 return
             # Keep the field-output panel on the current the sweep just sent.
             self._show_stfmr_lockin_kepco_state()
+            # Wait/pt, or 5 SR830 time constants when the SR830 is read and
+            # that is longer (user, 2026-10-13).
             self.stfmr_lockin_after_id = self.root.after(
-                max(1, int(self.stfmr_lockin_delay_s * 1000)),
+                max(1, int(self.stfmr_lockin_point_wait_s * 1000)),
                 self._read_next_stfmr_lockin_point,
             )
 
@@ -18322,11 +18492,20 @@ class CombinedControlApp:
             )
             for index, frequency in enumerate(frequencies)
         }
+        # Each frequency is named once, on its first saved loop.  That was
+        # always loop 1 until a fixed-current run (one reading per loop,
+        # loops 1 and 2 discarded) started at loop 3 and the legend was
+        # empty (user, 2026-10-13).
+        first_loop: dict[tuple[str, float], int] = {}
+        for key, (frequency, loop) in parsed.items():
+            group = (str(key).split("_freq_", 1)[0], frequency)
+            first_loop[group] = min(loop, first_loop.get(group, loop))
         labels: dict[str, str] = {}
         colors: dict[str, str] = {}
         for key, (frequency, loop) in parsed.items():
             colors[key] = frequency_colors[frequency]
-            labels[key] = f"{frequency:g} GHz" if loop == 1 else ""
+            group = (str(key).split("_freq_", 1)[0], frequency)
+            labels[key] = f"{frequency:g} GHz" if loop == first_loop[group] else ""
         dual = any(k.startswith("mfli_") for k in parsed) and any(k.startswith("8_") for k in parsed)
         if dual:
             for key in labels:
