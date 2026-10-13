@@ -42768,11 +42768,26 @@ class RTEPanel(PPMSPanel):
                 return
             try:
                 result = future.result()
-                self.rte_stage_live.set(
-                    f"Stage: stopped at {newmark_angle_text(result['px'], result['steps_per_degree'])}"
-                    if result['stopped'] else 'Stage: STOP not confirmed: CHECK THE STAGE')
             except Exception as error:
                 self.rte_stage_live.set(f'Stage STOP failed: {short_status_error(error, 60)}')
+                problem = f'Stop stage: STOP was not sent ({error}): CHECK THE STAGE'
+            else:
+                if result['stopped']:
+                    where = newmark_angle_text(result['px'], result['steps_per_degree'])
+                    self.rte_stage_live.set(f'Stage: stopped at {where}')
+                    self.thread_log(f'RT-E {stage.label}: Stop stage: stopped at {where}')
+                    return
+                self.rte_stage_live.set('Stage: STOP not confirmed: CHECK THE STAGE')
+                notes = result.get('notes') or []
+                problem = ('Stop stage: STOP (then ABORT) sent, but the stage could not be confirmed stopped: '
+                           "CHECK THE STAGE (switch the NSC-A1's 24 V off if it still turns)"
+                           + (f" ({'; '.join(notes)})" if notes else ''))
+            # The rack is not marked busy for this stop, so the idle poll queued
+            # behind it replaces the live line at once: the log and a dialog
+            # keep the warning, as for every other unconfirmed stop (review,
+            # 2026-10-14).
+            self.thread_log(f'RT-E {stage.label}: {problem}')
+            messagebox.showerror('RT-E stage', problem, parent=self.root)
         future.add_done_callback(lambda _: self.post_ui(finished))
 
     def _rte_stage_set_zero(self):
@@ -42964,6 +42979,17 @@ class RTEPanel(PPMSPanel):
     def start_ppms_field_scan(self):
         try:
             self._require_ppms_control_ready()
+            newmark = self.rte_controllers.get('newmark')
+            if newmark is not None and newmark.connected and newmark.motion_may_run:
+                # An unconfirmed stop may have left the stage turning the
+                # sample and its wires.  No scan of any mode watches it (an
+                # Angle scan only looks at its first move, after the field has
+                # settled), the idle poll that shows ", moving" pauses, and
+                # Stop stage queues no STOP behind a running scan, so it is
+                # stopped first (review, 2026-10-14).  Only a flag is read: no
+                # DLL call on the Tk thread.
+                raise RuntimeError(f'The {newmark.label}\'s last stop was not confirmed, so it may still be '
+                                   'turning: press Stop stage first (check the stage)')
             self._rte_capture_zurich()
             mode = self.ppms_simple_mode.get()
             plan = rte_scan_plan(mode, *(v.get() for v in self.ppms_simple_range),
@@ -43276,6 +43302,13 @@ class RTEPanel(PPMSPanel):
                 self.rte_stage_where = f'stage stopped at {newmark_angle_text(stopped.px, stage.steps_per_degree)}'
             raise PPMSScanCancelled(f"RT-E stopped at a stage move; {self.rte_stage_where or 'stage not moved'}") from stopped
         self.rte_stage_where = f"stage at {state['angle_deg']:+.3f}°"
+        # The last progress update may have come during the deceleration, and
+        # it always ends ", moving"; nothing else updates the line until the
+        # point is saved, Settle s and the acquisition later (the idle poll
+        # pauses during a scan).  So where it stopped is shown now (review,
+        # 2026-10-14).
+        text = newmark_stage_text(state)
+        self.post_ui(lambda: None if self.rte_closed or self.closing else self.rte_stage_live.set(text))
         return state
 
     def _rte_stop_stage_after_failure(self, error):

@@ -64,7 +64,10 @@
   **Stop stage** (usable whenever the stage is connected, even during a
   move or a scan: it sets the stop event the move loop watches, and that
   loop sends STOP from the worker, and an Angle scan makes no further move;
-  with no move or scan running it also queues STOP on the worker) and **Set stage 0°** (idle only; asks Yes/No first:
+  with no move or scan running it also queues STOP on the worker, and its
+  result goes to the log; a STOP that could not be sent or confirmed, even
+  after ABORT, also shows an error dialog (CHECK THE STAGE), because the
+  next idle read replaces the live line at once) and **Set stage 0°** (idle only; asks Yes/No first:
   the ±360° wire limit moves with the zero; PX=0 is lost when the NSC-A1 is
   powered off). Move and Set 0 are locked while the rack is busy, like the
   other edit widgets. A move by hand also stops (STOP, "Stage: stopped at
@@ -81,7 +84,9 @@
   stage turns the sample holder with its wires). At its first point it sets
   the KEPCO once (`set_output('CURR', current, limit)`), settles the field
   on the LS475 and holds it. Then at each angle: an absolute move (PX read
-  back equal to the target), Settle s, the field read, the acquisition (the
+  back equal to the target; the stage line then shows where it stopped, not
+  the last ", moving" update, which may come during the deceleration),
+  Settle s, the field read, the acquisition (the
   first point by the same first-point check as the other modes), the field
   read again with the Field scans' drift check. Rows add
   `stage_target_deg`, `stage_angle_deg`, `stage_position_steps` and
@@ -103,7 +108,14 @@
   failure switches the 6221 off; a field failure (settle, drift or read)
   also switches the KEPCO off, as in Field scans; a stage failure sends
   STOP (unless the driver's own STOP already ran) and keeps the KEPCO's
-  field. Closing the program sets both stop events; the queued clean-up
+  field. No scan of any mode starts while the stage's last stop was not
+  confirmed ("press Stop stage first"): no scan watches the stage, the idle
+  poll pauses during a scan, and Stop stage queues no STOP behind a running
+  scan (review, 2026-10-14). The 6221 is switched off after the stage's
+  STOP, not before it: the STOP is slow (up to about 15 s) only on a USB
+  link that has failed, where whether the stage turns is unknown, and a
+  move refused because the stage is moving has the same path.
+  Closing the program sets both stop events; the queued clean-up
   disconnects the stage first (STOP if it is moving, then Close, on the
   worker), then the other instruments as before (the KEPCO and 6221 close
   as they did).
@@ -145,15 +157,18 @@
   Angle scan, disconnect and the close clean-up, with no DLL call on the
   test's thread. `rte_scan_plan` for Angle. The scan worker end to end
   (rows and columns, the KEPCO set once, harmonic passes, Stop during a
-  move, a Stop in the gap after `X`, Stop stage between moves, a refused
+  move, a Stop in the gap after `X`, Stop stage between moves, the stage
+  line at each move's end before Settle s, a refused
   move, PX off the target, a time-out and a lost reply to `X` keep the
   KEPCO and stop the 6221 with STOP sent once, an unconfirmed stop logged,
   drift, settle and read failures switch the KEPCO off). Move, Stop and
   Set 0 by hand (refusals, Yes/No, Stop from the Tk thread while a move
-  runs on the worker, a lost reply to `X` stopped, KEPCO Zero / OFF and
+  runs on the worker, Stop stage when idle logged, and one that cannot be
+  confirmed or sent logged with a dialog, a lost reply to `X` stopped, KEPCO Zero / OFF and
   6221 / 2400 OFF during a 72 s move: STOP first and their OFF within a
   poll and a stop); the rack row after a failed first read and after a
-  Disconnect that closed without a confirmed stop; Start (refusals, the
+  Disconnect that closed without a confirmed stop; Start (refusals, every
+  mode refused while the stage's last stop is unconfirmed, the
   confirmation, the submitted scan, the status lines, the stage line in a
   failure's dialog and log); the
   defaults, the plot axis and the page build on stand-in widgets.

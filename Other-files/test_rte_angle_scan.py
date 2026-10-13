@@ -747,6 +747,29 @@ class AngleScanWorkerTests(StageBase):
         self.assertEqual(panel.rte_stage_where, "stage at +0.000°")
         self.assertTrue(h.ui, "points and stage angles are posted to the Tk thread")
 
+    def test_the_stage_line_shows_where_each_move_ended_before_settle_and_acquisition(self):
+        # The last progress update ("…, moving") can come during the
+        # deceleration; the end of the move is posted at once, not only when
+        # the point is saved (review, 2026-10-14).
+        h = self.make()
+        h.stage.connect("auto")
+        panel = h.panel
+        panel._rte_show_point = Mock()      # the saved point's own update is tested elsewhere
+        seen, shown = [], []
+
+        def wait(seconds):
+            if seconds == 2.:               # Settle s, right after the move
+                while h.ui:                 # what the Tk thread shows by then
+                    h.ui.pop(0)()
+                    shown.append(panel.rte_stage_live.get())
+                seen.append(panel.rte_stage_live.get())
+        panel._rte_wait = wait
+        panel._rte_harmonic_scan_worker("Angle", app.rte_scan_plan("Angle", 0, 10, 5, 1, False), [self.settings()],
+                                        5., 2., .001, 1.5)
+        self.assertEqual(seen, ["Stage: +0.000° (10000 steps/°)", "Stage: +5.000° (10000 steps/°)",
+                                "Stage: +10.000° (10000 steps/°)"])
+        self.assertTrue([text for text in shown if text.endswith(", moving")], "the moves' progress came first")
+
     def test_harmonic_passes_repeat_the_angles_without_resetting_the_field(self):
         h = self.make()
         panel = h.panel
@@ -1123,12 +1146,51 @@ class ManualStageControlTests(StageBase):
         self.drain(h)
         self.assertIn("STOP", h.sim.received)
         self.assertEqual(h.panel.rte_stage_live.get(), "Stage: stopped at +0.000°")
+        h.panel.thread_log.assert_any_call("RT-E Newmark NSC-A1: Stop stage: stopped at +0.000°")
         # Not connected: only the event.
         h = self.make()
         h.panel.ppms_executor = Mock()
         h.panel._rte_stage_stop()
         h.panel.ppms_executor.submit.assert_not_called()
         self.assertTrue(h.panel.rte_stage_stop_event.is_set())
+
+    def test_stop_stage_when_idle_that_cannot_confirm_the_stop_logs_it_and_shows_a_dialog(self):
+        # The rack is not busy for this stop, so the idle poll behind it
+        # replaces the live line at once: the warning must also go to the log
+        # and a dialog (review, 2026-10-14).
+        h = self.make(Runaway())
+        h.stage.connect("auto")
+        h.sim._start(3000000, script._now())        # left turning by an earlier unconfirmed stop
+        with patch.object(app.messagebox, "showerror") as showerror:
+            h.panel._rte_stage_stop()
+            self.drain(h)
+        self.assertLess(h.sim.received.index("STOP"), h.sim.received.index("ABORT"))
+        self.assertTrue(h.stage.motion_may_run, "still not confirmed stopped")
+        self.assertEqual(h.panel.rte_stage_live.get(), "Stage: STOP not confirmed: CHECK THE STAGE")
+        showerror.assert_called_once()
+        title, message = showerror.call_args.args
+        self.assertEqual(title, "RT-E stage")
+        self.assertIn("STOP (then ABORT) sent, but the stage could not be confirmed stopped: CHECK THE STAGE",
+                      message)
+        self.assertIn("24 V off", message)
+        h.panel.thread_log.assert_any_call(f"RT-E Newmark NSC-A1: {message}")
+        # STOP not sent at all (here refused as a call from another thread):
+        # the same log line and dialog.
+        h = self.make()
+        h.stage.connect("auto")
+        h.stage._thread_id = object()
+        with patch.object(app.messagebox, "showerror") as showerror:
+            h.panel._rte_stage_stop()
+            self.drain(h)
+        self.assertNotIn("STOP", h.sim.received)
+        self.assertTrue(h.panel.rte_stage_live.get().startswith("Stage STOP failed: "), h.panel.rte_stage_live.get())
+        showerror.assert_called_once()
+        message = showerror.call_args.args[1]
+        self.assertIn("STOP was not sent", message)
+        self.assertIn("another thread", message)
+        self.assertIn("CHECK THE STAGE", message)
+        h.panel.thread_log.assert_any_call(f"RT-E Newmark NSC-A1: {message}")
+        h.stage._thread_id = None
 
     def test_stop_stage_during_a_scan_between_moves_only_sets_the_event(self):
         h = self.make()
@@ -1144,7 +1206,7 @@ class ManualStageControlTests(StageBase):
 # ---- Start (Angle), status lines, defaults, plots ---------------------------------
 class AngleStartTests(unittest.TestCase):
     def start(self, mode="Angle", yes=True, stage=True, kepco=True, gauss=True, scale=10000,
-              span=("0", "10", "5"), drive="1.5", limit="5", executor=None):
+              span=("0", "10", "5"), drive="1.5", limit="5", executor=None, may_run=False):
         """The real RTEPanel.start_ppms_field_scan up to its submit (as in
         test_ppms_rte_review), with every dialog answered here."""
         panel = rte_tests.RTE.make_worker(self)
@@ -1157,7 +1219,7 @@ class AngleStartTests(unittest.TestCase):
         panel.rte_round_trip = Var(True)
         panel.rte_controllers["gauss"].connected = gauss
         panel.rte_controllers["kepco"].connected = kepco
-        panel.rte_controllers["newmark"] = Mock(connected=stage, steps_per_degree=scale,
+        panel.rte_controllers["newmark"] = Mock(connected=stage, steps_per_degree=scale, motion_may_run=may_run,
                                                 scale_error="SL=1", label="Newmark NSC-A1")
         panel.rte_stage_stop_event = threading.Event()
         panel.rte_stage_stop_event.set()
@@ -1230,6 +1292,27 @@ class AngleStartTests(unittest.TestCase):
                 self.assertEqual(len(run.panel.ppms_executor.submit.call_args.args), 7)
                 self.assertEqual(run.panel.ppms_field_scan_status_var.get(),
                                  f"RT-E {mode}: 1 harmonic pass(es), 5 points")
+
+    def test_no_scan_starts_while_the_stage_may_still_be_turning(self):
+        # An unconfirmed stop: no scan watches the stage, and Stop stage queues
+        # no STOP behind a running scan, so every mode is refused (review,
+        # 2026-10-14).
+        for mode, span in (("Field", ("0.01", "0.03", "0.01")), ("Current", ("0.01", "0.03", "0.01")),
+                           ("Angle", ("0", "10", "5"))):
+            with self.subTest(mode=mode):
+                run = self.start(mode=mode, span=span, may_run=True)
+                run.showerror.assert_called_once()
+                self.assertEqual(run.showerror.call_args.args[0], "RT-E scan parameters")
+                self.assertIn("last stop was not confirmed", run.showerror.call_args.args[1])
+                self.assertIn("press Stop stage first", run.showerror.call_args.args[1])
+                run.askyesno.assert_not_called()
+                run.askdirectory.assert_not_called()
+                run.panel.ppms_executor.submit.assert_not_called()
+                self.assertFalse(run.panel.__dict__.get("ppms_field_scan_running", False))
+        # A stage that is not connected is not asked.
+        run = self.start(mode="Field", span=("0.01", "0.03", "0.01"), stage=False, may_run=True)
+        run.showerror.assert_not_called()
+        run.panel.ppms_executor.submit.assert_called_once()
 
     def test_completed_and_stopped_status_lines_say_where_the_stage_is(self):
         for outcome, where, expected in (
