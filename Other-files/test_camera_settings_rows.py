@@ -5,6 +5,8 @@ CIDWM pages always show what the camera uses.
 1. A click refused during a scan puts the radio back (it has already moved).
 2. A camera connected again (after Disconnect or a camera error) gets the
    page's choices instead of starting at the defaults.
+3. The stand-in camera of the GUI test test_camera_live_keys takes those
+   choices too (it lacked the setters, so its Connect raised).
 
 No Tk and no camera: the real CameraAcquisitionWorker (its thread never
 started) behind a stand-in Camera Live window."""
@@ -13,6 +15,7 @@ import types
 import unittest
 from unittest import mock
 
+from test_camera_live_keys import StandInCamera
 from test_nonlocal_keithley import Var, bare_app
 from test_ppms_motor_debug import app
 
@@ -209,6 +212,31 @@ class ReconnectTests(unittest.TestCase):
         a.attach_camera(new)
         self.assertFalse(new.worker.exposure_update_requested)
         self.assertEqual(a.camera_exposure_ms_var.get(), f"{app.EXPOSURE_S * 1000:g}")
+
+
+class CameraLiveKeysStandInTests(unittest.TestCase):
+    """Review of this fix: test_camera_live_keys (a GUI test, run on CI)
+    connects with a stand-in worker.  Connect now calls the worker's
+    setters, which the old stand-in did not have, so its set-up raised
+    AttributeError.  The same stand-in, through the same attach_camera."""
+
+    def setUp(self):
+        no_dialogs(self)
+
+    def test_connect_with_the_gui_tests_stand_in(self):
+        a = page()
+        a.difference_temporal_average_var.set(1)
+        a.camera_exposure_ms_var.set("50")
+        window = camera()
+        window.worker = StandInCamera(lambda _message: None)
+        window.worker.start()   # as TkCameraWindow does
+        self.assertFalse(window.worker.thread.is_alive(), "no camera thread")
+        a.attach_camera(window)
+        self.assertEqual(window.worker.difference_display_average_state(),
+                         (1, DEFAULTS[1], DEFAULTS[2]))
+        self.assertAlmostEqual(window.worker.requested_exposure_s, 0.050)
+        window.worker.stop()
+        self.assertFalse(window.worker.thread.is_alive())
 
 
 if __name__ == "__main__":

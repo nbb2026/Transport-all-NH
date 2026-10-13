@@ -2,7 +2,6 @@
 nothing on the lab PC).  [C] clears the ROI and says so in the picture; a
 click in the picture gives Camera Live the keyboard.  Needs a display.
 """
-import queue
 import tkinter as tk
 import unittest
 from unittest import mock
@@ -13,10 +12,10 @@ from test_ppms_motor_debug import app
 ROI = {"cx": 50.0, "cy": 40.0, "w": 20.0, "h": 10.0, "angle": 0.0}
 
 
-class StandInCamera:
-    def __init__(self, *_args, **_kwargs):
-        self.frames, self.errors = queue.Queue(), queue.Queue()
-        self.background_mode = "off"
+class StandInCamera(app.CameraAcquisitionWorker):
+    """The real worker with no camera thread: Connect gives it the page's
+    averaging, binning and exposure through its setters, which a bare
+    stand-in lacked (review, 2026-10-13: set-up raised AttributeError)."""
 
     def start(self):
         pass

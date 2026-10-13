@@ -23,7 +23,10 @@
   refuses a stale display with a warning.
 - **Tests:** `test_camera_settings_rows.py` (each scan and each radio row;
   the next click after a refusal; disconnect and camera error, then
-  connect, with the real worker; page defaults request nothing);
+  connect, with the real worker; page defaults request nothing; the
+  stand-in camera of the GUI test `test_camera_live_keys.py`, now the real
+  worker with no camera thread, since Connect calls its setters and the
+  old bare stand-in made that test's set-up fail);
   `test_cidwm_pulse_scan.SaveImagesTests` (an older display, never drawn,
   the real `_poll` with Camera Live hidden, Save current display). Both
   classes mock every dialog, so no window can open.
