@@ -35554,7 +35554,10 @@ class CombinedControlApp:
             self._ppms_macro_finish("Macro completed.")
             return
         line, op, args = command
-        self.ppms_macro_status.set(f"Running line {line}: {op} {' '.join(map(str, args))}")
+        # A TEMP without a rate carries None; its rate is chosen at run time
+        # (review, 2026-10-13).
+        shown = ' '.join('auto' if arg is None else str(arg) for arg in args)
+        self.ppms_macro_status.set(f"Running line {line}: {op} {shown}")
         self.ppms_macro_editor.tag_remove("active_line", "1.0", "end")
         self.ppms_macro_editor.tag_add("active_line", f"{line}.0", f"{line}.end")
         self.ppms_macro_editor.see(f"{line}.0")
@@ -35580,6 +35583,12 @@ class CombinedControlApp:
             return
         if op == "TEMP":
             self.ppms_temperature_target_var.set(str(args[0]))
+            # The target trace snaps the rate box to 1 or 10 K/min; show the
+            # line's own rate, so a later SCAN or Set T re-sends this setpoint
+            # at the rate the Macro asked for (audit, 2026-10-13).  Without
+            # a rate the box keeps the trace's value.
+            if args[1] is not None:
+                self.ppms_temperature_rate_var.set(f"{args[1]:g}")
         elif op == "FIELD":
             self.ppms_field_target_var.set(str(args[0]))
             self._end_ppms_persistent_follow_up("The Macro")
@@ -37128,9 +37137,12 @@ class CombinedControlApp:
             transport_settings["acquisition_s"] = acquisition_s
             transport_settings["temperature_rate"] = temp_rate
             transport_settings["temperature_approach"] = self._ppms_temperature_approach_code(self.ppms_temperature_approach_var.get())
-            transport_settings["slowdown"] = int(self.ppms_motor_speed_var.get())
-            if not 0 <= transport_settings["slowdown"] <= 14:
-                raise ValueError("Decel code must be within 0–14")
+            # Parsed as Move parses it, so '5.0' is code 5 here too; int()
+            # refused it (audit, 2026-10-13).
+            slowdown = float(self.ppms_motor_speed_var.get())
+            if not slowdown.is_integer() or not 0 <= slowdown <= 14:
+                raise ValueError("Decel code must be an integer within 0–14")
+            transport_settings["slowdown"] = int(slowdown)
         except (ValueError, TypeError, RuntimeError, tk.TclError) as error:
             messagebox.showerror("PPMS scan parameters", str(error), parent=self.root)
             return
@@ -37972,7 +37984,10 @@ class CombinedControlApp:
         if resource_widget is not None:
             if connected or scan_busy:
                 resource_widget.configure(state="disabled")
-            elif key in PPMS_SR830_KEYS:
+            # Only the PPMS page's address list is a Combobox; RT-E's SR830
+            # addresses are plain entries, which "readonly" left impossible
+            # to type in (audit, 2026-10-13).
+            elif key in PPMS_SR830_KEYS and isinstance(resource_widget, ttk.Combobox):
                 resource_widget.configure(state="readonly")
             else:
                 resource_widget.configure(state="normal")
@@ -41072,13 +41087,17 @@ class RTEPanel(PPMSPanel):
         self._rte_submit(self.ppms_instrument_controllers[key].disconnect,
                          lambda _: self.ppms_device_connection_vars[key].set('Not connected'))
 
-    def _rte_drive_parameters(self):
-        target, limit = float(self.rte_drive_target.get()), float(self.rte_voltage_limit.get())
-        if not math.isfinite(target) or abs(target) > STFMR_KEPCO_MAX_CURRENT_A:
-            raise ValueError('KEPCO current must be within +/-10 A')
+    def _rte_voltage_limit(self):
+        limit = float(self.rte_voltage_limit.get())
         if not math.isfinite(limit) or not 0 < limit <= STFMR_KEPCO_MAX_VOLTAGE_V:
             raise ValueError('KEPCO voltage limit must be greater than 0 and at most 20 V')
-        return target, limit
+        return limit
+
+    def _rte_drive_parameters(self):
+        target = float(self.rte_drive_target.get())
+        if not math.isfinite(target) or abs(target) > STFMR_KEPCO_MAX_CURRENT_A:
+            raise ValueError('KEPCO current must be within +/-10 A')
+        return target, self._rte_voltage_limit()
 
     def _rte_apply_drive(self):
         try:
@@ -41217,7 +41236,11 @@ class RTEPanel(PPMSPanel):
                 raise ValueError('Connect LS475 for measured-field recording')
             if mode == 'Field' and not self.rte_controllers['kepco'].connected:
                 raise ValueError('Connect KEPCO for a field scan')
-            _, limit = self._rte_drive_parameters()
+            # A Field scan takes its KEPCO currents from the scan range and
+            # needs only the voltage limit; a Current scan never drives the
+            # KEPCO.  The unused boxes no longer refuse a scan (audit,
+            # 2026-10-13).
+            limit = self._rte_voltage_limit() if mode == 'Field' else None
             settings = self._ppms_direct_transport_settings()
             if mode == 'Current':
                 for _, _, value in plan:

@@ -1,6 +1,7 @@
 """PPMS / RT-E review fixes (2026-10-13), one check each.
 
 No Tk and no instrument: stand-ins record what the code asks of them."""
+import tempfile
 import threading
 import types
 import unittest
@@ -8,7 +9,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import test_rte_panel as rte_tests
 from test_ppms_motor_debug import app
-from test_ppms_two_panels import Var
+from test_ppms_two_panels import ImmediateExecutor, Var
 
 
 class RTECurrentScanStartsAtItsLargestCurrent(unittest.TestCase):
@@ -217,6 +218,184 @@ class WarmUpFromBaseTemperature(unittest.TestCase):
             panel._ppms_macro_operation('TEMP', app.parse_ppms_macro('TEMP 300 10')[0][2])
         panel.ppms_environment_controller.set_temperature.assert_not_called()
         panel.thread_log.assert_not_called()
+
+
+class RTESR830AddressesCanBeTyped(unittest.TestCase):
+    """minor #20: RT-E builds its SR830 addresses as plain entries."""
+
+    def state(self, panel_class, widget_class, key, connected=False, busy=False):
+        panel = panel_class.__new__(panel_class)
+        panel._set_connection_indicator = Mock()
+        panel.ppms_field_scan_running = busy
+        panel.ppms_device_connect_buttons = {key: Mock()}
+        panel.ppms_device_disconnect_buttons = {key: Mock()}
+        widget = Mock(spec=widget_class)
+        panel.ppms_device_resource_widgets = {key: widget}
+        panel._set_ppms_device_ui(key, connected)
+        widget.configure.assert_called_once()
+        return widget.configure.call_args.kwargs['state']
+
+    def test_rte_entries_are_editable_when_idle(self):
+        for key in app.PPMS_SR830_KEYS:
+            with self.subTest(key=key):
+                # 'readonly' on a ttk.Entry refused every keystroke.
+                self.assertEqual(self.state(app.RTEPanel, app.ttk.Entry, key), 'normal')
+                self.assertEqual(self.state(app.RTEPanel, app.ttk.Entry, key, connected=True), 'disabled')
+                self.assertEqual(self.state(app.RTEPanel, app.ttk.Entry, key, busy=True), 'disabled')
+
+    def test_ppms_page_lists_and_keithley_entries_unchanged(self):
+        for panel_class in (app.CombinedControlApp, app.PPMSPanel):
+            with self.subTest(panel=panel_class.__name__):
+                self.assertEqual(self.state(panel_class, app.ttk.Combobox, '830_b'), 'readonly')
+                self.assertEqual(self.state(panel_class, app.ttk.Combobox, '830_b', connected=True), 'disabled')
+                self.assertEqual(self.state(panel_class, app.ttk.Entry, '6221'), 'normal')
+        self.assertEqual(self.state(app.RTEPanel, app.ttk.Entry, '2400'), 'normal')
+
+
+class TracedVar(Var):
+    """A StringVar stand-in whose write trace runs, as Tk's does."""
+
+    def __init__(self, value, on_write):
+        super().__init__(value)
+        self.on_write = on_write
+
+    def set(self, value):
+        super().set(value)
+        self.on_write()
+
+
+class MacroTempKeepsItsRate(unittest.TestCase):
+    """minor #21 and the review's status line: the real _ppms_macro_next and
+    _ppms_macro_operation with the real target trace."""
+
+    def run_macro(self, text, box_rate='3', live_k=300.):
+        panel = app.CombinedControlApp.__new__(app.CombinedControlApp)
+        panel.closing = False
+        panel.ppms_macro_stop = threading.Event()
+        panel.ppms_macro_commands = iter(app.parse_ppms_macro(text))
+        panel.ppms_macro_status = Mock()
+        panel.ppms_macro_editor = Mock()
+        panel.thread_log = Mock()
+        panel.ppms_temperature_rate_var = Var(box_rate)
+        panel.ppms_temperature_target_var = TracedVar('300', panel._ppms_adjust_low_temperature_rate)
+        panel.ppms_environment_controller = Mock()
+        panel.ppms_environment_controller.read_environment.return_value = {'temperature_k': live_k}
+        panel.ppms_executor = ImmediateExecutor()
+        panel.post_ui = lambda callback: callback()
+        panel._set_ppms_environment_ui = Mock()
+        panel._ppms_macro_finish = Mock()
+        panel.ppms_field_scan_running = False   # the SCAN stand-in starts nothing
+        seen = []
+        panel.start_ppms_field_scan = Mock(side_effect=lambda: seen.append(
+            (panel.ppms_temperature_target_var.get(), panel.ppms_temperature_rate_var.get())))
+        panel._ppms_macro_next()
+        return panel, seen
+
+    def test_temp_with_a_rate_then_scan(self):
+        # The box held 3 K/min; the target trace made it 10, so the SCAN
+        # re-sent 250 K at 10 K/min, overriding the Macro's 3.
+        panel, seen = self.run_macro('TEMP 250 3\nSCAN')
+        panel.ppms_environment_controller.set_temperature.assert_called_once_with(250., 3., 0)
+        self.assertEqual(seen, [('250.0', '3')])
+        statuses = [c.args[0] for c in panel.ppms_macro_status.set.call_args_list]
+        self.assertEqual(statuses[0], 'Running line 1: TEMP 250.0 3.0 0')
+        # Set T afterwards sends the same rate.
+        panel.ppms_last_readback = {'temperature_k': 250.}
+        panel.ppms_temperature_approach_var = Var('Fast settle')
+        panel._run_ppms_command = Mock()
+        panel.root = None
+        with patch.object(app.messagebox, 'showerror') as showerror:
+            panel.set_ppms_temperature()
+        showerror.assert_not_called()
+        panel._run_ppms_command.call_args.args[1]()
+        panel.ppms_environment_controller.set_temperature.assert_called_with(250., 3., 0)
+
+    def test_other_explicit_rates_reach_the_box(self):
+        for text, live, box in (('TEMP 5 0.5', 6., '0.5'), ('TMP TEMP 20 7 1', 300., '7'),
+                                ('TEMP 300 1\nSCAN', 5., '1')):
+            with self.subTest(text=text):
+                panel, _ = self.run_macro(text, box_rate='3', live_k=live)
+                self.assertEqual(panel.ppms_temperature_rate_var.get(), box)
+
+    def test_temp_without_a_rate_shows_auto(self):
+        # The run picks 10 (live and target above 9 K); the box shows the
+        # target trace's value, as for a typed target, and the status line
+        # says "auto" instead of "None".
+        panel, seen = self.run_macro('TEMP 300\nSCAN', box_rate='3', live_k=300.)
+        panel.ppms_environment_controller.set_temperature.assert_called_once_with(300., 10., 0)
+        statuses = [c.args[0] for c in panel.ppms_macro_status.set.call_args_list]
+        self.assertEqual(statuses[0], 'Running line 1: TEMP 300.0 auto 0')
+        self.assertEqual(seen, [('300.0', '10')])
+        self.assertNotIn('None', ' '.join(statuses))
+
+
+class RTEStartIgnoresUnusedKepcoBoxes(unittest.TestCase):
+    """minor #23: the real RTEPanel.start_ppms_field_scan up to its submit."""
+
+    def start(self, mode, drive_a, limit_v):
+        panel = rte_tests.RTE.make_worker(self)
+        panel._require_ppms_control_ready = Mock()
+        panel._rte_capture_zurich = Mock()
+        panel.zurich_scan_enabled = False
+        panel.ppms_simple_mode = Var(mode)
+        panel.ppms_simple_range = [Var('0.01'), Var('0.03'), Var('0.01')]
+        panel.ppms_field_scan_loop_var = Var('1')
+        panel.rte_round_trip = Var(False)
+        panel.rte_controllers['gauss'].connected = True
+        panel.rte_controllers['kepco'].connected = True
+        panel.rte_drive_target = Var(drive_a)
+        panel.rte_voltage_limit = Var(limit_v)
+        settings = app.validate_ppms_transport_scan_settings(.1, 17.3, 50., 1, 2, ('830_a',))
+        panel._ppms_direct_transport_settings = Mock(return_value=settings)
+        panel._rte_harmonic_passes = Mock(return_value=[settings])
+        panel.ppms_field_scan_stable_var = Var('0')
+        panel.ppms_acquisition_time_var = Var('1')
+        panel.ppms_field_scan_progress = Mock()
+        panel.ppms_field_scan_status_var = Var('')
+        panel._update_ppms_control_ui = Mock()
+        panel._redraw_ppms_transport_plot = Mock()
+        panel.thread_log = Mock()
+        panel.ppms_executor = Mock()
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(app.filedialog, 'askdirectory', return_value=folder), \
+                patch.object(app.simpledialog, 'askstring', return_value=''), \
+                patch.object(app.messagebox, 'showerror') as showerror:
+            panel.start_ppms_field_scan()
+        return panel, showerror
+
+    def test_current_scan_ignores_both_kepco_boxes(self):
+        for drive, limit in (('', ''), ('12', '25'), ('0', '5')):
+            with self.subTest(drive=drive, limit=limit):
+                panel, showerror = self.start('Current', drive, limit)
+                showerror.assert_not_called()
+                # (worker, mode, plan, passes, limit, stable, duration)
+                args = panel.ppms_executor.submit.call_args.args
+                self.assertEqual(args[1], 'Current')
+                self.assertIsNone(args[4])
+                self.assertTrue(panel.ppms_field_scan_running)
+
+    def test_field_scan_checks_only_the_voltage_limit(self):
+        for drive in ('', '12', '0'):
+            with self.subTest(drive=drive):
+                panel, showerror = self.start('Field', drive, '5')
+                showerror.assert_not_called()
+                self.assertEqual(panel.ppms_executor.submit.call_args.args[4], 5.)
+        for limit in ('', '25', '0', 'nan'):
+            with self.subTest(limit=limit):
+                panel, showerror = self.start('Field', '0', limit)
+                showerror.assert_called_once()
+                self.assertEqual(showerror.call_args.args[0], 'RT-E scan parameters')
+                panel.ppms_executor.submit.assert_not_called()
+
+    def test_apply_still_checks_both(self):
+        panel = rte_tests.RTE.make_worker(self)
+        for drive, limit, error in (('12', '5', '10 A'), ('1', '25', '20 V'), ('', '5', 'float')):
+            with self.subTest(drive=drive, limit=limit):
+                panel.rte_drive_target, panel.rte_voltage_limit = Var(drive), Var(limit)
+                with self.assertRaisesRegex(ValueError, error):
+                    panel._rte_drive_parameters()
+        panel.rte_drive_target, panel.rte_voltage_limit = Var('-1.5'), Var('5')
+        self.assertEqual(panel._rte_drive_parameters(), (-1.5, 5.))
 
 
 if __name__ == '__main__':

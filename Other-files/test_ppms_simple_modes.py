@@ -54,7 +54,7 @@ class ModeTests(unittest.TestCase):
         self.assertEqual(parents["metrics"], "metrics_view")
         self.assertNotIn("in_=", inspect.getsource(app.CombinedControlApp._compact_ppms_controls))
 
-    def launch(self, mode, values, confirm=True, cancel_folder=False, filename="", existing=None, selected=None):
+    def launch(self, mode, values, confirm=True, cancel_folder=False, filename="", existing=None, selected=None, speed=14):
         obj = app.CombinedControlApp.__new__(app.CombinedControlApp)
         obj.ppms_field_scan_running = obj.ppms_environment_busy = False
         obj._require_ppms_control_ready = Mock()
@@ -68,7 +68,7 @@ class ModeTests(unittest.TestCase):
             ppms_transport_compliance_var=50, ppms_transport_harmonic_a_var=1,
             ppms_transport_harmonic_b_var=2, ppms_motor_confirm_var=True,
             ppms_temperature_rate_var=1, ppms_temperature_approach_var="No overshoot",
-            ppms_motor_speed_var=14)
+            ppms_motor_speed_var=speed)
         for name, value in defaults.items():
             setattr(obj, name, Mock(get=lambda v=value: v))
         obj.ppms_environment_controller = types.SimpleNamespace(backend=app.PPMS_QDINSTRUMENT_BACKEND)
@@ -121,6 +121,24 @@ class ModeTests(unittest.TestCase):
             self.assertEqual(len(settings["nested"]["temperature"]), 3 if mode == "Temperature" else 1)
             self.assertEqual(len(settings["nested"]["angle"]), 3 if mode == "Angle" else 1)
             self.assertEqual(len(settings["currents"]), 3 if mode == "Current" else 1)
+
+    def test_decel_code_is_parsed_as_move_parses_it(self):
+        # Move took '5.0' as code 5, Start scan refused it: int('5.0') raised
+        # (audit, 2026-10-13).  Both now accept and refuse the same entries.
+        for typed, code in (("5.0", 5), ("14.0", 14), (" 0 ", 0), ("7", 7), (14, 14)):
+            with self.subTest(typed=typed):
+                _, _, settings = self.launch("Angle", (26, 28, 1), speed=typed)
+                self.assertEqual(settings["slowdown"], code)
+                self.assertIs(type(settings["slowdown"]), int)
+                self.assertEqual(app.PPMSMotorDebug.validate_move(26, typed, 26)[1], code)
+        for typed in ("5.5", "15", "-1", "nan", "1e3"):
+            with self.subTest(typed=typed):
+                with self.assertRaises(ValueError):
+                    app.PPMSMotorDebug.validate_move(26, typed, 26)
+                # launch() asserts that no error dialog opened; here that
+                # assertion fails on the refusal, which names the decel code.
+                with self.assertRaisesRegex(AssertionError, "Decel code must be an integer within 0–14"):
+                    self.launch("Angle", (26, 28, 1), speed=typed)
 
     def test_optional_filename_and_no_overwrite(self):
         for entered, expected in (("sampleA", "sampleA.csv"), ("sampleA.csv", "sampleA.csv")):

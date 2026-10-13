@@ -161,6 +161,49 @@
   passes a 5000 MΩ gate. `test_nonlocal_pulse_gate_6221.py`: the block
   message.
 
+## PPMS / RT-E: RT-E SR830 addresses, the macro TEMP rate, decel code '5.0', unused KEPCO boxes (2026-10-13)
+
+- **RT-E SR830 addresses could not be typed in:** RT-E builds the three
+  SR830 addresses as plain entries, but the shared state update set every
+  idle SR830 address to 'readonly' (meant for the PPMS page's address
+  lists), so another GPIB address could never be entered. Now only a list
+  (Combobox) is set 'readonly'; the RT-E entries are editable when idle and
+  disabled while connected or busy, as before.
+- **A macro TEMP line replaced the rate box with 1 or 10 K/min:** writing
+  the line's target fired the trace meant for a typed target, which snaps
+  the rate to 1 K/min (below 10 K) or 10 K/min. A later SCAN (which re-sends
+  its fixed temperature) or Set T then used that rate, not the line's:
+  `TEMP 250 3` then `SCAN` re-sent 250 K at 10 K/min. Now a TEMP with a rate
+  also puts that rate in the box; without a rate the box keeps the trace's
+  value, as before. The macro status line shows `auto` instead of `None`
+  for a TEMP without a rate (the run log names the rate it picks).
+  `PPMS_Macro_README.md` now gives that rate as it is since the warm-up fix
+  (10 K/min only when the live temperature and the target are both above
+  9 K, else 1 K/min) and says what a TEMP does to the rate box.
+- **Decel code '5.0':** Move took it as code 5, Start scan refused it
+  ("invalid literal for int()"). Start scan now parses it as Move does: a
+  whole number 0–14, as '5' or '5.0'.
+- **RT-E scan refused because of KEPCO boxes it does not use:** Start scan
+  checked the KEPCO current A box and the voltage limit also in a Current
+  scan (no KEPCO), and the current box in a Field scan (its currents come
+  from the scan range). Now a Field scan checks only the voltage limit and
+  a Current scan neither; Apply still checks both.
+- **Tests:** `test_ppms_rte_review.py`: `RTESR830AddressesCanBeTyped`
+  (RT-E entries idle, connected and busy; the PPMS page's lists and the
+  Keithley entries unchanged), `MacroTempKeepsItsRate` (the real
+  `_ppms_macro_next` and `_ppms_macro_operation` with the real target
+  trace: with the box at 3, `TEMP 250 3` then `SCAN` sends 3, the SCAN sees
+  3 and a later Set T sends 3; other explicit rates; a TEMP without a rate
+  shows `auto`), `RTEStartIgnoresUnusedKepcoBoxes` (the real RT-E Start
+  scan up to its submit: a Current scan with blank or out-of-range KEPCO
+  boxes starts with no limit; a Field scan starts whatever the current box
+  holds and refuses a bad limit; Apply still refuses either);
+  `test_ppms_simple_modes.ModeTests.test_decel_code_is_parsed_as_move_parses_it`
+  (the real Start scan with '5.0', '14.0', ' 0 ', and refusing '5.5', '15',
+  '-1', 'nan', '1e3', each compared with Move's own check). The macro
+  stand-in in `test_ppms_field_persistent.py` now has a rate box. Every
+  dialog is mocked.
+
 ## Camera: settings rows and saved images match the camera (2026-10-13)
 
 - **Refused click left the radio moved:** during a MOKE magnet, MOKE-24 or

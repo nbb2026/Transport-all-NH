@@ -6,12 +6,12 @@ The window supports editing, loading/saving .seq, whole-script validation, line-
 Supported commands:
 
 - `REM note` or `# note`: comment.
-- `TEMP 300`: set temperature; without a rate, targets below 10 K use 1 K/min, otherwise 10 K/min.
+- `TEMP 300`: set temperature; without a rate, the run picks it from the live temperature: 10 K/min only when both the live temperature and the target are above 9 K, otherwise 1 K/min (the log names the rate; the status line shows `auto`).
 - `TMP TEMP 300 10 0`: temperature K, rate K/min, approach (0/1). The existing temperature safety validation applies; a start below 10 K may require a lower rate.
 - `FIELD 0 100 0 0` / `FLD FIELD 0 100 0 0`: field Oe, rate Oe/s, approach (0/1/2), mode (0 Persistent, 1 Driven). With two parameters the defaults are approach=0, mode=1.
 - `WAIT 10`: delay 10 seconds.
 - `WAI WAITFOR 10 1 1 0 0 0`: wait for the previously set temperature and field to stabilise, then hold for 10 s; the temperature/field flags can be set to 0 to skip. With field mode=0, Persistent must also be confirmed. The stability wait times out after 4 hours.
-- `SCAN`: run the current main-window transport scan (instruments, harmonics, ranges, …), choosing the CSV location each time; the next line runs only after the scan ends. Preceding TEMP/FIELD sync the matching main-window targets; the scan mode and other parameters still come from the main window.
+- `SCAN`: run the current main-window transport scan (instruments, harmonics, ranges, …), choosing the CSV location each time; the next line runs only after the scan ends. Preceding TEMP/FIELD sync the matching main-window targets; a TEMP also sets the temperature rate box, to its own rate, or without one to 1 K/min for targets below 10 K and 10 K/min otherwise, as typing the target does. The scan mode and other parameters still come from the main window.
 
 TEMP/FIELD do not wait for stability by themselves; use an explicit WAITFOR. A scan error, cancelled save, stop or command error stops the whole Macro. Stop does not revoke temperature/field setpoints already sent. While running, the editor and main window are locked; Stop and the immediate output-off button remain available.
 

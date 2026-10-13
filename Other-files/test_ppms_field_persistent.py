@@ -245,6 +245,8 @@ class PersistentSetpointTests(unittest.TestCase):
                 panel.ppms_macro_status = Var("")
                 panel.ppms_macro_editor = Mock()
                 panel.ppms_temperature_target_var = Var("300")
+                # A TEMP line with a rate also fills the rate box (audit, 2026-10-13).
+                panel.ppms_temperature_rate_var = Var("10")
                 panel.thread_log = lambda text: None
                 panel._ppms_macro_operation = Mock()
                 panel._ppms_macro_finish = Mock()
