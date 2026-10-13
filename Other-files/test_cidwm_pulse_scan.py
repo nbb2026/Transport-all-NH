@@ -269,6 +269,76 @@ class SizeTests(unittest.TestCase):
         self.assertEqual(app.K6221_DEFAULT_CURRENT_MA, 2.0)
 
 
+class AvtechSource:
+    """The Avtech: one pulse per call, off again when it returns."""
+
+    def __init__(self, trip_on=None):
+        self.calls, self.trip_on = [], trip_on
+
+    def single_pulse(self, amplitude_v, width_s):
+        self.calls.append(("pulse", amplitude_v, width_s))
+        pulses = len([c for c in self.calls if c[0] == "pulse"])
+        return {"amplitude_v": amplitude_v, "width_s": width_s, "overload": pulses == self.trip_on,
+                "pulse_end": time.monotonic()}
+
+    def switch_off(self):
+        self.calls.append(("off",))
+
+
+AVTECH_SETTINGS = {"source": "avtech", "amplitude_v": 20.0, "width_s": 10e-9, "signs": (1, -1, 1),
+                   "wait_s": 0.0, "signs_text": "+-"}
+
+
+class AvtechWorkerTests(unittest.TestCase):
+    """The pulse sign scan on the Avtech (user, 2026-10-13)."""
+
+    def setUp(self):
+        self.folder = Path(tempfile.mkdtemp()) / "run"
+        self.folder.mkdir()
+        for name, module in (("np", np), ("Image", Image)):
+            patcher = mock.patch.object(app, name, module)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def page(self, avtech):
+        a = page()
+        a.avtech_controller = avtech
+        a._publish_avtech_off_state = mock.Mock()
+        return a
+
+    def test_each_pulse_its_sign_its_images_and_the_avtech_off_at_the_end(self):
+        avtech = AvtechSource()
+        a = self.page(avtech)
+        result = a._cidwm_pulse_scan_worker(AVTECH_SETTINGS, self.folder)
+        self.assertEqual(result["done"], 3)
+        self.assertEqual(avtech.calls, [("pulse", 20.0, 10e-9), ("pulse", -20.0, 10e-9),
+                                        ("pulse", 20.0, 10e-9), ("off",)])
+        self.assertEqual(a.k6221_controller.calls, [], "the 6221 is not used")
+        with (self.folder / "run.csv").open(encoding="utf-8-sig") as file:
+            rows = list(csv.DictReader(file))
+        self.assertEqual(list(rows[0])[:7], ["pulse", "sign", "set_amplitude_V", "amplitude_V",
+                                             "pulse_width_ns", "elapsed_s", "overload_tripped"])
+        self.assertEqual([(r["sign"], r["set_amplitude_V"], r["pulse_width_ns"], r["overload_tripped"])
+                          for r in rows], [("+", "20", "10", "False"), ("-", "-20", "10", "False"),
+                                           ("+", "20", "10", "False")])
+        self.assertEqual(rows[1]["raw_tiff"], "CIDWM_pulse00002_neg_-20V_raw16.tiff")
+        self.assertTrue((self.folder / rows[1]["processed_tiff"]).exists())
+        self.assertEqual(rows[1]["display_png"], "CIDWM_pulse00002_neg_-20V_display8.png")
+        self.assertTrue(a.cidwm_scan_off_confirmed)
+
+    def test_an_overload_stops_the_scan_with_its_row(self):
+        avtech = AvtechSource(trip_on=2)
+        a = self.page(avtech)
+        with self.assertRaisesRegex(RuntimeError, "output protection tripped"):
+            a._cidwm_pulse_scan_worker(AVTECH_SETTINGS, self.folder)
+        self.assertEqual([c[0] for c in avtech.calls], ["pulse", "pulse", "off"])
+        with (self.folder / "run.csv").open(encoding="utf-8-sig") as file:
+            rows = list(csv.DictReader(file))
+        self.assertEqual([(r["pulse"], r["overload_tripped"]) for r in rows], [("1", "False"), ("2", "True")])
+        self.assertIn("overload", rows[1]["note"])
+        self.assertTrue(a.cidwm_scan_off_confirmed)
+
+
 class SaveImagesTests(unittest.TestCase):
     """Save images (user, 2026-10-12): the display, the raw 16-bit and the
     difference raw image of the same moment, in one folder."""

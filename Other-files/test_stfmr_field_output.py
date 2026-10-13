@@ -436,7 +436,14 @@ class FieldOutputTests(unittest.TestCase):
         outer = connection.master.master
         self.assertIn("Pulse sign scan (display, raw + processed TIFF after each pulse)", frames)
         self.assertIn("Camera settings", frames)
-        self.assertEqual(int(outer.rowconfigure(4)["weight"]), 1, "spare height below the controls")
+        # 2026-10-13: the Avtech box between the 6221 rows and the scan.
+        avtech = frames["Avtech AVR-E3-B pulse generator (GPIB; 50 Ω load required)"]
+        self.assertIs(avtech.master, outer)
+        self.assertEqual(int(avtech.grid_info()["row"]), 1)
+        self.assertLess(pulse.winfo_rooty(), avtech.winfo_rooty())
+        self.assertLess(avtech.winfo_rooty(),
+                        frames["Pulse sign scan (display, raw + processed TIFF after each pulse)"].winfo_rooty())
+        self.assertEqual(int(outer.rowconfigure(5)["weight"]), 1, "spare height below the controls")
 
     def test_cidwm_red_stop_button_is_never_clipped(self):
         """At narrow widths it used to extend 62 px past the window edge."""

@@ -1406,6 +1406,19 @@ CIDWM_SCAN_PULSES = 10
 CIDWM_SCAN_SIGNS = "+-"
 CIDWM_SCAN_WAIT_S = 1.0
 CIDWM_SCAN_MAX_PULSES = 100_000
+# Avtech AVR-E3-B-W3 pulse generator on the CIDWM page (user, 2026-10-13),
+# from Avtech's manuals (AVR-E2,E3-B sn14486 and ed9; programming manual for
+# "-B" instruments, firmware 5.07): GPIB address 8 from the factory; up to
+# 100 V into the 50 ohm load it requires; width 1 ns - 5 us (-W3); duty cycle
+# at most 5 % (one pulse at a time here).  Below 10 % of full scale Avtech
+# advises an external attenuator.  The defaults are the smallest advised
+# amplitude and a short pulse.
+AVTECH_DEFAULT_RESOURCE = "GPIB0::8::INSTR"
+AVTECH_MAX_AMPLITUDE_V = 100.0
+AVTECH_MIN_WIDTH_S = 1e-9
+AVTECH_MAX_WIDTH_S = 5e-6
+AVTECH_DEFAULT_AMPLITUDE_V = 10.0
+AVTECH_DEFAULT_WIDTH_NS = 10.0
 # After the wait, at most this long for a camera frame newer than the pulse.
 CIDWM_SCAN_FRAME_TIMEOUT_S = 10.0
 # Then at most this long for Camera Live to draw such a frame (its display is
@@ -2272,6 +2285,140 @@ class SafeVisaIdentityController:
             self.logger(f"{self.owner_scope} {self.label} disconnected")
             if shutdown_error is not None:
                 raise shutdown_error
+
+
+class AvtechPulserController(SafeVisaIdentityController):
+    """Avtech AVR-E3-B pulse generator over GPIB (CIDWM, user 2026-10-13).
+
+    One pulse is Avtech's own "single non-repetitive event" sequence: trigger
+    on hold, width and amplitude set and read back, output on, "trigger:source
+    immediate" (the remote Single Pulse button), then hold and the output off,
+    read back.  Connecting, disconnecting and every stop leave the trigger on
+    hold and the output off.  The polarity is the unit's (-P, -N or -PN): the
+    amplitude read back must have the sign asked for, or no pulse is fired.
+    """
+
+    def __init__(self, logger: Callable[[str], None]) -> None:
+        super().__init__(
+            logger,
+            "Avtech pulse generator",
+            "AVTECH",
+            safe_off_commands=("trigger:source hold", "output off"),
+            owner_scope="CIDWM",
+        )
+
+    @property
+    def polarities(self) -> tuple[int, ...] | None:
+        """(1,), (-1,) or (1, -1) from the model in *IDN? (-P, -N, -PN);
+        None when it does not say."""
+        match = re.search(r"-(PN|P|N)(?=-|,|\s|$)", self.identity.upper())
+        if match is None:
+            return None
+        return {"PN": (1, -1), "P": (1,), "N": (-1,)}[match.group(1)]
+
+    @staticmethod
+    def validate(amplitude_v, width_s) -> tuple[float, float]:
+        amplitude_v, width_s = float(amplitude_v), float(width_s)
+        if not (math.isfinite(amplitude_v) and 0 < abs(amplitude_v) <= AVTECH_MAX_AMPLITUDE_V):
+            raise ValueError(
+                f"The Avtech amplitude must be above 0 and at most {AVTECH_MAX_AMPLITUDE_V:g} V"
+            )
+        if not (math.isfinite(width_s) and AVTECH_MIN_WIDTH_S * 0.999 <= width_s <= AVTECH_MAX_WIDTH_S * 1.001):
+            raise ValueError("The Avtech pulse width must be within 1 ns - 5 us")
+        return amplitude_v, width_s
+
+    def _number(self, query: str) -> float:
+        reply = str(self.instrument.query(query)).strip()
+        try:
+            return float(reply)
+        except ValueError as error:
+            raise RuntimeError(f"{self.label}: {query} returned {reply!r}") from error
+
+    def _check_errors(self, step: str) -> None:
+        reply = str(self.instrument.query("syst:err?")).strip()
+        try:
+            clean = int(float(reply.split(",", 1)[0])) == 0
+        except ValueError:
+            clean = False
+        if not clean:
+            raise RuntimeError(f"{self.label} reported an error after {step}: {reply}")
+
+    def _off_problem(self) -> str | None:
+        """Trigger on hold and the output off, read back; None, or what went wrong."""
+        try:
+            self.instrument.write("trigger:source hold")
+            self.instrument.write("output off")
+            if self._number("output?") != 0:
+                return "its output did not read back off"
+        except BaseException as error:
+            return f"switching it off failed: {error}"
+        return None
+
+    def switch_off(self) -> None:
+        with self.lock:
+            if self.instrument is None:
+                return
+            problem = self._off_problem()
+            if problem is not None:
+                raise RuntimeError(f"{self.label}: {problem}; check the generator")
+
+    def single_pulse(self, amplitude_v: float, width_s: float) -> dict:
+        """One pulse of ``amplitude_v`` (signed) and ``width_s``.  Returns the
+        amplitude and width read back, whether the output protection tripped
+        (overload) and ``pulse_end`` (time.monotonic(), after the pulse)."""
+        amplitude_v, width_s = self.validate(amplitude_v, width_s)
+        sign = 1 if amplitude_v > 0 else -1
+        with self.lock:
+            if self.instrument is None:
+                raise RuntimeError(f"{self.label} is not connected")
+            allowed = self.polarities
+            if allowed is not None and sign not in allowed:
+                raise RuntimeError(
+                    f"This {self.label} gives {'positive' if allowed == (1,) else 'negative'} "
+                    "pulses only (its polarity option); no pulse fired"
+                )
+            failure = None
+            amplitude_read = width_read = math.nan
+            try:
+                self.instrument.write("trigger:source hold")
+                self.instrument.write("output off")
+                self.instrument.write(f"pulse:width {width_s:.6g}")
+                width_read = self._number("pulse:width?")
+                if not abs(width_read - width_s) <= max(0.05 * width_s, 0.2e-9):
+                    raise RuntimeError(
+                        f"{self.label} took a width of {width_read:.4g} s for {width_s:.4g} s; no pulse fired"
+                    )
+                self.instrument.write(f"volt:ampl {amplitude_v:.6g}")
+                amplitude_read = self._number("volt:ampl?")
+                if amplitude_read * sign <= 0 or abs(amplitude_read - amplitude_v) > max(0.02 * abs(amplitude_v), 0.5):
+                    raise RuntimeError(
+                        f"{self.label} took {amplitude_read:+g} V for {amplitude_v:+g} V "
+                        "(its polarity option?); no pulse fired"
+                    )
+                self._check_errors("setting the pulse; no pulse fired")
+                self.instrument.write("output on")
+                if self._number("output?") != 1:
+                    raise RuntimeError(f"{self.label}'s output did not switch on; no pulse fired")
+                self.instrument.write("trigger:source immediate")  # the pulse
+                self.instrument.write("trigger:source hold")
+                self._check_errors("the pulse")  # also: the pulse is over by now
+            except BaseException as error:
+                failure = error
+            problem = self._off_problem()
+            if failure is not None:
+                if problem is not None:
+                    raise RuntimeError(f"{failure}; and {problem}; check the generator") from failure
+                raise failure
+            if problem is not None:
+                raise RuntimeError(f"{self.label} fired the pulse, but {problem}; check the generator")
+            try:
+                overload = self._number("output:protection:tripped?") != 0
+            except BaseException as error:
+                raise RuntimeError(f"{self.label}: reading its overload state failed: {error}") from error
+            return {
+                "amplitude_v": amplitude_read, "width_s": width_read,
+                "overload": overload, "pulse_end": time.monotonic(),
+            }
 
 
 class STFMRKepco4886Controller:
@@ -13178,6 +13325,22 @@ class CombinedControlApp:
         self.k6221_roi_mean_var = tk.StringVar(value="ROI mean: --")
         self.k6221_safety_var = tk.BooleanVar(value=False)
         self.k6221_compliance_state_label = None
+        # The Avtech pulse generator on CIDWM (user, 2026-10-13): its own
+        # executor; the pulse sign scan uses it or the 6221 ("Pulse source").
+        self.avtech_controller = AvtechPulserController(self.thread_log)
+        self.avtech_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="avtech-pulser")
+        self.avtech_busy = False
+        self.avtech_closed = False
+        self.avtech_resource_var = tk.StringVar(value=AVTECH_DEFAULT_RESOURCE)
+        self.avtech_amplitude_var = tk.StringVar(value=f"{AVTECH_DEFAULT_AMPLITUDE_V:g}")
+        self.avtech_width_var = tk.StringVar(value=f"{AVTECH_DEFAULT_WIDTH_NS:g}")
+        self.avtech_safety_var = tk.BooleanVar(value=False)
+        self.avtech_connection_var = tk.StringVar(value="Not connected")
+        self.avtech_output_var = tk.StringVar(value="Output: OFF")
+        self.avtech_status_var = tk.StringVar(value="Avtech: not connected")
+        self.cidwm_scan_source_var = tk.StringVar(value="6221")
+        self.cidwm_scan_amplitude_var = tk.StringVar(value=f"{AVTECH_DEFAULT_AMPLITUDE_V:g}")
+        self.cidwm_scan_source = "6221"  # the running scan's
 
         self.nonlocal_controller = NonLocalACController(self.thread_log)
         self.nonlocal_executor = ThreadPoolExecutor(
@@ -21352,16 +21515,85 @@ class CombinedControlApp:
         ).grid(row=0, column=5, sticky="e", padx=(12, 0))
         self._arrange_pair_by_width(top, connection, output, gap=7)
 
+        # The Avtech pulse generator (user, 2026-10-13): one pulse per button,
+        # Avtech's single-pulse sequence; the output is off between pulses.
+        avtech = ttk.LabelFrame(
+            outer, text="Avtech AVR-E3-B pulse generator (GPIB; 50 Ω load required)", padding=7
+        )
+        avtech.grid(row=1, column=0, sticky="ew", pady=(7, 0))
+        avtech.columnconfigure(0, weight=1)
+        avtech_connection = ttk.Frame(avtech)
+        avtech_connection.grid(row=0, column=0, sticky="w")
+        ttk.Label(avtech_connection, text="Resource:").grid(row=0, column=0)
+        ttk.Entry(avtech_connection, textvariable=self.avtech_resource_var, width=18).grid(
+            row=0, column=1, padx=(0, 8)
+        )
+        self.avtech_connect_button = ttk.Button(
+            avtech_connection, text="Connect", command=self.connect_avtech
+        )
+        self.avtech_connect_button.grid(row=0, column=2, padx=3)
+        self.avtech_disconnect_button = ttk.Button(
+            avtech_connection, text="Disconnect", command=self.disconnect_avtech
+        )
+        self.avtech_disconnect_button.grid(row=0, column=3, padx=3)
+        self._create_connection_indicator(avtech_connection, "avtech").grid(row=0, column=4, padx=(8, 1))
+        ttk.Label(avtech_connection, textvariable=self.avtech_connection_var).grid(
+            row=0, column=5, sticky="w", padx=(1, 0)
+        )
+        avtech_pulse = ttk.Frame(avtech)
+        avtech_pulse.grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(avtech_pulse, text="Amplitude |V| (V):").grid(row=0, column=0)
+        ttk.Entry(avtech_pulse, textvariable=self.avtech_amplitude_var, width=8).grid(
+            row=0, column=1, padx=(0, 10)
+        )
+        ttk.Label(avtech_pulse, text="Width (ns):").grid(row=0, column=2)
+        ttk.Entry(avtech_pulse, textvariable=self.avtech_width_var, width=8).grid(
+            row=0, column=3, padx=(0, 10)
+        )
+        self.avtech_apply_button = ttk.Button(
+            avtech_pulse, text="Apply +V pulse", command=lambda: self.apply_avtech_pulse(1)
+        )
+        self.avtech_apply_button.grid(row=0, column=4, padx=(0, 3))
+        self.avtech_apply_negative_button = ttk.Button(
+            avtech_pulse, text="Apply −V pulse", command=lambda: self.apply_avtech_pulse(-1)
+        )
+        self.avtech_apply_negative_button.grid(row=0, column=5, padx=(3, 3))
+        self.avtech_off_button = tk.Button(
+            avtech_pulse,
+            text="Avtech output off",
+            command=self.avtech_output_off,
+            bg="#d70018",
+            fg="white",
+            activebackground="#a80012",
+            activeforeground="white",
+            padx=10,
+            pady=3,
+        )
+        self.avtech_off_button.grid(row=0, column=6, padx=(8, 12))
+        ttk.Label(avtech_pulse, textvariable=self.avtech_output_var, style="Metric.TLabel").grid(
+            row=0, column=7, sticky="w"
+        )
+        ttk.Checkbutton(
+            avtech,
+            text="Avtech: 50 Ω load at the output, wiring and amplitude confirmed safe",
+            variable=self.avtech_safety_var,
+            command=self._update_avtech_controls,
+        ).grid(row=2, column=0, sticky="w", pady=(6, 0))
+        avtech_status = ttk.Label(avtech, width=1)
+        avtech_status.grid(row=3, column=0, sticky="ew", pady=(2, 0))
+        show_trimmed(avtech_status, self.avtech_status_var)
+
         # The pulse sign scan (user, 2026-10-12): Pulses pulses at the pulse
         # output's |I|, width and compliance, each with its sign from Signs,
         # and after each the raw and processed TIFFs.
         scan = ttk.LabelFrame(
             outer, text="Pulse sign scan (display, raw + processed TIFF after each pulse)", padding=7
         )
-        scan.grid(row=1, column=0, sticky="ew", pady=(7, 0))
+        scan.grid(row=2, column=0, sticky="ew", pady=(7, 0))
         scan.columnconfigure(11, weight=1)
         for column, (label, variable, width) in enumerate((
             ("|I| mA:", self.cidwm_scan_current_var, 7),
+            ("|V| V:", self.cidwm_scan_amplitude_var, 7),
             ("Pulses:", self.cidwm_scan_pulses_var, 7),
             ("Signs:", self.cidwm_scan_signs_var, 14),
             ("Wait after pulse s:", self.cidwm_scan_wait_var, 6),
@@ -21376,18 +21608,29 @@ class CombinedControlApp:
         # 1101 px window with the |I| box.
         buttons = ttk.Frame(scan)
         buttons.grid(row=1, column=0, columnspan=12, sticky="w", pady=(4, 0))
+        # The pulse source (user, 2026-10-13): the 6221 (|I| mA, its pulse
+        # output's width and compliance) or the Avtech (|V| V, its width).
+        ttk.Label(buttons, text="Pulse source:").grid(row=0, column=0, padx=(0, 3))
+        self.cidwm_scan_source_buttons = []
+        for column, (value, text) in enumerate((("6221", "6221"), ("avtech", "Avtech")), 1):
+            button = ttk.Radiobutton(
+                buttons, text=text, value=value, variable=self.cidwm_scan_source_var,
+                command=self._update_k6221_controls,
+            )
+            button.grid(row=0, column=column, padx=(0, 6))
+            self.cidwm_scan_source_buttons.append(button)
         self.cidwm_scan_start_button = ttk.Button(
             buttons, text="Choose folder and start scan", command=self.start_cidwm_pulse_scan
         )
-        self.cidwm_scan_start_button.grid(row=0, column=0, padx=(0, 3))
+        self.cidwm_scan_start_button.grid(row=0, column=3, padx=(10, 3))
         self.cidwm_scan_stop_button = ttk.Button(
-            buttons, text="Stop", command=self.stop_k6221, state="disabled"
+            buttons, text="Stop", command=self.stop_cidwm_pulse_scan, state="disabled"
         )
-        self.cidwm_scan_stop_button.grid(row=0, column=1, padx=(3, 0))
+        self.cidwm_scan_stop_button.grid(row=0, column=4, padx=(3, 0))
         ttk.Label(
             scan,
-            text="Signs: + and - per pulse, repeated to fill Pulses (+- alternates, ++-- goes in pairs); "
-                 "width and compliance from the pulse output",
+            text="Signs: + and - per pulse, repeated to fill Pulses (+- alternates, ++-- goes in pairs). "
+                 "6221: |I| mA, width and compliance from its pulse output; Avtech: |V| V, width from its box",
             style="Muted.TLabel",
         ).grid(row=2, column=0, columnspan=12, sticky="w", pady=(4, 0))
         scan_status = ttk.Label(scan, width=1)
@@ -21399,7 +21642,7 @@ class CombinedControlApp:
         # rows as "Camera settings" (user, 2026-10-12: no ROI editing, no live
         # ROI plot).  They share the camera settings with MOKE magnet.
         moke = ttk.Frame(outer)
-        moke.grid(row=2, column=0, sticky="ew", pady=(7, 3))
+        moke.grid(row=3, column=0, sticky="ew", pady=(7, 3))
         # The Images box keeps its natural width and the difference display
         # takes the rest, as on MOKE magnet, so the display's width never
         # depends on its own mode row's layout (2026-10-12: with the spare
@@ -21423,18 +21666,18 @@ class CombinedControlApp:
         self._arrange_pair_by_width(moke, difference_box, images, gap=7)
         # The display rows in one box (user, 2026-10-12: "Camera settings").
         camera_settings = ttk.LabelFrame(outer, text="Camera settings", padding=4)
-        camera_settings.grid(row=3, column=0, sticky="ew", pady=(0, 4))
+        camera_settings.grid(row=4, column=0, sticky="ew", pady=(0, 4))
         camera_settings.columnconfigure(0, weight=1)
         self._build_moke_display_controls(camera_settings).grid(row=0, column=0, sticky="ew")
         # Spare height below the controls, so the status line stays at the
         # bottom of the page.
-        outer.rowconfigure(4, weight=1)
+        outer.rowconfigure(5, weight=1)
         ttk.Label(
             outer,
             textvariable=self.k6221_status_var,
             style="Status.TLabel",
             anchor="w",
-        ).grid(row=5, column=0, sticky="ew", pady=(7, 0))
+        ).grid(row=6, column=0, sticky="ew", pady=(7, 0))
         self._update_k6221_controls()
 
     def build_nonlocal_vi_ui(self) -> None:
@@ -28166,6 +28409,30 @@ class CombinedControlApp:
         return raw.copy(), processed.copy(), settings, roi_mean
 
     def _parse_cidwm_pulse_scan(self) -> dict:
+        if self._cidwm_scan_source() == "avtech":
+            try:
+                amplitude_v = abs(float(self.cidwm_scan_amplitude_var.get()))
+            except (TypeError, ValueError) as error:
+                raise ValueError("The scan's |V| V must be a number") from error
+            _box_amplitude, width_s = self._parse_avtech_pulse()
+            amplitude_v, width_s = AvtechPulserController.validate(amplitude_v, width_s)
+            signs = cidwm_sign_sequence(self.cidwm_scan_pulses_var.get(), self.cidwm_scan_signs_var.get())
+            try:
+                wait_s = float(self.cidwm_scan_wait_var.get())
+            except (TypeError, ValueError) as error:
+                raise ValueError("Wait after pulse s must be a number") from error
+            if not (math.isfinite(wait_s) and 0.0 <= wait_s <= 3600.0):
+                raise ValueError("Wait after pulse s must be within 0–3600 s")
+            allowed = self.avtech_controller.polarities
+            if allowed is not None and any(sign not in allowed for sign in signs):
+                raise ValueError(
+                    f"This Avtech gives {'positive' if allowed == (1,) else 'negative'} pulses only "
+                    "(its polarity option): use Signs of that sign"
+                )
+            return {
+                "source": "avtech", "amplitude_v": abs(amplitude_v), "width_s": width_s,
+                "signs": signs, "wait_s": wait_s, "signs_text": self.cidwm_scan_signs_var.get().strip(),
+            }
         _current_a, width_s, compliance_v, _count = self._parse_k6221_output()
         try:
             current_a = abs(float(self.cidwm_scan_current_var.get())) / 1000.0
@@ -28183,25 +28450,35 @@ class CombinedControlApp:
         if not (math.isfinite(wait_s) and 0.0 <= wait_s <= 3600.0):
             raise ValueError("Wait after pulse s must be within 0–3600 s")
         return {
+            "source": "6221",
             "current_ma": abs(current_a) * 1000.0, "width_s": width_s, "compliance_v": compliance_v,
             "signs": signs, "wait_s": wait_s,
             "signs_text": self.cidwm_scan_signs_var.get().strip(),
         }
 
+    def _cidwm_source_ready(self, source: str) -> bool:
+        if source == "avtech":
+            return self.avtech_controller.connected and not self.avtech_busy
+        return self.k6221_controller.connected and not self.k6221_busy
+
     def start_cidwm_pulse_scan(self) -> None:
-        if not self.k6221_controller.connected:
-            messagebox.showwarning("CIDWM pulse sign scan", "Connect the 6221 first", parent=self.root)
+        source = self._cidwm_scan_source()
+        name = "Avtech" if source == "avtech" else "6221"
+        connected = (self.avtech_controller if source == "avtech" else self.k6221_controller).connected
+        if not connected:
+            messagebox.showwarning("CIDWM pulse sign scan", f"Connect the {name} first", parent=self.root)
             return
-        if self.k6221_busy or self.k6221_scan_running:
+        if not self._cidwm_source_ready(source) or self.k6221_scan_running:
             return
         if self.magnet_scan_running or self.keithley_scan_running:
             messagebox.showwarning(
                 "CIDWM pulse sign scan", "A MOKE magnet or MOKE-24 scan is running", parent=self.root
             )
             return
-        if not self.k6221_safety_var.get():
+        safety = self.avtech_safety_var if source == "avtech" else self.k6221_safety_var
+        if not safety.get():
             messagebox.showwarning(
-                "CIDWM pulse sign scan", "Tick the 6221 safety confirmation first", parent=self.root
+                "CIDWM pulse sign scan", f"Tick the {name} safety confirmation first", parent=self.root
             )
             return
         try:
@@ -28213,17 +28490,22 @@ class CombinedControlApp:
         signs = settings["signs"]
         shown = "".join("+" if sign > 0 else "-" for sign in signs[:40]) + ("…" if len(signs) > 40 else "")
         estimate = len(signs) * (2 * settings["width_s"] + settings["wait_s"] + 0.5)
+        if source == "avtech":
+            pulse_text = (f"{len(signs)} Avtech pulses of {settings['amplitude_v']:g} V, "
+                          f"{settings['width_s'] * 1e9:g} ns (50 Ω load)")
+        else:
+            pulse_text = (f"{len(signs)} pulses of {settings['current_ma']:g} mA, "
+                          f"{settings['width_s'] * 1e6:g} us, compliance {settings['compliance_v']:g} V")
         if not messagebox.askyesno(
             "Start the CIDWM pulse sign scan?",
-            f"{len(signs)} pulses of {settings['current_ma']:g} mA, "
-            f"{settings['width_s'] * 1e6:g} us, compliance {settings['compliance_v']:g} V\n"
+            f"{pulse_text}\n"
             f"Signs: {shown}\n"
             f"After each pulse: wait {settings['wait_s']:g} s, then for a camera frame whose processed "
             "image holds only frames taken after the pulse; save its display (8-bit PNG), its raw "
             "16-bit TIFF and its processed (difference) TIFF\n"
             f"Estimated time: about {self._format_duration(estimate)}\n\n"
             "The scan writes a run folder, with the images, a CSV and the parameter log, "
-            "in the folder you choose next. The 6221 is switched off after each pulse and at the end.",
+            f"in the folder you choose next. The {name} is switched off after each pulse and at the end.",
             icon="warning",
             parent=self.root,
         ):
@@ -28238,20 +28520,31 @@ class CombinedControlApp:
         )
         if not folder:
             return
-        if self.k6221_busy or self.k6221_scan_running or not self.k6221_controller.connected:
+        if not self._cidwm_source_ready(source) or self.k6221_scan_running:
             return
         self.cidwm_scan_directory = Path(folder)
         try:
             run_directory = self.create_scan_image_session(Path(folder), "CIDWM_pulse_sign_scan")
             parameters = {
+                "pulse_source": name,
                 "pulses": len(signs), "signs_pattern": settings["signs_text"],
                 "signs": "".join("+" if sign > 0 else "-" for sign in signs),
-                "pulse_current_abs_mA": settings["current_ma"],
-                "pulse_width_us": settings["width_s"] * 1e6,
-                "compliance_V": settings["compliance_v"], "wait_after_pulse_s": settings["wait_s"],
-                "6221_resource": self.k6221_controller.resource_name,
-                "roi": self.k6221_roi,
             }
+            if source == "avtech":
+                parameters.update({
+                    "pulse_amplitude_abs_V": settings["amplitude_v"],
+                    "pulse_width_ns": settings["width_s"] * 1e9,
+                    "avtech_resource": self.avtech_controller.resource_name,
+                    "avtech_identity": self.avtech_controller.identity,
+                })
+            else:
+                parameters.update({
+                    "pulse_current_abs_mA": settings["current_ma"],
+                    "pulse_width_us": settings["width_s"] * 1e6,
+                    "compliance_V": settings["compliance_v"],
+                    "6221_resource": self.k6221_controller.resource_name,
+                })
+            parameters.update({"wait_after_pulse_s": settings["wait_s"], "roi": self.k6221_roi})
             self.write_parameter_log(
                 run_directory / f"{run_directory.name}_parameters.log",
                 self.format_parameter_log("CIDWM pulse sign scan parameter log", parameters),
@@ -28262,12 +28555,16 @@ class CombinedControlApp:
             return
         self.k6221_stop_event.clear()
         self.k6221_scan_running = True
-        self.cidwm_scan_status_var.set(f"Pulse sign scan: {len(signs)} pulses; run folder {run_directory}")
-        self.k6221_status_var.set("CIDWM pulse sign scan running")
+        self.cidwm_scan_source = source
+        self.cidwm_scan_status_var.set(
+            f"Pulse sign scan ({name}): {len(signs)} pulses; run folder {run_directory}"
+        )
+        self.k6221_status_var.set(f"CIDWM pulse sign scan running on the {name}")
         self._update_k6221_controls()
         self._update_keithley_controls()
         self._update_magnet_scan_controls()
-        future = self.k6221_executor.submit(self._cidwm_pulse_scan_worker, settings, run_directory)
+        executor = self.avtech_executor if source == "avtech" else self.k6221_executor
+        future = executor.submit(self._cidwm_pulse_scan_worker, settings, run_directory)
         future.add_done_callback(
             lambda completed: self.post_ui(lambda: self._finish_cidwm_pulse_scan(completed))
         )
@@ -28314,8 +28611,12 @@ class CombinedControlApp:
         """Each pulse: |I| with its sign (one pulse, the pulse output's width
         and compliance), the 6221 off, Wait after pulse s, a camera frame
         newer than the pulse, then its raw 16-bit and processed float32
-        TIFFs and a CSV row.  The 6221 ends off whatever happens."""
-        controller = self.k6221_controller
+        TIFFs and a CSV row.  The 6221 ends off whatever happens.  With
+        source "avtech" (user, 2026-10-13) each pulse is one Avtech pulse of
+        |V| with its sign; the Avtech ends off whatever happens."""
+        avtech = settings.get("source") == "avtech"
+        controller = self.avtech_controller if avtech else self.k6221_controller
+        unit = "V" if avtech else "mA"
         signs = settings["signs"]
         done = 0
         self.cidwm_scan_off_confirmed = False
@@ -28327,47 +28628,76 @@ class CombinedControlApp:
                 # in_compliance_at_readback: the 6221's condition when read
                 # just after INIT (a µs pulse may have ended by then).  note:
                 # why a pulse that was applied has no images.
-                writer.writerow((
-                    "pulse", "sign", "set_current_mA", "current_mA", "pulse_width_us",
-                    "compliance_V", "elapsed_s", "in_compliance_at_readback", "roi_mean_processed",
-                    "processing", "raw_tiff", "processed_tiff", "display_png", "note",
-                ))
+                if avtech:
+                    # Avtech: the amplitude and width read back before the
+                    # pulse; overload_tripped: its output protection after it.
+                    writer.writerow((
+                        "pulse", "sign", "set_amplitude_V", "amplitude_V", "pulse_width_ns",
+                        "elapsed_s", "overload_tripped", "roi_mean_processed",
+                        "processing", "raw_tiff", "processed_tiff", "display_png", "note",
+                    ))
+                else:
+                    writer.writerow((
+                        "pulse", "sign", "set_current_mA", "current_mA", "pulse_width_us",
+                        "compliance_V", "elapsed_s", "in_compliance_at_readback", "roi_mean_processed",
+                        "processing", "raw_tiff", "processed_tiff", "display_png", "note",
+                    ))
                 file.flush()
                 for index, sign in enumerate(signs, 1):
                     if self.k6221_stop_event.is_set():
                         break
-                    set_ma = sign * float(settings["current_ma"])
+                    set_value = sign * float(settings["amplitude_v" if avtech else "current_ma"])
                     label = "+" if sign > 0 else "-"
                     self.post_ui(
-                        lambda n=index, text=label, value=set_ma: self.cidwm_scan_status_var.set(
-                            f"Pulse sign scan: pulse {n}/{len(signs)} ({text}), {value:+g} mA"
+                        lambda n=index, text=label, value=set_value: self.cidwm_scan_status_var.set(
+                            f"Pulse sign scan: pulse {n}/{len(signs)} ({text}), {value:+g} {unit}"
                         )
                     )
                     actual = None
-                    try:
-                        actual = controller.set_dc_pulse(
-                            set_ma / 1000.0, settings["width_s"], settings["compliance_v"], 1
-                        )
-                        interrupted = self._wait_k6221_pulse_with_readback(actual)
-                    finally:
-                        controller.output_off()
-                    pulse_end = time.monotonic()
-                    self.post_ui(self._publish_k6221_off_state)
-                    actual_ma = float(actual["current_a"]) * 1000.0
+                    if avtech:
+                        # One pulse; the Avtech is off again (read back) when
+                        # this returns, or it raises.
+                        actual = controller.single_pulse(set_value, settings["width_s"])
+                        interrupted = False
+                        pulse_end = time.monotonic()
+                        self.post_ui(self._publish_avtech_off_state)
+                        actual_value = float(actual["amplitude_v"])
+                        middle = (f"{set_value:.10g}", f"{actual_value:.10g}",
+                                  f"{float(actual['width_s']) * 1e9:.10g}")
+                    else:
+                        try:
+                            actual = controller.set_dc_pulse(
+                                set_value / 1000.0, settings["width_s"], settings["compliance_v"], 1
+                            )
+                            interrupted = self._wait_k6221_pulse_with_readback(actual)
+                        finally:
+                            controller.output_off()
+                        pulse_end = time.monotonic()
+                        self.post_ui(self._publish_k6221_off_state)
+                        actual_value = float(actual["current_a"]) * 1000.0
+                        middle = (f"{set_value:.10g}", f"{actual_value:.10g}",
+                                  f"{settings['width_s'] * 1e6:.10g}", f"{settings['compliance_v']:.10g}")
 
                     def record(raw_name="", processed_name="", note="", roi_mean=math.nan,
                                processing=None, display_name=""):
                         # Every pulse applied has its row (review, 2026-10-12),
                         # with or without its images.
+                        flag = actual.get("overload") if avtech else actual.get("in_compliance")
                         writer.writerow((
-                            index, label, f"{set_ma:.10g}", f"{actual_ma:.10g}",
-                            f"{settings['width_s'] * 1e6:.10g}", f"{settings['compliance_v']:.10g}",
-                            f"{time.monotonic() - started:.3f}", bool(actual.get("in_compliance")),
+                            index, label, *middle,
+                            f"{time.monotonic() - started:.3f}", bool(flag),
                             "" if not math.isfinite(roi_mean) else f"{roi_mean:.10g}",
                             "" if processing is None else self.processed_image_settings_suffix(processing),
                             raw_name, processed_name, display_name, note,
                         ))
                         file.flush()
+
+                    if avtech and actual.get("overload"):
+                        record(note="overload: the Avtech's output protection tripped; scan stopped")
+                        raise RuntimeError(
+                            "The Avtech's output protection tripped (overload: is the 50 Ω load "
+                            "there?); the scan stopped with the output off"
+                        )
 
                     if interrupted or self.k6221_stop_event.wait(float(settings["wait_s"])):
                         record(note="stopped before the images were saved")
@@ -28391,7 +28721,7 @@ class CombinedControlApp:
                             display = None
                             note = "display not saved: Camera Live did not draw a frame after the pulse"
                         raw, processed, processing, roi_mean = self._cidwm_snapshot(frame)
-                        stem = f"CIDWM_pulse{index:05d}_{'pos' if sign > 0 else 'neg'}_{actual_ma:+.6g}mA"
+                        stem = f"CIDWM_pulse{index:05d}_{'pos' if sign > 0 else 'neg'}_{actual_value:+.6g}{unit}"
                         raw_name = f"{stem}_raw16.tiff"
                         processed_name = (
                             f"{stem}_{self.processed_image_settings_suffix(processing)}_float32.tiff"
@@ -28416,23 +28746,31 @@ class CombinedControlApp:
         finally:
             # Read back as off, or the finish says to check the 6221 (review,
             # 2026-10-12: it said "off" even when switching off had failed).
-            controller.output_off()
+            if avtech:
+                controller.switch_off()
+            else:
+                controller.output_off()
             self.cidwm_scan_off_confirmed = True
         return {"done": done, "total": len(signs), "directory": str(run_directory)}
 
     def _finish_cidwm_pulse_scan(self, future) -> None:
         self.k6221_scan_running = False
-        self.k6221_current_ma = 0.0
         off = bool(self.__dict__.get("cidwm_scan_off_confirmed"))
-        self.k6221_output_var.set("Output: 0 mA / OFF" if off else "Output: check the 6221")
-        self._reset_k6221_readback()
+        avtech = self.__dict__.get("cidwm_scan_source") == "avtech"
+        name = "Avtech" if avtech else "6221"
+        if avtech:
+            self.avtech_output_var.set("Output: OFF" if off else "Output: check the Avtech")
+        else:
+            self.k6221_current_ma = 0.0
+            self.k6221_output_var.set("Output: 0 mA / OFF" if off else "Output: check the 6221")
+            self._reset_k6221_readback()
         try:
             result = future.result()
         except BaseException as error:
             self.cidwm_scan_status_var.set(f"Pulse sign scan failed: {short_status_error(error)}")
             self.k6221_status_var.set(
                 "Pulse sign scan stopped by an error; "
-                + ("6221 output off" if off else "switching the 6221 off failed, check it")
+                + (f"{name} output off" if off else f"switching the {name} off failed, check it")
             )
             if not self.closing:
                 messagebox.showerror("CIDWM pulse sign scan", str(error), parent=self.root)
@@ -28443,11 +28781,196 @@ class CombinedControlApp:
                 f"{result['done']}/{result['total']} pulses saved in {result['directory']}"
             )
             self.k6221_status_var.set(
-                f"Pulse sign scan {'stopped' if stopped else 'complete'}; 6221 output off"
+                f"Pulse sign scan {'stopped' if stopped else 'complete'}; {name} output off"
             )
         self._update_k6221_controls()
         self._update_keithley_controls()
         self._update_magnet_scan_controls()
+
+    # ---- Avtech pulse generator (CIDWM, user 2026-10-13) ----------------------
+
+    def _cidwm_scan_source(self) -> str:
+        variable = self.__dict__.get("cidwm_scan_source_var")
+        return "avtech" if variable is not None and variable.get() == "avtech" else "6221"
+
+    def _parse_avtech_pulse(self) -> tuple[float, float]:
+        """(|amplitude| V, width s) from the Avtech box, within its limits."""
+        try:
+            amplitude_v = abs(float(self.avtech_amplitude_var.get()))
+            width_s = float(self.avtech_width_var.get()) * 1e-9
+        except (TypeError, ValueError) as error:
+            raise ValueError("The Avtech amplitude and width must be numbers") from error
+        return AvtechPulserController.validate(amplitude_v, width_s)
+
+    def _avtech_polarity_text(self) -> str:
+        allowed = self.avtech_controller.polarities
+        if allowed is None:
+            return "polarity not in its model name: each pulse's sign is checked"
+        return {(1,): "positive pulses only (-P)", (-1,): "negative pulses only (-N)",
+                (1, -1): "both polarities (-PN)"}[allowed]
+
+    def connect_avtech(self) -> None:
+        resource = self.avtech_resource_var.get().strip()
+        if not resource:
+            messagebox.showwarning("Avtech", "Enter a VISA resource name", parent=self.root)
+            return
+        self.avtech_busy = True
+        self.avtech_status_var.set(f"Avtech: connecting to {resource}…")
+        self._update_avtech_controls()
+        future = self.avtech_executor.submit(self.avtech_controller.connect, resource)
+        future.add_done_callback(
+            lambda completed: self.post_ui(lambda: self._finish_avtech_connect(completed))
+        )
+
+    def _finish_avtech_connect(self, future) -> None:
+        self.avtech_busy = False
+        try:
+            identity = future.result()
+        except BaseException as error:
+            self.avtech_connection_var.set("Not connected")
+            self.avtech_status_var.set(f"Avtech: connection failed: {short_status_error(error)}")
+            if not self.closing:
+                messagebox.showerror("Avtech", str(error), parent=self.root)
+        else:
+            self.avtech_connection_var.set("Connected")
+            self.avtech_output_var.set("Output: OFF")
+            self.avtech_safety_var.set(False)
+            self.avtech_status_var.set(
+                f"Avtech: {identity} | trigger on hold, output off | {self._avtech_polarity_text()}"
+            )
+        self._update_avtech_controls()
+        self._update_k6221_controls()
+
+    def disconnect_avtech(self) -> None:
+        self.avtech_busy = True
+        self.avtech_status_var.set("Avtech: switching off and disconnecting…")
+        self._update_avtech_controls()
+        future = self.avtech_executor.submit(self.avtech_controller.disconnect)
+        future.add_done_callback(
+            lambda completed: self.post_ui(lambda: self._finish_avtech_disconnect(completed.exception()))
+        )
+
+    def _finish_avtech_disconnect(self, error) -> None:
+        self.avtech_busy = False
+        self.avtech_connection_var.set("Not connected")
+        self.avtech_safety_var.set(False)
+        if error is None:
+            self.avtech_output_var.set("Output: OFF")
+            self.avtech_status_var.set("Avtech: output off and disconnected")
+        else:
+            self.avtech_output_var.set("Output: check the Avtech")
+            self.avtech_status_var.set(f"Avtech: disconnect warning: {short_status_error(error)}")
+            if not self.closing:
+                messagebox.showerror("Avtech", str(error), parent=self.root)
+        self._update_avtech_controls()
+        self._update_k6221_controls()
+
+    def apply_avtech_pulse(self, polarity: int = 1) -> None:
+        """Apply +V pulse (polarity 1) or Apply −V pulse (−1): one pulse of
+        |Amplitude| with the button's sign and Width, the output off before
+        and after."""
+        if not self.avtech_controller.connected:
+            messagebox.showwarning("Avtech", "Connect the Avtech first", parent=self.root)
+            return
+        if not self.avtech_safety_var.get():
+            messagebox.showwarning("Avtech", "Tick the Avtech safety confirmation first", parent=self.root)
+            return
+        if self.avtech_busy or self.k6221_scan_running:
+            return
+        try:
+            amplitude_v, width_s = self._parse_avtech_pulse()
+        except ValueError as error:
+            messagebox.showwarning("Avtech", str(error), parent=self.root)
+            return
+        signed = (1 if polarity >= 0 else -1) * amplitude_v
+        self.avtech_busy = True
+        self.avtech_status_var.set(f"Avtech: one pulse of {signed:+g} V, {width_s * 1e9:g} ns…")
+        self._update_avtech_controls()
+        future = self.avtech_executor.submit(self.avtech_controller.single_pulse, signed, width_s)
+        future.add_done_callback(
+            lambda completed: self.post_ui(lambda: self._finish_avtech_pulse(completed, signed))
+        )
+
+    def _finish_avtech_pulse(self, future, signed: float) -> None:
+        self.avtech_busy = False
+        try:
+            result = future.result()
+        except BaseException as error:
+            self.avtech_output_var.set("Output: OFF" if "check the generator" not in str(error)
+                                       else "Output: check the Avtech")
+            self.avtech_status_var.set(f"Avtech: pulse failed: {short_status_error(error)}")
+            if not self.closing:
+                messagebox.showerror("Avtech pulse", str(error), parent=self.root)
+        else:
+            self.avtech_output_var.set("Output: OFF")
+            text = (f"Avtech: pulse {result['amplitude_v']:+g} V, {result['width_s'] * 1e9:g} ns "
+                    "(read back); output off")
+            if result["overload"]:
+                text += " | OVERLOAD: output protection tripped (is the 50 Ω load there?)"
+            self.avtech_status_var.set(text)
+            self.append_log(text)
+            if result["overload"] and not self.closing:
+                messagebox.showwarning("Avtech pulse", text, parent=self.root)
+        self._update_avtech_controls()
+
+    def avtech_output_off(self) -> None:
+        """The red button: the trigger on hold and the output off, read back.
+        During a pulse sign scan on the Avtech it stops the scan, which ends
+        with the output off."""
+        if not self.avtech_controller.connected:
+            return
+        if self.k6221_scan_running and self.cidwm_scan_source == "avtech":
+            self.k6221_stop_event.set()
+            self.avtech_status_var.set("Avtech: stopping the scan; the output goes off after this pulse")
+            return
+        self.avtech_busy = True
+        self.avtech_status_var.set("Avtech: trigger on hold, output off…")
+        self._update_avtech_controls()
+        future = self.avtech_executor.submit(self.avtech_controller.switch_off)
+        future.add_done_callback(
+            lambda completed: self.post_ui(lambda: self._finish_avtech_off(completed.exception()))
+        )
+
+    def _finish_avtech_off(self, error) -> None:
+        self.avtech_busy = False
+        if error is None:
+            self.avtech_output_var.set("Output: OFF")
+            self.avtech_status_var.set("Avtech: trigger on hold, output off (read back)")
+        else:
+            self.avtech_output_var.set("Output: check the Avtech")
+            self.avtech_status_var.set(f"Avtech: {short_status_error(error)}")
+            if not self.closing:
+                messagebox.showerror("Avtech", str(error), parent=self.root)
+        self._update_avtech_controls()
+
+    def _publish_avtech_off_state(self) -> None:
+        self.avtech_output_var.set("Output: OFF")
+
+    def stop_cidwm_pulse_scan(self) -> None:
+        """Stop: the scan ends after the pulse in progress, its source off."""
+        if self.k6221_scan_running and self.cidwm_scan_source == "avtech":
+            self.k6221_stop_event.set()
+            self.cidwm_scan_status_var.set("Pulse sign scan: stopping after this pulse…")
+            return
+        self.stop_k6221()
+
+    def _update_avtech_controls(self) -> None:
+        if "avtech_connect_button" not in self.__dict__:
+            return
+        connected = self.avtech_controller.connected
+        self._set_connection_indicator("avtech", connected)
+        scanning = self.k6221_scan_running and self.cidwm_scan_source == "avtech"
+        idle = not self.avtech_busy and not self.k6221_scan_running
+        self.avtech_connect_button.configure(state="normal" if not connected and idle else "disabled")
+        self.avtech_disconnect_button.configure(state="normal" if connected and idle else "disabled")
+        can_pulse = (
+            connected and idle and self.avtech_safety_var.get()
+            and not self.magnet_scan_running and not self.keithley_scan_running
+        )
+        allowed = self.avtech_controller.polarities or (1, -1)
+        for button, sign in ((self.avtech_apply_button, 1), (self.avtech_apply_negative_button, -1)):
+            button.configure(state="normal" if can_pulse and sign in allowed else "disabled")
+        self.avtech_off_button.configure(state="normal" if connected or scanning else "disabled")
 
     def stop_k6221(self) -> None:
         if not self.k6221_controller.connected:
@@ -28658,13 +29181,26 @@ class CombinedControlApp:
         for button in (self.k6221_apply_button, self.k6221_apply_negative_button):
             button.configure(state="normal" if can_operate else "disabled")
         if "cidwm_scan_start_button" in self.__dict__:
-            self.cidwm_scan_start_button.configure(state="normal" if can_operate else "disabled")
+            if self._cidwm_scan_source() == "avtech":
+                avtech = self.avtech_controller
+                can_start = (
+                    avtech.connected and not self.avtech_busy and not running
+                    and self.avtech_safety_var.get()
+                    and not self.magnet_scan_running and not self.keithley_scan_running
+                )
+            else:
+                can_start = can_operate
+            self.cidwm_scan_start_button.configure(state="normal" if can_start else "disabled")
             self.cidwm_scan_stop_button.configure(state="normal" if running else "disabled")
+            for button in self.__dict__.get("cidwm_scan_source_buttons", ()):
+                button.configure(state="disabled" if running else "normal")
         self.k6221_off_button.configure(state="normal" if connected else "disabled")
         if "cidwm_save_images_button" in self.__dict__:
             self.cidwm_save_images_button.configure(
                 state="disabled" if "cidwm-images" in self.active_file_exports else "normal"
             )
+        if "avtech_connect_button" in self.__dict__:
+            self._update_avtech_controls()
 
     def _draw_nonlocal_series(
         self,
@@ -33487,6 +34023,18 @@ class CombinedControlApp:
         finally:
             self.k6221_executor.shutdown(wait=False, cancel_futures=True)
 
+    def safe_close_avtech(self) -> None:
+        if self.__dict__.get("avtech_closed", True):
+            return
+        self.avtech_closed = True
+        self.k6221_stop_event.set()  # a pulse sign scan on the Avtech stops too
+        try:
+            self.avtech_controller.disconnect()  # trigger on hold, output off
+        except BaseException as error:
+            self.append_log(f"Avtech safe-close warning: {error}")
+        finally:
+            self.avtech_executor.shutdown(wait=False, cancel_futures=True)
+
     def safe_close_keithley(self) -> None:
         if self.keithley_closed:
             return
@@ -36963,6 +37511,7 @@ class CombinedControlApp:
             ("MOKE-24 Keithley", self.safe_close_keithley),
             ("Non-local", self.safe_close_nonlocal_vi),
             ("Keithley 6221", self.safe_close_k6221),
+            ("Avtech pulse generator", self.safe_close_avtech),
             ("FMR", self.safe_close_stfmr),
             ("STFMR", self.safe_close_stfmr_lockin),
             ("PPMS", self.safe_close_ppms),

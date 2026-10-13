@@ -1,5 +1,47 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## CIDWM: the Avtech AVR-E3-B pulse generator (2026-10-13)
+
+- **User:** add the Avtech AVR-E3-B-W3 (100 V, 500 ps, 1 ns - 5 us, 20 kHz)
+  to CIDWM; a box of its own, and the pulse sign scan can use it or the
+  6221; GPIB.
+- **Commands from Avtech's manuals** (AVR-E2,E3-B sn14486 and ed9;
+  programming manual for "-B" instruments, firmware 5.07): no Python driver
+  exists (Avtech offers LabVIEW drivers only).
+  - GPIB address 8 from the factory: `GPIB0::8::INSTR`.
+  - One pulse is Avtech's "single non-repetitive event": `trigger:source
+    hold`, `output off`, `pulse:width <s>` and `volt:ampl <V>` each read
+    back (`pulse:width?`, `volt:ampl?`), `syst:err?`, `output on` read back,
+    `trigger:source immediate` (the remote Single Pulse button),
+    `trigger:source hold`, `syst:err?`, then `trigger:source hold`,
+    `output off`, `output?` = 0, and `output:protection:tripped?`.
+  - Connecting (after `*IDN?` names AVTECH), disconnecting, closing the
+    program and the red "Avtech output off" button leave the trigger on hold
+    and the output off.
+- **Safety:** amplitude above 0 and at most 100 V, width 1 ns - 5 us (-W3);
+  a tick "50 Ω load at the output, wiring and amplitude confirmed safe";
+  the polarity is the unit's (-P, -N or -PN, read from `*IDN?`): a sign the
+  model cannot give is refused, and with any model a pulse fires only if the
+  amplitude read back has the sign and size asked for (within 2 % or 0.5 V)
+  and the width within 5 %. An overload (output protection tripped) is
+  reported, and stops a scan.
+- **Box:** Resource, Connect, Disconnect, lamp; Amplitude |V| (V) (10),
+  Width (ns) (10); Apply +V pulse, Apply −V pulse, Avtech output off; the
+  read-back of the last pulse. Defaults: 10 V, the smallest amplitude Avtech
+  advises without an attenuator, and 10 ns.
+- **Pulse sign scan:** "Pulse source: 6221 / Avtech" and its own |V| V (the
+  width from the Avtech box). After each pulse, as before: the wait, a
+  camera frame wholly after the pulse, its display PNG, raw and processed
+  TIFFs, a CSV row. The Avtech CSV: set_amplitude_V, amplitude_V,
+  pulse_width_ns (read back), overload_tripped; files `..._+20V_...`. The
+  parameter log names the source and the Avtech's identity. Stop ends after
+  the pulse in progress, the Avtech off.
+- **Tests:** `test_avtech_pulser.py` (a simulated generator: the sequence,
+  the polarity refusals, an output left on, overload, limits, connecting);
+  `test_cidwm_pulse_scan.py` (the scan on the Avtech, an overload);
+  `test_panel_defaults.py`, `test_stfmr_field_output.py` (the box, CI).
+- **Not tried on the instrument yet.**
+
 ## Drift tracking: two steps, windowed, band-passed, to a few hundredths of a pixel (2026-10-13)
 
 - **User:** "the drift tracking seems not working very well": in the

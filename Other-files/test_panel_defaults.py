@@ -167,6 +167,21 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertEqual(str(a.cidwm_scan_stop_button.cget("state")), "disabled")
         self.assertEqual(str(a.cidwm_scan_start_button.cget("text")), "Choose folder and start scan")
 
+    def test_cidwm_avtech_box_and_the_scan_source(self):
+        """2026-10-13: the Avtech AVR-E3-B box (GPIB address 8, 10 V, 10 ns,
+        everything off until connected and ticked) and the scan's pulse
+        source, the 6221 by default."""
+        a = self.app
+        self.assertEqual((a.avtech_resource_var.get(), a.avtech_amplitude_var.get(), a.avtech_width_var.get(),
+                          a.cidwm_scan_amplitude_var.get(), a.cidwm_scan_source_var.get()),
+                         ("GPIB0::8::INSTR", "10", "10", "10", "6221"))
+        self.assertEqual(str(a.avtech_connect_button.cget("state")), "normal")
+        for button in (a.avtech_disconnect_button, a.avtech_apply_button, a.avtech_apply_negative_button,
+                       a.avtech_off_button):
+            self.assertEqual(str(button.cget("state")), "disabled", str(button.cget("text")))
+        self.assertEqual([str(b.cget("text")) for b in a.cidwm_scan_source_buttons], ["6221", "Avtech"])
+        self.assertFalse(a.avtech_safety_var.get())
+
     def _boxes(self):
         found, pending = [], list(self.app.root.winfo_children())
         while pending:
