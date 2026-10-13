@@ -61,8 +61,8 @@ def page():
     a.camera_exposure_ms_var = Var(f"{app.EXPOSURE_S * 1000:g}")
     a.objective_100x_marker_visible = False
     a.objective_100x_marker_buttons = [mock.Mock()]
-    for name in ("magnet_status_var", "camera_window_status_var", "difference_status_var",
-                 "camera_exposure_status_var", "operation_var"):
+    for name in ("magnet_status_var", "k6221_status_var", "camera_window_status_var",
+                 "difference_status_var", "camera_exposure_status_var", "operation_var"):
         setattr(a, name, Var())
     a.camera_video_stopping = False
     for name in ("clear_difference_histogram", "_set_connection_indicator",

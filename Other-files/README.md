@@ -1,5 +1,37 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## LED, MOKE motor, camera rows: bad boxes, Pulse on one channel, step range, CIDWM status (2026-10-13)
+
+- **LED, an empty or non-numeric box:** clearing a channel's Current (or
+  p/g/d/f) or the "Continuous current, all 4" box, or typing 'abc', raised
+  TclError outside the integer check, so Apply, Apply all, the "All 4
+  currents" presets, "All 4 continuous on" and "Set continuous current on
+  all 4" did nothing and showed nothing. Now the box is read inside the
+  check: "Input error" names the box and nothing is sent.
+- **LED, Pulse on one channel:** Apply all asked "Confirm pulse mode" (the
+  p/g/d/f units are unconfirmed) but a channel's own Apply did not. Now it
+  asks the same.
+- **MOKE motor, Step message:** a Step of 0 (the default "0.000") is refused,
+  but the message read "Step range: 0–20000 µm". It now reads "Step must be
+  greater than 0 and at most 20000 µm". The default is unchanged.
+- **MOKE motor, repeated steps:** Up/Down targets add up and were never
+  checked against the ±100000 µm software range of Go to absolute position
+  (after the 7250 µm preset, the 19th Down of 20000 µm passed it). Now a step
+  whose target is beyond that range is refused with the same warning; the
+  limit itself is reachable, as for an absolute move.
+- **Camera settings rows on CIDWM:** averaging, binning, mean filter and
+  Apply exposure wrote their status only to the MOKE magnet page's line.
+  Now the CIDWM status line shows it too, as for the ROI live settings.
+- **Tests:** `test_light_camera_inputs.py` (every LED button with an empty
+  and an 'abc' box, through the real `IntVar.get` on a stand-in
+  interpreter; valid boxes still apply; single-channel Pulse asks and No
+  sends nothing; the Step messages; 18 Down steps from 7250 µm pass and the
+  19th is refused with nothing written; 20 Up steps reach -100000 µm and the
+  21st is refused; both status lines); `test_camera_settings_rows.py` page
+  stand-in gains the CIDWM status line. Every dialog is mocked (the motor
+  code imports `tkinter.messagebox` itself, so its dialogs are mocked
+  there), and a real Tk root fails the test instead of opening a window.
+
 ## Camera: settings rows and saved images match the camera (2026-10-13)
 
 - **Refused click left the radio moved:** during a MOKE magnet, MOKE-24 or

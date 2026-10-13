@@ -24216,6 +24216,7 @@ class CombinedControlApp:
     def apply_difference_display_average(self) -> None:
         if self.camera_window is None:
             self.magnet_status_var.set("The camera has not started yet")
+            self.k6221_status_var.set("The camera has not started yet")
             return
         # A change mid-scan would process later points differently from the
         # earlier ones (review, 2026-10-09), as background changes are blocked.
@@ -24253,10 +24254,14 @@ class CombinedControlApp:
             if mean_filter_size > 1
             else ""
         )
-        self.magnet_status_var.set(
+        status = (
             f"Camera Live: {temporal_count}-frame average{spatial_text}{mean_text}; "
             "ROI, scan acquisition and float32 processed images use the same processing chain"
         )
+        # These rows are on the MOKE magnet and CIDWM pages: both status
+        # lines show it, as for the ROI live settings (audit, 2026-10-13).
+        self.magnet_status_var.set(status)
+        self.k6221_status_var.set(status)
         self.clear_difference_histogram("Processing parameters changed; waiting for a new difference frame…")
 
     def apply_camera_exposure(self) -> None:
@@ -24285,10 +24290,12 @@ class CombinedControlApp:
             # Exposure changes force a new background in the acquisition
             # worker, so the associated difference trace starts a new clock.
             self.reset_difference_live_time_window(restart_clock=True)
-        self.magnet_status_var.set(
+        status = (
             f"Updating camera exposure to {exposure_ms:g} ms; "
             "the background is recaptured automatically while difference is enabled"
         )
+        self.magnet_status_var.set(status)
+        self.k6221_status_var.set(status)
 
     def show_difference_histogram(self) -> None:
         window = self.difference_histogram_window
@@ -38341,9 +38348,13 @@ class CombinedControlApp:
         self.run_task("Switching off and disconnecting…", work, done)
 
     @staticmethod
-    def raw_int(name: str, value: object) -> int:
+    def raw_int(name: str, variable: tk.Variable) -> int:
+        # The IntVar is read inside the try: an empty box or text such as
+        # 'abc' raises TclError at .get(), which the callers (they catch
+        # ValueError) let through, so Apply did nothing and showed nothing
+        # (audit, 2026-10-13).
         try:
-            number = int(value)
+            number = int(variable.get())
         except (TypeError, ValueError, tk.TclError) as error:
             raise ValueError(f"{name} must be an integer") from error
         if number < 0:
@@ -38352,7 +38363,7 @@ class CombinedControlApp:
 
     def settings_from_ui(self, channel: int) -> ChannelSettings:
         variables = self.channel_vars[channel]
-        current = self.raw_int(f"Channel {channel} current", variables["i"].get())
+        current = self.raw_int(f"Channel {channel} current", variables["i"])
         if current > CURRENT_LIMIT:
             raise ValueError(f"Channel {channel} current must be within 0–{CURRENT_LIMIT}")
         mode_label = str(variables["m"].get())
@@ -38360,7 +38371,7 @@ class CombinedControlApp:
             raise ValueError(f"Channel {channel} mode is invalid")
         raw = {
             parameter: self.raw_int(
-                f"Channel {channel} {parameter}", variables[parameter].get()
+                f"Channel {channel} {parameter}", variables[parameter]
             )
             for parameter in ("p", "g", "d", "f")
         }
@@ -38386,6 +38397,12 @@ class CombinedControlApp:
             settings = self.settings_from_ui(channel)
         except ValueError as error:
             messagebox.showerror("Input error", str(error))
+            return
+        # The same confirmation as Apply all: one channel's Pulse mode has the
+        # same unconfirmed p/g/d/f units (audit, 2026-10-13).
+        if settings.mode == 2 and not messagebox.askyesno(
+            "Confirm pulse mode", "The physical units of p/g/d/f are unconfirmed. Continue?"
+        ):
             return
         readback = bool(self.auto_readback_var.get())
 
@@ -38440,7 +38457,7 @@ class CombinedControlApp:
 
     def apply_global_continuous_current(self) -> None:
         try:
-            current = self.raw_int("Continuous current for all 4", self.global_current_var.get())
+            current = self.raw_int("Continuous current for all 4", self.global_current_var)
         except ValueError as error:
             messagebox.showerror("Input error", str(error))
             return
@@ -39582,12 +39599,29 @@ def create_motor_subsystem():
             except ValueError:
                 messagebox.showwarning(APP_TITLE, "Step must be a number", parent=self.root)
                 return
+            # A step of 0 is refused, so the message no longer reads as if
+            # 0 were allowed (audit, 2026-10-13).
             if not 0 < step_um <= MAX_STEP_UM:
-                messagebox.showwarning(APP_TITLE, f"Step range: 0–{MAX_STEP_UM:g} µm", parent=self.root)
+                messagebox.showwarning(
+                    APP_TITLE,
+                    f"Step must be greater than 0 and at most {MAX_STEP_UM:g} µm",
+                    parent=self.root,
+                )
                 return
             delta = step_um_to_counts(step_um) * direction
             target = self.command_counts + delta
             label = "Down" if direction > 0 else "Up"
+            # Repeated Up/Down steps add up: the target gets the same software
+            # range as Go to absolute position, which they could otherwise
+            # pass (audit, 2026-10-13).
+            if abs(target) > absolute_um_to_counts(MAX_POSITION_UM):
+                messagebox.showwarning(
+                    APP_TITLE,
+                    f"Absolute position software range ±{MAX_POSITION_UM:g} µm; "
+                    f"this {label} step would reach {target / ABS_SCALE_COUNTS_PER_UM:g} µm",
+                    parent=self.root,
+                )
+                return
             if not self.safety_var.get():
                 self.bottom_status_var.set("Tick the mechanical path, limits and direction safety confirmation first")
                 return
