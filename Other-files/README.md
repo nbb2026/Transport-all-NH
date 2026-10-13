@@ -1,5 +1,22 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Avtech_pulse_test.py: a standalone test of the Avtech generator (2026-10-13)
+
+- **User:** an individual test script for the Avtech pulse generator.
+- **`Avtech_pulse_test.py`** (repository root; needs only PyVISA): the same
+  pulse sequence as the CIDWM page (reviewed twice), every command and reply
+  printed. Modes: no argument = read only (identity, output, amplitude,
+  width, delay, frequency, overload, error queue; queries only); `off`
+  (hold, output off, read back); `pulse --amplitude V --width ns` (one
+  pulse after typing "yes", or `--yes`); `--dry-run` (a simulated -P
+  generator; nothing sent); `--resource` (default `GPIB0::8::INSTR`).
+- **Exit status:** 0 done; 1 refused or failed with the output read back
+  off; 2 usage error (nothing sent); 3 output state unknown.
+- **Tests:** `test_avtech_pulse_test_script.py` (read only sends queries
+  only; one pulse and off; the other sign refused; "no" fires nothing;
+  another instrument gets only `*IDN?`; a stuck output is exit 3; limits
+  checked before anything is opened).
+
 ## CIDWM: the Avtech AVR-E3-B pulse generator (2026-10-13)
 
 - **User:** add the Avtech AVR-E3-B-W3 (100 V, 500 ps, 1 ns - 5 us, 20 kHz)
