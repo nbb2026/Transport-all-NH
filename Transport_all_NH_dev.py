@@ -42561,6 +42561,11 @@ class RTEPanel(PPMSPanel):
         # failed: …", "Stage: stopping…".  A fixed box like the rack's field
         # and KEPCO lines, so a new reading never shifts the block; a longer
         # message, such as a failure or an unconfirmed STOP, wraps inside it.
+        # Wrapped rather than cut, so a warning is read whole: while such a
+        # message shows (up to three lines; a failure's text is cut to 60
+        # characters), the block, and the scan box with it, is up to about
+        # 22 px taller than the scan rows, until the next one-line message
+        # (user/CI, 2026-10-14).
         self.rte_stage_live = tk.StringVar(value='Stage: not connected')
         live = ttk.Label(stage_box, textvariable=self.rte_stage_live, width=32)
         live.grid(row=2, column=2, columnspan=3, sticky='w', padx=(2, 0))

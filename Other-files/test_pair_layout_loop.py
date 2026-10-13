@@ -150,6 +150,44 @@ class RTEStageBlockTests(Built, unittest.TestCase):
         finally:
             panel.rte_stage_live.set("Stage: not connected")
 
+    def test_a_long_message_wraps_inside_the_stage_line(self):
+        # User/CI, 2026-10-14: a failure or an unconfirmed STOP is longer than
+        # the stage line's fixed box.  It wraps rather than being cut (a
+        # warning is read whole), so the block keeps its width and neither
+        # pair changes; only the scan box is a line or two taller while it
+        # shows.  The plots' 55 px minimum is checked on Windows only: the
+        # README's estimate is from the lab PC's fonts (Microsoft YaHei UI).
+        self.root.geometry(f"1101x{CI_SHOT_HEIGHT}+0+0")
+        self.root.update()
+        panel = self.a.rte_panel
+        block = rte_stage_pair(self.a)[2]
+        live = next(w for w in block.winfo_children() if w.winfo_class() == "TLabel"
+                    and str(w.cget("textvariable")) == str(panel.rte_stage_live))
+        # The longest text a read failure shows: the error cut to 60 characters.
+        failure = "Stage read failed: " + app.short_status_error(app.NewmarkStageError(
+            "Newmark NSC-A1: a call from another thread was refused before it reached the DLL "
+            "(its USB handles belong to the thread that connected)"), 60)
+        on_windows = self.root.tk.call("tk", "windowingsystem") == "win32"
+        try:
+            panel.rte_stage_live.set("Stage: not connected")
+            self.root.update()
+            one_line, width, layouts = live.winfo_height(), block.winfo_reqwidth(), self.layouts()
+            for message in ("Stage: STOP not confirmed: CHECK THE STAGE",
+                            "Stage: -359.999° (10000 steps/°), moving, limit input on", failure):
+                panel.rte_stage_live.set(message)
+                self.root.update()
+                with self.subTest(message=message):
+                    self.assertEqual(block.winfo_reqwidth(), width, "the message wraps: the block keeps its width")
+                    self.assertEqual(self.layouts(), layouts)
+                    if on_windows:
+                        for key, canvas in panel.ppms_harmonic_canvases.items():
+                            self.assertGreaterEqual(canvas.winfo_height(), 55, f"{key}: Increase the window height")
+            # 79 characters in a box 32 digits wide cannot fit on one line.
+            self.assertGreater(live.winfo_height(), one_line, "the failure wraps, it is not cut")
+        finally:
+            panel.rte_stage_live.set("Stage: not connected")
+            self.root.update()
+
     def test_every_plot_is_drawn_in_the_1101_px_window(self):
         self.root.geometry(f"1101x{CI_SHOT_HEIGHT}+0+0")
         self.root.update()

@@ -148,8 +148,17 @@
   (36 + 36 + 34 px against 36 + 36 + 42: its buttons have the style
   `Inline.TButton`, as tall as an entry), so the plots have the height
   they had before the stage (69 px canvases at 1101 × 1300 px on the
-  screenshot of d6674c9). In the 2000 px window the scan box is beside the
-  settings and too narrow, so the block goes under the scan rows (the scan
+  screenshot of d6674c9). The one exception is a message longer than the
+  stage line's fixed box (32 digits wide, about 288 px on Windows), such
+  as "Stage: STOP not confirmed: CHECK THE STAGE", a reading with
+  ", moving" or ", limit input on", or "Stage read failed: …" (its error
+  cut to 60 characters): it wraps onto two or three lines rather than
+  being cut, so a warning is read whole, and while it shows the block, and
+  the scan box with it, is up to about 22 px taller than the rows. The
+  plots then have about 62 px (estimated; CI checks that they keep their
+  55 px minimum on Windows) and get their height back with the next
+  one-line message. The former rack line did the same. In the 2000 px
+  window the scan box is beside the settings and too narrow, so the block goes under the scan rows (the scan
   box grows by about 110 px there, where the plots have height to spare,
   and the rack is one row shorter). The
   settings/scan pair decides by the scan box's width with the block under
@@ -200,8 +209,10 @@
   it needs a display) also checks that the longest Angle status lines fit on
   one line. `test_pair_layout_loop.RTEStageBlockTests` (CI only): the block
   beside the scan rows at 1101 px and under them at 2000 px whatever the
-  resize history, no taller than the rows, a reading on one line, and all
-  nine plots at least 55 px tall at 1101 × 1300 px.
+  resize history, no taller than the rows, a reading on one line, all
+  nine plots at least 55 px tall at 1101 × 1300 px, and a long message
+  wrapped inside the stage line (the block keeps its width and the pairs
+  their layout; on Windows the plots keep 55 px while it shows).
 
 ## STFMR: Mod. start / Mod. end, prime modulation frequencies (2026-10-13)
 
