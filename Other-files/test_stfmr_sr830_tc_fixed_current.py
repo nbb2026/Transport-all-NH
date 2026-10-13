@@ -1,6 +1,6 @@
 """STFMR page, two changes the user approved on 2026-10-13, one check each:
 
-- an 'SR830 TC' choice (default 1 s, as before), with every SR830 reading of
+- an 'SR830 TC' choice (default 100 ms; the old fixed value was 1 s), with every SR830 reading of
   a sweep waiting at least 5 time constants (12 dB/oct settling);
 - fixed-current runs (Start A = Stop A): only the first two readings of each
   frequency are discarded, so such a run saves data.
@@ -234,7 +234,7 @@ class Sr830TimeConstantTests(NoWindows):
     """STFMR set the SR830 to a fixed 1 s (OFLT 10, 12 dB/oct) while the
     default Wait/pt is 0.5 s, so each SR830 point was a lagged reading."""
 
-    def test_the_choices_are_the_sr830_oflt_codes_and_1_s_stays_the_default(self):
+    def test_the_choices_are_the_sr830_oflt_codes_and_100_ms_is_the_default(self):
         choices = app.STFMR_LOCKIN_SR830_TIME_CONSTANTS
         self.assertEqual(list(choices), ["1 ms", "3 ms", "10 ms", "30 ms", "100 ms",
                                          "300 ms", "1 s", "3 s", "10 s"])
@@ -242,19 +242,20 @@ class Sr830TimeConstantTests(NoWindows):
             number, unit = label.split()
             seconds = float(number) * (1e-3 if unit == "ms" else 1.0)
             self.assertAlmostEqual(app.SR830_TIME_CONSTANTS_S[code], seconds, delta=seconds * 1e-9, msg=label)
-        self.assertEqual(app.STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT, "1 s")
-        self.assertEqual(choices["1 s"], 10)
-        self.assertEqual(app.STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE, 10)
+        # User, 2026-10-13: 100 ms by default (the old fixed value was 1 s).
+        self.assertEqual(app.STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT, "100 ms")
+        self.assertEqual(choices["100 ms"], 8)
+        self.assertEqual(app.STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE, 8)
         self.assertEqual(app.STFMR_LOCKIN_SR830_SETTLE_TAUS, 5.0)
 
     def test_configure_sends_the_chosen_code_in_the_same_place_and_reads_it_back(self):
-        for code in (10, 4, 8, 12):
+        for code in (8, 4, 10, 12):
             with self.subTest(code=code):
                 fake = FakeSR830()
                 controller = app.STFMRSR830Controller(lambda _message: None)
                 controller.instrument = fake
-                if code == 10:
-                    result = controller.configure()      # the default, unchanged set-up
+                if code == 8:
+                    result = controller.configure()      # the default, 100 ms (user, 2026-10-13)
                 else:
                     result = controller.configure("Sine", True, code)
                 self.assertEqual(fake.writes, sr830_setup(code))
@@ -292,6 +293,15 @@ class Sr830TimeConstantTests(NoWindows):
                           settings["effective_point_wait_s"], settings["point_delay_s"]), (10, 1.0, 5.0, 0.5))
         self.assertEqual(events(recorder)[-1]["outcome"], "completed")
         self.error.assert_not_called()
+
+    def test_the_default_100_ms_keeps_the_0_5_s_pace(self):
+        """User, 2026-10-13: the default SR830 TC is 100 ms, so a default
+        sweep (Wait/pt 0.5 s) waits 0.5 s per point and sends OFLT 8."""
+        h, recorder = self.run_sweep(stop="5", tc=app.STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT)
+        self.assertIn("SR830 TC: 100 ms (12 dB/oct); each point waits 0.5 s", self.message())
+        self.assertEqual(h.root.reads, [1, 500, 500, 500, 500])
+        self.assertIn(("configure", ("Sine", True, 8)), h.stfmr_lockin_controllers["830"].calls)
+        self.assertEqual(events(recorder)[0]["settings"]["effective_point_wait_s"], 0.5)
 
     def test_the_wait_is_the_longer_of_wait_per_point_and_five_time_constants(self):
         for tc, delay, code, wait_ms in (("100 ms", "0.5", 8, 500), ("300 ms", "0.5", 9, 1500),

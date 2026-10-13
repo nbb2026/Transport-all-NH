@@ -13,9 +13,9 @@ The meter mode is locked during a scan; connecting an instrument in dual mode do
 - Each instrument runs its own reference configuration and autorange. If either range changes, both current
   readings are discarded and the same point is re-read after the wait. In dual mode, any read failure, reference loss,
   invalid SR830 status, MFLI overload or invalid X/Y/Theta aborts the scan through the existing output-off sequence.
-- The SR830 time constant is the "SR830 TC" choice (1 ms to 10 s, default 1 s as before; 12 dB/oct). Whenever the
+- The SR830 time constant is the "SR830 TC" choice (1 ms to 10 s, default 100 ms; 12 dB/oct). Whenever the
   SR830 is read, in dual mode too, each point and each re-read after a range change waits the longer of Wait/pt and
-  5 × the time constant, so with the default 1 s a point waits 5 s, not 0.5 s, except the discarded first point of
+  5 × the time constant (0.5 s with the default 100 ms, the same as the default Wait/pt; 5 s at 1 s), except the discarded first point of
   each frequency, read right after the start pre-read as before (2026-10-13).
 - Discarded for both meters: the start pre-read, the first two points of each frequency (the 4886 has just gone
   from 0 to Start A, with a new carrier) and the first two points of each later loop, which starts with the jump

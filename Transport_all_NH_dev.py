@@ -1985,17 +1985,17 @@ STFMR_LOCKIN_DEFAULT_STEP_A = 0.01
 STFMR_LOCKIN_DEFAULT_DELAY_S = 0.5
 STFMR_LOCKIN_MFLI_TIME_CONSTANT_S = 0.1
 STFMR_LOCKIN_SR830_SENSITIVITY_CODE = 13  # 50 uV full scale
-STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE = 10  # 1 s
+STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE = 8  # 100 ms, the default choice below
 # The 'SR830 TC' choices and their OFLT codes (SR830 manual: OFLT 0 = 10 us,
 # stepping 1-3-10 up to 19 = 30 ks, so 10 = 1 s; see SR830_TIME_CONSTANTS_S).
-# Every sweep used 1 s, with no way to change it, so 1 s stays the default
-# and the SR830 set-up is unchanged unless another is picked; the slope
-# stays 12 dB/oct (OFSL 1) (user, 2026-10-13).
+# Sweeps used a fixed 1 s.  The user chose 100 ms as the default: with the
+# 5 x TC wait below it keeps the default 0.5 s Wait/pt pace.  The slope stays
+# 12 dB/oct (OFSL 1) (user, 2026-10-13).
 STFMR_LOCKIN_SR830_TIME_CONSTANTS = {
     "1 ms": 4, "3 ms": 5, "10 ms": 6, "30 ms": 7, "100 ms": 8,
     "300 ms": 9, "1 s": 10, "3 s": 11, "10 s": 12,
 }
-STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT = "1 s"
+STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT = "100 ms"
 # At 12 dB/oct an SR830 output settles in about 5 time constants, so every
 # SR830 reading of a sweep but the discarded first of each frequency waits at
 # least this many, whatever Wait/pt says:
@@ -2989,7 +2989,7 @@ class STFMRSR830Controller(SafeVisaIdentityController):
             choices = ", ".join(STFMR_LOCKIN_SR830_REFERENCE_INPUTS)
             raise ValueError(f"SR830 REF IN must be one of: {choices}")
         reference_slope = STFMR_LOCKIN_SR830_REFERENCE_INPUTS[reference_input]
-        # The page's 'SR830 TC' choice; the old fixed 1 s is the default
+        # The page's 'SR830 TC' choice; 100 ms is the default
         # (user, 2026-10-13).
         if time_constant_code not in STFMR_LOCKIN_SR830_TIME_CONSTANTS.values():
             raise ValueError(f"SR830 time constant code {time_constant_code!r} is not an 'SR830 TC' choice")

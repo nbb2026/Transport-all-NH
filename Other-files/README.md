@@ -46,17 +46,16 @@
   "SR830 TC" dropdown (1 ms to 10 s, OFLT codes 4 to 12) in the MFLI TC row,
   in the free cell under Loop and as wide as the Loop spinbox, so the table
   keeps its width in the 1101 px window; its column gives way in a narrower
-  window only down to the dropdown's width. The default stays 1 s, so the
-  SR830 gets the same set-up commands as before, still at 12 dB/oct, plus an
+  window only down to the dropdown's width. The default is 100 ms (user,
+  2026-10-13; the fixed value had been 1 s), still at 12 dB/oct, with an
   OFLT? read-back, as for SENS, that stops the sweep with the outputs off on
   a mismatch. As for the MFLI TC, Start reads it only when that lock-in is
   used; a value not in the list is refused, and the dropdown is locked during
   a sweep.
 - **SR830 wait:** whenever the SR830 is read (SR830 alone or MFLI + SR830),
   each point and each re-read after a range change waits the longer of
-  Wait/pt and 5 × TC (12 dB/oct settling). **With the default 1 s an SR830
-  point now waits 5 s instead of 0.5 s**, so an SR830 sweep takes about ten
-  times as long; a 100 ms TC keeps the 0.5 s pace. The Start confirmation
+  Wait/pt and 5 × TC (12 dB/oct settling). With the default 100 ms that is
+  the default 0.5 s Wait/pt; at 1 s an SR830 point waits 5 s. The Start confirmation
   shows the TC and the wait, and the duration estimate uses the wait. The run
   log records `sr830_time_constant_index`, `sr830_time_constant_s` and
   `effective_point_wait_s`; the live CSV gains a last column,
