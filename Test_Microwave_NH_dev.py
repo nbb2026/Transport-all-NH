@@ -55,6 +55,251 @@ from tkinter import filedialog, font as tkfont, messagebox, ttk
 from typing import Callable
 
 
+# ===== BEGIN English dialogs copied from Transport_all_NH_dev.py (Other-files/tools/ms_fourstate_copy_core.py) =====
+# The English dialogs (Tk's own message boxes and file dialogs) it shares with the main program, copied so
+# this file runs on its own.  Do not edit here: fix the main program and run
+# Other-files/tools/ms_fourstate_copy_core.py.
+# Copied from Transport_all_NH_dev.py, SHA-256 23b4c07d8e77…
+import sys
+
+
+import tkinter as tk
+
+
+from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
+
+
+_ENGLISH_TK_DIALOGS = r"""
+package require msgcat
+::msgcat::mclocale en
+foreach {name file} {
+    ::tk::MessageBox msgbox.tcl
+    ::tk::dialog::file:: tkfbox.tcl
+    ::tk::dialog::file::chooseDir:: choosedir.tcl
+} {
+    if {[info commands $name] eq ""} { catch {auto_load $name} }
+    if {[info commands $name] eq ""} {
+        uplevel #0 [list source [file join $::tk_library $file]]
+    }
+}
+foreach {command target} {
+    ::tk_messageBox {::tk::MessageBox}
+    ::tk_getOpenFile {::tk::dialog::file:: open}
+    ::tk_getSaveFile {::tk::dialog::file:: save}
+    ::tk_chooseDirectory {::tk::dialog::file::chooseDir::}
+} {
+    if {[interp alias {} $command] ne ""} { continue }
+    if {[info commands ${command}_native] eq ""} { rename $command ${command}_native }
+    interp alias {} $command {} {*}$target
+}
+"""
+
+
+_ENGLISH_MESSAGE_BUTTONS = {
+    "ok": (("ok", "OK"),),
+    "okcancel": (("ok", "OK"), ("cancel", "Cancel")),
+    "yesno": (("yes", "Yes"), ("no", "No")),
+    "yesnocancel": (("yes", "Yes"), ("no", "No"), ("cancel", "Cancel")),
+    "retrycancel": (("retry", "Retry"), ("cancel", "Cancel")),
+    "abortretryignore": (("abort", "Abort"), ("retry", "Retry"), ("ignore", "Ignore")),
+}
+
+
+_ENGLISH_MESSAGE_ICONS = {"error": "error", "warning": "warning", "info": "information",
+                          "question": "question"}
+
+
+_NATIVE_MESSAGE_SHOW = None
+
+
+def english_message_box(title=None, message=None, _icon=None, _type=None, **options) -> str:
+    """tkinter.messagebox's boxes, in English, each its own window with its
+    own answer (review, 2026-10-12: Tk's own message box shares one window
+    and one answer, so a box popping up over another closed it and gave the
+    first the second's answer).  The buttons sit at the bottom, so a long
+    message never pushes them off the screen.  Returns what tk_messageBox
+    returns ("yes", "no", "ok", "cancel" ...)."""
+    parent = options.get("parent") or getattr(tk, "_default_root", None)
+    if not isinstance(parent, tk.Misc) or _NATIVE_MESSAGE_SHOW is None:
+        # Not a Tk window (a stand-in in the tests, or no window yet): the
+        # standard box.  Walking a stand-in's masters never ends (2026-10-12).
+        if _NATIVE_MESSAGE_SHOW is None:
+            raise RuntimeError("A message box needs a Tk window")
+        return _NATIVE_MESSAGE_SHOW(title, message, _icon, _type, **options)
+    # "parent" is the first argument already (2026-10-12: passed twice, every
+    # box with a parent raised TypeError).
+    rest = {key: value for key, value in options.items() if key != "parent"}
+    try:
+        return _english_message_box(parent, title, message, _icon, _type, **rest)
+    except Exception:
+        return _NATIVE_MESSAGE_SHOW(title, message, _icon, _type, **options)
+
+
+def _english_message_box(parent, title, message, _icon, _type, **options) -> str:
+    kind = str(options.get("type") or _type or "ok")
+    buttons = _ENGLISH_MESSAGE_BUTTONS.get(kind, _ENGLISH_MESSAGE_BUTTONS["ok"])
+    names = [name for name, _text in buttons]
+    default = str(options.get("default") or names[0])
+    # Closing the window or Escape: the safe answer.
+    cancel = next((name for name in ("cancel", "no", "abort", "ok") if name in names), names[-1])
+    top = tk.Toplevel(parent, class_="EnglishMessageBox")
+    try:
+        return _show_english_message_box(top, parent, title, message, _icon, kind, buttons,
+                                         names, default, cancel, options)
+    except BaseException:
+        try:
+            top.destroy()  # never a box left on screen that nothing waits on
+        except tk.TclError:
+            pass
+        raise
+
+
+def _show_english_message_box(top, parent, title, message, _icon, kind, buttons, names,
+                              default, cancel, options) -> str:
+    top.withdraw()
+    top.title(str(title or ""))
+    try:
+        owner = parent.winfo_toplevel()
+        if owner.winfo_viewable():
+            top.transient(owner)
+    except tk.TclError:
+        owner = None
+    answer = tk.StringVar(top, value=cancel)
+    bar = ttk.Frame(top, padding=(12, 0, 12, 12), name="buttons")
+    bar.pack(side="bottom", fill="x")
+    row = ttk.Frame(bar)
+    row.pack(side="right")
+    widgets = {}
+    for name, text in buttons:
+        button = ttk.Button(row, text=text, name=name, command=lambda value=name: answer.set(value))
+        button.pack(side="left", padx=(6, 0))
+        widgets[name] = button
+    body = ttk.Frame(top, padding=(12, 12, 12, 8))
+    body.pack(side="top", fill="both", expand=True)
+    icon = _ENGLISH_MESSAGE_ICONS.get(str(options.get("icon") or _icon or "info"), "information")
+    image = f"::tk::icons::{icon}"
+    try:
+        has_image = image in top.tk.splitlist(top.tk.call("image", "names"))
+    except tk.TclError:
+        has_image = False
+    if has_image:
+        ttk.Label(body, image=image).pack(side="left", anchor="n", padx=(0, 12))
+    else:
+        tk.Label(body, bitmap={"information": "info"}.get(icon, icon)).pack(
+            side="left", anchor="n", padx=(0, 12)
+        )
+    text = ttk.Frame(body)
+    text.pack(side="left", fill="both", expand=True)
+    try:
+        wrap = max(360, min(640, int(top.winfo_screenwidth() * 0.4)))
+    except tk.TclError:
+        wrap = 520
+    ttk.Label(text, text=str(message or ""), wraplength=wrap, justify="left").pack(anchor="w")
+    if options.get("detail"):
+        ttk.Label(text, text=str(options["detail"]), wraplength=wrap, justify="left").pack(
+            anchor="w", pady=(6, 0)
+        )
+    top.protocol("WM_DELETE_WINDOW", lambda: answer.set(cancel))
+    top.bind("<Escape>", lambda _event: answer.set(cancel))
+
+    def press(_event=None) -> None:
+        # Return presses the focused button, else the default one.
+        focused = top.focus_get()
+        target = focused if focused in widgets.values() else widgets.get(default, widgets[names[0]])
+        target.invoke()
+
+    top.bind("<Return>", press)
+    top.update_idletasks()
+    width, height = top.winfo_reqwidth(), top.winfo_reqheight()
+    try:
+        if owner is not None and owner.winfo_viewable():
+            x = owner.winfo_rootx() + (owner.winfo_width() - width) // 2
+            y = owner.winfo_rooty() + (owner.winfo_height() - height) // 3
+        else:
+            x = (top.winfo_screenwidth() - width) // 2
+            y = (top.winfo_screenheight() - height) // 3
+        x = max(0, min(x, top.winfo_screenwidth() - width))
+        y = max(0, min(y, top.winfo_screenheight() - height - 40))
+        top.geometry(f"+{x}+{y}")
+    except tk.TclError:
+        pass
+    top.deiconify()
+    # In front of every window (the program's own and others, e.g. VS Code)
+    # while it waits: a box opened during start-up, before the main window
+    # is up, was easy to lose behind them.
+    try:
+        top.lift()
+        top.attributes("-topmost", True)
+        top.focus_force()
+    except tk.TclError:
+        pass
+    # The window holding the grab, by its Tcl name: a Combobox's open list
+    # and Tk's own file dialogs are not tkinter widgets, and grab_current()
+    # raised KeyError for them, which left this box on top for good (review,
+    # 2026-10-12).
+    try:
+        previous_grab = str(top.tk.call("grab", "current", top._w)) or None
+    except tk.TclError:
+        previous_grab = None
+    try:
+        top.grab_set()
+    except tk.TclError:
+        pass
+    widgets.get(default, widgets[names[0]]).focus_set()
+    try:
+        top.wait_variable(answer)
+        value = answer.get()
+    finally:
+        try:
+            top.grab_release()
+            top.destroy()
+        except tk.TclError:
+            pass
+        if previous_grab is not None:
+            try:
+                if (int(parent.tk.call("winfo", "exists", previous_grab))
+                        and int(parent.tk.call("winfo", "viewable", previous_grab))):
+                    parent.tk.call("grab", "set", previous_grab)
+            except tk.TclError:
+                pass
+    return value
+
+
+def use_english_tk_dialogs(root: tk.Misc) -> bool:
+    """Message boxes (Yes/No, OK) and the open, save and folder dialogs in
+    English, whatever the language of Windows.  tkinter's messagebox and
+    filedialog call the Tk commands replaced here, so every call site is
+    covered.  On X11 Tk's own dialogs are already used.  Returns whether
+    Tk's own dialogs are in use."""
+    # tkinter.messagebox's functions all go through _show: each box becomes
+    # its own window (english_message_box).  Tcl's own tk_messageBox (the
+    # file dialogs' "overwrite?") is Tk's English one, below.
+    import tkinter.messagebox as tk_messagebox
+    global _NATIVE_MESSAGE_SHOW
+    if hasattr(tk_messagebox, "_show"):
+        # tkinter's own _show, kept once per process on tkinter.messagebox:
+        # MS-fourState.py and Test_Microwave_NH_dev.py carry copies of this
+        # code, and two copies in one process (the tests) must not each keep
+        # the other's box as their standard one.
+        native = getattr(tk_messagebox, "_english_native_show", None)
+        if native is None:
+            native = tk_messagebox._english_native_show = tk_messagebox._show
+        _NATIVE_MESSAGE_SHOW = native
+        tk_messagebox._show = english_message_box
+    try:
+        system = str(root.tk.call("tk", "windowingsystem"))
+        if system == "x11":
+            root.tk.call("package", "require", "msgcat")
+            root.tk.call("::msgcat::mclocale", "en")
+            return True
+        root.tk.eval(_ENGLISH_TK_DIALOGS)
+        return True
+    except tk.TclError as error:
+        print(f"Tk's own dialogs are not available; the system's are used: {error}", file=sys.stderr)
+        return False
+# ===== END English dialogs copied from Transport_all_NH_dev.py =====
+
+
 def configure_tk_font_system(root: tk.Misc) -> tuple[str, str]:
     """Apply one predictable font system to every Tk/ttk window.
 
@@ -3590,6 +3835,7 @@ class MicrowaveTransportApp:
         self.cells={};self.settings=None;self.last_directory=None;self.dirty=False;self.idle_field_pending=False;self.last_idle_field_time=0.
         self.root.title(APP_NAME+(' — SIMULATION' if demo else ''));self.root.geometry('1360x860');self.root.minsize(1000,700)
         configure_tk_font_system(root)
+        use_english_tk_dialogs(root)  # Yes/No and Tk's own file dialogs, in English (user, 2026-10-13)
         logger=lambda message:self.events.put(('log',str(message)))
         if demo:
             bank={'current':0.,'rf':False};self.devices={k:DemoDevice(bank,k) for k in STFMR_LOCKIN_DEFAULT_RESOURCES}

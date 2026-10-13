@@ -2,6 +2,10 @@
 
 A standalone fixed-current two-dimensional frequency-sweep program. The entry point is `Test_Microwave_NH_dev.py` in the repository root; it does not import the main combined program and contains no other measurement modules. Saved runs are still named `Microwave_Transport_Test_NH_dev_<time>`.
 
+## Dialogs
+
+Folder, open and save dialogs and Yes/No boxes are Tk's own, in English whatever the language of Windows, as in the main program (2026-10-13). The code is copied from `Transport_all_NH_dev.py` by `Other-files/tools/ms_fourstate_copy_core.py`; do not edit the copied block.
+
 ## Usage
 
 Run in the instrument Python environment on the original experiment PC:

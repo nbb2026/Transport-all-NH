@@ -35,6 +35,10 @@ any folder and run it; `Transport_all_NH_dev.py` is not needed.
   - **The test check:** `test_ms_four_state.py` fails while the copy differs
     from the main program, as a reminder to run that tool.
 
+## Dialogs
+
+Folder, open and save dialogs and Yes/No boxes are Tk's own, in English whatever the language of Windows, as in the main program (2026-10-13). The code is copied from `Transport_all_NH_dev.py` by `Other-files/tools/ms_fourstate_copy_core.py`; do not edit the copied block.
+
 ## Connections
 
 Each instrument has its own row: name, address, **Connect**, **Disconnect**,

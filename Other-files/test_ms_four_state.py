@@ -55,6 +55,45 @@ class StandaloneTests(unittest.TestCase):
         self.assertEqual(without_digest(actual), without_digest(expected),
                          "run Other-files/tools/ms_fourstate_copy_core.py")
 
+    @staticmethod
+    def _tool():
+        tool_path = Path(__file__).resolve().parent / "tools" / "ms_fourstate_copy_core.py"
+        tool_spec = importlib.util.spec_from_file_location("ms_fourstate_copy_core", tool_path)
+        tool = importlib.util.module_from_spec(tool_spec)
+        tool_spec.loader.exec_module(tool)
+        return tool
+
+    def test_the_microwave_programs_english_dialogs_match_the_main_program(self):
+        """2026-10-13: Test_Microwave_NH_dev.py has the main program's English
+        dialogs, copied by the same tool."""
+        tool = self._tool()
+        expected = tool.microwave_block(tool.CORE.read_text(encoding="utf-8"))
+        source = tool.MICROWAVE.read_text(encoding="utf-8")
+        actual = (tool.MICROWAVE_BEGIN + source.split(tool.MICROWAVE_BEGIN, 1)[1].split(tool.MICROWAVE_END, 1)[0]
+                  + tool.MICROWAVE_END)
+
+        def without_digest(text):
+            return "\n".join(line for line in text.splitlines() if "SHA-256" not in line)
+
+        self.assertEqual(without_digest(actual), without_digest(expected),
+                         "run Other-files/tools/ms_fourstate_copy_core.py")
+
+    def test_both_programs_install_the_english_dialogs_with_their_window(self):
+        """2026-10-13 (user): Tk's own folder, open and save dialogs and
+        Yes/No boxes in MS-fourState and the microwave program, as on the
+        main program's CIDWM page."""
+        import ast
+        tool = self._tool()
+        for path, cls in ((PROGRAM, "FourStateApp"), (tool.MICROWAVE, "MicrowaveTransportApp")):
+            with self.subTest(program=path.name):
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                init = next(item for node in tree.body if isinstance(node, ast.ClassDef) and node.name == cls
+                            for item in node.body if isinstance(item, ast.FunctionDef) and item.name == "__init__")
+                calls = [n for n in ast.walk(init) if isinstance(n, ast.Call)
+                         and getattr(n.func, "id", None) == "use_english_tk_dialogs"]
+                self.assertEqual([ast.unparse(c.args[0]) for c in calls], ["root"])
+        self.assertIs(ms.use_english_tk_dialogs.__module__, ms.__name__, "MS-fourState's own copy")
+
 
 class Clock:
     def __init__(self):

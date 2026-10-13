@@ -63,6 +63,27 @@ def example_timeline():
     return traces
 
 
+
+def english_dialogs_problem(module, root):
+    """None when the program's window uses Tk's own English dialogs (user,
+    2026-10-13: as on the main program's CIDWM page), else what is wrong."""
+    import tkinter.messagebox as tk_messagebox
+    if tk_messagebox._show is not module.english_message_box:
+        return "the message boxes are not the English ones"
+    if str(root.tk.call("::msgcat::mclocale")) != "en":
+        return "msgcat is not English"
+    if str(root.tk.call("tk", "windowingsystem")) == "x11":
+        return None  # Tk's own dialogs already
+    for command, target in (("::tk_messageBox", "::tk::MessageBox"),
+                            ("::tk_getOpenFile", "::tk::dialog::file:: open"),
+                            ("::tk_getSaveFile", "::tk::dialog::file:: save"),
+                            ("::tk_chooseDirectory", "::tk::dialog::file::chooseDir::")):
+        alias = " ".join(map(str, root.tk.splitlist(root.tk.call("interp", "alias", "", command))))
+        if alias != target:
+            return f"{command} is {alias or 'the native dialog'}"
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--shots", type=Path)
@@ -78,6 +99,9 @@ def main():
         root.maxsize(4000, 3000)
         # Checked at fixed sizes, so not maximised.
         app = module.FourStateApp(root, mode, maximise=False)
+        dialogs = english_dialogs_problem(module, root)
+        print(f"  {'FAIL' if dialogs else 'ok  '} English dialogs: {dialogs or 'Tk own message boxes and file dialogs'}")
+        failed = failed or bool(dialogs)
         root.geometry(f"{width}x{height}+0+0")
         for _ in range(6):
             root.update()

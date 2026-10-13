@@ -237,8 +237,14 @@ def use_english_tk_dialogs(root: tk.Misc) -> bool:
     import tkinter.messagebox as tk_messagebox
     global _NATIVE_MESSAGE_SHOW
     if hasattr(tk_messagebox, "_show"):
-        if tk_messagebox._show is not english_message_box:
-            _NATIVE_MESSAGE_SHOW = tk_messagebox._show
+        # tkinter's own _show, kept once per process on tkinter.messagebox:
+        # MS-fourState.py and Test_Microwave_NH_dev.py carry copies of this
+        # code, and two copies in one process (the tests) must not each keep
+        # the other's box as their standard one.
+        native = getattr(tk_messagebox, "_english_native_show", None)
+        if native is None:
+            native = tk_messagebox._english_native_show = tk_messagebox._show
+        _NATIVE_MESSAGE_SHOW = native
         tk_messagebox._show = english_message_box
     try:
         system = str(root.tk.call("tk", "windowingsystem"))

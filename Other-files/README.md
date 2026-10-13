@@ -1,5 +1,21 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## English Tk dialogs in MS-fourState and the microwave program (2026-10-13)
+
+- **User:** the CIDWM folder chooser (Tk's own dialog) in the other programs too.
+- **Main program:** already on every page: all 24 folder, open and save
+  dialogs go through the Tk commands `use_english_tk_dialogs` replaces.
+- **MS-fourState.py and Test_Microwave_NH_dev.py:** the same code (Tk's own
+  folder, open and save dialogs; English Yes/No boxes), copied from the main
+  program by `Other-files/tools/ms_fourstate_copy_core.py` (MS-fourState in
+  its copied block; the microwave program in its own "English dialogs"
+  block), installed when each program's window is built.
+- **One standard box per process:** tkinter's own `_show` is kept on
+  `tkinter.messagebox`, so copies in one process never fall back on each other.
+- **Tests:** both copies match the main program; both programs install the
+  dialogs with their window; the CI checks fail if a program's window on
+  Windows uses the native dialogs.
+
 ## Review of the start-up fix (2026-10-12)
 
 Four read-only reviewers (the guard, every other pair, start-up risks since
