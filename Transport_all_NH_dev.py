@@ -1979,6 +1979,17 @@ STFMR_FIELD_SETTLE_TIMEOUT_S = 15.0
 STFMR_LOCKIN_DEFAULT_FREQUENCY_GHZ = 4.0
 STFMR_LOCKIN_DEFAULT_POWER_DBM = 6.0
 STFMR_LOCKIN_DEFAULT_LFO_HZ = 317.3
+# Mod. start / Mod. end replace the single Mod. Hz box: equal, they give that
+# one modulation frequency (317.3 Hz by default, as before); different, every
+# whole-number prime between them, with no step, and the whole f x A sweep
+# runs at each in turn.  At most as many modulation frequencies as the
+# microwave sweep allows frequencies (10000), so a slip of a digit cannot
+# start a sweep of months (user, 2026-10-13).
+STFMR_LOCKIN_MAX_MODULATION_FREQUENCIES = 10_000
+# Above 2**53 a float no longer holds every whole number, so a prime range
+# there has no exact list; it also keeps the prime search well under a
+# second (user, 2026-10-13).
+STFMR_LOCKIN_MAX_PRIME_MODULATION_HZ = float(2 ** 53)
 STFMR_LOCKIN_DEFAULT_START_A = -3.0
 STFMR_LOCKIN_DEFAULT_STOP_A = 3.0
 STFMR_LOCKIN_DEFAULT_STEP_A = 0.01
@@ -3251,6 +3262,18 @@ class STFMRSMB100AController(SafeVisaIdentityController):
             if self.instrument is None:
                 raise RuntimeError("SMB100A is not connected")
             self.instrument.write(f"FREQ {frequency_ghz:.9g}GHz")
+
+    def set_modulation_frequency(self, lfo_hz: float) -> None:
+        """Change only the LFO (modulation) frequency, with the command
+        configure() sends, while AM/LFO/RF remain enabled: a sweep over
+        several modulation frequencies (user, 2026-10-13)."""
+        lfo_hz = float(lfo_hz)
+        if not math.isfinite(lfo_hz) or lfo_hz <= 0.0:
+            raise ValueError("SMB100A low-frequency modulation frequency must be a finite positive number")
+        with self.lock:
+            if self.instrument is None:
+                raise RuntimeError("SMB100A is not connected")
+            self.instrument.write(f"LFO:FREQ {lfo_hz:.7g} Hz")
 
     def rf_off(self) -> None:
         self.safe_output_off()
@@ -5546,6 +5569,95 @@ def nonlocal_prime_frequencies(start_hz, stop_hz) -> tuple[float, ...]:
     if not values:
         raise ValueError(f"No prime from {start} to {stop} Hz; widen the range")
     return values
+
+
+def _is_whole_number_prime(number: int) -> bool:
+    """Exact for every number below 3.3e24 (Miller-Rabin with the first 12
+    primes as bases), so for every STFMR modulation range."""
+    if number < 2:
+        return False
+    bases = (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37)
+    for prime in bases:
+        if number % prime == 0:
+            return number == prime
+    odd, twos = number - 1, 0
+    while odd % 2 == 0:
+        odd //= 2
+        twos += 1
+    for base in bases:
+        value = pow(base, odd, number)
+        if value in (1, number - 1):
+            continue
+        for _ in range(twos - 1):
+            value = value * value % number
+            if value == number - 1:
+                break
+        else:
+            return False
+    return True
+
+
+def stfmr_modulation_frequencies(start_hz, end_hz) -> tuple[float, ...]:
+    """The STFMR sweep's modulation frequencies (user, 2026-10-13).
+
+    Mod. start = Mod. end: that one value, any finite positive number, such
+    as the default 317.3 Hz.  Otherwise every whole-number prime p with
+    min <= p <= max, in order from Mod. start towards Mod. end (descending
+    when Mod. start is the larger), as the f and current ranges run from
+    start to stop; there is no step.  Primes, as on the Non-local frequency
+    scan: their 2nd and 3rd harmonics never fall exactly on a 50 or 60 Hz
+    mains harmonic."""
+    try:
+        start, end = float(start_hz), float(end_hz)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Mod. start Hz and Mod. end Hz must be finite positive numbers") from error
+    if not all(math.isfinite(value) and value > 0 for value in (start, end)):
+        raise ValueError("Mod. start Hz and Mod. end Hz must be finite positive numbers")
+    if start == end:
+        return (start,)
+    if max(start, end) > STFMR_LOCKIN_MAX_PRIME_MODULATION_HZ:
+        raise ValueError(
+            f"A prime range of modulation frequencies must stay below "
+            f"{STFMR_LOCKIN_MAX_PRIME_MODULATION_HZ:.0f} Hz; set Mod. end = Mod. start "
+            "for one frequency"
+        )
+    low, high = math.ceil(min(start, end)), math.floor(max(start, end))
+    candidates = range(low, high + 1) if end > start else range(high, low - 1, -1)
+    values: list[float] = []
+    for number in candidates:
+        if _is_whole_number_prime(number):
+            if len(values) >= STFMR_LOCKIN_MAX_MODULATION_FREQUENCIES:
+                raise ValueError(
+                    f"Mod. start {start:g} to Mod. end {end:g} Hz holds more than "
+                    f"{STFMR_LOCKIN_MAX_MODULATION_FREQUENCIES} primes, and a sweep takes at most "
+                    f"{STFMR_LOCKIN_MAX_MODULATION_FREQUENCIES} modulation frequencies (as many as "
+                    "microwave frequencies); narrow the range"
+                )
+            values.append(float(number))
+    if not values:
+        raise ValueError(
+            f"No whole-number prime from Mod. start {start:g} to Mod. end {end:g} Hz; widen the "
+            "range, or set Mod. end = Mod. start for one modulation frequency"
+        )
+    return tuple(values)
+
+
+def stfmr_modulation_summary(values, start_hz, end_hz) -> str:
+    """The Start confirmation's modulation line (user, 2026-10-13); a long
+    list shows its first five and last two values."""
+    values = [float(value) for value in values]
+    start, end = float(start_hz), float(end_hz)
+    if start == end:
+        return f"Mod. Hz: {values[0]:g}"
+    shown = [f"{value:g}" for value in values]
+    if len(shown) > 12:
+        shown = shown[:5] + ["…"] + shown[-2:]
+    if len(values) == 1:
+        return f"Mod. Hz: {shown[0]} (the only prime from {start:g} to {end:g})"
+    return (
+        f"Mod. Hz: {', '.join(shown)} ({len(values)} primes from {start:g} to {end:g}); "
+        "the whole f × A sweep runs at each, in this order"
+    )
 
 
 def shade_color(color: str, fraction: float) -> str:
@@ -14189,7 +14301,13 @@ class CombinedControlApp:
         self.stfmr_lockin_power_var = tk.StringVar(
             value=f"{STFMR_LOCKIN_DEFAULT_POWER_DBM:g}"
         )
-        self.stfmr_lockin_lfo_var = tk.StringVar(
+        # Mod. start and Mod. end replace the single Mod. Hz box; both default
+        # to 317.3 Hz, so a default sweep keeps its one modulation frequency
+        # (user, 2026-10-13; see stfmr_modulation_frequencies).
+        self.stfmr_lockin_mod_start_var = tk.StringVar(
+            value=f"{STFMR_LOCKIN_DEFAULT_LFO_HZ:g}"
+        )
+        self.stfmr_lockin_mod_end_var = tk.StringVar(
             value=f"{STFMR_LOCKIN_DEFAULT_LFO_HZ:g}"
         )
         self.stfmr_lockin_start_var = tk.StringVar(
@@ -14234,6 +14352,10 @@ class CombinedControlApp:
         self.stfmr_lockin_started = 0.0
         self.stfmr_lockin_delay_s = STFMR_LOCKIN_DEFAULT_DELAY_S
         self.stfmr_lockin_expected_hz = STFMR_LOCKIN_DEFAULT_LFO_HZ
+        # The running sweep's modulation frequencies, the outermost loop, and
+        # the one in use (user, 2026-10-13).
+        self.stfmr_lockin_modulation_frequencies_hz = [STFMR_LOCKIN_DEFAULT_LFO_HZ]
+        self.stfmr_lockin_modulation_index = 0
         self.stfmr_lockin_power_dbm = STFMR_LOCKIN_DEFAULT_POWER_DBM
         self.stfmr_lockin_limit_v = 10.0
         self.stfmr_lockin_mfli_timeconstant_s = STFMR_LOCKIN_MFLI_TIME_CONSTANT_S
@@ -16417,22 +16539,26 @@ class CombinedControlApp:
                      padx=(12, 0), pady=1)
             return box
 
-        # Row 0: microwave carrier and modulation.
+        # Row 0: microwave carrier and the first modulation frequency.  The
+        # single Mod. Hz box became Mod. start (here) and Mod. end (below it,
+        # where Wait/pt was), with no step box (user, 2026-10-13): a sixth
+        # pair on these rows made the table too wide for the 1101 px window
+        # (see Loop below), so Wait/pt moves to the free cell after Loop.
         for pair, (label, variable) in enumerate((
             ("f start GHz:", self.stfmr_lockin_frequency_start_var),
             ("f stop GHz:", self.stfmr_lockin_frequency_stop_var),
             ("f step GHz:", self.stfmr_lockin_frequency_step_var),
             ("Power dBm:", self.stfmr_lockin_power_var),
-            ("Mod. Hz:", self.stfmr_lockin_lfo_var),
+            ("Mod. start Hz:", self.stfmr_lockin_mod_start_var),
         )):
             parameter(0, pair, label, variable)
-        # Row 1: the magnet current sweep.
+        # Row 1: the magnet current sweep, and the last modulation frequency.
         for pair, (label, variable) in enumerate((
             ("Start A:", self.stfmr_lockin_start_var),
             ("Stop A:", self.stfmr_lockin_stop_var),
             ("Step A:", self.stfmr_lockin_step_var),
             ("Comp. V:", self.stfmr_lockin_limit_var),
-            ("Wait/pt s:", self.stfmr_lockin_delay_var),
+            ("Mod. end Hz:", self.stfmr_lockin_mod_end_var),
         )):
             parameter(1, pair, label, variable)
         # Rows 2 and 3: SR830, then MFLI.  Two rows keep the table narrow
@@ -16456,6 +16582,9 @@ class CombinedControlApp:
         # row 1 it made the table too wide for the 1101 px window the program
         # opens with, which pushed the spinbox off the page on Windows.
         parameter(2, 3, "Loop:", self.stfmr_lockin_loop_var, kind="spinbox")
+        # Wait/pt beside Loop, in this row's last free cell, as its old cell
+        # under Mod. start now holds Mod. end (user, 2026-10-13).
+        parameter(2, 4, "Wait/pt s:", self.stfmr_lockin_delay_var)
         parameter(
             3, 0, "MFLI reference:", self.stfmr_lockin_reference_var,
             kind="combo", values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS), width=12,
@@ -17075,6 +17204,7 @@ class CombinedControlApp:
         field_g: float = math.nan,
         loop: int = 1,
         frequency_ghz: float = math.nan,
+        modulation_frequency_hz: float = math.nan,
     ) -> None:
         voltage = self._stfmr_lockin_sample_voltage(sample)
         x_value = self._stfmr_lockin_sample_component(sample, "X")
@@ -17092,6 +17222,9 @@ class CombinedControlApp:
                 "meter": meter,
                 "loop": max(1, int(loop)),
                 "microwave_frequency_ghz": float(frequency_ghz),
+                # Keeps each modulation frequency's curve apart in the live
+                # plots, as the carrier's is (user, 2026-10-13).
+                "modulation_frequency_hz": float(modulation_frequency_hz),
                 "field_g": float(field_g),
                 "x_v": x_value,
                 "y_v": y_value,
@@ -17205,8 +17338,14 @@ class CombinedControlApp:
                 500, self._stfmr_lockin_live_timer
             )
             return
+        # The idle Ref lamp compares the lock-in's reference with Mod. start,
+        # the one modulation frequency of a sweep with Mod. start = Mod. end
+        # (the default) and where a range starts; no prime list is worked
+        # out twice a second (user, 2026-10-13).
         try:
-            expected_hz = float(self.stfmr_lockin_lfo_var.get())
+            expected_hz = float(self.stfmr_lockin_mod_start_var.get())
+            if not math.isfinite(expected_hz) or expected_hz <= 0:
+                raise ValueError("not a modulation frequency")
         except (TypeError, ValueError, tk.TclError):
             expected_hz = STFMR_LOCKIN_DEFAULT_LFO_HZ
 
@@ -17322,7 +17461,7 @@ class CombinedControlApp:
 
     def _stfmr_lockin_inputs(
         self,
-    ) -> tuple[list[float], list[float], float, float, float, str]:
+    ) -> tuple[list[float], list[float], float, list[float], float, str]:
         meter = self.stfmr_lockin_meter_var.get().strip()
         meter_keys = self._stfmr_lockin_meter_keys(meter)
         missing = [
@@ -17346,7 +17485,13 @@ class CombinedControlApp:
             )
         ]
         power_dbm = float(self.stfmr_lockin_power_var.get())
-        lfo_hz = float(self.stfmr_lockin_lfo_var.get())
+        # One value, or the primes from Mod. start to Mod. end; it refuses a
+        # value that is not a finite positive number, as the Mod. Hz box did
+        # (user, 2026-10-13).
+        modulation_frequencies_hz = list(stfmr_modulation_frequencies(
+            self.stfmr_lockin_mod_start_var.get(),
+            self.stfmr_lockin_mod_end_var.get(),
+        ))
         delay_s = float(self.stfmr_lockin_delay_var.get())
         limit_v = float(self.stfmr_lockin_limit_var.get())
         # Parsed as text like the other fields.  As an IntVar a cleared box
@@ -17363,8 +17508,6 @@ class CombinedControlApp:
         ):
             raise ValueError("Loop count must be a whole number of at least 1")
         loops = int(loops_value)
-        if not math.isfinite(lfo_hz) or lfo_hz <= 0:
-            raise ValueError("Modulation frequency must be a finite positive number")
         if not math.isfinite(power_dbm) or power_dbm > 25:
             raise ValueError("SMB100A power must not exceed 25 dBm")
         if delay_s < 0 or not math.isfinite(delay_s):
@@ -17396,7 +17539,7 @@ class CombinedControlApp:
             )
         self.stfmr_lockin_points_per_loop = len(forward)
         points = forward * loops
-        return points, frequencies_ghz, power_dbm, lfo_hz, delay_s, meter
+        return points, frequencies_ghz, power_dbm, modulation_frequencies_hz, delay_s, meter
 
     def start_stfmr_lockin_scan(self) -> None:
         if (self.closing or self.stfmr_lockin_closed
@@ -17420,8 +17563,15 @@ class CombinedControlApp:
 
     def _start_stfmr_lockin_scan(self) -> None:
         try:
-            points, frequencies_ghz, power_dbm, lfo_hz, delay_s, meter = (
+            points, frequencies_ghz, power_dbm, modulation_frequencies_hz, delay_s, meter = (
                 self._stfmr_lockin_inputs()
+            )
+            # Read once, as the list was: the confirmation and the run log
+            # name the range the sweep uses (user, 2026-10-13).
+            modulation_start_hz = float(self.stfmr_lockin_mod_start_var.get())
+            modulation_end_hz = float(self.stfmr_lockin_mod_end_var.get())
+            modulation_text = stfmr_modulation_summary(
+                modulation_frequencies_hz, modulation_start_hz, modulation_end_hz,
             )
             limit_v = float(self.stfmr_lockin_limit_var.get())
             mfli_timeconstant_s = STFMR_LOCKIN_MFLI_TIME_CONSTANT_S
@@ -17473,20 +17623,24 @@ class CombinedControlApp:
         )
         if folder is None or self.closing or self.stfmr_lockin_closed:
             return
-        total_points = len(frequencies_ghz) * len(points)
+        # The whole f x A sweep runs once per modulation frequency
+        # (user, 2026-10-13), so every count below is per pass, one pass per
+        # modulation and microwave frequency.
+        passes = len(modulation_frequencies_hz) * len(frequencies_ghz)
+        total_points = passes * len(points)
         loops_count = max(len(points) // max(self.stfmr_lockin_points_per_loop, 1), 1)
         # Counted by the discard rule, which a fixed current changes
         # (user, 2026-10-13).
         retained_per_frequency = self._stfmr_saved_points_per_frequency(
             self.stfmr_lockin_points_per_loop, loops_count
         )
-        estimated_saved = len(frequencies_ghz) * retained_per_frequency
+        estimated_saved = passes * retained_per_frequency
         if meter == "MFLI + SR830":
             estimated_saved *= 2
         # Every reading after the first of each frequency waits the effective
         # wait, 5 SR830 time constants when that is longer than Wait/pt
         # (user, 2026-10-13).
-        estimate = max(total_points - len(frequencies_ghz), 0) * max(
+        estimate = max(total_points - passes, 0) * max(
             point_wait_s, 0.05
         )
         fixed_current = self.stfmr_lockin_points_per_loop == 1
@@ -17494,6 +17648,7 @@ class CombinedControlApp:
             "STFMR scan",
             f"Microwave: {frequencies_ghz[0]:g} → {frequencies_ghz[-1]:g} GHz, "
             f"{len(frequencies_ghz)} frequencies\n"
+            + f"{modulation_text}\n"
             + (
                 f"{len(points)} readings per frequency at a fixed {points[0]:g} A, "
                 "first two readings of each frequency discarded, "
@@ -17534,7 +17689,12 @@ class CombinedControlApp:
             "meter": meter, "frequencies_ghz": frequencies_ghz,
             "acquisition_mode": "sequential_same_current" if meter == "MFLI + SR830" else "single",
             "csv_pair_key": "index + meter; dual mode saves two rows per retained field point",
-            "power_dbm": power_dbm, "modulation_frequency_hz": lfo_hz,
+            # The first modulation frequency under its old name, for readers
+            # of older logs, then the whole list (user, 2026-10-13).
+            "power_dbm": power_dbm, "modulation_frequency_hz": modulation_frequencies_hz[0],
+            "modulation_frequencies_hz": modulation_frequencies_hz,
+            "modulation_start_hz": modulation_start_hz,
+            "modulation_end_hz": modulation_end_hz,
             "current_start_a": points[0],
             "current_stop_a": points[self.stfmr_lockin_points_per_loop - 1],
             "current_step_a": abs(float(self.stfmr_lockin_step_var.get())),
@@ -17579,7 +17739,9 @@ class CombinedControlApp:
         self.stfmr_lockin_started = time.monotonic()
         self.stfmr_lockin_live_started = self.stfmr_lockin_started
         self.stfmr_lockin_delay_s = delay_s
-        self.stfmr_lockin_expected_hz = lfo_hz
+        self.stfmr_lockin_modulation_frequencies_hz = modulation_frequencies_hz
+        self.stfmr_lockin_modulation_index = 0
+        self.stfmr_lockin_expected_hz = modulation_frequencies_hz[0]
         self.stfmr_lockin_power_dbm = power_dbm
         self.stfmr_lockin_limit_v = limit_v
         self.stfmr_lockin_mfli_timeconstant_s = mfli_timeconstant_s
@@ -17616,8 +17778,23 @@ class CombinedControlApp:
             return []
         return recorder.close(outcome, **details)
 
-    def _configure_stfmr_lockin_frequency(self, *, initial: bool) -> None:
-        """Configure one carrier and apply its first current setpoint."""
+    def _stfmr_lockin_pass_label(self, frequency_ghz: float) -> str:
+        """'5 GHz' in the status line, or '5 GHz, Mod. 307 Hz' when the sweep
+        runs at several modulation frequencies (user, 2026-10-13)."""
+        if len(getattr(self, "stfmr_lockin_modulation_frequencies_hz", ())) > 1:
+            return f"{frequency_ghz:g} GHz, Mod. {self.stfmr_lockin_expected_hz:g} Hz"
+        return f"{frequency_ghz:g} GHz"
+
+    def _configure_stfmr_lockin_frequency(
+        self, *, initial: bool, modulation_change: bool = False
+    ) -> None:
+        """Configure one carrier and apply its first current setpoint.
+
+        modulation_change: the next modulation frequency's pass starts, at
+        the first carrier.  The 4886 is zeroed as before a new carrier, the
+        SMB100A LFO is set to the new frequency, which the lock-ins expect
+        from now on, and the SR830 reference lock is checked again as at the
+        start, before the 4886 is switched back on (user, 2026-10-13)."""
         self.stfmr_lockin_mfli_initial_range_pending = True
         self.stfmr_lockin_mfli_range_attempts = 0
         self.stfmr_lockin_mfli_range_actions = []
@@ -17635,10 +17812,14 @@ class CombinedControlApp:
         sample_rate_hz = max(
             1.0, 1.0 / max(self.stfmr_lockin_delay_s, 0.05)
         )
+        expected_hz = self.stfmr_lockin_expected_hz
         if not self._stfmr_lockin_log_event(
             "frequency_configure", frequency_ghz=frequency_ghz,
             frequency_index=self.stfmr_lockin_frequency_index + 1,
             initial=initial, first_current_a=first_current,
+            modulation_frequency_hz=expected_hz,
+            modulation_index=self.stfmr_lockin_modulation_index + 1,
+            modulation_change=modulation_change,
         ):
             return
 
@@ -17678,10 +17859,26 @@ class CombinedControlApp:
             else:
                 with visa_operation("KEPCO 4886", "zeroing before the next carrier"):
                     self.stfmr_lockin_controllers["kepco"].zero_output()
+                if modulation_change:
+                    with visa_operation("SMB100A", "modulation frequency change"):
+                        self.stfmr_lockin_controllers["smb"].set_modulation_frequency(
+                            expected_hz
+                        )
                 with visa_operation("SMB100A", "carrier frequency change"):
                     self.stfmr_lockin_controllers["smb"].set_frequency(
                         frequency_ghz
                     )
+                # The SR830 follows the LFO by itself (external reference);
+                # it is the reference wait of the start, with the new
+                # frequency, that shows it locked before the 4886 comes back
+                # on.  The MFLI's external reference also follows by itself
+                # and, as at the start, its reading checks the frequency.
+                if modulation_change and meter in ("SR830", "MFLI + SR830"):
+                    with visa_operation("SR830", "waiting for the reference to lock"):
+                        self.stfmr_lockin_controllers["830"].wait_for_reference(
+                            expected_hz,
+                            timeout_s=5.0,
+                        )
             if self.stfmr_lockin_stop_event.is_set():
                 return
             with visa_operation("KEPCO 4886", "enabling the output at the first current"):
@@ -17708,10 +17905,13 @@ class CombinedControlApp:
                 self._finish_stfmr_lockin_scan(stopped=True)
                 return
             self._show_stfmr_lockin_kepco_state()
-            if not self._stfmr_lockin_log_event("frequency_ready", frequency_ghz=frequency_ghz):
+            if not self._stfmr_lockin_log_event(
+                "frequency_ready", frequency_ghz=frequency_ghz,
+                modulation_frequency_hz=expected_hz,
+            ):
                 return
             self.stfmr_lockin_status_var.set(
-                f"{frequency_ghz:g} GHz: start current "
+                f"{self._stfmr_lockin_pass_label(frequency_ghz)}: start current "
                 f"I={first_current:+.5g} A sent; running the start pre-read now"
             )
             self.stfmr_lockin_after_id = self.root.after(
@@ -17794,8 +17994,10 @@ class CombinedControlApp:
             if not self._stfmr_lockin_log_event("startup_prime_discarded"):
                 return
             self.stfmr_lockin_status_var.set(
-                f"{self.stfmr_lockin_frequencies_ghz[self.stfmr_lockin_frequency_index]:g} "
-                "GHz start pre-read done; the first two samples of this frequency will be discarded"
+                self._stfmr_lockin_pass_label(
+                    self.stfmr_lockin_frequencies_ghz[self.stfmr_lockin_frequency_index]
+                )
+                + " start pre-read done; the first two samples of this frequency will be discarded"
             )
             self.stfmr_lockin_after_id = self.root.after(
                 1,
@@ -17987,9 +18189,12 @@ class CombinedControlApp:
                         )
                     )
                     return
-            completed_before_frequency = frequency_index * len(
-                self.stfmr_lockin_points
-            )
+            # Passes before this one: whole modulation frequencies, each with
+            # every carrier, then this modulation's carriers (user, 2026-10-13).
+            completed_before_frequency = (
+                self.stfmr_lockin_modulation_index * len(self.stfmr_lockin_frequencies_ghz)
+                + frequency_index
+            ) * len(self.stfmr_lockin_points)
             row = {
                 "index": completed_before_frequency + index + 1,
                 "frequency_index": frequency_index + 1,
@@ -18088,13 +18293,16 @@ class CombinedControlApp:
                     field_g=field_g,
                     loop=int(row["loop"]),
                     frequency_ghz=frequency_ghz,
+                    modulation_frequency_hz=self.stfmr_lockin_expected_hz,
                 )
                 if dual:
                     self._append_stfmr_lockin_live_sample("SR830", secondary,
-                        field_g=field_g, loop=int(row["loop"]), frequency_ghz=frequency_ghz)
+                        field_g=field_g, loop=int(row["loop"]), frequency_ghz=frequency_ghz,
+                        modulation_frequency_hz=self.stfmr_lockin_expected_hz)
             elif not self._stfmr_lockin_log_event(
                 "startup_point_discarded", frequency_ghz=frequency_ghz,
                 point_index=index + 1, current_a=current, field_g=field_g,
+                modulation_frequency_hz=self.stfmr_lockin_expected_hz,
             ):
                 return
             self.stfmr_lockin_field_var.set(f"B: {field_g:+.7g} G")
@@ -18110,9 +18318,9 @@ class CombinedControlApp:
             self.stfmr_lockin_mfli_range_actions = []
             done_in_frequency = self.stfmr_lockin_index
             completed = completed_before_frequency + done_in_frequency
-            total = len(self.stfmr_lockin_frequencies_ghz) * len(
-                self.stfmr_lockin_points
-            )
+            total = len(self.stfmr_lockin_modulation_frequencies_hz) * len(
+                self.stfmr_lockin_frequencies_ghz
+            ) * len(self.stfmr_lockin_points)
             self._set_stfmr_progress(
                 self.stfmr_lockin_progress, completed, total
             )
@@ -18127,7 +18335,7 @@ class CombinedControlApp:
                 # (user, 2026-10-13).
                 fixed_current = self.stfmr_lockin_points_per_loop <= 1
                 self.stfmr_lockin_status_var.set(
-                    f"{frequency_ghz:g} GHz discarded start-transition point "
+                    f"{self._stfmr_lockin_pass_label(frequency_ghz)} discarded start-transition point "
                     f"{index + 1}/2: "
                     f"I={current:+.5g} A, B={field_g:+.6g} G; "
                     + (
@@ -18140,7 +18348,7 @@ class CombinedControlApp:
                 )
             else:
                 self.stfmr_lockin_status_var.set(
-                    f"{frequency_ghz:g} GHz; scanning {completed}/{total}; "
+                    f"{self._stfmr_lockin_pass_label(frequency_ghz)}; scanning {completed}/{total}; "
                     f"I={current:+.5g} A; "
                     f"remaining about {remaining:.1f} s"
                 )
@@ -18153,12 +18361,35 @@ class CombinedControlApp:
                         )
                         for point in range(done_in_frequency)
                     ) * (2 if dual else 1),
+                    modulation_frequency_hz=self.stfmr_lockin_expected_hz,
                 ):
                     return
                 if frequency_index + 1 >= len(
                     self.stfmr_lockin_frequencies_ghz
                 ):
-                    self._finish_stfmr_lockin_scan()
+                    modulations = self.stfmr_lockin_modulation_frequencies_hz
+                    if self.stfmr_lockin_modulation_index + 1 >= len(modulations):
+                        self._finish_stfmr_lockin_scan()
+                        return
+                    # The next modulation frequency: the whole f x A sweep
+                    # again from the first carrier.  Its first two readings
+                    # are discarded as after a carrier change, since the
+                    # frequency index starts again (user, 2026-10-13).
+                    finished_hz = self.stfmr_lockin_expected_hz
+                    self.stfmr_lockin_modulation_index += 1
+                    self.stfmr_lockin_frequency_index = 0
+                    self.stfmr_lockin_index = 0
+                    self.stfmr_lockin_expected_hz = modulations[
+                        self.stfmr_lockin_modulation_index
+                    ]
+                    self.stfmr_lockin_status_var.set(
+                        f"Mod. {finished_hz:g} Hz done; zeroing and switching to Mod. "
+                        f"{self.stfmr_lockin_expected_hz:g} Hz at "
+                        f"{self.stfmr_lockin_frequencies_ghz[0]:g} GHz"
+                    )
+                    self._configure_stfmr_lockin_frequency(
+                        initial=False, modulation_change=True
+                    )
                     return
                 self.stfmr_lockin_frequency_index += 1
                 self.stfmr_lockin_index = 0
@@ -18166,7 +18397,7 @@ class CombinedControlApp:
                     self.stfmr_lockin_frequency_index
                 ]
                 self.stfmr_lockin_status_var.set(
-                    f"{frequency_ghz:g} GHz done; zeroing and switching to "
+                    f"{self._stfmr_lockin_pass_label(frequency_ghz)} done; zeroing and switching to "
                     f"{next_frequency:g} GHz"
                 )
                 self._configure_stfmr_lockin_frequency(initial=False)
@@ -18236,9 +18467,12 @@ class CombinedControlApp:
                 f"Scan stopped; {len(self.stfmr_lockin_rows)} points saved; outputs OFF"
             )
         else:
+            modulations = len(getattr(self, "stfmr_lockin_modulation_frequencies_hz", ()))
             self.stfmr_lockin_status_var.set(
                 f"Multi-frequency scan complete: {len(self.stfmr_lockin_frequencies_ghz)} frequencies, "
-                f"{len(self.stfmr_lockin_rows)} points saved; "
+                # Named only when there were several (user, 2026-10-13).
+                + (f"{modulations} modulation frequencies, " if modulations > 1 else "")
+                + f"{len(self.stfmr_lockin_rows)} points saved; "
                 "4886/SMB100A outputs OFF; CSV saved"
             )
 
@@ -18351,6 +18585,7 @@ class CombinedControlApp:
         """Plot set current against measured field without joining scan loops."""
         if meter == "MFLI + SR830":
             meter, key = "MFLI", "mfli"
+        modulation_part = CombinedControlApp._stfmr_lockin_modulation_part(rows)
         series: dict[str, list[tuple[float, float]]] = {}
         for row in rows:
             if str(row.get("meter", meter)) != meter:
@@ -18365,9 +18600,37 @@ class CombinedControlApp:
             )):
                 continue
             loop = max(1, int(row.get("loop", 1)))
-            series_key = f"{key}_freq_{frequency_ghz:.12g}_loop_{loop}"
+            series_key = (
+                f"{key}{modulation_part(row)}_freq_{frequency_ghz:.12g}_loop_{loop}"
+            )
             series.setdefault(series_key, []).append((current_a, field_g))
         return series if series else {key: []}
+
+    @staticmethod
+    def _stfmr_lockin_modulation_part(rows):
+        """The series name's modulation part for one row: '_mod_307' when the
+        rows hold several modulation frequencies, so each frequency's curve
+        stays apart and is named, as each carrier's is; '' with one, so a
+        default sweep keeps its old names (user, 2026-10-13).  The part goes
+        before '_freq_', where the plots and the legend read the carrier."""
+        # One set of the raw values first: this runs at every redraw, and the
+        # set stays small however many rows there are.
+        modulations = set()
+        for value in {row.get("modulation_frequency_hz") for row in rows}:
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                modulations.add(value)
+        if len(modulations) <= 1:
+            return lambda _row: ""
+
+        def part(row) -> str:
+            value = float(row.get("modulation_frequency_hz", math.nan))
+            return f"_mod_{value:.12g}" if math.isfinite(value) else ""
+
+        return part
 
     def _draw_stfmr_lockin_frequency_component(
         self,
@@ -18416,6 +18679,7 @@ class CombinedControlApp:
         group_frequency: bool = False,
     ) -> dict[str, list[tuple[float, float]]]:
         """Plot a lock-in component against field without joining scan loops."""
+        modulation_part = CombinedControlApp._stfmr_lockin_modulation_part(rows)
         series: dict[str, list[tuple[float, float]]] = {}
         for row in rows:
             row_meter = str(row.get("meter", meter))
@@ -18437,7 +18701,7 @@ class CombinedControlApp:
                 if not math.isfinite(frequency_ghz):
                     continue
                 series_key = (
-                    f"{key}_freq_{frequency_ghz:.12g}_loop_{loop}"
+                    f"{key}{modulation_part(row)}_freq_{frequency_ghz:.12g}_loop_{loop}"
                 )
             else:
                 series_key = f"{key}_loop_{loop}"
@@ -18470,24 +18734,36 @@ class CombinedControlApp:
             return "#" + "".join(f"{channel:02x}" for channel in rgb)
 
         parsed: dict[str, tuple[float, int]] = {}
+        # A series of a sweep over several modulation frequencies also names
+        # its modulation ('..._mod_307_freq_5_loop_1'); each carrier and
+        # modulation pair gets its own shade and legend entry, so the
+        # frequencies stay apart (user, 2026-10-13).
+        modulation_of: dict[str, float | None] = {}
         for key in series:
             match = re.search(
                 r"_freq_([-+0-9.eE]+)_loop_(\d+)$", str(key)
             )
             if match is not None:
                 parsed[key] = (float(match.group(1)), int(match.group(2)))
-        frequencies = sorted({item[0] for item in parsed.values()})
+                modulation = re.search(r"_mod_([-+0-9.eE]+)_freq_", str(key))
+                modulation_of[key] = (
+                    float(modulation.group(1)) if modulation is not None else None
+                )
+        pairs = sorted(
+            {(item[0], modulation_of[key]) for key, item in parsed.items()},
+            key=lambda pair: (pair[0], -1.0 if pair[1] is None else pair[1]),
+        )
         light, dark = STFMR_LOCKIN_COMPONENT_COLOR_RANGES.get(
             component, ("#999999", "#333333")
         )
-        denominator = max(len(frequencies) - 1, 1)
+        denominator = max(len(pairs) - 1, 1)
         frequency_colors = {
-            frequency: interpolate_color(
+            pair: interpolate_color(
                 light,
                 dark,
-                0.55 if len(frequencies) == 1 else index / denominator,
+                0.55 if len(pairs) == 1 else index / denominator,
             )
-            for index, frequency in enumerate(frequencies)
+            for index, pair in enumerate(pairs)
         }
         # Each frequency is named once, on its first saved loop.  That was
         # always loop 1 until a fixed-current run (one reading per loop,
@@ -18500,9 +18776,13 @@ class CombinedControlApp:
         labels: dict[str, str] = {}
         colors: dict[str, str] = {}
         for key, (frequency, loop) in parsed.items():
-            colors[key] = frequency_colors[frequency]
+            modulation = modulation_of[key]
+            colors[key] = frequency_colors[(frequency, modulation)]
             group = (str(key).split("_freq_", 1)[0], frequency)
-            labels[key] = f"{frequency:g} GHz" if loop == first_loop[group] else ""
+            name = f"{frequency:g} GHz" + (
+                f", {modulation:g} Hz" if modulation is not None else ""
+            )
+            labels[key] = name if loop == first_loop[group] else ""
         dual = any(k.startswith("mfli_") for k in parsed) and any(k.startswith("8_") for k in parsed)
         if dual:
             for key in labels:

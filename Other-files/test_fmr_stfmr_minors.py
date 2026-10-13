@@ -245,7 +245,8 @@ def inputs_app(start="-1", stop="1", step="0.5", loop="1"):
     a.stfmr_lockin_manual_safety_var = Var(True)
     a.stfmr_lockin_meter_var = Var("MFLI")
     for name, value in (("frequency_start", "5"), ("frequency_stop", "10"),
-                        ("frequency_step", "1"), ("power", "6"), ("lfo", "317.3"),
+                        ("frequency_step", "1"), ("power", "6"),
+                        ("mod_start", "317.3"), ("mod_end", "317.3"),
                         ("delay", "0.5"), ("limit", "10"), ("loop", loop),
                         ("start", start), ("stop", stop), ("step", step)):
         setattr(a, f"stfmr_lockin_{name}_var", Var(value))

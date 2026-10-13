@@ -152,6 +152,84 @@
   it needs a display) also checks that the longest Angle status lines fit on
   one line.
 
+## STFMR: Mod. start / Mod. end, prime modulation frequencies (2026-10-13)
+
+- **User:** "add a Mod. start & end input like f and A in the STFMR module.
+  also only pick the prime, ignore the step input."
+- **Boxes:** the single "Mod. Hz" box is now "Mod. start Hz" (its old cell,
+  at the end of the f row) and "Mod. end Hz" under it (end of the A row);
+  both default to 317.3, so a default sweep is unchanged. There is no step
+  box. "Wait/pt s" moves from under Mod. to the free cell right of Loop
+  (SR830 row). Each row keeps five pairs: a sixth made the table too wide
+  for the 1101 px window. The label column is wider for "Mod. start Hz:"
+  (about 28 px in the lab's Segoe UI 11 pt); in the 1101 px window the
+  number fields give way, down to six characters, if needed.
+- **Which frequencies:** Mod. start = Mod. end gives that one value (any
+  finite positive number, e.g. 317.3). Otherwise every whole-number prime
+  between them, both included, from Mod. start towards Mod. end (descending
+  when start > end), as the f and A ranges run from start to stop. Start
+  refuses, with a message and before any output or file: a box that is not
+  a finite positive number, a range with no prime, more than 10000 primes
+  (the microwave sweep's own limit), or a prime range above 2^53 Hz.
+- **The sweep:** the whole f × A sweep (every carrier, every loop) runs once
+  per modulation frequency, modulation outermost, so each modulation gives
+  a complete sweep and the LFO changes as few times as possible. At each
+  change: the 4886 to zero (as at a carrier change), the SMB100A
+  `LFO:FREQ` only (the command the start sends; RF, AM and LFO stay on),
+  the carrier back to f start, the SR830 reference wait of the start (5 s,
+  at the new frequency; the MFLI follows its external reference by itself,
+  as at the start, and each reading checks the frequency), then the 4886
+  back on at Start A, the start pre-read and the first two readings
+  discarded, as after a carrier change. Every read expects the modulation
+  frequency in use. A failed LFO change or a lost lock stops the sweep with
+  the 4886 at zero and the RF off.
+- **Records:** each live CSV row already had `modulation_frequency_hz`; it
+  now holds that row's modulation frequency, so no column was added and
+  every column keeps its place. `index` runs across the whole run;
+  `frequency_index` counts the carriers within each modulation frequency.
+  The log's settings add `modulation_frequencies_hz`, `modulation_start_hz`
+  and `modulation_end_hz` (`modulation_frequency_hz` is the first one); the
+  `frequency_configure`, `frequency_ready`, `startup_point_discarded` and
+  `frequency_complete` events name the modulation frequency, and
+  `frequency_configure` says whether it changed (`modulation_change`).
+- **Start confirmation and estimate:** a line such as "Mod. Hz: 307, 311,
+  313, 317 (4 primes from 300 to 330); the whole f × A sweep runs at each,
+  in this order" ("Mod. Hz: 317.3" for one value; a long list shows its
+  first five and last two). The saved-point count, the duration estimate
+  and the progress bar count every modulation frequency.
+- **Plots and status:** with several modulation frequencies each curve is
+  named "5 GHz, 307 Hz" and has its own shade, in the live plots and in
+  the PNGs of Save CSV; with one, names and colours are as before. Status
+  lines name the modulation ("5 GHz, Mod. 311 Hz …", "Mod. 307 Hz done;
+  zeroing and switching to Mod. 311 Hz at 5 GHz") and the end status
+  counts the modulation frequencies; a one-frequency sweep's lines are as
+  before.
+- **Idle Ref lamp:** compares the lock-in's reference with Mod. start (the
+  one value when start = end).
+- **Docs:** README_STFMR_DUAL.md says how the modulation frequencies run and
+  what the CSV column holds.
+- **Tests:** `test_stfmr_mod_prime_range.py` (the list: equal boxes keep a
+  non-integer value, ascending, descending, both bounds included, the same
+  primes as the Non-local sieve, no prime, bad numbers, the 10000 cap and
+  the 2^53 bound; the confirmation line; the SMB100A sends only
+  `LFO:FREQ`; real sweeps on the STFMR harness over three primes and two
+  carriers with the SR830, a descending dual-meter sweep and an MFLI sweep:
+  the LFO set per modulation in order, the 4886 zeroed before and switched
+  on after the lock re-check, every read at its pass's frequency, the
+  settling readings discarded after each change, rows tagged, the CSV
+  header unchanged, the confirmation, the estimate, the log, separate
+  plot curves; a lost lock, a failed LFO change and Stop end with the
+  outputs off; the default 317.3 sweep unchanged; refusals before any
+  output or file; the idle Ref lamp; the table cells from the real page
+  build). The harnesses in `test/test_stfmr_realtime_recording.py`,
+  `test/test_instrument_safety_logic.py`, `test_fmr_stfmr_minors.py` and
+  `test_fmr_stfmr_review.py` set the two boxes instead of the old one. The
+  CI GUI test `test_stfmr_field_output.py` gains
+  `test_mod_start_and_end_take_the_last_column_and_fit` (the three cells,
+  defaults 317.3, nothing past the edge or cut in the 1101 px and 2000 px
+  windows; not run here: it needs a display). Every dialog is mocked and a
+  real Tk root fails the new tests.
+
 ## MOKE-24: OVP margin warning, Zero on an output that is on (2026-10-13)
 
 - **Scan near the OVP (the user's choice: warn only):** the MOKE-24

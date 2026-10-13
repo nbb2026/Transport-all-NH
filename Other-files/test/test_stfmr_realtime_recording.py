@@ -164,7 +164,8 @@ def harness(folder, meter='MFLI', stop='6', end_current='1'):
         # The sweep's safety confirmation is the tick in the 4886 output panel.
         'manual_safety': True, 'meter': meter, 'frequency_start': '5',
         'frequency_stop': stop, 'frequency_step': '1', 'power': '10',
-        'lfo': '317.3', 'delay': '0', 'limit': '10', 'loop': 1,
+        # Mod. start = Mod. end: one modulation frequency (2026-10-13).
+        'mod_start': '317.3', 'mod_end': '317.3', 'delay': '0', 'limit': '10', 'loop': 1,
         'start': '-1', 'stop': end_current, 'step': '0.5',
         'sr830_reference': 'Sine', 'sr830_auto_range': True,
         # The page's 'SR830 TC' default (user, 2026-10-13).

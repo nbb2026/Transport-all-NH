@@ -433,6 +433,43 @@ class FieldOutputTests(unittest.TestCase):
         finally:
             self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
 
+    def test_mod_start_and_end_take_the_last_column_and_fit(self):
+        """User, 2026-10-13: "Mod. Hz" became "Mod. start Hz" (row 0) and
+        "Mod. end Hz" under it (row 1), with no step box, and Wait/pt moved
+        to the free cell right of Loop (row 2).  No sixth pair, and every box
+        and label whole in the 1101 px window the program opens with."""
+        field_font = tkinter.font.nametofont("TkTextFont")
+        label_font = tkinter.font.nametofont("TkDefaultFont")
+        table = self.a.stfmr_lockin_meter_combo.master
+        cells = {0: ("Mod. start Hz:", self.a.stfmr_lockin_mod_start_var),
+                 1: ("Mod. end Hz:", self.a.stfmr_lockin_mod_end_var),
+                 2: ("Wait/pt s:", self.a.stfmr_lockin_delay_var)}
+        self.assertEqual((self.a.stfmr_lockin_mod_start_var.get(), self.a.stfmr_lockin_mod_end_var.get()),
+                         ("317.3", "317.3"))
+        try:
+            for width in (self.LAB_DEFAULT, LAB_WIDE):
+                self.arranged(width, "STFMR", self.a.stfmr_lockin_resource_widgets)
+                tab = self.a.stfmr_lockin_tab
+                right = tab.winfo_rootx() + tab.winfo_width()
+                for row, (text, variable) in cells.items():
+                    with self.subTest(width=width, row=row):
+                        (label,) = table.grid_slaves(row=row, column=8)
+                        (entry,) = table.grid_slaves(row=row, column=9)
+                        self.assertEqual(str(label.cget("text")), text)
+                        self.assertEqual(entry.winfo_class(), "TEntry")
+                        self.assertEqual(str(entry.cget("textvariable")), str(variable))
+                        for widget in (label, entry):
+                            self.assertTrue(widget.winfo_ismapped())
+                            self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), right + 1,
+                                                 f"{text} is past the right edge")
+                        self.assertGreaterEqual(label.winfo_width(), label_font.measure(text), f"{text} is cut")
+                        self.assertGreaterEqual(entry.winfo_width(), field_font.measure("0" * 6))
+                        self.assertEqual(table.grid_slaves(row=row, column=10), [], "no sixth pair")
+                self.assertEqual(table.grid_slaves(row=3, column=8) + table.grid_slaves(row=3, column=9), [],
+                                 "the MFLI row's last cell stays free")
+        finally:
+            self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
+
     def test_fmr_plots_fill_the_page_down_to_the_status_line(self):
         self.arranged(LAB_WIDE, "FMR", self.a.stfmr_device_resource_widgets)
         tab = self.a.stfmr_tab

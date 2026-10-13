@@ -279,7 +279,8 @@ class Sr830IdleReadTests(unittest.TestCase):
         a.stfmr_lockin_live_future = None
         a.stfmr_lockin_meter_var = Var(meter)
         a.stfmr_lockin_gauss_continuous_var = Var(False)
-        a.stfmr_lockin_lfo_var = Var("1000")
+        # The idle check expects Mod. start (2026-10-13).
+        a.stfmr_lockin_mod_start_var = Var("1000")
         a.stfmr_lockin_controllers = {"830": controller, "gauss": types.SimpleNamespace(connected=False)}
         a.stfmr_lockin_mfli_controller = types.SimpleNamespace(
             mfli_connected=True,
