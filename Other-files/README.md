@@ -96,6 +96,38 @@
   scanning or writing; editable after Disconnect and the next Connect uses
   the new value; the refusal messages).
 
+## Non-local: pulses end at Width s; the Gate-VI gate above 4.9 GΩ; 6221 OFF only once read back (2026-10-13)
+
+- **Pulse width (2400-IV Apply pulse, every Gate-VI pulse):** the Keithley
+  switch-off asked `:OUTP?` (the 50 ms query delay and the GPIB round trip)
+  before it wrote 0 V, so every pulse stayed at its level about 55 ms past
+  Width s (a 10 ms pulse lasted about 68 ms). It came with the review fix
+  `13174fc`. Now 0 V is written first, then `:OUTP?` decides the drain; the
+  drain at 0 V and the switch-off are unchanged.
+- **Gate-VI pulse gate:** a sample above about 4.9 GΩ (5 V at 1 nA: an
+  intact gate insulator or an open gap) raised "Resistance exceeds the
+  measurable range" and stopped the scan, although the gate's rule is "a
+  pulse needs |R| above it". Now that reading is a lower bound (the measured
+  V/I, or 4.9 GΩ with no current) marked over range; the status line shows
+  "|R|≥… (above the range at 1 nA)", and a Pulse gate above 4.9 GΩ blocks
+  with a message saying so. VI_resistance_gate.csv keeps its columns.
+- **Set 6221 / 6221-IV:** with the sine on from Set 6221, a failed Keithley
+  read-back (a GPIB timeout, or still on) at Set 6221 or 6221-IV Start
+  stopped the task before the 6221 was switched off, and the page said
+  "6221: OFF" / "6221: not switched on" with the sine still on. Now the
+  Keithley check is inside the task's try, so the 6221 is switched off and
+  read back in every case; "6221: OFF" only after that read-back ("6221:
+  check the output" otherwise), and the Set status names the Keithley too.
+- **Tests:** `test_nonlocal_pulse_gate_6221.py` (12; all fail on the old
+  code): the 0 V right after the wait for -30 V / 0.01 s and 5 V / 0.1 s,
+  with simulated query delays, then the drain and the switch-off; a failed
+  0 V still drains and switches off; 5 GΩ, 20 GΩ, 1 TΩ and an open gap
+  give a finite |R| ≥ 4.9 GΩ, 3 and 4.8 GΩ unchanged; the Gate-VI worker
+  pulses past the 100 MΩ gate and blocks a 5000 MΩ gate with the reason;
+  Set 6221 and 6221-IV Start switch a sine left on off with the Keithley
+  read-back failing (or with a Stop), and never show OFF without the 6221's
+  own read-back.
+
 ## MOKE magnet: Start scan says why it does not start (2026-10-13)
 
 - **User:** "the start scan cannot be used".

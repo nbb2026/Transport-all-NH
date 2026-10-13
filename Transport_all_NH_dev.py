@@ -7021,6 +7021,15 @@ class NonLocalVI2410Controller:
             # and an output already off has nothing to drain (review,
             # 2026-10-09: the drain then failed and its flag stuck).
             drain = self.source_mode != "CURR" and bool(self.__dict__.get("high_voltage_active"))
+            # The zero first, then the :OUTP? read-back: with the query
+            # first (its 50 ms query_delay and the GPIB round trip) every
+            # pulse stayed at its level about 55 ms past Width s
+            # (review, 2026-10-13).  0 V does not change the output state,
+            # so the read-back still decides the drain.
+            try:
+                instrument.write(zero_command)
+            except BaseException as error:
+                errors.append(f"{zero_command}: {error}")
             if drain:
                 try:
                     drain = int(round(float(instrument.query(":OUTP?").strip()))) == 1
@@ -7029,16 +7038,16 @@ class NonLocalVI2410Controller:
                     drain = False
                 if not drain:
                     self.high_voltage_active = False
-            for command in commands:
-                try:
-                    instrument.write(command)
-                except BaseException as error:
-                    errors.append(f"{command}: {error}")
-                if command == zero_command and drain:
+                else:
                     try:
                         self._drain_locked(instrument)
                     except BaseException as error:
                         errors.append(str(error))
+            for command in commands[1:]:
+                try:
+                    instrument.write(command)
+                except BaseException as error:
+                    errors.append(f"{command}: {error}")
             if drain and not errors:
                 # Drained and off: no further drain is needed (each later
                 # output sets its own range, or starts from *RST).
@@ -7162,6 +7171,11 @@ class NonLocalVI2410Controller:
         if not math.isfinite(voltage_v) or not math.isfinite(current_a):
             raise RuntimeError(f"Keithley {self.model} response is not a finite value: {response}")
         if abs(current_a) < 1e-15:
+            # No current at the voltage limit: an open gap or an intact
+            # insulator; measure_resistance takes it as over range
+            # (review, 2026-10-13).
+            if abs(voltage_v) >= NONLOCAL_VI_RES_COMPLIANCE_V * 0.98:
+                return voltage_v, current_a, math.inf
             raise RuntimeError(f"Keithley {self.model} measured current is too small to compute the resistance")
         return voltage_v, current_a, abs(voltage_v / current_a)
 
@@ -7174,7 +7188,8 @@ class NonLocalVI2410Controller:
         same current autorange (1 nA up, kept between 0.05 and 2 V, checked
         at every reading), the current held NONLOCAL_VI_RES_HOLD_S after its
         last change and the readings of the last NONLOCAL_VI_RES_AVERAGE_S
-        averaged.  Returns the source current and the mean V, I and |R|."""
+        averaged.  Returns the source current and the mean V, I and |R|;
+        "over_range" when |R| is the lower bound at the 5 V limit at 1 nA."""
         levels = NONLOCAL_VI_RES_CURRENT_LEVELS_A
         with self.lock:
             # A Stop since the last wait: the current source is not switched on.
@@ -7188,7 +7203,8 @@ class NonLocalVI2410Controller:
                 started = changed = time.monotonic()
                 if status_callback is not None:
                     status_callback(source_current_a)
-                readings = []  # (s since the last current change, V, I, |R|)
+                # (s since the last current change, V, I, |R|, over range)
+                readings = []
                 while True:
                     self._wait(NONLOCAL_VI_RES_SAMPLE_INTERVAL_S, stop_event)
                     voltage_v, current_a, resistance_ohm = (
@@ -7196,10 +7212,18 @@ class NonLocalVI2410Controller:
                     )
                     now = time.monotonic()
                     abs_voltage = abs(voltage_v)
+                    over_range = False
                     if abs_voltage >= NONLOCAL_VI_RES_COMPLIANCE_V * 0.98 and index == 0:
-                        raise RuntimeError(
-                            f"Resistance exceeds the measurable range at the Keithley {self.model} minimum test current"
-                        )
+                        # At the 5 V limit at 1 nA (an intact gate insulator
+                        # or an open gap): |R| is at least the limit over
+                        # 1 nA, about 4.9 GΩ, kept as that lower bound, so
+                        # the pulse gate ("a pulse needs |R| above it")
+                        # passes it.  It stopped the scan before
+                        # (review, 2026-10-13).
+                        bound = NONLOCAL_VI_RES_COMPLIANCE_V * 0.98 / levels[0]
+                        if not bound <= resistance_ohm < math.inf:
+                            resistance_ohm = bound
+                        over_range = True
                     new_index = index
                     if abs_voltage > NONLOCAL_VI_RES_TARGET_HIGH_V and index > 0:
                         new_index = index - 1
@@ -7223,7 +7247,9 @@ class NonLocalVI2410Controller:
                         changed = now
                         readings = []
                         continue
-                    readings.append((now - changed, voltage_v, current_a, resistance_ohm))
+                    readings.append(
+                        (now - changed, voltage_v, current_a, resistance_ohm, over_range)
+                    )
                     if now - changed >= NONLOCAL_VI_RES_HOLD_S:
                         break
                 used = [
@@ -7236,6 +7262,8 @@ class NonLocalVI2410Controller:
                     "current_a": statistics.fmean(item[2] for item in used),
                     "resistance_ohm": statistics.fmean(item[3] for item in used),
                     "sample_count": len(used),
+                    # |R| is then a lower bound (at least about 4.9 GΩ).
+                    "over_range": any(item[4] for item in used),
                 }
             finally:
                 try:
@@ -31188,8 +31216,10 @@ class CombinedControlApp:
                 (pulse_voltage_v, result["resistance_ohm"], elapsed, stage, frequency_hz, loop)
             )
         self.post_ui(
-            lambda value=result["resistance_ohm"]: self.nonlocal_vi_status_var.set(
-                f"Keithley {self.nonlocal_vi_2410_controller.model} |R|={value:.6e} Ω"
+            lambda value=result["resistance_ohm"], over=bool(result.get("over_range")):
+            self.nonlocal_vi_status_var.set(
+                f"Keithley {self.nonlocal_vi_2410_controller.model} |R|"
+                + (f"≥{value:.6e} Ω (above the range at 1 nA)" if over else f"={value:.6e} Ω")
             )
         )
         return result
@@ -31371,10 +31401,15 @@ class CombinedControlApp:
                         not math.isfinite(gate_resistance)
                         or gate_resistance <= settings["gate_resistance_ohm"]
                     ):
+                        # Above the range at 1 nA, |R| is only a lower bound:
+                        # a Pulse gate above it can never pass (review,
+                        # 2026-10-13), so the message says so.
+                        over = bool(gate_result.get("over_range"))
                         raise RuntimeError(
                             f"Pulse {point_index} blocked by the resistance gate: "
-                            f"|R|={gate_resistance:.6e} Ω, must be >"
-                            f"{settings['gate_resistance_ohm']:.6e} Ω"
+                            f"|R|{'≥' if over else '='}{gate_resistance:.6e} Ω"
+                            + (" (above the range at 1 nA, the most it can show)" if over else "")
+                            + f", must be >{settings['gate_resistance_ohm']:.6e} Ω"
                         )
 
                     self.nonlocal_vi_ac_controller.output_off()
@@ -33664,11 +33699,14 @@ class CombinedControlApp:
     def _nonlocal_iv6221_set_worker(self, settings: dict):
         source = self.nonlocal_vi_ac_controller
         keithley = self.nonlocal_vi_2410_controller
-        # The Keithley drained and read back off first (also after a Set).
-        self._nonlocal_keithley_off_first("before switching the 6221 on")
-        if self.nonlocal_keithley_stop_event.is_set():
-            raise InterruptedError("Stopped before the 6221 was switched on")
         try:
+            # The Keithley drained and read back off first (also after a
+            # Set).  Inside the try, so a failed read-back or a Stop still
+            # switches off a sine left on by the last Set 6221 (review,
+            # 2026-10-13: it stayed on, shown as "not switched on").
+            self._nonlocal_keithley_off_first("before switching the 6221 on")
+            if self.nonlocal_keithley_stop_event.is_set():
+                raise InterruptedError("Stopped before the 6221 was switched on")
             frequency, _readbacks = self._nonlocal_iv6221_configure(
                 source, settings, settings["current_ma"]
             )
@@ -33692,13 +33730,15 @@ class CombinedControlApp:
         try:
             actual, frequency = future.result()
         except BaseException as error:
+            # The 6221 from its own read-back only: the worker switches it
+            # off also when the Keithley check failed (a Set may have left
+            # it on; review, 2026-10-13).
             off = bool(self.__dict__.get("nonlocal_keithley_output_off"))
-            if self.__dict__.get("nonlocal_keithley_off_unconfirmed"):
-                # It stopped at the Keithley, before the 6221 was touched.
-                self.nonlocal_iv6221_source_var.set("6221: not switched on")
+            unconfirmed = bool(self.__dict__.get("nonlocal_keithley_off_unconfirmed"))
+            self.nonlocal_iv6221_source_var.set("6221: OFF" if off else "6221: check the output")
+            if unconfirmed:
                 self.nonlocal_vi_output_var.set(self._nonlocal_output_text())
             else:
-                self.nonlocal_iv6221_source_var.set("6221: OFF" if off else "6221: check the output")
                 self.nonlocal_vi_output_var.set(
                     self._nonlocal_output_text() if off else "6221 output: check it"
                 )
@@ -33711,6 +33751,8 @@ class CombinedControlApp:
                 self.nonlocal_vi_status_var.set(
                     f"Set 6221 failed: {short_status_error(error).rstrip(';')}"
                     + ("; 6221 output off (read back)" if off else "; check the 6221 output")
+                    + (f"; check the Keithley {self.nonlocal_vi_2410_controller.model} output"
+                       if unconfirmed else "")
                 )
             if not self.closing and not isinstance(error, InterruptedError):
                 messagebox.showerror("Set 6221", str(error), parent=self.root)
@@ -34033,10 +34075,12 @@ class CombinedControlApp:
         # set up again in between.
         frequencies = tuple(settings.get("frequencies") or (settings["frequency_hz"],))
         scanning = bool(settings.get("frequency_scan"))
-        # The Keithley must be off while the voltmeters read: drained and
-        # read back off first (also after a Set).
-        self._nonlocal_keithley_off_first("before the 6221-IV scan")
         try:
+            # The Keithley must be off while the voltmeters read: drained and
+            # read back off first (also after a Set).  Inside the try, so a
+            # failed read-back still switches off a sine left on by Set 6221
+            # (review, 2026-10-13: it stayed on, shown as OFF).
+            self._nonlocal_keithley_off_first("before the 6221-IV scan")
             if stop.is_set():
                 raise InterruptedError("Stopped before the 6221 was switched on")
             self.nonlocal_vi_interlock.begin(NonLocalVIInterlock.SR830_READ)
@@ -34282,10 +34326,11 @@ class CombinedControlApp:
             f" Run folder: {Path(path).parent.name}" if path and Path(path).exists()
             else " No CSV was written."
         )
+        # The 6221 is OFF only once read back off; the worker switches it
+        # off also when the Keithley check failed (a Set may have left it
+        # on; review, 2026-10-13: it showed OFF without a read-back).
         off = bool(self.__dict__.get("nonlocal_keithley_output_off", True))
         if self.__dict__.get("nonlocal_keithley_off_unconfirmed"):
-            # It stopped at the Keithley, before the 6221 was touched.
-            off = True
             self.nonlocal_vi_output_var.set(self._nonlocal_output_text())
         else:
             self.nonlocal_vi_output_var.set(
