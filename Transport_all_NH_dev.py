@@ -6179,18 +6179,37 @@ class Keithley2410Controller:
             return actual
 
     def zero_voltage(self) -> float | None:
-        """The MOKE-24 Zero button: 0 V on an output that is on, as before;
-        an output that is off gets 0 V and OUTP OFF again, never OUTP ON
-        (audit/review, 2026-10-13: Zero went through apply_manual_voltage,
-        which switched an OFF output on at 0 V without the safety tick).
+        """The MOKE-24 Zero button.  An output that is off gets 0 V and OUTP
+        OFF again, never OUTP ON (audit/review, 2026-10-13: Zero went through
+        apply_manual_voltage, which switched an OFF output on at 0 V without
+        the safety tick).  An output that is on only gets 0 V, read back: the
+        range and the output stay as they are and no OUTP command is sent
+        (user, 2026-10-13: apply_manual_voltage could change the range, so
+        it sent OUTP OFF and OUTP ON at 0 V without the safety tick).
         Returns the 0 V readback, or None when the output is off."""
         with self.lock:
             if self.instrument is None:
                 raise RuntimeError(f"Keithley {self.model} is not connected")
-            if self.output_enabled:
-                return self.apply_manual_voltage(0.0)
-            self.output_off()
-            return None
+            if not self.output_enabled:
+                self.output_off()
+                return None
+            # 0 V would not zero an output sourcing current, so that is
+            # refused with nothing sent rather than shown as 0 V.
+            if self.source_mode != "VOLT":
+                raise RuntimeError(
+                    f"{self.model} is not in voltage-source mode; Zero sent nothing "
+                    "(use the red zero / output off button)"
+                )
+            # 0 V fits every source range, so the range is kept.
+            self._write_checked(":SOUR:VOLT 0")
+            actual = float(self.instrument.query(":SOUR:VOLT?").strip())
+            # A readback other than 0 V is an error, never shown as zeroed.
+            if not math.isfinite(actual) or abs(actual) > 1e-6:
+                raise RuntimeError(
+                    f"{self.model} voltage readback after Zero is {actual!r}, not 0 V"
+                )
+            self.last_set_voltage = 0.0
+            return actual
 
     def initialize_resistance(self, source_current_a: float) -> None:
         current = float(source_current_a)
@@ -27723,11 +27742,11 @@ class CombinedControlApp:
             )
         future.add_done_callback(
             lambda completed: self.post_ui(
-                lambda: self._finish_keithley_manual_voltage(completed)
+                lambda: self._finish_keithley_manual_voltage(completed, action)
             )
         )
 
-    def _finish_keithley_manual_voltage(self, completed) -> None:
+    def _finish_keithley_manual_voltage(self, completed, action: str) -> None:
         self.keithley_manual_busy = False
         error = completed.exception()
         if error is not None:
@@ -27747,7 +27766,14 @@ class CombinedControlApp:
                 self.keithley_current_voltage = actual
             self.keithley_manual_voltage_var.set(f"{actual:.9g}")
             self.keithley_voltage_var.set(f"Output: {actual:+.6g} V / ON")
-            self.keithley_status_var.set(f"Manual voltage set to {actual:+.6g} V")
+            if action == "zero":
+                # Zero on an output that is on sets 0 V only; it does not
+                # switch the output off (user, 2026-10-13).
+                self.keithley_status_var.set(
+                    f"Zero: {actual:+.6g} V read back; the output stays on, range unchanged"
+                )
+            else:
+                self.keithley_status_var.set(f"Manual voltage set to {actual:+.6g} V")
         self._update_keithley_controls()
 
     def disconnect_keithley(self) -> None:
@@ -27996,7 +28022,23 @@ class CombinedControlApp:
             f"Range: {sequence[0]:g} V → {max(sequence):g}/{min(sequence):g} V → {sequence[-1]:g} V\n"
             f"Settle {settle_s:g} s and acquire {collect_s:g} s per point.\n\nStart?"
         )
-        if max(abs(value) for value in sequence) > 42.0:
+        # The software limit equals the hardware OVP, and the OVP levels are
+        # ±5 % (2400-series manual), so above 95 % of the OVP the source may
+        # clip the scan.  Only a warning: the limit, the OVP and the scan are
+        # unchanged and the user can still start (user, 2026-10-13).
+        max_abs_v = max(abs(value) for value in sequence)
+        ovp_v = self.keithley_controller.source_ovp_v
+        if max_abs_v > 0.95 * ovp_v:
+            margin_v = ovp_v - max_abs_v
+            summary = (
+                f"⚠ Near the hardware OVP: the scan reaches |V| = {max_abs_v:g} V, a margin of only "
+                f"{margin_v:g} V ({margin_v / ovp_v * 100:.3g} %) below the "
+                f"{self.keithley_controller.model}'s {ovp_v:g} V OVP. The OVP level has a ±5 % "
+                f"tolerance (it may act from {0.95 * ovp_v:g} V), so the source may clip the "
+                "voltage at the top of the scan.\n\n"
+                + summary
+            )
+        if max_abs_v > 42.0:
             summary = (
                 "⚠ High-voltage scan: confirm the wiring, probes, sample and shielding meet high-voltage safety requirements.\n\n"
                 + summary
