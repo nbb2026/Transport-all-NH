@@ -1193,6 +1193,11 @@ MAGNET_POLL_FAILURE_LIMIT = 3
 MAGNET_CURRENT_READBACK_TOLERANCE_A = 0.020
 MAGNET_CURRENT_READBACK_REL_TOLERANCE = 0.020
 MAGNET_CURRENT_LIMIT_A = 10.0
+# A current-scan point keeps only ROI samples whose camera average began after
+# its current was set.  When none has come by the end of "Acquire s" it waits
+# at most two averaging blocks plus this long for one, then records NaN
+# (review, 2026-10-13).
+MAGNET_SCAN_FRAME_TIMEOUT_S = 10.0
 # Closed-loop Gauss-zeroing guardrails. The probe establishes the active
 # path's polarity instead of assuming a fixed wiring direction. Corrections
 # remain bounded so a bad/noisy reading cannot request one large current jump.
@@ -12707,7 +12712,9 @@ class TkCameraWindow:
                 mean_value = float(np.mean(roi_values))
                 label = f"Processed ROI mean {mean_value:.3f}"
                 if not self.selecting_roi and fresh:
-                    self.app.ingest_moke_roi_sample(mean_value)
+                    self.app.ingest_moke_roi_sample(
+                        mean_value, getattr(frame, "window_start_monotonic", math.nan)
+                    )
                     self.app.ingest_2410_roi_sample(mean_value)
             else:
                 label = "ROI outside image"
@@ -13288,6 +13295,12 @@ class CombinedControlApp:
         }
         self.magnet_closed = False
         self.magnet_busy = False
+        # Commands submitted and not finished: "Zero both now" may queue
+        # behind a running command, and the page stays busy until both are
+        # done.  The event makes a running current write give up so the zero
+        # follows quickly (review, 2026-10-13).
+        self.magnet_pending_tasks = 0
+        self.magnet_abort_event = threading.Event()
         self.magnet_field_zero_active = False
         self.magnet_field_zero_stop_event = threading.Event()
         self.magnet_poll_inflight = False
@@ -13333,6 +13346,9 @@ class CombinedControlApp:
         self.magnet_scan_stop_event = threading.Event()
         self.magnet_scan_data_lock = threading.Lock()
         self.magnet_scan_collecting = False
+        # time.monotonic() when the current of the point being acquired was
+        # set and read back; ROI samples from earlier frames are not kept.
+        self.magnet_scan_point_set_monotonic = math.inf
         self.magnet_scan_current_samples = []
         self.magnet_scan_rows = []
         self.magnet_scan_start_time = None
@@ -24848,22 +24864,27 @@ class CombinedControlApp:
         success: Callable[[object], None] | None = None,
         *,
         is_poll: bool = False,
-    ) -> None:
+        urgent: bool = False,
+    ) -> bool:
+        """Queue one command on the single magnet worker; False if refused
+        or not submitted.  ``urgent`` ("Zero both now") queues behind a
+        running command instead of being refused (review, 2026-10-13)."""
         if self.magnet_closed or self.closing:
-            return
+            return False
         if self.magnet_scan_running:
             if is_poll:
-                return
+                return False
             self.magnet_status_var.set("Other magnet commands cannot run during a current scan")
-            return
+            return False
         if is_poll:
             if self.magnet_poll_inflight or self.magnet_busy:
-                return
+                return False
             self.magnet_poll_inflight = True
         else:
-            if self.magnet_busy:
+            if self.magnet_busy and not urgent:
                 self.magnet_status_var.set("The previous magnet operation has not finished")
-                return
+                return False
+            self.magnet_pending_tasks += 1
             self.magnet_busy = True
             self.magnet_status_var.set(label + "…")
             self._update_magnet_controls()
@@ -24877,7 +24898,7 @@ class CombinedControlApp:
                 success,
                 is_poll,
             )
-            return
+            return False
 
         def done(completed) -> None:
             try:
@@ -24897,6 +24918,7 @@ class CombinedControlApp:
             )
 
         future.add_done_callback(done)
+        return True
 
     def _finish_magnet_task(
         self,
@@ -24914,7 +24936,10 @@ class CombinedControlApp:
         if is_poll:
             self.magnet_poll_inflight = False
         else:
-            self.magnet_busy = False
+            # Busy until every queued command is done (a queued "Zero both
+            # now" included).
+            self.magnet_pending_tasks = max(0, self.magnet_pending_tasks - 1)
+            self.magnet_busy = self.magnet_pending_tasks > 0
         if error is not None:
             self.append_magnet_log(f"ERROR {label}: {error}")
             if is_poll:
@@ -25524,9 +25549,19 @@ class CombinedControlApp:
         except RuntimeError as error:
             self.magnet_status_var.set(str(error))
             return
+        was_polling = bool(self.magnet_auto_poll_var.get())
         self.magnet_auto_poll_var.set(False)
+        # Another command running (a Write whose readback retries can take
+        # 30 s): it was refused and only the status line said so, so the
+        # zero was never sent.  Now the zero queues behind it and a running
+        # current write gives up at its next attempt (review, 2026-10-13).
+        if self.magnet_busy:
+            self.magnet_abort_event.set()
 
         def worker() -> dict[str, float]:
+            # The single worker runs this only after the aborted command has
+            # returned.
+            self.magnet_abort_event.clear()
             # Send T 0 to every open BOP as a best-effort emergency action, but
             # require and verify a reply only from the physical selector's
             # active path.  The inactive BOP is electrically isolated and may
@@ -25570,7 +25605,12 @@ class CombinedControlApp:
                 "Note: this is not a hardware power-off"
             )
 
-        self._submit_magnet_task("Zero both magnets (not a power-off)", worker, success)
+        if not self._submit_magnet_task(
+            "Zero both magnets (not a power-off)", worker, success, urgent=True
+        ):
+            self.magnet_abort_event.clear()
+            if was_polling and not self.closing:
+                self.magnet_auto_poll_var.set(True)
 
     def _write_and_verify_magnet_current(self, key: str, value: float) -> float:
         """Write and verify only the BOP selected by the physical lever."""
@@ -25590,6 +25630,11 @@ class CombinedControlApp:
         recovery_used = False
         while True:
             for attempt in range(1, 3):
+                # "Zero both now" pressed: stop here; the tail below writes
+                # 0 A and the zero command follows (review, 2026-10-13).
+                if self.magnet_abort_event.is_set():
+                    last_error = MagnetProtocolError('stopped by "Zero both now"')
+                    break
                 try:
                     bop.set_current(expected)
                     time.sleep(MAGNET_COMMAND_SETTLE_S)
@@ -25609,7 +25654,7 @@ class CombinedControlApp:
                     last_error = error
                 if attempt < 2:
                     time.sleep(MAGNET_RETRY_DELAY_S)
-            if recovery_used or last_error is None:
+            if recovery_used or last_error is None or self.magnet_abort_event.is_set():
                 break
             recovery_used = True
             was_armed = bool(bop.output_armed)
@@ -25675,15 +25720,26 @@ class CombinedControlApp:
                 f"Currents updated; only the {MAGNET_SWITCH_KEY_TO_LABEL[selected]} path field reading is valid"
             )
 
-    def ingest_moke_roi_sample(self, mean_value: float) -> None:
-        """Update the numeric value and aggregate one live-plot point per interval."""
+    def ingest_moke_roi_sample(self, mean_value: float, window_start: float = math.nan) -> None:
+        """Update the numeric value and aggregate one live-plot point per interval.
+
+        ``window_start`` is when the oldest frame in the averaged image began
+        exposing (CameraFrame.window_start_monotonic).  A magnet scan point
+        keeps a sample only if that is after the point's current was set: the
+        4-frame average and its cross-fade reach back about 0.7 s, so with
+        Settle 0.1 s / Acquire 0.1 s the samples were mostly the previous
+        point's current (review, 2026-10-13).  NaN is never kept."""
         value = float(mean_value)
         self.moke_latest_roi_mean = value
         self.moke_roi_mean_var.set(f"ROI mean: {value:.4f}")
         self.keithley_roi_mean_var.set(f"ROI mean: {value:.4f}")
         self.k6221_roi_mean_var.set(f"ROI mean: {value:.4f}")
         with self.magnet_scan_data_lock:
-            if self.magnet_scan_running and self.magnet_scan_collecting:
+            if (
+                self.magnet_scan_running
+                and self.magnet_scan_collecting
+                and window_start > self.magnet_scan_point_set_monotonic
+            ):
                 self.magnet_scan_current_samples.append(value)
         now = time.monotonic()
         self.roi_live_sample_sum += value
@@ -26195,7 +26251,10 @@ class CombinedControlApp:
             "scan.image_session": image_session,
             "magnet.physical_selector_confirmation": self.magnet_switch_var.get(),
             "magnet.output_armed": bool(self._magnet_bops_armed()),
-            "magnet.poll_interval_s": float(self.magnet_poll_interval_var.get()),
+            # Log metadata only: the safe read, so text in the "Interval s"
+            # box ('1,5', '0.5s', empty) cannot raise TclError here and leave
+            # Start silently dead with Continuous off (review, 2026-10-13).
+            "magnet.poll_interval_s": self._snapshot_variable(self.magnet_poll_interval_var),
             "magnet.OUT_BOP_port": self.magnet_port_vars["OUT_BOP"].get(),
             "magnet.OUT_GAUSS_port": self.magnet_port_vars["OUT_GAUSS"].get(),
             "magnet.IN_BOP_port": self.magnet_port_vars["IN_BOP"].get(),
@@ -26294,6 +26353,9 @@ class CombinedControlApp:
                 read_current = self._write_and_verify_magnet_current(
                     key, target_current
                 )
+                # Frames that began exposing before this may show the
+                # previous point's current (review, 2026-10-13).
+                point_set = time.monotonic()
                 self.post_ui(
                     lambda loop=loop_index, point=point_index, total=points_per_loop,
                     current=target_current: self.magnet_status_var.set(
@@ -26305,6 +26367,7 @@ class CombinedControlApp:
                     break
                 with self.magnet_scan_data_lock:
                     self.magnet_scan_current_samples = []
+                    self.magnet_scan_point_set_monotonic = point_set
                     self.magnet_scan_collecting = True
                 self.post_ui(
                     lambda loop=loop_index, point=point_index, total=points_per_loop:
@@ -26312,7 +26375,32 @@ class CombinedControlApp:
                         f"Loop {loop} · point {point}/{total}: acquiring ROI…"
                     )
                 )
+                # Only samples whose average began after point_set count
+                # (ingest_moke_roi_sample).  With a short Settle/Acquire none
+                # may have come yet, so keep acquiring until one does, as the
+                # CIDWM scan waits for a frame newer than its pulse; no
+                # camera window, no wait (review, 2026-10-13).
+                camera = getattr(self, "camera_window", None)
+                frame = getattr(camera, "latest_frame", None)
+                try:
+                    block_s = (
+                        2.0 * float(frame.temporal_average_count)
+                        * float(frame.exposure_ms) / 1000.0
+                    )
+                except (AttributeError, TypeError, ValueError):
+                    block_s = 0.0
+                if not math.isfinite(block_s):
+                    block_s = 0.0
+                deadline = (
+                    time.monotonic() + collect_s + block_s + MAGNET_SCAN_FRAME_TIMEOUT_S
+                )
                 stopped = self.magnet_scan_stop_event.wait(collect_s)
+                while not stopped and camera is not None:
+                    with self.magnet_scan_data_lock:
+                        have_sample = bool(self.magnet_scan_current_samples)
+                    if have_sample or time.monotonic() >= deadline:
+                        break
+                    stopped = self.magnet_scan_stop_event.wait(0.05)
                 with self.magnet_scan_data_lock:
                     samples = list(self.magnet_scan_current_samples)
                     self.magnet_scan_collecting = False

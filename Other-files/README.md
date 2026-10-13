@@ -31,6 +31,41 @@
   the real `_poll` with Camera Live hidden, Save current display). Both
   classes mock every dialog, so no window can open.
 
+## MOKE magnet: Zero both now while busy, fresh scan frames, the Interval box (2026-10-13)
+
+- **Zero both now was dropped while another command ran:** pressed during
+  a Write / Up / Down / Flip / Zero current / Enable / Read (a Write whose
+  readback retries can take 30 s or more), it only wrote "The previous
+  magnet operation has not finished" to the status line, never sent 0 A,
+  and left Continuous off. Now it queues behind the running command on the
+  single magnet worker (no interleaved serial traffic); a running current
+  write stops at its next attempt and writes 0 A, then the zero follows.
+  The page stays busy until both are done (a count of pending commands).
+  Other commands are still refused while one runs. If the zero cannot be
+  submitted, Continuous is restored.
+- **Current scan recorded the previous point at short Settle/Acquire:** the
+  ROI value comes from the averaged difference image (4 frames plus its
+  cross-fade, about 0.7 s at 100 ms), but samples were kept by wall-clock
+  time only, so at the user's Settle 0.1 s / Acquire 0.1 s each point was
+  roughly half the previous point's magnetisation (the loop looked wider)
+  and some points were NaN. Now a point keeps only samples whose average
+  began after its current was set and read back (the frame's
+  `window_start_monotonic`, as the CIDWM scan does); if none has come when
+  Acquire s ends it keeps acquiring, for at most two averaging blocks plus
+  10 s, then records NaN. The default 2 s / 1 s scan is unchanged.
+- **Start scan died silently on text in "Interval s":** '1,5', '0.5s' or an
+  empty box raised TclError after Yes (no dialog, Continuous left off,
+  nothing submitted). The interval is only log metadata; it is now read
+  with the safe snapshot read ("unavailable" if not a number).
+- **Tests:** `test_magnet_zero_and_frames.py` (a Zero pressed during a
+  retrying Write's readback is queued, the Write gives up with no second
+  write or recovery, busy until both end; other commands still refused;
+  Continuous restored when the zero is not submitted; the scan worker at
+  0.1 s / 0.1 s keeps only the sample begun after the set; NaN, not the old
+  current, when no new frame comes; the camera passes the average start);
+  `test_magnet_scan_start.py` (Start with '1,5', '0.5s', '' submits the
+  scan); `test_moke_scan_zero.py` updated for the worker's new names.
+
 ## MOKE magnet: Start scan says why it does not start (2026-10-13)
 
 - **User:** "the start scan cannot be used".

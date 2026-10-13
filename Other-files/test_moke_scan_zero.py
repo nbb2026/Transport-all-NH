@@ -1,6 +1,7 @@
 """Isolated worker regression: no GUI, drivers, or physical instruments."""
 import ast
 import __future__
+import math
 from pathlib import Path
 import threading
 import time
@@ -13,7 +14,10 @@ names = {'_magnet_scan_worker', '_magnet_scan_zero_readback'}
 methods = [n for c in tree.body if isinstance(c, ast.ClassDef)
            for n in c.body if isinstance(n, ast.FunctionDef) and n.name in names]
 assert len(methods) == len(names)
-namespace = {'Path': Path, 'time': time}
+# The worker now waits for an ROI sample newer than the point's current
+# (review, 2026-10-13); with no camera window it does not wait.
+namespace = {'Path': Path, 'time': time, 'math': math,
+             'MAGNET_SCAN_FRAME_TIMEOUT_S': 10.0}
 exec(compile(ast.Module(body=methods, type_ignores=[]), str(SOURCE), 'exec',
              flags=__future__.annotations.compiler_flag), namespace)
 
