@@ -231,7 +231,9 @@ class RTE(unittest.TestCase):
         self.assertEqual(app.rte_scan_plan('Current', 1, 1, .1), ((1, 1, 1.),))
 
     def test_plan_rejects_invalid_ranges_and_removed_modes(self):
-        for args in [('Temperature', 1, 2, 1), ('Angle', 0, 360, 5),
+        # Angle is an RT-E mode again since 2026-10-13 (the Newmark stage);
+        # only angles beyond +/-360 deg of the stage zero are refused.
+        for args in [('Temperature', 1, 2, 1), ('Angle', 0, 370, 5),
                      ('Field', -11, 1, 1), ('Field', 0, float('nan'), 1),
                      ('Current', 1, 2, 0), ('Field', 0, 1, 1, 1.5)]:
             with self.subTest(args=args), self.assertRaises(ValueError):

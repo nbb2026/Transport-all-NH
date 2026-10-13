@@ -39147,6 +39147,8 @@ class CombinedControlApp:
                 "nonlocal_keithley_stop_event", "stfmr_fmr_stop_event",
                 "stfmr_frequency_stop_event", "stfmr_lockin_stop_event",
                 "ppms_field_scan_stop_event",
+                # RT-E's Newmark stage, turning by hand (user, 2026-10-13).
+                "rte_stage_stop_event",
             ):
                 event = owner.__dict__.get(name)
                 if event is not None:
@@ -40980,13 +40982,825 @@ class PPMSPanel(CombinedControlApp):
         super().safe_close_ppms()
 
 
+# ---- Newmark NSC-A1 rotation stage, for the RT-E Angle scan (user, 2026-10-13) ----
+# The reviewed driver core of Newmark_motor_test.py (999c1e2 + 164812f), copied
+# here so the program stays one file.  The stage (Newmark RM-5-110: 72:1 worm
+# gear, 1.8 deg stepper, home switch, no encoder, no limit switches) turns the
+# SAMPLE HOLDER, wires attached, inside the RT-E magnet; the NSC-A1 is a
+# rebadged Arcus ACE-SDE, reached through the vendor's PerformaxCom.dll over USB
+# (never a COM port).  Homing (HL+/HL-) is left out on purpose: the program
+# never moves the zero, and with it the +/-360 deg wire limit, by itself.
+# Nothing here has been tried on the hardware yet: Newmark_motor_test.py is the
+# place for the first tests.
+NEWMARK_DLL_NAME = "PerformaxCom.dll"
+NEWMARK_SIUSB_NAME = "SiUSBXp.dll"
+NEWMARK_BUFFER_SIZE = 64        # fnPerformaxComSendRecv writes and reads exactly 64 bytes (manual, ch. 7)
+NEWMARK_PRODUCT_STRING_SIZE = 256
+NEWMARK_TIMEOUT_MS = 1000       # the manual's recommended read/write timeout
+NEWMARK_SERIAL_OPTION, NEWMARK_DESCRIPTION_OPTION = 0, 1
+NEWMARK_FLUSH = "fnPerformaxComFlush"
+# BOOL fn...(...) as in the manual (DWORD = 32 bits, HANDLE = a pointer);
+# fnPerformaxComFlush exists only in newer DLLs.
+NEWMARK_SIGNATURES = (
+    ("fnPerformaxComGetNumDevices", [ctypes.POINTER(ctypes.c_uint32)]),
+    ("fnPerformaxComGetProductString", [ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32]),
+    ("fnPerformaxComOpen", [ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]),
+    ("fnPerformaxComClose", [ctypes.c_void_p]),
+    ("fnPerformaxComSetTimeouts", [ctypes.c_uint32, ctypes.c_uint32]),
+    ("fnPerformaxComSendRecv", [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+                                ctypes.c_void_p]),
+    (NEWMARK_FLUSH, [ctypes.c_void_p]),
+)
+NEWMARK_FULL_STEPS_PER_TURN = 200   # 1.8 deg motor (Lin 5718M-05P)
+NEWMARK_GEAR_RATIO = 72             # RM-5-110 worm gear
+NEWMARK_FULL_STEPS_PER_DEG = NEWMARK_FULL_STEPS_PER_TURN * NEWMARK_GEAR_RATIO // 360    # 40; x DRVMS
+NEWMARK_SPEED_DEG_S = 5.0           # every move of the program (the reviewed default)
+NEWMARK_MAX_SPEED_DEG_S = 20.0      # the allowlist's ceiling for HSPD (the stage allows 25 deg/s)
+NEWMARK_ACC_MS = 300
+NEWMARK_MIN_LSPD = 10               # pps; the manual's smallest low speed at these high speeds
+NEWMARK_MAX_ACC_MS = 5000           # the allowlist's ceiling for ACC= (the program sends 300)
+NEWMARK_MAX_DRVMS = 500             # the driver's finest micro-stepping (manual: DRVMS 2 - 500)
+NEWMARK_CABLE_LIMIT_DEG = 360.0     # every target within +/-360 deg of the zero (the sample wires)
+NEWMARK_PX_SAFE = (2 ** 27 - 1) // 4    # PX is a 28-bit signed number; targets stay far inside it
+NEWMARK_POLL_S = 0.05
+NEWMARK_IDLE_READS = 3              # "not moving" this many polls in a row before a move counts as ended
+NEWMARK_SETTLE_S = 1.0              # not moving but PX not yet at the target: wait this long before believing it
+NEWMARK_RR_WAIT_S = 2.5             # the manual: no communication for 2 s after RR; half a second of margin
+NEWMARK_STOP_WAIT_S = 10.0
+NEWMARK_ABORT_WAIT_S = 3.0
+NEWMARK_PROGRESS_S = 0.25           # how often a move reports its angle to the page
+# MST bits (manual, Table 6.5).  MST == 0 is not "idle": bit 3 is the home switch.
+NEWMARK_MOVING = 0b111
+NEWMARK_LIMIT_INPUTS = (1 << 4) | (1 << 5)
+NEWMARK_LIMIT_ERRORS = (1 << 6) | (1 << 7)
+NEWMARK_STATUS_BITS = ((0, "constant speed"), (1, "accelerating"), (2, "decelerating"), (3, "home switch on"),
+                       (4, "-limit input on"), (5, "+limit input on"), (6, "-limit ERROR (latched)"),
+                       (7, "+limit ERROR (latched)"), (8, "latch input on"), (9, "Z index on"),
+                       (10, "TOC watchdog time-out"))
+# The commands the program may send: the reviewed script's list without HL+/HL-.
+# Anything else (STORE, RW, J+, POL=, DRVMS=, ...) is refused before it is sent.
+NEWMARK_READ_ONLY = frozenset("ID VER DN MST PX EO HSPD LSPD ACC MM PS POL IERR RZ HCA RT SL EDIO TOC "
+                              "DRVMS DRVRC DRVIC DRVIT R2".split())
+NEWMARK_ACTIONS = frozenset("ABS INC EO=0 EO=1 STOP ABORT CLR RR".split())
+NEWMARK_NUMERIC = re.compile(r"(X|PX=)(-?[0-9]{1,9})|(HSPD=|LSPD=|ACC=)([0-9]{1,7})")
+NEWMARK_INTEGER = re.compile(r"-?[0-9]{1,10}")
+NEWMARK_NO_DEVICE_HELP = ("No Performax USB device found. Check the USB cable, that the NSC-A1 has its 24 V "
+                          "supply on, and that the Performax USB driver is installed (Device Manager: "
+                          "USB\\VID_1589&PID_A101, to be confirmed on the lab PC).")
+_NEWMARK_DLL_DIRECTORIES = []       # os.add_dll_directory cookies, kept for the life of the program
+
+
+class NewmarkStageError(RuntimeError):
+    """Anything that went wrong with the Newmark NSC-A1 stage."""
+
+
+class NewmarkCommandNotAllowed(NewmarkStageError):
+    """A command outside the allowlist, or a number out of range; it was not sent."""
+
+
+class NewmarkControllerError(NewmarkStageError):
+    """The controller answered "?..." (it did not do it)."""
+
+
+class NewmarkRefused(NewmarkStageError):
+    """A precondition was not met; nothing moved."""
+
+
+class NewmarkMotionError(NewmarkStageError):
+    """A move that failed after it was sent.  ``stop_ran``: the STOP sequence
+    already ran for it (time-out, lost communication); otherwise the move had
+    ended (PX off the target, a limit error)."""
+
+    def __init__(self, message, stopped, px=None, notes=(), stop_ran=False):
+        super().__init__(message)
+        self.stopped, self.px, self.notes, self.stop_ran = stopped, px, list(notes), stop_ran
+
+
+class NewmarkStopRequested(NewmarkStageError):
+    """Stop was asked for: before the move (nothing sent) or during it (STOP
+    was sent and waited for; ``stopped`` says whether it was seen stopped)."""
+
+    def __init__(self, stopped, px=None, notes=(), steps_per_degree=None, before=False):
+        self.stopped, self.px, self.notes, self.before = stopped, px, list(notes), before
+        self.stop_ran = not before
+        if before:
+            text = "Stop was pressed before the stage move; nothing was sent"
+        elif stopped:
+            text = f"the stage move was stopped (Stop) at {newmark_angle_text(px, steps_per_degree)}"
+        else:
+            text = ("Stop was pressed during a stage move, but the stage could not be confirmed stopped "
+                    "(STOP, then ABORT): CHECK THE STAGE (switch the NSC-A1's 24 V off if it still turns)")
+        if self.notes:
+            text += " (" + "; ".join(self.notes) + ")"
+        super().__init__(text)
+
+
+def newmark_check_allowed(command, steps_per_degree=None):
+    """Raise NewmarkCommandNotAllowed unless the command is on the list, with its
+    number in range: X within +/-360 deg of the zero once the scale is known
+    (else far inside the 28-bit range), PX= far inside it, MIN_LSPD <= LSPD,
+    HSPD <= 20 deg/s, 1 <= ACC <= 5000 ms.  The ranges are the last line of
+    defence against a units mistake in the caller."""
+    if command in NEWMARK_READ_ONLY or command in NEWMARK_ACTIONS:
+        return
+    match = NEWMARK_NUMERIC.fullmatch(command)
+    if not match:
+        raise NewmarkCommandNotAllowed(f"{command!r} is not on the program's list of allowed NSC-A1 commands; "
+                                       "it was not sent")
+    name, value = ((match.group(1), int(match.group(2))) if match.group(1)
+                   else (match.group(3), int(match.group(4))))
+    top = round(NEWMARK_MAX_SPEED_DEG_S * (steps_per_degree or NEWMARK_FULL_STEPS_PER_DEG * NEWMARK_MAX_DRVMS))
+    if name == "X":
+        wire = round(NEWMARK_CABLE_LIMIT_DEG * steps_per_degree) if steps_per_degree else NEWMARK_PX_SAFE
+        low, high = -wire, wire
+    elif name == "PX=":
+        low, high = -NEWMARK_PX_SAFE, NEWMARK_PX_SAFE
+    elif name == "HSPD=":
+        low, high = NEWMARK_MIN_LSPD + 1, top
+    elif name == "LSPD=":
+        low, high = NEWMARK_MIN_LSPD, top - 1
+    else:
+        low, high = 1, NEWMARK_MAX_ACC_MS
+    if not low <= value <= high:
+        raise NewmarkCommandNotAllowed(f"{command!r}: {value} is outside {low} - {high} for {name.rstrip('=')}; "
+                                       "it was not sent")
+
+
+def newmark_command_buffer(command):
+    """The 64-byte write buffer: the bare upper-case command (no "@01" over USB), NUL-terminated."""
+    data = command.encode("ascii")
+    if len(data) >= NEWMARK_BUFFER_SIZE:
+        raise NewmarkCommandNotAllowed(f"{command!r} is {len(data)} bytes; commands must be shorter than "
+                                       f"{NEWMARK_BUFFER_SIZE}")
+    return ctypes.create_string_buffer(data, NEWMARK_BUFFER_SIZE)
+
+
+def newmark_clean_reply(raw):
+    """Cut at the first NUL, strip CR/LF/spaces and a "#NN" prefix (RT=1)."""
+    text = bytes(raw).split(b"\0", 1)[0].decode("ascii", "replace").strip("\r\n ")
+    return re.sub(r"^#(?:SDE)?[0-9]{2}", "", text).strip("\r\n ")
+
+
+def newmark_describe_status(mst):
+    parts = ["moving" if mst & NEWMARK_MOVING else "not moving"]
+    parts += [text for bit, text in NEWMARK_STATUS_BITS if mst >> bit & 1]
+    parts += [f"bit {bit}" for bit in range(11, 32) if mst >> bit & 1]
+    return ", ".join(parts)
+
+
+def newmark_angle_text(px, steps_per_degree):
+    if px is None:
+        return "an unread position"
+    if not steps_per_degree:
+        return f"PX {px}"
+    return f"{px / steps_per_degree:+.3f}°"
+
+
+def newmark_looks_like_id(reply):
+    """An ID reply ("Ace-Series-SDE"): it contains "SDE" but is not a device name
+    like "SDE01", the DN reply, which a stale reply could also bring."""
+    return "SDE" in reply and not re.fullmatch(r"SDE[0-9]{2}", reply)
+
+
+def newmark_stage_text(state):
+    """The RT-E rack's live stage line, e.g. "Stage: +12.345° (10000 steps/°)"."""
+    spd, px, mst = state.get("steps_per_degree"), state.get("px"), state.get("mst")
+    text = f"Stage: {px / spd:+.3f}° ({spd} steps/°)" if spd else f"Stage: PX {px} (scale not read)"
+    if mst is not None:
+        if mst & NEWMARK_MOVING:
+            text += ", moving"
+        if mst & NEWMARK_LIMIT_ERRORS:
+            text += ", limit error latched"
+        elif mst & NEWMARK_LIMIT_INPUTS:
+            text += ", limit input on"
+    return text
+
+
+def newmark_declare_functions(dll):
+    """argtypes/restype of every function, from the manual's C prototypes."""
+    for name, argtypes in NEWMARK_SIGNATURES:
+        function = getattr(dll, name, None)     # a WinDLL raises AttributeError for a missing export
+        if function is None:
+            if name == NEWMARK_FLUSH:
+                continue
+            raise NewmarkStageError(f"{name} is missing from {NEWMARK_DLL_NAME} (an old or a different DLL?)")
+        function.argtypes = argtypes
+        function.restype = ctypes.c_int
+    return dll
+
+
+def newmark_dll_folder():
+    """The program's own folder (beside this .py, or beside the .exe of a
+    built program) when PerformaxCom.dll is there, else None."""
+    folders = [Path(__file__).resolve().parent]
+    if getattr(sys, "frozen", False):
+        folders.append(Path(sys.executable).resolve().parent)
+    for folder in folders:
+        if (folder / NEWMARK_DLL_NAME).is_file():
+            return folder
+    return None
+
+
+def newmark_explain_load_error(path, error):
+    """The Windows error code, from OSError.winerror or else its exact "[WinError N]"
+    text (not any "193" in the message, which also holds the path)."""
+    code = getattr(error, "winerror", None)
+    if code is None:
+        found = re.search(r"\[WinError (\d+)\]", str(error))
+        code = int(found.group(1)) if found else None
+    if code == 193:
+        return (f"Could not load {path} (WinError 193): it is not a 64-bit DLL. This Python is 64-bit, so "
+                f"{NEWMARK_DLL_NAME} and {NEWMARK_SIUSB_NAME} must both be the 64-bit ones (Arcus \"USB 64-bit "
+                "DLL v2.06\"), side by side in the program's folder.")
+    if code == 126:
+        return (f"Could not load {path} (WinError 126): it, or the {NEWMARK_SIUSB_NAME} it needs, was not found. "
+                f"Put the 64-bit {NEWMARK_DLL_NAME} and {NEWMARK_SIUSB_NAME} together in the program's folder "
+                "(beside Transport_all_NH_dev.py).")
+    return f"Could not load {path}: {error}"
+
+
+def newmark_load_performax():
+    """The real loader, Windows only (the tests replace it).  Search: the
+    program's own folder, then the normal Windows DLL search.  The folder
+    found is added with os.add_dll_directory, and its SiUSBXp.dll is loaded
+    first, so PerformaxCom.dll uses that one."""
+    win_dll = getattr(ctypes, "WinDLL", None)
+    if win_dll is None:
+        raise NewmarkStageError(f"{NEWMARK_DLL_NAME} is a Windows DLL: the Newmark stage works on the lab PC "
+                                "(64-bit Python 3.11 on Windows)")
+    bits = ctypes.sizeof(ctypes.c_void_p) * 8
+    if bits != 64:
+        # The DLLs set up for the stage are the 64-bit ones; a 32-bit
+        # PerformaxCom.dll would also need another calling convention.
+        raise NewmarkStageError(f"This is a {bits}-bit Python: the Newmark stage needs 64-bit Python 3.11 "
+                                "with the 64-bit DLLs")
+    folder = newmark_dll_folder()
+    path = NEWMARK_DLL_NAME
+    if folder is not None:
+        if hasattr(os, "add_dll_directory"):
+            _NEWMARK_DLL_DIRECTORIES.append(os.add_dll_directory(str(folder)))
+        path = str(folder / NEWMARK_DLL_NAME)
+        helper = folder / NEWMARK_SIUSB_NAME
+        if helper.is_file():
+            try:
+                win_dll(str(helper))
+            except OSError as error:
+                raise NewmarkStageError(newmark_explain_load_error(helper, error)) from error
+    try:
+        dll = win_dll(path)
+    except OSError as error:
+        raise NewmarkStageError(newmark_explain_load_error(path, error)) from error
+    return newmark_declare_functions(dll), path
+
+
+class _EitherEvent:
+    """is_set() when either event is set: an Angle scan's stage move stops on
+    the scan's Stop (or the program closing) and on Stop stage."""
+
+    def __init__(self, *events):
+        self.events = events
+
+    def is_set(self):
+        return any(event.is_set() for event in self.events)
+
+
+class NewmarkNSCA1Controller:
+    """The Newmark NSC-A1 + RM-5-110 rotation stage over PerformaxCom.dll.
+
+    One thread only: SiUSBXp.dll keeps its USB handles per thread, so every
+    DLL call of a session must come from the thread that connected (on the
+    RT-E page, its single-worker executor 'rte-control').  A call from any
+    other thread is refused before it reaches the DLL.  A failed command is
+    never repeated (a move may already have started); replies are brought
+    back in step (flush, ID, VER) before the next one is trusted."""
+
+    label = "Newmark NSC-A1"
+
+    def __init__(self, logger, owner_scope="RT-E", loader=None):
+        self.logger = logger
+        self.owner_scope = str(owner_scope)
+        self._loader = loader           # None: newmark_load_performax, looked up when connecting
+        self._now, self._sleep = time.monotonic, time.sleep
+        self.dll = None
+        self.dll_path = ""
+        self.handle = None
+        self._thread_id = None
+        self._no_flush_said = False
+        self._reset_session()
+
+    def _reset_session(self):
+        self.handle = None
+        self._thread_id = None
+        self.resource_name = ""
+        self.identity = ""
+        self.version = ""
+        self.steps_per_degree = None
+        self.microsteps = None
+        self.scale_error = ""
+        self.need_resync = False
+        self.motion_may_run = False     # a move command was sent and it has not been seen stopped since
+        self.stop_finished = False      # a stop sequence ran to its end (stopped or not)
+        self.in_move = False            # move_to_deg is running: its own loop watches the stop event
+
+    @property
+    def connected(self) -> bool:
+        return self.handle is not None
+
+    # ---- the DLL, from one thread only ------------------------------------
+    def _check_thread(self):
+        if self._thread_id is not None and threading.get_ident() != self._thread_id:
+            raise NewmarkStageError(f"{self.label}: a call from another thread was refused before it reached the "
+                                    "DLL (its USB handles belong to the thread that connected)")
+
+    def _function(self, name, optional=False):
+        self._check_thread()
+        function = getattr(self.dll, name, None)
+        if function is None and not optional:
+            raise NewmarkStageError(f"{name} is missing from {NEWMARK_DLL_NAME}")
+        return function
+
+    def _require_open(self):
+        self._check_thread()
+        if self.handle is None:
+            raise NewmarkStageError(f"{self.label} is not connected")
+
+    def _product_string(self, index, option):
+        buffer = ctypes.create_string_buffer(NEWMARK_PRODUCT_STRING_SIZE)
+        if not self._function("fnPerformaxComGetProductString")(index, buffer, option):
+            return None
+        return buffer.value.decode("ascii", "replace").strip()
+
+    def devices(self):
+        """[(index, serial, description)] from the DLL's own enumeration."""
+        count = ctypes.c_uint32(0)
+        if not self._function("fnPerformaxComGetNumDevices")(ctypes.pointer(count)):
+            raise NewmarkStageError("fnPerformaxComGetNumDevices failed (is the Performax USB driver installed?)")
+        return [(index, self._product_string(index, NEWMARK_SERIAL_OPTION),
+                 self._product_string(index, NEWMARK_DESCRIPTION_OPTION)) for index in range(count.value)]
+
+    def _choose_device(self, serial):
+        """"auto" (no serial): the only Performax device; else the one with that USB serial."""
+        found = self.devices()
+        if not found:
+            raise NewmarkStageError(NEWMARK_NO_DEVICE_HELP)
+        serials = ", ".join(repr(number) for _index, number, _text in found)
+        if serial:
+            matches = [(index, number) for index, number, _text in found if number == serial]
+            if len(matches) != 1:
+                raise NewmarkStageError(f"{len(matches)} Performax devices have the USB serial {serial!r} "
+                                        f"(found: {serials})")
+            return matches[0]
+        if len(found) > 1:
+            raise NewmarkStageError(f"{len(found)} Performax devices are plugged in: type the NSC-A1's USB serial "
+                                    f"(one of {serials}) in place of auto")
+        return found[0][0], found[0][1] or ""
+
+    def _open(self, index):
+        if not self._function("fnPerformaxComSetTimeouts")(NEWMARK_TIMEOUT_MS, NEWMARK_TIMEOUT_MS):
+            raise NewmarkStageError("fnPerformaxComSetTimeouts failed")
+        handle = ctypes.c_void_p()
+        if not self._function("fnPerformaxComOpen")(index, ctypes.pointer(handle)) or not handle.value:
+            raise NewmarkStageError(f"Could not open Performax device {index} (is QuickMotion, "
+                                    "Newmark_motor_test.py or another program using it?)")
+        self.handle = handle
+        self._flush()
+
+    def _flush(self):
+        """fnPerformaxComFlush if this DLL has it: right after Open and after a failed transaction."""
+        flush = self._function(NEWMARK_FLUSH, optional=True)
+        if flush is None:
+            if not self._no_flush_said:
+                self.logger(f"RT-E {self.label}: this {NEWMARK_DLL_NAME} has no {NEWMARK_FLUSH} (an older DLL)")
+                self._no_flush_said = True
+            return False
+        try:
+            return bool(flush(self.handle))
+        except Exception:
+            return False
+
+    def _close_handle(self):
+        if self.handle is None:
+            return
+        close = self._function("fnPerformaxComClose")   # off the connecting thread: refused, handle kept
+        try:
+            close(self.handle)
+        except Exception:
+            pass
+        self.handle = None
+
+    # ---- one command ---------------------------------------------------------
+    def _transact(self, command):
+        """Send one allowed command and return its reply (never repeated)."""
+        newmark_check_allowed(command, self.steps_per_degree)
+        write = newmark_command_buffer(command)
+        self._require_open()
+        send_recv = self._function("fnPerformaxComSendRecv")
+        read = ctypes.create_string_buffer(NEWMARK_BUFFER_SIZE)
+        finished = False
+        try:
+            ok = send_recv(self.handle, write, NEWMARK_BUFFER_SIZE, NEWMARK_BUFFER_SIZE, read)
+            finished = True
+        finally:
+            if not finished:            # an error mid-transaction: its reply may come later
+                self.need_resync = True
+        if not ok:
+            self.need_resync = True
+            self._flush()
+            raise NewmarkStageError(f"{command}: the USB transaction failed (it is not repeated)")
+        reply = newmark_clean_reply(read.raw)
+        if not reply:
+            self.need_resync = True
+            raise NewmarkStageError(f"{command}: an empty reply")
+        if reply.startswith("?"):
+            raise NewmarkControllerError(f"{command}: the controller answered {reply!r}")
+        return reply
+
+    def _resync(self):
+        """After a failure: flush, then ID and VER.  ID with "SDE", then a VER
+        reply that is not the ID reply, show that they are back in step (one
+        behind, VER would get the ID reply)."""
+        self._flush()
+        identity = self._transact("ID")
+        if not newmark_looks_like_id(identity):
+            raise NewmarkStageError(f"after a flush ID answered {identity!r}: replies are out of step")
+        version = self._transact("VER")
+        if version == identity:
+            raise NewmarkStageError(f"VER answered {version!r}, the ID reply: replies are still one behind")
+        self.need_resync = False
+
+    def query(self, command):
+        if self.need_resync:
+            self._resync()
+        return self._transact(command)
+
+    def number(self, command):
+        reply = self.query(command)
+        if not NEWMARK_INTEGER.fullmatch(reply):
+            self.need_resync = True
+            raise NewmarkStageError(f"{command} answered {reply!r}, not a number (a stale reply?)")
+        return int(reply)
+
+    def set_ok(self, command):
+        reply = self.query(command)
+        if reply != "OK":
+            self.need_resync = True
+            raise NewmarkStageError(f"{command} answered {reply!r}, not OK (a stale reply?)")
+
+    def status(self):
+        mst = self.number("MST")
+        if mst < 0:
+            self.need_resync = True
+            raise NewmarkStageError(f"MST answered {mst} (a stale reply?)")
+        return mst
+
+    # ---- connection ----------------------------------------------------------
+    def _identify(self):
+        """ID before anything else; then VER, whose different reply shows they are in step."""
+        try:
+            identity = self._transact("ID")
+        except NewmarkControllerError as error:
+            raise NewmarkStageError(f"{error}: not an NSC-A1") from error
+        if not newmark_looks_like_id(identity):
+            raise NewmarkStageError(f"The device answered ID with {identity!r}, not an NSC-A1 (\"Ace-Series-SDE\"). "
+                                    "If it is the NSC-A1, the reply may be a stale one: unplug and replug the USB "
+                                    "cable and connect again.")
+        version = self._transact("VER")
+        if version == identity:
+            raise NewmarkStageError(f"VER answered {version!r}, the ID reply: replies are out of step; unplug and "
+                                    "replug the USB cable and connect again")
+        return identity, version
+
+    def connect(self, resource="auto"):
+        """Open the NSC-A1 ("auto" = the only Performax device, else its USB
+        serial), confirm it is one (ID), and read its scale (RR -> DRVMS).
+        A scale that cannot be read (moving, StepNLoop on, ...) leaves it
+        connected, so Stop works, with moves refused until it is read."""
+        if self.handle is not None:
+            return self.identity
+        requested = str(resource or "").strip()
+        serial = "" if requested.lower() in ("", "auto") else requested
+        self._thread_id = threading.get_ident()
+        try:
+            if self.dll is None:
+                loader = self._loader or newmark_load_performax
+                self.dll, self.dll_path = loader()
+            index, chosen = self._choose_device(serial)
+            self._open(index)
+            identity, version = self._identify()
+        except BaseException:
+            self._close_handle()
+            self._reset_session()
+            raise
+        self.resource_name, self.identity, self.version = chosen, identity, version
+        try:
+            self._read_scale()
+        except Exception as error:
+            self.steps_per_degree = self.microsteps = None
+            self.scale_error = str(error)
+            self.logger(f"RT-E {self.label} connected ({identity}, {version}); scale not read: {error}")
+        else:
+            self.logger(f"RT-E {self.label} connected ({identity}, {version}): {self.scale_text()}")
+        return identity
+
+    def scale_text(self):
+        if not self.steps_per_degree:
+            return f"scale not read: {self.scale_error}"
+        return (f"{self.steps_per_degree} steps/° ({NEWMARK_GEAR_RATIO}:1 x {NEWMARK_FULL_STEPS_PER_TURN} "
+                f"x DRVMS {self.microsteps} / 360)")
+
+    def disconnect(self):
+        """STOP first if the stage is moving (bounded), then close the handle."""
+        if self.handle is None:
+            self._reset_session()
+            return
+        self._check_thread()
+        outcome, failure = None, None
+        try:
+            try:
+                moving = bool(self.status() & NEWMARK_MOVING)
+            except Exception:
+                moving = self.motion_may_run and not self.stop_finished
+            if moving:
+                outcome = self._stop_motion()
+        except Exception as error:
+            failure = error
+        finally:
+            self._close_handle()
+            spd = self.steps_per_degree
+            self._reset_session()
+        self.logger(f"RT-E {self.label} disconnected")
+        if outcome is not None and not outcome[0]:
+            raise NewmarkStageError(f"{self.label} closed, but the stage could not be confirmed stopped "
+                                    "(STOP, then ABORT): CHECK THE STAGE")
+        if failure is not None:
+            raise failure
+        if outcome is not None:
+            self.logger(f"RT-E {self.label}: stopped before closing, at {newmark_angle_text(outcome[1], spd)}")
+
+    # ---- reads ---------------------------------------------------------------
+    def read_state(self):
+        """MST and PX (two reads); the scale is the one read when connecting."""
+        self._require_open()
+        mst = self.status()
+        px = self.number("PX")
+        spd = self.steps_per_degree
+        return {"px": px, "mst": mst, "moving": bool(mst & NEWMARK_MOVING),
+                "status_text": newmark_describe_status(mst), "steps_per_degree": spd,
+                "angle_deg": px / spd if spd else None, "scale_error": self.scale_error}
+
+    def _read_scale(self):
+        """DRVMS (and DRVRC/DRVIC/DRVIT for the log) via RR; nothing is written.
+        steps/deg = 72:1 x 200 full steps x DRVMS / 360 = 40 x DRVMS."""
+        mst = self.status()
+        if mst & NEWMARK_MOVING:
+            raise NewmarkRefused("the stage is moving, and reading its scale (RR) cuts communication for 2 s")
+        sl, edio = self.number("SL"), self.number("EDIO")
+        if sl or edio:
+            raise NewmarkRefused(f"StepNLoop (SL={sl}) or DIO control (EDIO={edio}) is on; the manual wants both off "
+                                 "while the driver is read: switch them off in Newmark's QuickMotion")
+        self.set_ok("RR")
+        self._sleep(NEWMARK_RR_WAIT_S)
+        r2 = self.number("R2")
+        if r2 != 1:
+            raise NewmarkRefused(f"the driver read failed (R2 = {r2}; 1 means success)")
+        microsteps = self.number("DRVMS")
+        if not 2 <= microsteps <= NEWMARK_MAX_DRVMS:
+            raise NewmarkRefused(f"DRVMS = {microsteps}, outside 2 - {NEWMARK_MAX_DRVMS}")
+        others = []
+        for name in ("DRVRC", "DRVIC", "DRVIT"):
+            try:
+                others.append(f"{name} {self.number(name)}")
+            except NewmarkStageError as error:
+                others.append(f"{name} not read ({error})")
+        self.microsteps = microsteps
+        self.steps_per_degree = NEWMARK_FULL_STEPS_PER_DEG * microsteps
+        self.scale_error = ""
+        self.logger(f"RT-E {self.label} driver: DRVMS {microsteps}, " + ", ".join(others))
+
+    # ---- motion --------------------------------------------------------------
+    def _check_ready(self):
+        """Before every move: not moving, no latched limit error, no limit input, EO = 1."""
+        mst = self.status()
+        if mst & NEWMARK_MOVING:
+            raise NewmarkRefused(f"the stage is moving (MST {mst}: {newmark_describe_status(mst)}); stop it first")
+        if mst & NEWMARK_LIMIT_ERRORS:
+            raise NewmarkRefused(f"a limit error is latched (MST {mst}: {newmark_describe_status(mst)}); clear it "
+                                 "on purpose first (Newmark_motor_test.py clear)")
+        if mst & NEWMARK_LIMIT_INPUTS:
+            raise NewmarkRefused(f"a limit input is on at rest (MST {mst}: {newmark_describe_status(mst)}), but the "
+                                 "RM-5-110 has no limit switches: a polarity problem; fix the limit polarity in "
+                                 "Newmark's QuickMotion")
+        eo = self.number("EO")
+        if eo != 1:
+            raise NewmarkRefused(f"the motor driver is off (EO={eo}): the position counter would advance without "
+                                 "motion; switch it on with Newmark_motor_test.py enable")
+        return mst
+
+    def _set_speeds(self, hspd, lspd, acc):
+        """Runtime registers (not stored): set, then read back."""
+        if not NEWMARK_MIN_LSPD <= lspd < hspd:
+            raise NewmarkCommandNotAllowed(f"LSPD {lspd} must be at least {NEWMARK_MIN_LSPD} and below HSPD {hspd}; "
+                                           "nothing was sent")
+        self.set_ok(f"HSPD={hspd}")
+        self.set_ok(f"LSPD={lspd}")
+        self.set_ok(f"ACC={acc}")
+        hspd_read, lspd_read, acc_read = self.number("HSPD"), self.number("LSPD"), self.number("ACC")
+        if (hspd_read, lspd_read) != (hspd, lspd):
+            raise NewmarkRefused(f"the speeds read back HSPD {hspd_read}, LSPD {lspd_read} (set {hspd}, {lspd})")
+        if acc_read <= 0:
+            raise NewmarkRefused(f"ACC read back {acc_read} ms")
+        return acc_read     # the controller may adjust ACC: a positive value is accepted
+
+    def move_to_deg(self, target_deg, stop_event, on_progress=None):
+        """Turn to ``target_deg`` from the zero (absolute, so 350 -> 0 goes back
+        -350, never across 360) at 5 deg/s, and wait until it has ended with
+        PX exactly at the target.  ``stop_event.is_set()`` is polled; once it
+        is set, STOP is sent from here (this thread), the stop is waited for
+        and NewmarkStopRequested is raised.  ``on_progress(px, degrees)`` is
+        called a few times a second while it turns.  Returns read_state()."""
+        self._require_open()
+        target_deg = float(target_deg)
+        if not math.isfinite(target_deg) or abs(target_deg) > NEWMARK_CABLE_LIMIT_DEG:
+            raise NewmarkRefused(f"the stage target {target_deg:g}° is beyond ±{NEWMARK_CABLE_LIMIT_DEG:g}° of the "
+                                 "zero (the sample wires); nothing moved")
+        self.in_move = True
+        try:
+            if stop_event is not None and stop_event.is_set():
+                raise NewmarkStopRequested(True, before=True)
+            if self.steps_per_degree is None:
+                self._read_scale()
+            spd = self.steps_per_degree
+            target = round(target_deg * spd)
+            if abs(target) > round(NEWMARK_CABLE_LIMIT_DEG * spd) or abs(target) > NEWMARK_PX_SAFE:
+                raise NewmarkRefused(f"the stage target PX {target} is beyond ±{NEWMARK_CABLE_LIMIT_DEG:g}° of the zero")
+            hspd = round(NEWMARK_SPEED_DEG_S * spd)
+            lspd = max(NEWMARK_MIN_LSPD, hspd // 10)
+            self.set_ok("ABS")
+            mode = self.number("MM")
+            if mode != 0:
+                raise NewmarkRefused(f"MM read back {mode}, not 0 (absolute)")
+            acc = self._set_speeds(hspd, lspd, NEWMARK_ACC_MS)
+            self._check_ready()
+            start = self.number("PX")
+            if start != target:
+                if stop_event is not None and stop_event.is_set():
+                    raise NewmarkStopRequested(True, before=True)
+                timeout = 3 * (abs(target - start) / hspd + 2 * acc / 1000) + 5
+                # Flagged before sending: a failed reply does not prove the
+                # move did not start, so it is never repeated, only stopped.
+                self.motion_may_run, self.stop_finished = True, False
+                self.set_ok(f"X{target}")
+                end, mst = self._wait_motion(target, timeout, stop_event, on_progress)
+                if mst & NEWMARK_LIMIT_ERRORS:
+                    raise NewmarkMotionError(f"the stage stopped with a limit error (MST {mst}: "
+                                             f"{newmark_describe_status(mst)}) at {newmark_angle_text(end, spd)}",
+                                             True, end)
+                if end != target:
+                    raise NewmarkMotionError(
+                        f"the stage ended at {newmark_angle_text(end, spd)} (PX {end}), not at the target "
+                        f"{target_deg:+.3f}° (PX {target}, {end - target:+d} steps): steps lost, or the move was "
+                        "cut short", True, end)
+        finally:
+            self.in_move = False
+        return self.read_state()
+
+    def _wait_motion(self, target, timeout_s, stop_event, on_progress):
+        """Poll MST and PX every 50 ms until the move has ended: IDLE_READS polls
+        in a row not moving, and PX at the target (or still elsewhere after
+        SETTLE_S not moving).  One idle read is not enough: the controller may
+        set its moving bits a moment after its OK.  Stop asked, the time-out,
+        a lost reply or any other error: STOP here, wait, and raise."""
+        spd = self.steps_per_degree
+        started = self._now()
+        idle, idle_since, reason, asked = 0, None, None, False
+        reported = -math.inf
+        try:
+            self._sleep(NEWMARK_POLL_S)
+            while True:
+                if stop_event is not None and stop_event.is_set():
+                    asked = True
+                    break
+                mst = self.status()
+                px = self.number("PX")
+                now = self._now()
+                if on_progress is not None and now - reported >= NEWMARK_PROGRESS_S:
+                    reported = now
+                    try:
+                        on_progress(px, px / spd)
+                    except Exception:
+                        pass        # a display update never cuts a move short
+                if mst & NEWMARK_MOVING:
+                    idle, idle_since = 0, None
+                else:
+                    idle += 1
+                    idle_since = now if idle_since is None else idle_since
+                    if idle >= NEWMARK_IDLE_READS and (px == target or now - idle_since >= NEWMARK_SETTLE_S):
+                        break
+                if now - started > timeout_s:
+                    reason = f"the stage move did not end within {timeout_s:.0f} s"
+                    break
+                self._sleep(NEWMARK_POLL_S)
+        except Exception as error:
+            reason = f"the stage move was cut off by an error ({error})"
+        if asked:
+            stopped, px, notes = self._stop_motion()
+            raise NewmarkStopRequested(stopped, px, notes, spd)
+        if reason is not None:
+            stopped, px, notes = self._stop_motion()
+            where = (f"stopped (STOP) at {newmark_angle_text(px, spd)}" if stopped else
+                     "and it could not be confirmed stopped (STOP, then ABORT): CHECK THE STAGE (switch the "
+                     "NSC-A1's 24 V off if it still turns)")
+            raise NewmarkMotionError(f"{reason}, {where}" + (f" ({'; '.join(notes)})" if notes else ""),
+                                     stopped, px, notes, stop_ran=True)
+        self.motion_may_run = False
+        return self.number("PX"), mst
+
+    def _send_stop(self, command, notes):
+        try:
+            reply = self._transact(command)     # sent even when replies are out of step
+            if reply != "OK":
+                self.need_resync = True
+                notes.append(f"{command} answered {reply!r}")
+        except Exception as error:
+            notes.append(f"{command}: {error}")
+
+    def _wait_until_still(self, wait_s, notes):
+        """(True, PX) once MST shows it not moving; (False, None) after wait_s."""
+        deadline = self._now() + wait_s
+        while True:
+            try:
+                if not self.status() & NEWMARK_MOVING:
+                    break
+            except Exception as error:
+                if str(error) not in notes:
+                    notes.append(str(error))
+            if self._now() >= deadline:
+                return False, None
+            self._sleep(NEWMARK_POLL_S)
+        self.motion_may_run = False
+        try:
+            return True, self.number("PX")
+        except Exception as error:
+            notes.append(f"PX could not be read: {error}")
+            return True, None
+
+    def _stop_motion(self, wait_s=NEWMARK_STOP_WAIT_S):
+        """STOP (decelerated); wait until it is not moving; ABORT if STOP did not
+        stop it.  Returns (stopped, PX, notes); every step is tried."""
+        self.stop_finished = False
+        notes = []
+        self._send_stop("STOP", notes)
+        stopped, px = self._wait_until_still(wait_s, notes)
+        if not stopped:
+            self.logger(f"RT-E {self.label}: not stopped after STOP; ABORT")
+            self._send_stop("ABORT", notes)
+            stopped, px = self._wait_until_still(NEWMARK_ABORT_WAIT_S, notes)
+        self.stop_finished = True
+        return stopped, px, notes
+
+    def stop(self):
+        """Stop stage outside a move of this program: STOP, wait, ABORT if STOP
+        did not stop it, read PX.  Returns {stopped, px, angle_deg, notes}."""
+        self._require_open()
+        self.motion_may_run = True      # whatever turns it
+        stopped, px, notes = self._stop_motion()
+        spd = self.steps_per_degree
+        return {"stopped": stopped, "px": px, "notes": notes, "steps_per_degree": spd,
+                "angle_deg": px / spd if px is not None and spd else None}
+
+    def set_zero(self):
+        """PX=0 here (runtime only: lost when the NSC-A1 is powered off, kept
+        across a USB reconnect).  The +/-360 deg wire limit moves with it.
+        Returns the old PX."""
+        self._require_open()
+        mst = self.status()
+        if mst & NEWMARK_MOVING:
+            raise NewmarkRefused("the stage is moving; stop it first")
+        before = self.number("PX")
+        self.set_ok("PX=0")
+        now = self.number("PX")
+        if now != 0:
+            raise NewmarkStageError(f"PX read back {now} after PX=0")
+        self.logger(f"RT-E {self.label}: zero set here (was {newmark_angle_text(before, self.steps_per_degree)}, "
+                    f"PX {before})")
+        return before
+
+
 def rte_scan_plan(mode, start, end, step, loops=1, round_trip=True):
-    """KEPCO drive-current or 6221 excitation-current nodes; no field calibration."""
-    if mode not in ('Field', 'Current'):
-        raise ValueError('RT-E supports only Field and Current scans')
+    """KEPCO drive-current, 6221 excitation-current or stage-angle nodes; no field calibration."""
+    if mode not in ('Field', 'Current', 'Angle'):
+        raise ValueError('RT-E supports only Field, Current and Angle scans')
     nodes = tuple(ppms_scan_axis(float(start), float(end), float(step)))
     if mode == 'Field' and any(abs(v) > STFMR_KEPCO_MAX_CURRENT_A for v in nodes):
         raise ValueError('KEPCO sweep current must stay within +/-10 A')
+    if mode == 'Angle':
+        outside = [v for v in nodes if abs(v) > NEWMARK_CABLE_LIMIT_DEG]
+        if outside:
+            # The sample wires: the stage turns the holder with them attached
+            # (user, 2026-10-13), so no angle may lie beyond one turn either
+            # way of the stage zero.
+            raise ValueError(f'Stage angles must stay within +/-{NEWMARK_CABLE_LIMIT_DEG:g}° of the stage zero '
+                             f'(the sample wires); {outside[0]:g}° is outside')
     loops_value = float(loops)
     if not math.isfinite(loops_value) or not loops_value.is_integer() or not 1 <= loops_value <= 10000:
         raise ValueError('Loops must be an integer from 1 to 10000')
@@ -41053,7 +41867,14 @@ class RTEPanel(PPMSPanel):
         self.rte_controllers = {
             'kepco': STFMRKepco4886Controller(parent.thread_log),
             'gauss': STFMRGauss475Controller(parent.thread_log),
+            # The rotation stage of the Angle scan (user, 2026-10-13).  Its DLL
+            # is loaded on Connect, never here.
+            'newmark': NewmarkNSCA1Controller(parent.thread_log),
         }
+        # Stop stage sets this; a manual move watches it, and an Angle scan's
+        # moves watch it beside the scan's own stop event.
+        self.rte_stage_stop_event = threading.Event()
+        self.rte_stage_where = ''
         super().__init__(parent, tab)
         # This rack uses DEV4414, not the other modules' DEV4435 server.
         self.zurich_controller.mfli_server_candidates = SUPER_ZURICH_MFLI_SERVERS
@@ -41062,7 +41883,8 @@ class RTEPanel(PPMSPanel):
             controller.owner_scope = 'RT-E'
         self.rte_controllers['gauss'].owner_scope = 'RT-E'
         self.rte_controllers['kepco'].owner_scope = 'RT-E'
-        self.ppms_plot_frame.configure(text='RT-E: X, Y, phase vs measured field / excitation current')
+        self.rte_controllers['newmark'].owner_scope = 'RT-E'
+        self.ppms_plot_frame.configure(text='RT-E: X, Y, phase vs measured field / excitation current / sample angle')
         # RT-E start-up defaults, which differ from the PPMS page (the user's
         # figure, 2026-10-07): 6221 0.1 mA RMS at 17.3 Hz, and the Zurich
         # alone measures, reading 1+2+3 harmonics together.  The SR830s keep
@@ -41182,6 +42004,30 @@ class RTEPanel(PPMSPanel):
             self._create_connection_indicator(group, 'ppms_' + key).grid(row=device_row, column=4, padx=3)
             status = self._ppms_compact_status(self.ppms_xy_vars[key]) if key in PPMS_SR830_KEYS else self.ppms_device_connection_vars[key]
             ttk.Label(group, textvariable=status, width=13).grid(row=device_row, column=5, sticky='w')
+        # The Newmark NSC-A1 rotation stage after the other rack rows, in the
+        # same columns (user, 2026-10-13).  "auto" takes the only Performax USB
+        # device; with several, its USB serial goes in the box.  The row says
+        # "Newmark stage": "Newmark NSC-A1" is wider than the 13-character
+        # label column, and widening that column would shift every row.
+        self.rte_resources['newmark'] = tk.StringVar(value='auto')
+        self.rte_connections['newmark'] = tk.StringVar(value='Not connected')
+        ttk.Label(rack, text='Newmark stage', width=13).grid(row=4, column=0, sticky='w')
+        entry = ttk.Entry(rack, textvariable=self.rte_resources['newmark'], width=18)
+        entry.grid(row=4, column=1)
+        connect = ttk.Button(rack, text='Connect', width=8, command=lambda: self._rte_connect('newmark'))
+        connect.grid(row=4, column=2)
+        disconnect = ttk.Button(rack, text='Disconnect', width=10, command=lambda: self._rte_disconnect('newmark'))
+        disconnect.grid(row=4, column=3)
+        self._create_connection_indicator(rack, 'rte_newmark').grid(row=4, column=4, padx=3)
+        ttk.Label(rack, textvariable=self.rte_connections['newmark'], width=13).grid(row=4, column=5, sticky='w')
+        self.rte_connection_widgets['newmark'] = (entry, connect, disconnect)
+        # The stage's live line beside its row, a fixed box like the field and
+        # KEPCO lines: "Stage: +12.345° (10000 steps/°)" or a read failure.
+        self.rte_stage_live = tk.StringVar(value='Stage: not connected')
+        live = ttk.Label(rack, textvariable=self.rte_stage_live, width=32)
+        live.grid(row=4, column=6, padx=(10, 0), sticky='w')
+        if laid_out:
+            live.configure(wraplength=32 * tkfont.nametofont('TkDefaultFont', root=live).measure('0'))
         if laid_out:
             # Side by side in the widened lab window; stacked in the 1101 px
             # window the program opens with, where the two did not fit.
@@ -41241,6 +42087,25 @@ class RTEPanel(PPMSPanel):
         current_live = ttk.Label(params, textvariable=self.ppms_current_live_var, width=1, wraplength=0)
         current_live.grid(row=3, column=0, columnspan=4, sticky='ew')
         current_live.bind('<Configure>', lambda event: event.widget.configure(wraplength=max(100, event.width - 8)), add='+')
+        # Manual stage controls (user, 2026-10-13), a row of their own under
+        # the source settings and lock-in choices: a fifth row inside either
+        # of those would break their level rows side by side.  Move stage and
+        # Set stage 0° are edit widgets (locked while busy); Stop stage stays
+        # usable whenever the stage is connected, even during a move or scan.
+        stage_row = ttk.Frame(settings)
+        stage_row.grid(row=1, column=0, sticky='w', pady=(4, 0))
+        self.rte_stage_target = tk.StringVar(value='0')
+        ttk.Label(stage_row, text='Stage °').grid(row=0, column=0, sticky='e')
+        stage_entry = ttk.Entry(stage_row, textvariable=self.rte_stage_target, width=7)
+        stage_entry.grid(row=0, column=1, padx=3, sticky='ew')
+        self.rte_edit_widgets.append((stage_entry, 'normal'))
+        for column, label, callback in ((2, 'Move stage', self._rte_stage_move),
+                                        (4, 'Set stage 0°', self._rte_stage_set_zero)):
+            button = ttk.Button(stage_row, text=label, command=callback, width=11)
+            button.grid(row=0, column=column, padx=4)
+            self.rte_edit_widgets.append((button, 'normal'))
+        self.rte_stage_stop_button = ttk.Button(stage_row, text='Stop stage', command=self._rte_stage_stop, width=11)
+        self.rte_stage_stop_button.grid(row=0, column=3, padx=4)
         for grid_row, key in enumerate(PPMS_SR830_KEYS):
             # Share the safety row on the right to save one row of height.
             # The inherited Zurich controls follow SR830-3 at row 3.
@@ -41267,7 +42132,7 @@ class RTEPanel(PPMSPanel):
         self.ppms_simple_range = [tk.StringVar(value=v) for v in ('0.01', '1', '0.01')]
         self.rte_scan_units = tk.StringVar(value='6221 mA RMS')
         self.rte_round_trip = tk.BooleanVar(value=False)
-        combo = ttk.Combobox(scan, textvariable=self.ppms_simple_mode, values=('Field', 'Current'), state='readonly', width=9)
+        combo = ttk.Combobox(scan, textvariable=self.ppms_simple_mode, values=('Field', 'Current', 'Angle'), state='readonly', width=9)
         combo.grid(row=0, column=0)
         combo.bind('<<ComboboxSelected>>', self._rte_mode_changed)
         self.rte_edit_widgets.append((combo, 'readonly'))
@@ -41341,13 +42206,18 @@ class RTEPanel(PPMSPanel):
         self.ppms_plot_axis = 'current'
 
     def _rte_mode_changed(self, _event=None):
-        current = self.ppms_simple_mode.get() == 'Current'
+        mode = self.ppms_simple_mode.get()
+        current = mode == 'Current'
+        # Round trip by default for Field and Angle: an Angle scan then comes
+        # back toward its start, unwinding the sample wires (user, 2026-10-13).
         self.rte_round_trip.set(not current)
-        for variable, value in zip(self.ppms_simple_range, ('0.01', '1', '0.01') if current else ('-3', '3', '0.05')):
+        defaults = (('0.01', '1', '0.01') if current else ('0', '360', '5') if mode == 'Angle'
+                    else ('-3', '3', '0.05'))
+        for variable, value in zip(self.ppms_simple_range, defaults):
             variable.set(value)
-        self.rte_scan_units.set('6221 mA RMS' if current else 'KEPCO A')
+        self.rte_scan_units.set('6221 mA RMS' if current else 'Stage °' if mode == 'Angle' else 'KEPCO A')
         if not self.ppms_field_scan_rows:
-            self.ppms_plot_axis = 'current' if current else 'field'
+            self.ppms_plot_axis = 'current' if current else 'angle' if mode == 'Angle' else 'field'
             self._redraw_ppms_transport_plot()
 
     def _update_ppms_control_ui(self):
@@ -41365,6 +42235,13 @@ class RTEPanel(PPMSPanel):
             connect.configure(state='disabled' if busy or connected else 'normal')
             disconnect.configure(state='normal' if connected and not busy else 'disabled')
             self._set_connection_indicator('rte_' + key, connected)
+        stop_stage = self.__dict__.get('rte_stage_stop_button')
+        if stop_stage is not None:
+            # Not locked while busy: during a move or an Angle scan it is the
+            # way to stop the stage (it only sets the event the move watches).
+            stage = self.rte_controllers.get('newmark')
+            stop_stage.configure(state='normal' if stage is not None and stage.connected and not self.rte_closed
+                                 else 'disabled')
         for key, controller in self.ppms_instrument_controllers.items():
             self._set_ppms_device_ui(key, controller.connected)
             if busy:
@@ -41410,12 +42287,113 @@ class RTEPanel(PPMSPanel):
 
     def _rte_connect(self, key):
         resource = self.rte_resources[key].get().strip()
+        if key == 'newmark':
+            stage = self.rte_controllers[key]
+            # Connect and the first read on the RT-E worker; the Tk thread
+            # only shows the result (it never calls the stage's DLL).
+            def connect_stage():
+                stage.connect(resource)
+                return stage.read_state()
+            def connected(state):
+                self.rte_connections[key].set('Connected')
+                self.rte_stage_live.set(newmark_stage_text(state))
+            self._rte_submit(connect_stage, connected)
+            return
         self._rte_submit(lambda: self.rte_controllers[key].connect(resource),
                          lambda identity: self.rte_connections[key].set('Connected'))
 
     def _rte_disconnect(self, key):
-        self._rte_submit(self.rte_controllers[key].disconnect,
-                         lambda _: self.rte_connections[key].set('Not connected'))
+        def disconnected(_):
+            self.rte_connections[key].set('Not connected')
+            if key == 'newmark':
+                self.rte_stage_live.set('Stage: not connected')
+        self._rte_submit(self.rte_controllers[key].disconnect, disconnected)
+
+    # ---- the Newmark stage, by hand (user, 2026-10-13) -------------------------
+    def _rte_stage_progress(self, _px, degrees):
+        """A move's position, from the RT-E worker: shown on the Tk thread."""
+        def show():
+            if not self.rte_closed and not self.closing:
+                self.rte_stage_live.set(f'Stage: {degrees:+.3f}°, moving')
+        self.post_ui(show)
+
+    def _rte_stage_move(self):
+        try:
+            self._require_ppms_control_ready()
+            stage = self.rte_controllers['newmark']
+            if not stage.connected:
+                raise RuntimeError(f'Connect the {stage.label} first')
+            target = float(self.rte_stage_target.get())
+            if not math.isfinite(target) or abs(target) > NEWMARK_CABLE_LIMIT_DEG:
+                raise ValueError(f'The stage angle must be within ±{NEWMARK_CABLE_LIMIT_DEG:g}° of the stage zero '
+                                 '(the sample wires)')
+        except Exception as error:
+            messagebox.showerror('RT-E stage', str(error), parent=self.root)
+            return
+        self.rte_stage_stop_event.clear()
+
+        def move():
+            try:
+                state = stage.move_to_deg(target, self.rte_stage_stop_event, on_progress=self._rte_stage_progress)
+            except NewmarkStopRequested as stopped:
+                if not stopped.stopped:
+                    raise
+                where = ('not moved' if stopped.before else
+                         f'stopped at {newmark_angle_text(stopped.px, stage.steps_per_degree)}')
+                return f'Stage: {where} (Stop)'
+            return newmark_stage_text(state)
+        self._rte_submit(move, self.rte_stage_live.set)
+
+    def _rte_stage_stop(self):
+        """Stop stage: always sets the stop event.  A move of this program (by
+        hand or in an Angle scan) watches it and sends STOP from the RT-E
+        worker, and an Angle scan makes no further move.  With no move or
+        scan running, STOP is queued on the worker too, so a stage left
+        turning (an unconfirmed stop) can be stopped."""
+        self.rte_stage_stop_event.set()
+        stage = self.rte_controllers.get('newmark')
+        if self.rte_closed or self.closing or stage is None or not stage.connected:
+            return
+        if stage.in_move or self.ppms_field_scan_running:
+            # Not queued behind a scan: it would arrive only after the scan.
+            self.rte_stage_live.set('Stage: stopping…' if stage.in_move else 'Stage: Stop pressed; no further move')
+            return
+        try:
+            future = self.ppms_executor.submit(stage.stop)
+        except RuntimeError:
+            return      # the worker is shutting down; its clean-up stops the stage
+        def finished():
+            if self.rte_closed or self.closing:
+                return
+            try:
+                result = future.result()
+                self.rte_stage_live.set(
+                    f"Stage: stopped at {newmark_angle_text(result['px'], result['steps_per_degree'])}"
+                    if result['stopped'] else 'Stage: STOP not confirmed: CHECK THE STAGE')
+            except Exception as error:
+                self.rte_stage_live.set(f'Stage STOP failed: {short_status_error(error, 60)}')
+        future.add_done_callback(lambda _: self.post_ui(finished))
+
+    def _rte_stage_set_zero(self):
+        if self.rte_closed or self.closing or self.ppms_environment_busy or self.ppms_field_scan_running:
+            return
+        stage = self.rte_controllers['newmark']
+        if not stage.connected:
+            messagebox.showerror('RT-E stage', f'Connect the {stage.label} first', parent=self.root)
+            return
+        if not messagebox.askyesno(
+                'RT-E stage zero',
+                'Call the stage\'s present position 0°?\n\n'
+                f'The ±{NEWMARK_CABLE_LIMIT_DEG:g}° limit for the sample wires counts from the stage zero, so it '
+                'moves with it: the wires must hang free here.\n\n'
+                'The zero is kept across a USB reconnect but lost when the NSC-A1 is powered off.',
+                parent=self.root):
+            return
+
+        def zero():
+            stage.set_zero()
+            return stage.read_state()
+        self._rte_submit(zero, lambda state: self.rte_stage_live.set(newmark_stage_text(state)))
 
     def connect_ppms_device(self, key):
         resource = self.ppms_resource_vars[key].get().strip()
@@ -41520,6 +42498,8 @@ class RTEPanel(PPMSPanel):
                 try:
                     data = future.result()
                     self.rte_field_live.set(data['field_display'])
+                    if data.get('stage_display') is not None:
+                        self.rte_stage_live.set(data['stage_display'])
                     self.ppms_current_live_var.set('6221: ' + data['current_display'])
                     for key, (text, valid, overload) in data['references'].items():
                         self.ppms_xy_vars[key].set(text)
@@ -41537,6 +42517,14 @@ class RTEPanel(PPMSPanel):
                 field_display = f'LS475 field: {self._rte_read_field():+.7g} G'
             except Exception as error:
                 field_display = f'LS475 read failed: {short_status_error(error, 60)}'
+        # The stage: PX and MST only, and only when it is connected (this read
+        # runs when the rack is idle, on the RT-E worker like every stage call).
+        stage, stage_display = self.rte_controllers.get('newmark'), None
+        if stage is not None and stage.connected:
+            try:
+                stage_display = newmark_stage_text(stage.read_state())
+            except Exception as error:
+                stage_display = f'Stage read failed: {short_status_error(error, 60)}'
         references = {}
         for key in self._ppms_sr830_keys():
             if not self.ppms_instrument_controllers[key].connected:
@@ -41549,7 +42537,8 @@ class RTEPanel(PPMSPanel):
                 references[key] = ('LOCK reference locked' if valid else 'WARNING reference unlocked / frequency mismatch', valid, bool(status & 7))
             except Exception as error:
                 references[key] = ('Read failed: ' + short_status_error(error, 45), False, False)
-        return dict(field_display=field_display, current_display=self._read_ppms_current_display(), references=references)
+        return dict(field_display=field_display, current_display=self._read_ppms_current_display(), references=references,
+                    stage_display=stage_display)
 
     def _rte_read_field(self):
         controller = self.rte_controllers['gauss']
@@ -41582,11 +42571,27 @@ class RTEPanel(PPMSPanel):
                 raise ValueError('Connect LS475 for measured-field recording')
             if mode == 'Field' and not self.rte_controllers['kepco'].connected:
                 raise ValueError('Connect KEPCO for a field scan')
+            if mode == 'Angle':
+                # The stage turns the sample holder while the KEPCO holds a
+                # fixed field (user, 2026-10-13).
+                stage = self.rte_controllers['newmark']
+                if not stage.connected:
+                    raise ValueError(f'Connect the {stage.label} (rack row "Newmark stage") for an angle scan')
+                if not stage.steps_per_degree:
+                    raise ValueError(f'The stage scale was not read ({stage.scale_error}); fix that, then '
+                                     'Disconnect and Connect the stage again')
+                if not self.rte_controllers['kepco'].connected:
+                    raise ValueError('Connect KEPCO for an angle scan: it holds the field')
             # A Field scan takes its KEPCO currents from the scan range and
             # needs only the voltage limit; a Current scan never drives the
             # KEPCO.  The unused boxes no longer refuse a scan (audit,
-            # 2026-10-13).
-            limit = self._rte_voltage_limit() if mode == 'Field' else None
+            # 2026-10-13).  An Angle scan holds the "KEPCO current A" box's
+            # current, with the voltage limit, for the whole scan.
+            field_current = None
+            if mode == 'Angle':
+                field_current, limit = self._rte_drive_parameters()
+            else:
+                limit = self._rte_voltage_limit() if mode == 'Field' else None
             settings = self._ppms_direct_transport_settings()
             if mode == 'Current':
                 for _, _, value in plan:
@@ -41602,6 +42607,21 @@ class RTEPanel(PPMSPanel):
         except Exception as error:
             messagebox.showerror('RT-E scan parameters', str(error), parent=self.root)
             return
+        if mode == 'Angle':
+            first, last = plan[0][2], max((p[2] for p in plan), key=lambda value: abs(value - plan[0][2]))
+            trip = ', round trip' if self.rte_round_trip.get() else ''
+            if not messagebox.askyesno(
+                    'RT-E Angle scan',
+                    f'Angle scan from {first:g}° to {last:g}° (step {abs(float(self.ppms_simple_range[2].get())):g}°'
+                    f'{trip}): {len(plan)} angles x {len(passes)} harmonic pass(es) = {len(plan) * len(passes)} '
+                    'points.\n\n'
+                    f'The field is fixed: the KEPCO is set once to {field_current:+g} A (voltage limit {limit:g} V), '
+                    'settled on the LS475 and held for the whole scan.\n\n'
+                    'The Newmark stage turns the SAMPLE HOLDER with its wires attached, at '
+                    f'{NEWMARK_SPEED_DEG_S:g}°/s, to each angle counted from the stage zero (absolute moves, all '
+                    f'within ±{NEWMARK_CABLE_LIMIT_DEG:g}° of it). Can the wires follow?\n\nStart the scan?',
+                    parent=self.root):
+                return
         folder = filedialog.askdirectory(parent=self.root, title='RT-E live CSV folder')
         if not folder:
             return
@@ -41631,16 +42651,23 @@ class RTEPanel(PPMSPanel):
         self.ppms_field_scan_stop_event.clear()
         self.ppms_field_scan_running = True
         self.ppms_active_scan_mode = mode
-        self.ppms_plot_axis = 'field' if mode == 'Field' else 'current'
+        self.ppms_plot_axis = 'field' if mode == 'Field' else 'angle' if mode == 'Angle' else 'current'
         self.ppms_plot_addresses = {key: self._ppms_sr830_address(self.ppms_instrument_controllers[key].resource_name) for key in settings['active_lockins']}
         self.ppms_field_scan_rows = []
         self.ppms_field_scan_total = len(plan) * len(passes)
         self.ppms_field_scan_started_at = time.monotonic()
         self.ppms_field_scan_progress.configure(maximum=self.ppms_field_scan_total, value=0)
         self.ppms_field_scan_status_var.set(f'RT-E {mode}: {len(passes)} harmonic pass(es), {self.ppms_field_scan_total} points')
+        if mode == 'Angle':
+            self.rte_stage_stop_event.clear()
+            self.rte_stage_where = 'stage not moved'
+            self.ppms_field_scan_status_var.set(
+                f'RT-E Angle {first:g}° to {last:g}°, KEPCO {field_current:+g} A held; stage turns sample and wires; '
+                f'{self.ppms_field_scan_total} points')
         self._update_ppms_control_ui()
         self._redraw_ppms_transport_plot()
-        self.thread_log(f'RT-E {mode} scan; CSV: {path}; {len(plan)} points')
+        self.thread_log(f'RT-E {mode} scan; CSV: {path}; {len(plan)} points'
+                        + (f'; stage {first:g}° to {last:g}°, KEPCO {field_current:+g} A held' if mode == 'Angle' else ''))
         def finished(future):
             try:
                 future.result()
@@ -41653,12 +42680,15 @@ class RTEPanel(PPMSPanel):
                 self.thread_log('RT-E scan ' + status)
                 if not self.closing and not self.rte_closed:
                     messagebox.showerror('RT-E scan', str(error), parent=self.root)
+            if mode == 'Angle' and not status.startswith('Failed'):
+                status += f'; {self.rte_stage_where}'     # where the stage is (user, 2026-10-13)
             self.ppms_field_scan_running = False
             if not self.closing and not self.rte_closed:
                 self.ppms_field_scan_status_var.set(status)
                 self._update_ppms_control_ui()
         try:
-            future = self.ppms_executor.submit(self._rte_harmonic_scan_worker, mode, plan, passes, limit, stable, duration)
+            future = self.ppms_executor.submit(self._rte_harmonic_scan_worker, mode, plan, passes, limit, stable, duration,
+                                               *((field_current,) if mode == 'Angle' else ()))
         except Exception as error:
             self.ppms_field_scan_running = False
             self._update_ppms_control_ui()
@@ -41666,7 +42696,7 @@ class RTEPanel(PPMSPanel):
             return
         future.add_done_callback(lambda f: self.post_ui(lambda: finished(f)))
 
-    def _rte_harmonic_scan_worker(self, mode, plan, passes, limit, stable, duration):
+    def _rte_harmonic_scan_worker(self, mode, plan, passes, limit, stable, duration, field_current=None):
         for index, settings in enumerate(passes):
             self._rte_wait(0)
             if index:
@@ -41679,7 +42709,8 @@ class RTEPanel(PPMSPanel):
                     self._stop_ppms_transport_source()
                     raise
             self._rte_scan_worker(mode, plan, dict(settings, continue_source=bool(index),
-                                  progress_offset=index * len(plan)), limit, stable, duration)
+                                  progress_offset=index * len(plan)), limit, stable, duration,
+                                  *((field_current,) if mode == 'Angle' else ()))
         if mode == 'Current':
             self._rte_zero_6221_after_scan()
 
@@ -41696,8 +42727,9 @@ class RTEPanel(PPMSPanel):
         self._rte_wait(0)
         self._update_ppms_transport_current(settings)
 
-    def _rte_scan_worker(self, mode, plan, settings, limit, stable, duration):
+    def _rte_scan_worker(self, mode, plan, settings, limit, stable, duration, field_current=None):
         field_failure = False
+        stage_failure = False
         try:
             # Same expression, in the same order, as the validator's peak_a:
             # (I*1e-3)*sqrt2 could come out 1 ulp below sqrt2*I*1e-3, so a scan
@@ -41729,11 +42761,35 @@ class RTEPanel(PPMSPanel):
                     except Exception:
                         field_failure = True
                         raise
+                elif mode == 'Angle':
+                    # The field first, once: the KEPCO current box's value with
+                    # the voltage limit, settled on the LS475 and then held
+                    # while the stage turns (user, 2026-10-13).
+                    if index == 1 and not settings.get('continue_source'):
+                        try:
+                            self._rte_wait(0)
+                            self.rte_controllers['kepco'].set_output('CURR', field_current, limit)
+                            self.post_ui(lambda value=field_current: self.rte_drive_live.set(
+                                f'KEPCO programmed: {value:+g} A (held)'))
+                            self._rte_settle_field()
+                        except PPMSScanCancelled:
+                            raise
+                        except Exception:
+                            field_failure = True
+                            raise
+                    try:
+                        self._rte_wait(0)
+                        stage_state = self._rte_scan_move_stage(target)
+                    except PPMSScanCancelled:
+                        raise
+                    except Exception:
+                        stage_failure = True
+                        raise
                 self._rte_wait(stable)
                 try:
                     before = self._rte_read_field()
                 except Exception:
-                    field_failure = mode == 'Field'
+                    field_failure = mode in ('Field', 'Angle')
                     raise
                 if index == 1:
                     sample, windows = self._acquire_ppms_first_point(settings['frequency_hz'], settings['active_lockins'], duration)
@@ -41744,18 +42800,25 @@ class RTEPanel(PPMSPanel):
                 try:
                     measured = self._rte_read_field()
                 except Exception:
-                    field_failure = mode == 'Field'
+                    field_failure = mode in ('Field', 'Angle')
                     raise
-                if mode == 'Field' and abs(measured - before) > max(STFMR_FIELD_SETTLE_ABS_TOLERANCE_G, abs(before) * STFMR_FIELD_SETTLE_REL_TOLERANCE):
+                if mode in ('Field', 'Angle') and abs(measured - before) > max(STFMR_FIELD_SETTLE_ABS_TOLERANCE_G, abs(before) * STFMR_FIELD_SETTLE_REL_TOLERANCE):
                     field_failure = True
                     raise PPMSFieldScanError('LS475 field drifted during acquisition; partial point not saved')
                 kepco = self.rte_controllers['kepco']
+                # Angle rows add the stage's target and where it is (PX read
+                # back, equal to the target); Field and Current rows keep their
+                # columns.
+                stage_columns = {} if mode != 'Angle' else dict(
+                    stage_target_deg=target, stage_angle_deg=stage_state['angle_deg'],
+                    stage_position_steps=stage_state['px'],
+                    stage_steps_per_degree=stage_state['steps_per_degree'])
                 row = dict(module='RT-E', scan_mode=mode, loop=loop, point=point,
                     harmonic_pass=settings.get('harmonic_pass', 1),
                     elapsed_s=time.monotonic() - self.ppms_field_scan_started_at,
                     kepco_programmed_current_a=kepco.cached_current_a if kepco.output_owned else '',
-                    kepco_voltage_limit_v=limit if mode == 'Field' else '',
-                    measured_field_g=measured, stable_s=stable,
+                    kepco_voltage_limit_v=limit if mode in ('Field', 'Angle') else '',
+                    measured_field_g=measured, **stage_columns, stable_s=stable,
                     first_point_windows=windows, warmup_s=(windows - 1) * duration,
                     **{'6221_current_rms_ma': point_settings['current_rms_ma'],
                        '6221_frequency_hz': settings['frequency_hz'],
@@ -41772,7 +42835,11 @@ class RTEPanel(PPMSPanel):
                 self.post_ui(lambda data=dict(row), progress=index + settings.get('progress_offset', 0): self._rte_show_point(data, progress))
         except PPMSScanCancelled:
             raise
-        except Exception:
+        except Exception as error:
+            if stage_failure:
+                # A stage failure: STOP (never raises here), the 6221 off
+                # below, and the KEPCO's field held (user, 2026-10-13).
+                self._rte_stop_stage_after_failure(error)
             # A source-off failure must not skip the magnet cleanup attempt.
             try:
                 self._stop_ppms_transport_source()
@@ -41781,10 +42848,47 @@ class RTEPanel(PPMSPanel):
                     self.rte_controllers['kepco'].safe_output_off()
             raise
 
+    def _rte_scan_move_stage(self, target):
+        """One Angle-scan point's absolute stage move, on the RT-E worker.
+        The move watches the scan's Stop (and the program closing) and Stop
+        stage; a Stop during the move sends STOP, waits for it, and ends the
+        scan as Stopped."""
+        stage = self.rte_controllers['newmark']
+        try:
+            state = stage.move_to_deg(target, _EitherEvent(self.ppms_field_scan_stop_event, self.rte_stage_stop_event),
+                                      on_progress=self._rte_stage_progress)
+        except NewmarkStopRequested as stopped:
+            if not stopped.stopped:
+                raise       # STOP not confirmed: a failure, not a clean stop
+            if not stopped.before:
+                self.rte_stage_where = f'stage stopped at {newmark_angle_text(stopped.px, stage.steps_per_degree)}'
+            raise PPMSScanCancelled(f"RT-E stopped at a stage move; {self.rte_stage_where or 'stage not moved'}") from stopped
+        self.rte_stage_where = f"stage at {state['angle_deg']:+.3f}°"
+        return state
+
+    def _rte_stop_stage_after_failure(self, error):
+        """STOP after a stage failure in an Angle scan, unless the driver's own
+        STOP sequence already ran for it.  Never raises: the 6221 must still
+        be switched off after it."""
+        stage = self.rte_controllers.get('newmark')
+        try:
+            if getattr(error, 'stop_ran', False):
+                stopped, px = error.stopped, error.px
+            else:
+                result = stage.stop()
+                stopped, px = result['stopped'], result['px']
+            self.rte_stage_where = (f'stage stopped at {newmark_angle_text(px, stage.steps_per_degree)}' if stopped
+                                    else 'stage NOT confirmed stopped: check it')
+        except Exception as stop_error:
+            self.rte_stage_where = 'stage NOT confirmed stopped: check it'
+            self.thread_log(f'RT-E stage STOP after the failure failed: {stop_error}')
+
     def _rte_show_point(self, row, progress):
         if self.rte_closed or self.closing:
             return
         self.rte_field_live.set(f"LS475 field: {row['measured_field_g']:+.7g} G")
+        if 'stage_angle_deg' in row:
+            self.rte_stage_live.set(f"Stage: {row['stage_angle_deg']:+.3f}° ({row['stage_steps_per_degree']} steps/°)")
         self.ppms_current_live_var.set(f"6221 ON: {row['6221_current_rms_ma']:g} mA RMS / {row['6221_frequency_hz']:g} Hz")
         for key, address in self.ppms_plot_addresses.items():
             if row.get(f'sr830_{address}_harmonic', '') == '':
@@ -41807,8 +42911,11 @@ class RTEPanel(PPMSPanel):
     def _redraw_ppms_transport_plot(self):
         canvases = self.__dict__.get('ppms_harmonic_canvases', {})
         orders = self._ppms2_measured_orders()
-        field = self.__dict__.get('ppms_plot_axis', 'field') == 'field'
-        x_key = 'measured_field_g' if field else '6221_current_rms_ma'
+        axis = self.__dict__.get('ppms_plot_axis', 'field')
+        # An Angle scan plots against where the stage is (user, 2026-10-13).
+        x_key, x_label = {'field': ('measured_field_g', 'Measured magnetic field (G)'),
+                          'angle': ('stage_angle_deg', 'Sample angle (°)')}.get(
+                              axis, ('6221_current_rms_ma', 'Applied AC current (mA RMS)'))
         by_order = {}
         for (order, channel), canvas in canvases.items():
             by_order.setdefault(order, []).append((channel, canvas))
@@ -41839,8 +42946,7 @@ class RTEPanel(PPMSPanel):
                         if meter == 'zurich':
                             markers[channel][name] = 'open_circle'
             for channel, canvas in targets:
-                self._draw_nonlocal_series(canvas, series[channel],
-                    'Measured magnetic field (G)' if field else 'Applied AC current (mA RMS)',
+                self._draw_nonlocal_series(canvas, series[channel], x_label,
                     'Phase (degrees)' if channel == 'theta' else channel.upper() + ' voltage',
                     'Waiting for scan data', markers=True, auto_voltage_unit=channel != 'theta',
                     show_legend=False, series_colors=colors[channel], series_markers=markers[channel])
@@ -41865,6 +42971,8 @@ class RTEPanel(PPMSPanel):
             return
         self.rte_closed = self.ppms_closed = self.zurich_closed = True
         self.ppms_field_scan_stop_event.set()
+        # A stage move by hand watches only this one; it sends STOP itself.
+        self.rte_stage_stop_event.set()
         for name in ('ppms_poll_after_id', 'zurich_after_id'):
             timer = self.__dict__.get(name)
             if timer is not None:
@@ -41872,7 +42980,11 @@ class RTEPanel(PPMSPanel):
                 setattr(self, name, None)
         # Queued after the scan on the one-worker executor: no write can follow OFF.
         def cleanup():
-            for controller in (*self.rte_controllers.values(), *self.ppms_instrument_controllers.values()):
+            # The stage first (STOP if it is moving, then Close), on this
+            # worker thread, which holds its USB handle; then the rest as before.
+            stage = self.rte_controllers.get('newmark')
+            others = [controller for key, controller in self.rte_controllers.items() if key != 'newmark']
+            for controller in ([stage] if stage is not None else []) + [*others, *self.ppms_instrument_controllers.values()]:
                 try:
                     controller.disconnect()
                 except Exception as error:

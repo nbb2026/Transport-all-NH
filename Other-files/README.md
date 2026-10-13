@@ -1,5 +1,116 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## RT-E: Angle scan with the Newmark NSC-A1 rotation stage (2026-10-13)
+
+- **What the user chose:** a third RT-E scan mode, "Angle", beside Field and
+  Current. The Newmark RM-5-110 stage on its NSC-A1 controller turns the
+  SAMPLE HOLDER, wires attached, inside the RT-E magnet; the field is fixed
+  during the scan; the lock-ins ticked to Measure (SR830s and/or the
+  Zurich) are read at each angle, as in the other RT-E scans.
+- **Driver:** `NewmarkNSCA1Controller` in `Transport_all_NH_dev.py` (the
+  program stays one file) is the reviewed core of `Newmark_motor_test.py`
+  (999c1e2 + 164812f): `PerformaxCom.dll` over USB (never a COM port);
+  "auto" takes the only Performax device, else the USB serial typed in its
+  box; `ID` must name an ACE-SDE (and not be a device name like SDE01), then
+  `VER`; the same allowlist without HL+/HL− (no homing in the program),
+  number ranges included; a failed command is never repeated, and replies
+  are brought back in step (flush, `ID`, `VER`) before the next one is
+  trusted; the scale from `RR` → `R2` → `DRVMS` (steps/° = 40 × DRVMS);
+  every move sets and reads back HSPD/LSPD/ACC (5 °/s), is absolute (`ABS`,
+  `MM` read back, `X<steps>`), is refused while moving, with a latched limit
+  error, a limit input on (the RM-5-110 has no limit switches) or the
+  driver off (EO=0), ends after three "not moving" reads in a row and must
+  read back PX exactly at the target; a time-out (3 × the expected time +
+  5 s) or a lost reply sends STOP (ABORT if STOP does not stop it). A scale
+  that cannot be read (SL/EDIO on, moving) leaves the stage connected, so
+  Stop works, with moves refused until it is read.
+- **One thread:** SiUSBXp.dll keeps its handles per thread, so every DLL
+  call (connect, the idle read, moves, STOP, Set 0, disconnect, the close
+  clean-up) runs on the RT-E page's single worker `rte-control`, never on
+  the Tk thread; the controller refuses a call from any other thread before
+  it reaches the DLL.
+- **Controls:** a rack row "Newmark stage" after the 6221 and 2400 rows,
+  in the same columns (address box "auto", Connect, Disconnect, lamp,
+  "Connected"/"Not connected"; "Newmark NSC-A1" is wider than the
+  13-character label column), and beside it the live line, e.g. "Stage:
+  +12.345° (10000 steps/°)", ", moving", a limit warning or a read failure
+  (read, PX and MST only, by the idle poll when the rack is idle). Under
+  the RT-E settings, a row "Stage °" [box] **Move stage** (needs the safety
+  tick and an idle rack; the target within ±360° of the stage zero),
+  **Stop stage** (usable whenever the stage is connected, even during a
+  move or a scan: it sets the stop event the move loop watches, and that
+  loop sends STOP from the worker, and an Angle scan makes no further move;
+  with no move or scan running it also queues STOP on the worker) and **Set stage 0°** (idle only; asks Yes/No first:
+  the ±360° wire limit moves with the zero; PX=0 is lost when the NSC-A1 is
+  powered off). Move and Set 0 are locked while the rack is busy, like the
+  other edit widgets. The scan mode list offers Field, Current, Angle;
+  Angle's defaults are Start 0, End 360, Step 5 (units "Stage °"), Round
+  trip ticked (back toward the start, unwinding the wires).
+- **The Angle scan:** Start needs the stage (with its scale read), the
+  KEPCO and the LS475 connected, every angle within ±360° of the stage zero,
+  and the "KEPCO current A" and "Voltage limit V" boxes valid, and asks
+  Yes/No first (the angle range, the points, the field current and that the
+  stage turns the sample holder with its wires). At its first point it sets
+  the KEPCO once (`set_output('CURR', current, limit)`), settles the field
+  on the LS475 and holds it. Then at each angle: an absolute move (PX read
+  back equal to the target), Settle s, the field read, the acquisition (the
+  first point by the same first-point check as the other modes), the field
+  read again with the Field scans' drift check. Rows add
+  `stage_target_deg`, `stage_angle_deg`, `stage_position_steps` and
+  `stage_steps_per_degree` after `measured_field_g`, with the KEPCO's
+  programmed current and voltage limit; Field and Current rows and CSV
+  columns are unchanged. Harmonic passes repeat the angle list without
+  setting the field again. The plots' x axis is "Sample angle (°)".
+  "Completed" and "Stopped" status lines end with where the stage is.
+- **Safety:** the ±360° wire limit is checked at Start, at Move, in the
+  driver and by the allowlist; moves are absolute, so 350 → 0 turns back
+  −350°, never across 360. Stop (the scan's) or Stop stage during a move:
+  STOP, wait for it, the scan ends as Stopped with the outputs held. Any
+  failure switches the 6221 off; a field failure (settle, drift or read)
+  also switches the KEPCO off, as in Field scans; a stage failure sends
+  STOP (unless the driver's own STOP already ran) and keeps the KEPCO's
+  field. Closing the program sets both stop events; the queued clean-up
+  disconnects the stage first (STOP if it is moving, then Close, on the
+  worker), then the other instruments as before (the KEPCO and 6221 close
+  as they did).
+- **DLL setup on the lab PC (64-bit Python 3.11):** as for
+  `Newmark_motor_test.py`: the Performax USB driver, and the 64-bit
+  `PerformaxCom.dll` and `SiUSBXp.dll` (Arcus "USB 64-bit DLL v2.06")
+  together in the program's folder, beside `Transport_all_NH_dev.py` (else
+  the normal Windows DLL search). A 32-bit DLL (WinError 193), a missing
+  SiUSBXp.dll (WinError 126) and a 32-bit Python are reported in plain
+  words. Close QuickMotion and `Newmark_motor_test.py` first: one program at
+  a time on the USB device. Try the stage with `Newmark_motor_test.py`
+  first (direction of +, the scale), set the zero where the wires hang free,
+  and only then scan.
+- **Not yet tried on the hardware.**
+- **Tests:** `test_rte_angle_scan.py` (Tk-free; the fake DLL is
+  `Newmark_motor_test.py`'s simulated controller behind the same ctypes
+  calls, recording each call's thread; `ctypes.WinDLL`,
+  `os.add_dll_directory`, the program's loader, `tkinter.Tk` and every
+  dialog fail a test that reaches them; a virtual clock). The driver: the
+  device choice, the ID check, the allowlist, the scale (and one that cannot
+  be read), absolute moves with the speeds read back, the idle reads, the
+  refusals, the wire limit, Stop during a move, the time-out, PX off the
+  target, a lost reply (not repeated, then resynced), Set 0, disconnect
+  stopping a turning stage first, a call from another thread, an old DLL
+  without flush, the loader's errors. Thread affinity with a real
+  single-worker executor: connect, the idle read, Move, Set 0, Stop, an
+  Angle scan, disconnect and the close clean-up, with no DLL call on the
+  test's thread. `rte_scan_plan` for Angle. The scan worker end to end
+  (rows and columns, the KEPCO set once, harmonic passes, Stop during a
+  move, Stop stage between moves, a refused move, PX off the target and a
+  time-out keep the KEPCO and stop the 6221, drift, settle and read
+  failures switch the KEPCO off). Move, Stop and Set 0 by hand (refusals,
+  Yes/No, Stop from the Tk thread while a move runs on the worker); Start
+  (refusals, the confirmation, the submitted scan, the status lines); the
+  defaults, the plot axis and the page build on stand-in widgets.
+  `test_rte_panel.py`'s removed-mode plan check now refuses an Angle range
+  beyond ±360° instead of every Angle plan; the other Field and Current
+  tests are unchanged. `test_panel_defaults.RTEStatusRowTests` (CI only:
+  it needs a display) also checks that the longest Angle status lines fit on
+  one line.
+
 ## MOKE-24: OVP margin warning, Zero on an output that is on (2026-10-13)
 
 - **Scan near the OVP (the user's choice: warn only):** the MOKE-24
