@@ -59,12 +59,14 @@ SAFETY
     zero (from the zero itself, first move 13 deg or more the other way at
     5 deg/s: the refusal says how far).  Afterwards the zero, and with it
     the +/-360 deg limit, is the home switch: the script says where the old
-    zero now is, so you can turn back there and run "zero" again.
+    zero now is, so you can turn back there and run "zero" again.  It says
+    so too when a search is stopped or fails after the counter reset.
   - Ctrl+C at any point sends STOP if a move may be running, waits until it
     has stopped (ABORT if STOP does not stop it) and says where it stopped.
     While it stops and reports, a further Ctrl+C only asks for ABORT.
   - A move counts as ended after three status reads in a row that say it is
-    not moving, with PX where it should be.
+    not moving, with PX where it should be; a stop, after three such reads
+    with PX unchanged.
   - At most 20 deg/s (the stage allows 25 deg/s).
   - A move is refused while it moves, with a latched limit error, with a
     limit input on (the RM-5-110 has no limit switches: that is a polarity
@@ -317,7 +319,11 @@ def python_bits():
 
 def explain_load_error(path, error):
     """The Windows error code, from OSError.winerror or else its exact "[WinError N]"
-    text (not any "193" in the message, which also holds the path)."""
+    text (not any "193" in the message, which also holds the path).
+
+    Python 3.8+ reports a missing module (error 126) as a FileNotFoundError
+    "Could not find module ... (or one of its dependencies)", without
+    winerror or "[WinError 126]" (user, 2026-10-13)."""
     code = getattr(error, "winerror", None)
     if code is None:
         found = re.search(r"\[WinError (\d+)\]", str(error))
@@ -326,9 +332,10 @@ def explain_load_error(path, error):
         return (f"Could not load {path} (WinError 193): it is not a 64-bit DLL. This Python is 64-bit, so "
                 f"{DLL_NAME} and {SIUSB_NAME} must both be the 64-bit ones (Arcus \"USB 64-bit DLL v2.06\"), "
                 "side by side.")
-    if code == 126:
-        return (f"Could not load {path} (WinError 126): it, or the {SIUSB_NAME} it needs, was not found. "
-                f"Put the 64-bit {DLL_NAME} and {SIUSB_NAME} together in this script's folder or in --dll-dir.")
+    if code == 126 or isinstance(error, FileNotFoundError):
+        return (f"Could not load {path}: it, or a DLL it needs, was not found (Windows error 126). {DLL_NAME} "
+                f"needs {SIUSB_NAME}, and Python does not search PATH for them: put both 64-bit DLLs together "
+                "in this script's folder or in --dll-dir.")
     return f"Could not load {path}: {error}"
 
 
@@ -418,6 +425,8 @@ class NSC:
         self.steps_per_degree = None
         self.hold_depth = 0             # HoldCtrlC nesting
         self.abort_asked = False        # Ctrl+C pressed during a hold: go on to ABORT
+        self.home_watch = None          # home mode: the search's HomeWatch, so every report can say what PX counts from
+        self.closing_code = None        # close_and_report's exit status, kept in case it has to run again
         self._no_flush_said = False
 
     def hold_ctrl_c(self):
@@ -741,19 +750,32 @@ class NSC:
             notes.append(f"{command}: {describe_error(error)}")
 
     def _wait_until_still(self, wait_s, notes, escalate=False):
-        """(True, PX) once MST shows it not moving; (False, None) after wait_s or a
-        Ctrl+C (with ``escalate``, also a Ctrl+C held by HoldCtrlC)."""
+        """(True, PX) once IDLE_READS status reads in a row say it is not moving,
+        with PX the same at each; (False, None) after wait_s or a Ctrl+C (with
+        ``escalate``, also a Ctrl+C held by HoldCtrlC).
+
+        One read is not enough here either (see wait_motion): a STOP that lands
+        just after a motion command's OK, or between HL stages, may do nothing,
+        and the motion would then go on unwatched (user, 2026-10-13)."""
         deadline = _now() + wait_s
+        idle, still_px = 0, None
         while True:
             try:
                 mst = self.status(quiet=True)
-                if not mst & MOVING:
-                    self.echo(f"  MST {mst} ({describe_status(mst)})")
-                    break
+                if mst & MOVING:
+                    idle = 0
+                else:
+                    px = self.number("PX", quiet=True)
+                    idle = idle + 1 if idle and px == still_px else 1
+                    still_px = px
+                    if idle >= IDLE_READS:
+                        self.echo(f"  MST {mst} ({describe_status(mst)})  PX {px}")
+                        break
             except KeyboardInterrupt:
                 notes.append("Ctrl+C while waiting for the stop")
                 return False, None
             except Exception as error:
+                idle = 0
                 text = describe_error(error)
                 if text not in notes:
                     notes.append(text)
@@ -768,11 +790,7 @@ class NSC:
                 notes.append("Ctrl+C while waiting for the stop")
                 return False, None
         self.motion_may_run = False
-        try:
-            return True, self.number("PX")
-        except BaseException as error:
-            notes.append(f"PX could not be read: {describe_error(error)}")
-            return True, None
+        return True, still_px
 
     def stop_motion(self, wait_s=STOP_WAIT_S):
         """STOP (decelerated); wait until it is not moving; ABORT if STOP did not
@@ -1082,10 +1100,13 @@ class HomePlan:
 
     def __init__(self, start, sign, steps_per_degree, hspd, lspd, acc_ms, hca):
         self.start, self.sign, self.spd = start, sign, steps_per_degree
-        self.hspd, self.lspd = hspd, lspd
+        self.hspd, self.lspd, self.acc_ms = hspd, lspd, acc_ms
         self.turn = round(360 * steps_per_degree)
         self.hca = abs(hca)
         self.margin = round(HOME_MARGIN_DEG * steps_per_degree)
+        # Slowing down over ACC is the default (EDEC = 0).  With EDEC = 1, stored
+        # in flash, HL and STOP slow down over DEC, which is not on this script's
+        # list of reads: check EDEC = 0 in QuickMotion (user, 2026-10-13).
         self.overshoot = round((hspd + lspd) / 2 * acc_ms / 1000)
         late = round(hspd * HOME_LATE_S)
         self.ahead = self.turn + self.hca + 2 * self.overshoot + self.margin + late
@@ -1095,19 +1116,44 @@ class HomePlan:
         self.expected = ((self.turn + self.hca) / hspd + (self.overshoot + self.hca) / lspd + 4 * acc_ms / 1000)
         self.timeout = 1.2 * self.expected + 2      # a back-up: the watch bounds it by travel first
 
-    def check_wires(self):
-        """Refuse unless every point it may reach is within +/-CABLE_LIMIT_DEG of the zero."""
+    def shift_needed(self):
+        """The turn, in whole degrees with its sign, after which every point the
+        search may reach is within +/-CABLE_LIMIT_DEG of the zero: 0 if it is
+        already, None if no start is."""
         limit = round(CABLE_LIMIT_DEG * self.spd)
         over_far = self.sign * self.far - limit         # steps beyond the limit, ahead
         over_back = -self.sign * self.back - limit      # steps beyond the limit, behind
         if over_far <= 0 and over_back <= 0:
-            return
+            return 0
         if self.ahead + self.behind > 2 * limit:
+            return None
+        return -self.sign * math.ceil(over_far / self.spd) if over_far > 0 else \
+            self.sign * math.ceil(over_back / self.spd)
+
+    def check_wires(self):
+        """Refuse unless every point it may reach is within +/-CABLE_LIMIT_DEG of the zero."""
+        shift = self.shift_needed()
+        if shift == 0:
+            return
+        if shift is None:
             advice = "no start keeps it within the limit (is HCA too large?)"
-        else:
-            shift = -self.sign * math.ceil(over_far / self.spd) if over_far > 0 else \
-                self.sign * math.ceil(over_back / self.spd)
+        elif abs(shift) <= MAX_MOVE_DEG:
             advice = f"first move it {abs(shift)} deg (move --degrees {shift:+d}), then search again"
+        else:
+            # One 'move' turns at most MAX_MOVE_DEG, so advice beyond it would be a
+            # usage error; from within the limit the other direction then always
+            # fits after a short move (user, 2026-10-13).
+            way = "-" if self.sign > 0 else "+"
+            other = HomePlan(self.start, -self.sign, self.spd, self.hspd, self.lspd, self.acc_ms,
+                             self.hca).shift_needed()
+            if other == 0:
+                advice = f"search the other way instead (home --direction {way})"
+            elif other is not None and abs(other) <= MAX_MOVE_DEG:
+                advice = (f"one move turns at most {MAX_MOVE_DEG:g} deg, so search the other way instead: "
+                          f"move --degrees {other:+d}, then home --direction {way}")
+            else:
+                advice = ("moves within the limit cannot bring it back from there: run 'zero' first where the "
+                          "sample wires hang free")
         raise Refused(f"a home search HL{'+' if self.sign > 0 else '-'} from {angle(self.start, self.spd)} may "
                       f"reach {angle(self.back, self.spd)} to {angle(self.far, self.spd)} from the zero (one turn "
                       f"to the switch, HCA = {self.hca} steps, the slowing down and a {HOME_MARGIN_DEG:g} deg "
@@ -1124,14 +1170,27 @@ class HomeWatch:
     switch, so STOP.  At the switch the controller sets the counter to 0,
     seen as a step PX could not make by turning (backwards, or faster than
     HSPD); from then on PX counts from the switch, and the rest of HL stays
-    within overshoot + |HCA| + margin of it.  A reset that looks like a
-    small step (a switch near the old zero) changes the count by less than
-    that step, which the margin covers."""
+    within overshoot + |HCA| + margin of it.
+
+    A switch within about one poll of the old zero makes its reset look like
+    a normal step.  The first backward step is then HL's turn back after
+    slowing down (manual, Figure 6.6), and the poll before it already counts
+    from the switch.  Such a step is ambiguous: either way the switch is
+    within near_deg() of the old zero, so only that range is reported
+    (``near_zero``).  The bounds hold either way: PX counts from the switch
+    by then (user, 2026-10-13)."""
 
     def __init__(self, plan, start, now):
         self.plan, self.start = plan, start
         self.last_px, self.last_time = start, now
         self.switch = None      # PX (old count) at the poll before the counter reset: about where the switch is
+        self.near_zero = False  # the switch is within near_deg() of the old zero; ``switch`` is not more exact
+        self.most = plan.hspd * (1.5 * POLL_S + 0.1)    # the largest step allowed in one poll so far
+
+    def near_deg(self):
+        """How close to the old zero a switch may be for its reset to pass for a
+        normal step: the slowing down and two polls of travel, in degrees."""
+        return (self.plan.overshoot + 2 * self.most) / self.plan.spd
 
     def __call__(self, px, now):
         """None while the search is within its bounds, else why it must be stopped."""
@@ -1139,8 +1198,12 @@ class HomeWatch:
         if self.switch is None:
             step = plan.sign * (px - self.last_px)
             most = plan.hspd * (1.5 * max(now - self.last_time, 0.0) + 0.1)
+            self.most = max(self.most, most)
             if step < 0 or step > most:
                 self.switch = self.last_px
+                # A backward step from within the slowing down + one poll of 0 may be
+                # the turn back after a reset that passed for a normal step.
+                self.near_zero = step < 0 and 0 <= plan.sign * self.last_px <= plan.overshoot + most
             elif plan.sign * (px - self.start) > plan.turn + plan.margin:
                 return (f"no home switch within one turn: the home search turned {angle(abs(px - self.start), spd)} "
                         "without the counter reset at the switch (is the home switch wired to the DB9 Signals "
@@ -1151,6 +1214,55 @@ class HomeWatch:
                     f"(more than the slowing down + HCA + {HOME_MARGIN_DEG:g} deg); positions now count from the "
                     "switch")
         return None
+
+
+def move_text(shift):
+    """The 'move' command(s) that turn ``shift`` deg (one turns at most
+    MAX_MOVE_DEG), or None when it is less than 0.1 deg."""
+    shift = round(shift, 1)
+    if abs(shift) < 0.1:
+        return None
+    if abs(shift) <= MAX_MOVE_DEG:
+        return f"move --degrees {shift:+.1f}"
+    first = math.copysign(MAX_MOVE_DEG, shift)
+    return f"move --degrees {first:+.0f}, then move --degrees {shift - first:+.1f}"
+
+
+def old_zero_text(watch, px):
+    """After the counter reset at the switch: where the old zero (where the
+    sample wires should hang free) now is, and the way back there from PX
+    ``px`` (None: not known)."""
+    if watch.near_zero:
+        near = watch.near_deg()
+        return (f"The home switch is within about {near:.1f} deg of the old zero (where the sample wires should "
+                f"hang free), so the old zero is within about {near:.1f} deg of 0 deg now: turn to where the "
+                "wires hang free and run 'zero' there.")
+    spd = watch.plan.spd
+    old = -watch.switch / spd
+    text = (f"The home switch is about {angle(watch.switch, spd)} from the old zero (where the sample wires "
+            f"should hang free), so the old zero is now about {old:+.1f} deg")
+    if px is None:
+        return text + ": read the position ('info'), turn back there with 'move' and run 'zero' there."
+    way = move_text(old - px / spd)
+    if way is None:
+        return text + ": it is about here; run 'zero' if the wires hang free here."
+    return text + f": to turn back there, {way}, then run 'zero'."
+
+
+def home_note(nsc, px):
+    """After a home search that did not end as planned, what its angles count
+    from: a report against the switch alone would hide that the zero and the
+    +/-360 deg limit of 'move' moved there (user, 2026-10-13).  None outside a
+    home search."""
+    watch = nsc.home_watch
+    if watch is None or not nsc.motion_sent:
+        return None
+    if watch.switch is None:
+        return (f"No counter reset at the home switch was seen: angles still count from the old zero, or, if the "
+                f"switch was passed within about {watch.near_deg():.1f} deg of it (a reset there looks like a "
+                "normal step), from the switch, about the same place.")
+    return ("The counter was reset at the home switch: angles, and the +/-360 deg wire limit of 'move', now count "
+            "from it. " + old_zero_text(watch, px))
 
 
 def mode_info(nsc, args):
@@ -1287,6 +1399,7 @@ def mode_home(nsc, args):
     if now != start:
         raise Refused(f"the position changed since the question (PX {start} -> {now})")
     watch = HomeWatch(plan, start, _now())
+    nsc.home_watch = watch          # every report from here on says what PX counts from
     nsc.start_motion(f"HL{args.direction}")
     elapsed, end, mst = nsc.wait_motion(plan.timeout, "the home search", expect_px=0, watch=watch)
     if mst & LIMIT_ERRORS:
@@ -1299,12 +1412,8 @@ def mode_home(nsc, args):
     if watch.switch is None:
         print("No counter reset was seen on the way, so the home switch is within a few degrees of the old zero.")
     else:
-        back = -watch.switch / spd
-        print(f"The home switch is about {angle(watch.switch, spd)} from the old zero (where the sample wires "
-              f"should hang free), so the old zero is now about {back:+.1f} deg.")
-        print("The zero, and the +/-360 deg wire limit of 'move', now count from the home switch. If the wires "
-              f"do not hang free here, turn back about {back:+.1f} deg (move --degrees {back:+.1f}) and run "
-              "'zero' there.")
+        print("The zero, and the +/-360 deg wire limit of 'move', now count from the home switch.")
+        print(old_zero_text(watch, end))
     print("(The counter is runtime only: lost when the controller is powered off.)")
     return 0
 
@@ -1408,18 +1517,26 @@ MODES = {"info": mode_info, "move": mode_move, "stop": mode_stop, "zero": mode_z
          "enable": mode_enable, "disable": mode_disable, "home": mode_home}
 
 
-def report_stop(why, stopped, px, notes, steps_per_degree):
+def report_stop(why, stopped, px, notes, nsc):
+    """Print where a stop left the stage (and, after a home search, what that
+    angle counts from); returns the exit status, 1 or 3."""
+    spd = nsc.steps_per_degree
     if notes:
         print("  (" + "; ".join(notes) + ")")
     if stopped:
-        where = angle(px, steps_per_degree)
-        if px is not None and steps_per_degree:
+        where = angle(px, spd)
+        if px is not None and spd:
             where += f" (PX {px})"
         print(f"{why}; the motor is stopped (MST read back) at {where}.")
-        return 1
-    print(f"{why}; MOTION STATE UNKNOWN: it could not be confirmed stopped. CHECK THE STAGE (switch the "
-          "controller's 24 V off if it is still turning).")
-    return 3
+        code = 1
+    else:
+        print(f"{why}; MOTION STATE UNKNOWN: it could not be confirmed stopped. CHECK THE STAGE (switch the "
+              "controller's 24 V off if it is still turning).")
+        px, code = None, 3
+    note = home_note(nsc, px)
+    if note:
+        print(note)
+    return code
 
 
 def run_mode(nsc, args):
@@ -1430,13 +1547,13 @@ def run_mode(nsc, args):
         return 1
     except MotionError as error:
         with nsc.hold_ctrl_c():
-            return report_stop(f"\n{error}", error.stopped, error.px, error.notes, nsc.steps_per_degree)
+            return report_stop(f"\n{error}", error.stopped, error.px, error.notes, nsc)
     except NscError as error:
         if nsc.motion_may_run:
             with nsc.hold_ctrl_c():
                 print(f"\n{error}: STOP")
                 stopped, px, notes = nsc.stop_motion()
-                return report_stop("Stopped after the failure", stopped, px, notes, nsc.steps_per_degree)
+                return report_stop("Stopped after the failure", stopped, px, notes, nsc)
         print(f"\nFailed: {error}")
         return 1
 
@@ -1449,24 +1566,42 @@ def after_interrupt(nsc, args):
         if not nsc.motion_may_run:
             if nsc.motion_sent or nsc.stop_finished:
                 print("\nStopped (Ctrl+C); no move is running (it was read back not moving).")
+                note = home_note(nsc, None)
+                if note:
+                    print(note)
             else:
                 print("\nStopped (Ctrl+C); this run had not started a move.")
             return 1
         print("\nStopped (Ctrl+C): STOP")
         stopped, px, notes = nsc.stop_motion()
-        return report_stop("Stopped (Ctrl+C)", stopped, px, notes, nsc.steps_per_degree)
+        return report_stop("Stopped (Ctrl+C)", stopped, px, notes, nsc)
+
+
+def cut_short_code(args, nsc):
+    """The exit status when a second Ctrl+C lands before after_interrupt holds
+    Ctrl+C.  close() then stops a move that may still run and reports it, so
+    only what it leaves out is decided here: a stop that ended without being
+    confirmed (close does not repeat it), and stop mode before its stop ran,
+    are 3 (user, 2026-10-13)."""
+    if nsc is not None and nsc.motion_may_run and nsc.stop_finished:
+        return 3
+    if args.mode == "stop" and (nsc is None or not (nsc.motion_may_run or nsc.stop_finished)):
+        return 3
+    return 1
 
 
 def close_and_report(nsc):
     """Close the controller; if close() had to stop a move (a run cut off in an
     unforeseen way), report that stop like any other.  Returns its exit status,
-    or None when nothing had to be stopped."""
+    or None when nothing had to be stopped.  Run again after a Ctrl+C before
+    its hold, it gives the status it already found."""
     with nsc.hold_ctrl_c():
-        outcome = nsc.close()
-        if outcome is None:
-            return None
-        stopped, px, notes = outcome
-        return report_stop("Stopped on closing", stopped, px, notes, nsc.steps_per_degree)
+        if nsc.handle is not None:
+            outcome = nsc.close()
+            if outcome is not None:
+                stopped, px, notes = outcome
+                nsc.closing_code = report_stop("Stopped on closing", stopped, px, notes, nsc)
+    return nsc.closing_code
 
 
 def parse_arguments(argv):
@@ -1548,14 +1683,28 @@ def run_session(args, session):
 
 def main(argv=None):
     args = parse_arguments(argv)
-    session, closing = [], None
+    session, code, closing = [], None, None
     try:
-        code = run_session(args, session)
+        try:
+            code = run_session(args, session)
+        except KeyboardInterrupt:
+            code = after_interrupt(session[0] if session else None, args)
     except KeyboardInterrupt:
-        code = after_interrupt(session[0] if session else None, args)
+        # A second Ctrl+C a few ms after the first can land before after_interrupt
+        # holds Ctrl+C; close_and_report below still stops a move that may run
+        # (user, 2026-10-13).
+        code = max(code or 0, cut_short_code(args, session[0] if session else None))
+        try:
+            print("\nCtrl+C again: closing (a move that may still run is stopped first).")
+        except KeyboardInterrupt:
+            pass
     finally:
-        if session:
-            closing = close_and_report(session[0])
+        while session:      # a Ctrl+C before close_and_report holds Ctrl+C: run it again
+            try:
+                closing = close_and_report(session[0])
+                break
+            except KeyboardInterrupt:
+                pass
     return code if closing is None else max(code, closing)
 
 

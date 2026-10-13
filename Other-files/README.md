@@ -168,7 +168,12 @@
   (EO=0). Ctrl+C at any point sends STOP if a move may be running, waits
   until it has stopped (ABORT if STOP does not stop it) and says where it
   stopped; while it stops and reports, a further Ctrl+C only asks for ABORT
-  and cannot cut the report (or exit status 3) short.
+  and cannot cut the report (or exit status 3) short. A second press a few
+  ms after the first, before that hold is in place, leaves the stop to the
+  closing step, which still sends it and reports it (exit 1 or 3, no
+  traceback). A stop counts as confirmed after three status reads in a
+  row say not moving with PX unchanged (one read could fall in the moment
+  after a motion command's OK, where a STOP may not take).
 - **`home`** (the RM-5-110 turns without end and has no limit switches, so
   a home switch that never triggers must not wind up the wires): PX is read
   at every poll. The controller sets the counter to 0 at the switch (manual,
@@ -178,10 +183,16 @@
   10°; a time-out (1.2 × the expected time + 2 s) backs this up. It is
   refused unless all of that stays within ±360° of the zero: from the zero
   itself, first move about 13° the other way at 5 deg/s (the refusal prints
-  the `move` to make). It must end not moving with PX 0. Afterwards the zero,
-  and with it the ±360° limit of `move`, is the home switch; the script says
-  where the switch was found from the old zero and the `move` that turns
-  back there.
+  the `move` to make; where that would be more than the 360° one `move`
+  turns, it suggests the other direction after a short move). It must end
+  not moving with PX 0. Afterwards the zero, and with it the ±360° limit of
+  `move`, is the home switch; the script says where the switch was found
+  from the old zero and the `move` that turns back there. A search stopped
+  or failed after the counter reset (Ctrl+C, time-out, communication
+  failure, the travel check, HL ending off 0) says the same, with the move
+  back from where it stopped. A switch within about one poll of the old
+  zero makes the reset look like a normal step, so then only a range is
+  given ("within about 2.6° of the old zero" at 5 deg/s).
 - **Setup on the lab PC (64-bit Python 3.11):**
   1. Install the Performax USB driver ("Performax USB Setup 4.01.3", from
      Newmark/Arcus). With the controller on its 24 V supply and plugged in,
@@ -191,7 +202,9 @@
      and `SiUSBXp.dll` together next to `Newmark_motor_test.py` (or in a
      folder given with `--dll-dir`). 32-bit DLLs do not load in 64-bit Python
      (WinError 193); the script says so, and it refuses a 32-bit Python
-     (use `py -3.11-64`).
+     (use `py -3.11-64`). Python does not search PATH for them: a missing
+     DLL or a missing `SiUSBXp.dll` beside it (error 126, which Python
+     reports as "Could not find module") is explained as such.
   3. Close QuickMotion first: one program at a time on the USB device.
 - **First test:**
   1. `py Newmark_motor_test.py --dry-run` and
@@ -217,7 +230,10 @@
   `fnPerformaxComFlush`, the reply framing (CR, a `#NN` prefix), the STOP
   reply at rest, R2 = 1 after the 2.5 s wait following RR, DRVMS, the
   direction of +, and how HL behaves (the counter reset at the switch, PX 0
-  at the end, the home polarity).
+  at the end, the home polarity). Check in QuickMotion that EDEC = 0: the
+  home bounds assume the slowing down takes ACC, but with EDEC = 1 (stored
+  in flash) HL and STOP slow down over DEC, which the script does not read
+  (reading EDEC and DEC would need adding them to the allowed list).
 - **Tests:** `test_newmark_motor_test_script.py` (Tk-free; no real DLL is
   loaded on any OS, including the Windows CI: `ctypes.WinDLL`,
   `os.add_dll_directory` and the loader are replaced; time is a virtual
@@ -235,20 +251,28 @@
   late DN reply); the refusals (moving, latched limit error, limit input,
   EO=0, beyond ±360°, speeds not read back, a position changed since the
   question); one "not moving" read does not end a move; a PX read-back that
-  differs; a time-out sends STOP, then ABORT, else exit 3; `zero` asks;
-  `home` both ways, with HCA, the plan's numbers, refused where it could
-  pass ±360°, no home switch (stopped after one turn + 10°, both ways),
-  running on after the switch, a pause between HL stages, HL ending off 0, a
-  time-out; Ctrl+C at the question, during RR, during and inside the move
-  command, twice, before the identity, in info, home and stop, after a
-  finished move, a second Ctrl+C while it reports or before ABORT (the
-  report and exit 3 are kept), and a stop on closing reported; the
-  simulator's STOP reads "decelerating"; the ctypes path through real ctypes
-  function pointers (argtypes, pointers, 64-byte NUL-terminated buffers,
-  256-byte product strings, timeouts before Open, flush after it, the same
-  handle closed); the loader (search order, SiUSBXp.dll first, WinError 193
-  explained without guessing it from the path, 32-bit Python refused,
-  missing functions); standard-library imports only.
+  differs; a time-out sends STOP, then ABORT, else exit 3; a USB failure
+  mid-move or mid-search (STOP, back in step, exit 1; without flush, exit
+  3); `zero` asks; `home` both ways, with HCA, the plan's numbers, refused
+  where it could pass ±360° (its advice always a `move` that parses and
+  makes the search fit, also from −355°), no home switch (stopped after
+  one turn + 10°, both ways), running on after the switch, a pause between
+  HL stages, HL ending off 0, a time-out, the old zero given after a Ctrl+C,
+  a time-out or HL ending off 0 after the counter reset, a switch near the
+  old zero (a range); Ctrl+C at the question, during RR, during and inside
+  the move command, twice, before the identity, in info, home and stop,
+  after a finished move, a second Ctrl+C while it reports or before ABORT
+  (the report and exit 3 are kept), a second Ctrl+C before the handler or
+  close holds it (no traceback; the stop on closing runs; exit 3 after a
+  stop that ended unconfirmed), a STOP lost just after the move command
+  (three still reads), and a stop on closing reported; the simulator's STOP
+  reads "decelerating"; the ctypes path through real ctypes function
+  pointers (argtypes, pointers, 64-byte NUL-terminated buffers, 256-byte
+  product strings, timeouts before Open, flush after it, the same handle
+  closed); the loader (search order, SiUSBXp.dll first, WinError 193
+  explained without guessing it from the path, a missing DLL as the
+  FileNotFoundError Python 3.8+ raises, 32-bit Python refused, missing
+  functions); standard-library imports only.
 
 ## Settings audit: last review notes (2026-10-13)
 
