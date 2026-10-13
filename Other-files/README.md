@@ -61,6 +61,23 @@
     refreshes Start; the red button is off during a connect/disconnect;
   - overload means a short or too-low load impedance; a missing load is not
     detected (said in the tick and here).
+- **Second review** (of the fixes; all confirmed findings fixed):
+  - each pulse starts with a device clear and `*CLS`, THEN hold and off,
+    whose errors and the output (read back off) are checked before anything
+    else: a `*CLS` after them had hidden a refused hold, and with internal
+    triggering left on the output could have pulsed freely;
+  - the off path clears the device first, sends hold and off each with a
+    retry, and "output off" once more if the output does not read back off;
+  - connecting reads the output back off (else it closes the session and
+    says "check the generator"); a failure keeps every message;
+  - an overload already read (1001) is kept when a later query fails; an
+    unreadable overload state is "unknown" in the CSV; the box's error
+    message says OVERLOAD;
+  - "the trigger may have been sent" when the trigger write itself failed;
+  - the 6221's red button only signals a running 6221 job (it switches its
+    own output off), so it no longer frees the 6221 for the Avtech while a
+    newer train runs; a 6221 off that failed shows "check the 6221" and the
+    Avtech waits until an off succeeds.
 - **This unit's polarity:** Avtech's ed9 manual says -PN is not offered on
   -W3 units, so this generator very likely gives one polarity only. A pulse
   of the other sign is refused before anything is fired; for ± pulses use a

@@ -2292,7 +2292,7 @@ class AvtechPulseError(RuntimeError):
     been sent (the sample may have had the pulse), with what was read back."""
 
     def __init__(self, message: str, *, fired: bool = False, amplitude_v: float = math.nan,
-                 width_s: float = math.nan, overload: bool = False) -> None:
+                 width_s: float = math.nan, overload: bool | None = False) -> None:
         super().__init__(message)
         self.fired = fired
         self.amplitude_v = amplitude_v
@@ -2327,17 +2327,22 @@ class AvtechPulserController(SafeVisaIdentityController):
         )
 
     def connect(self, resource_name: str) -> str:
+        """As the base class (identity first, then hold and off), then the
+        error queue cleared and the output read back off; otherwise the
+        session is closed again (review, 2026-10-13)."""
         identity = super().connect(resource_name)
         with self.lock:
             try:
-                # Errors left by an earlier session would refuse the first
-                # pulse (review, 2026-10-13).
-                self.instrument.write("*CLS")
+                self.instrument.write("*CLS")  # errors left by an earlier session
+                problem = self._off_problem()
             except BaseException as error:
+                problem = f"*CLS after connecting failed: {error}"
+            if problem is not None:
                 try:
                     self.disconnect()
-                finally:
-                    raise RuntimeError(f"{self.label}: *CLS after connecting failed: {error}") from error
+                except BaseException as error:
+                    problem += f"; {error}"
+                raise RuntimeError(f"{self.label}: {problem}; check the generator")
         return identity
 
     def disconnect(self) -> None:
@@ -2403,44 +2408,62 @@ class AvtechPulserController(SafeVisaIdentityController):
             raise RuntimeError(f"{self.label}: {query} returned {reply!r}")
         return value
 
-    def _errors(self) -> list[tuple[int, str]]:
-        """The error queue, read until empty (at most 32 entries)."""
-        found = []
+    def _errors(self, found: list | None = None) -> list[tuple[int, str]]:
+        """The error queue, read until empty (at most 32 entries), into
+        ``found``: what was read is kept there if a later query fails."""
+        found = [] if found is None else found
         for _ in range(32):
             reply = str(self.instrument.query("syst:err?")).strip()
             try:
                 code = int(float(reply.split(",", 1)[0]))
             except ValueError:
                 found.append((-1, reply))
-                break
+                continue
             if code == 0:
                 break
             found.append((code, reply))
         return found
 
     def _off_problem(self) -> str | None:
-        """Trigger on hold and the output off, each sent even if the other
-        failed (after a device clear), and the output read back; None when it
-        reads back off, else what went wrong (review, 2026-10-13: a failed
-        hold had skipped the output off)."""
+        """Trigger on hold and the output off, and the output read back; None
+        when it reads back off, else what went wrong.  A device clear first
+        (a partly received command or a stale reply would swallow the next
+        one), each command sent even if the other failed and retried after a
+        clear, and "output off" once more if it does not read back off
+        (review, 2026-10-13)."""
         failures = []
-        for command in ("trigger:source hold", "output off"):
+
+        def clear() -> None:
+            try:
+                self.instrument.clear()
+            except BaseException as error:
+                failures.append(f"device clear: {error}")
+
+        def send(command: str) -> bool:
             try:
                 self.instrument.write(command)
+                return True
             except BaseException as error:
-                try:
-                    self.instrument.clear()  # a partly received command
-                    self.instrument.write(command)
-                except BaseException as again:
-                    failures.append(f"{command}: {error}; again: {again}")
-        try:
-            if self._number("output?") == 0:
-                if failures:
-                    self.logger(f"{self.label}: output read back off, but " + "; ".join(failures))
-                return None
-            failures.append("its output did not read back off")
-        except BaseException as error:
-            failures.append(f"output? failed: {error}")
+                failures.append(f"{command}: {error}")
+                return False
+
+        clear()
+        for command in ("trigger:source hold", "output off"):
+            if not send(command):
+                clear()
+                send(command)
+        for attempt in range(2):
+            try:
+                if self._number("output?") == 0:
+                    if failures:
+                        self.logger(f"{self.label}: output read back off, after: " + "; ".join(failures))
+                    return None
+                failures.append("its output did not read back off")
+            except BaseException as error:
+                failures.append(f"output? failed: {error}")
+            if attempt == 0:
+                clear()
+                send("output off")
         return "; ".join(failures)
 
     def switch_off(self) -> None:
@@ -2468,14 +2491,27 @@ class AvtechPulserController(SafeVisaIdentityController):
                     "pulses only (its polarity option); no pulse fired"
                 )
             failure = None
-            fired = False
-            overload = False
+            fired = trigger_sent = False
             amplitude_read = width_read = math.nan
-            after = []
+            after: list[tuple[int, str]] = []
+            others: list[str] = []
             try:
+                # A device clear (a partly received command or a stale reply),
+                # the queue cleared, THEN hold and off, so an error from them
+                # is caught below (review, 2026-10-13: a *CLS after them had
+                # hidden a rejected hold, and internal triggering could have
+                # pulsed freely once the output went on).
+                self.instrument.clear()
+                self.instrument.write("*CLS")
                 self.instrument.write("trigger:source hold")
                 self.instrument.write("output off")
-                self.instrument.write("*CLS")
+                errors = self._errors()
+                if errors:
+                    raise RuntimeError(
+                        f"{self.label} refused hold or output off: " + "; ".join(text for _code, text in errors)
+                    )
+                if self._number("output?") != 0:
+                    raise RuntimeError(f"{self.label}'s output did not read back off before the pulse")
                 # No delay: a front-panel delay (0 - 1 s) would put the pulse
                 # after the output went off (review, 2026-10-13).
                 self.instrument.write("pulse:delay 0")
@@ -2498,19 +2534,25 @@ class AvtechPulserController(SafeVisaIdentityController):
                 self.instrument.write("output on")
                 if self._number("output?") != 1:
                     raise RuntimeError(f"{self.label}'s output did not switch on")
-                fired = True
+                fired = True  # from here the sample may have had the pulse
                 self.instrument.write("trigger:source immediate")  # the pulse
+                trigger_sent = True
                 self.instrument.write("trigger:source hold")
-                after = self._errors()  # also: the pulse is over by now
+                self._errors(after)  # also: the pulse is over by now
             except BaseException as error:
                 failure = error
             problem = self._off_problem()
-            overload = any(code == self.OVERLOAD_ERROR for code, _text in after)
-            others = [text for code, text in after if code != self.OVERLOAD_ERROR]
+            try:
+                self._errors(after)  # anything queued meanwhile, before the next *CLS
+            except BaseException as error:
+                others.append(f"its error queue could not be read: {error}")
+            overload: bool | None = any(code == self.OVERLOAD_ERROR for code, _text in after)
+            others += [text for code, text in after if code != self.OVERLOAD_ERROR]
             try:
                 overload = overload or self._number("output:protection:tripped?") != 0
             except BaseException as error:
                 others.append(f"its overload state could not be read: {error}")
+                overload = True if overload else None  # unknown
             parts = []
             if failure is not None:
                 parts.append(str(failure))
@@ -2518,7 +2560,14 @@ class AvtechPulserController(SafeVisaIdentityController):
             if problem is not None:
                 parts.append(f"{problem}; check the generator")
             if parts:
-                prefix = "pulse fired, then: " if fired else "no pulse fired: "
+                if overload:
+                    parts.append("OVERLOAD: output protection tripped (short or too-low load impedance)")
+                if trigger_sent:
+                    prefix = "pulse fired, then: "
+                elif fired:
+                    prefix = "the trigger may have been sent (a pulse may have fired), then: "
+                else:
+                    prefix = "no pulse fired: "
                 raise AvtechPulseError(
                     prefix + "; ".join(parts), fired=fired, amplitude_v=amplitude_read,
                     width_s=width_read, overload=overload,
@@ -13439,6 +13488,7 @@ class CombinedControlApp:
         self.avtech_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="avtech-pulser")
         self.avtech_busy = False
         self.avtech_closed = False
+        self.k6221_output_unknown = False  # set when a 6221 off failed
         self.avtech_resource_var = tk.StringVar(value=AVTECH_DEFAULT_RESOURCE)
         self.avtech_amplitude_var = tk.StringVar(value=f"{AVTECH_DEFAULT_AMPLITUDE_V:g}")
         self.avtech_width_var = tk.StringVar(value=f"{AVTECH_DEFAULT_WIDTH_NS:g}")
@@ -28238,6 +28288,7 @@ class CombinedControlApp:
             if not self.closing:
                 messagebox.showerror("Keithley 6221", str(error), parent=self.root)
         else:
+            self.k6221_output_unknown = False
             self.k6221_connection_var.set("Connected")
             self._clear_k6221_readback_history(redraw=False)
             self._reset_k6221_readback()
@@ -28261,6 +28312,8 @@ class CombinedControlApp:
 
     def _finish_k6221_disconnect(self, error) -> None:
         self.k6221_busy = False
+        if error is None:
+            self.k6221_output_unknown = False
         if not (self.k6221_scan_running and self.__dict__.get("cidwm_scan_source") == "avtech"):
             self.k6221_scan_running = False
         self.k6221_connection_var.set("Not connected")
@@ -28580,7 +28633,7 @@ class CombinedControlApp:
         if self.k6221_busy or self.__dict__.get("avtech_busy", False):
             return False
         if source == "avtech":
-            return self.avtech_controller.connected
+            return self.avtech_controller.connected and not self.__dict__.get("k6221_output_unknown", False)
         return self.k6221_controller.connected
 
     def start_cidwm_pulse_scan(self) -> None:
@@ -28790,7 +28843,8 @@ class CombinedControlApp:
                                 writer.writerow((
                                     index, label, f"{set_value:.10g}", shown(error.amplitude_v),
                                     shown(error.width_s, 1e9), f"{time.monotonic() - started:.3f}",
-                                    bool(error.overload), "", "", "", "", "",
+                                    "unknown" if error.overload is None else bool(error.overload),
+                                    "", "", "", "", "",
                                     f"the scan stopped: {error}",
                                 ))
                                 file.flush()
@@ -28965,6 +29019,8 @@ class CombinedControlApp:
             identity = future.result()
         except BaseException as error:
             self.avtech_connection_var.set("Not connected")
+            if "check the generator" in str(error):
+                self.avtech_output_var.set("Output: check the Avtech")
             self.avtech_status_var.set(f"Avtech: connection failed: {short_status_error(error)}")
             if not self.closing:
                 messagebox.showerror("Avtech", str(error), parent=self.root)
@@ -28973,7 +29029,7 @@ class CombinedControlApp:
             self.avtech_output_var.set("Output: OFF")
             self.avtech_safety_var.set(False)
             self.avtech_status_var.set(
-                f"Avtech: {identity} | trigger on hold, output off | {self._avtech_polarity_text()}"
+                f"Avtech: {identity} | trigger on hold, output off (read back) | {self._avtech_polarity_text()}"
             )
         self._update_avtech_controls()
         self._update_k6221_controls()
@@ -29013,6 +29069,12 @@ class CombinedControlApp:
             messagebox.showwarning("Avtech", "Tick the Avtech safety confirmation first", parent=self.root)
             return
         if self.avtech_busy or self.k6221_busy or self.k6221_scan_running:
+            return
+        if self.__dict__.get("k6221_output_unknown", False):
+            messagebox.showwarning(
+                "Avtech", "The 6221's output state is unknown: switch it off first (its red button)",
+                parent=self.root,
+            )
             return
         try:
             amplitude_v, width_s = self._parse_avtech_pulse()
@@ -29107,6 +29169,7 @@ class CombinedControlApp:
         self.avtech_disconnect_button.configure(state="normal" if connected and idle else "disabled")
         can_pulse = (
             connected and idle and self.avtech_safety_var.get() and not self.k6221_busy
+            and not self.__dict__.get("k6221_output_unknown", False)
             and not self.magnet_scan_running and not self.keithley_scan_running
         )
         allowed = self.avtech_controller.polarities or (1, -1)
@@ -29121,6 +29184,11 @@ class CombinedControlApp:
             return
         self.k6221_stop_event.set()
         self.k6221_status_var.set("Stopping output, zeroing and switching off…")
+        if self.k6221_busy:
+            # The running 6221 job (a pulse train, a connect) switches the
+            # output off itself when it ends.  A second off queued behind it
+            # would clear the busy flag of a newer job (review, 2026-10-13).
+            return
         if not (self.k6221_scan_running and self.__dict__.get("cidwm_scan_source", "6221") == "6221"):
             self.k6221_busy = True
             self._update_k6221_controls()
@@ -29134,7 +29202,9 @@ class CombinedControlApp:
     def _finish_k6221_off(self, error) -> None:
         self.k6221_busy = False
         self.k6221_current_ma = 0.0
-        self.k6221_output_var.set("Output: 0 mA / OFF")
+        # Until an off succeeds, the Avtech does not pulse (review, 2026-10-13).
+        self.k6221_output_unknown = error is not None
+        self.k6221_output_var.set("Output: 0 mA / OFF" if error is None else "Output: check the 6221")
         if error is None:
             self._reset_k6221_readback()
             self.k6221_status_var.set("Output stopped, current zeroed and output off")
@@ -29330,7 +29400,8 @@ class CombinedControlApp:
                 avtech = self.avtech_controller
                 can_start = (
                     avtech.connected and not self.avtech_busy and not running
-                    and not self.k6221_busy and self.avtech_safety_var.get()
+                    and not self.k6221_busy and not self.__dict__.get("k6221_output_unknown", False)
+                    and self.avtech_safety_var.get()
                     and not self.magnet_scan_running and not self.keithley_scan_running
                 )
             else:

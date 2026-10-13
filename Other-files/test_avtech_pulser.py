@@ -19,12 +19,16 @@ class FakeAvtech:
     the pulses it fired."""
 
     def __init__(self, identity="AVTECH ELECTROSYSTEMS,AVR-E3-B-PN-W3,14486,5.07",
-                 polarities=(1, -1), stuck_on=False, trip=False, fail=(), replies=None):
+                 polarities=(1, -1), stuck_on=False, trip=False, fail=(), replies=None,
+                 reject=(), fail_queries=(), stuck_after_pulse=False):
         self.identity = identity
         self.polarities = polarities
         self.stuck_on, self.trip = stuck_on, trip
+        self.stuck_after_pulse = stuck_after_pulse
         # fail: (command, which occurrence) writes that time out; replies: fixed query answers.
         self.fail, self.replies = set(fail), dict(replies or {})
+        # reject: (command, occurrence) refused with an error queued; fail_queries: queries that time out.
+        self.reject, self.fail_queries = set(reject), set(fail_queries)
         self.trigger, self.output, self.width, self.amplitude = "internal", 0, 1e-9, 0.1
         self.delay = 0.5
         self.errors, self.pulses, self.log = [], [], []
@@ -40,6 +44,9 @@ class FakeAvtech:
         self.log.append(command)
         if (command, occurrence) in self.fail:
             raise TimeoutError(f"VI_ERROR_TMO on {command}")
+        if (command, occurrence) in self.reject:
+            self.errors.append('-102,"Syntax error; Unrecognized command"')
+            return
         word, _, value = command.strip().lower().partition(" ")
         if word == "*cls":
             self.errors.clear()
@@ -64,7 +71,10 @@ class FakeAvtech:
                 self.errors.append('-222,"Data out of range"')
 
     def query(self, command):
+        occurrence = sum(1 for entry in self.log if entry == command) + 1
         self.log.append(command)
+        if (command, occurrence) in self.fail_queries:
+            raise TimeoutError(f"VI_ERROR_TMO reading {command}")
         command = command.strip().lower()
         if command in self.replies:
             return self.replies[command]
@@ -77,7 +87,8 @@ class FakeAvtech:
         if command == "volt:ampl?":
             return f"{self.amplitude:.4e}"
         if command == "output?":
-            return "1" if self.output or self.stuck_on else "0"
+            stuck = self.stuck_on or (self.stuck_after_pulse and self.pulses)
+            return "1" if self.output or stuck else "0"
         if command == "syst:err?":
             return self.errors.pop(0) if self.errors else '0,"No error"'
         if command == "output:protection:tripped?":
@@ -132,9 +143,9 @@ class SinglePulseTests(unittest.TestCase):
         self.assertEqual((fake.output, fake.trigger), (0, "hold"))
 
     def test_an_output_that_stays_on_is_reported(self):
-        fake = FakeAvtech(stuck_on=True)
+        fake = FakeAvtech(stuck_after_pulse=True)
         with self.assertRaisesRegex(app.AvtechPulseError,
-                                    "pulse fired, then: its output did not read back off; check the generator") as caught:
+                                    "pulse fired, then: its output did not read back off.*check the generator") as caught:
             controller(fake).single_pulse(20.0, 10e-9)
         self.assertEqual(len(fake.pulses), 1)
         self.assertTrue(caught.exception.fired)
@@ -170,6 +181,32 @@ class SinglePulseTests(unittest.TestCase):
         with self.assertRaisesRegex(app.AvtechPulseError, "no pulse fired"):
             controller(fake).single_pulse(20.0, 10e-9)
         self.assertEqual(fake.pulses, [])
+
+    def test_an_output_on_before_the_pulse_fires_nothing(self):
+        fake = FakeAvtech(stuck_on=True)
+        with self.assertRaisesRegex(app.AvtechPulseError, "no pulse fired: .*did not read back off before the pulse"):
+            controller(fake).single_pulse(20.0, 10e-9)
+        self.assertEqual(fake.pulses, [])
+        self.assertNotIn("trigger:source immediate", fake.log)
+
+    def test_a_refused_hold_fires_nothing(self):
+        """Second review, 2026-10-13: a *CLS after hold and off had hidden a
+        refused hold; with the trigger left on internal the output would
+        have pulsed freely."""
+        fake = FakeAvtech(reject={("trigger:source hold", 1)})
+        with self.assertRaisesRegex(app.AvtechPulseError, "no pulse fired: .*refused hold or output off"):
+            controller(fake).single_pulse(20.0, 10e-9)
+        self.assertNotIn("output on", fake.log)
+        self.assertEqual(fake.pulses, [])
+        self.assertLess(fake.log.index("*CLS"), fake.log.index("trigger:source hold"))
+
+    def test_an_overload_already_read_survives_a_failed_query(self):
+        # syst:err? 1, 2 before the pulse; 3 after it reads the 1001; 4 times out.
+        fake = FakeAvtech(trip=True, fail_queries={("syst:err?", 4)})
+        with self.assertRaisesRegex(app.AvtechPulseError, "pulse fired, then: .*OVERLOAD") as caught:
+            controller(fake).single_pulse(20.0, 10e-9)
+        self.assertIs(caught.exception.overload, True)
+        self.assertEqual(fake.output, 0)
 
     def test_stale_errors_from_an_earlier_session_do_not_refuse_the_pulse(self):
         fake = FakeAvtech()
@@ -217,13 +254,21 @@ class ConnectTests(unittest.TestCase):
         fake = FakeAvtech()
         c, identity = self.connect(fake)
         self.assertIn("AVR-E3-B", identity)
-        self.assertEqual(fake.log, ["*IDN?", "trigger:source hold", "output off", "*CLS"])
+        self.assertEqual(fake.log, ["*IDN?", "trigger:source hold", "output off", "*CLS",
+                                    "<device clear>", "trigger:source hold", "output off", "output?"],
+                         "the output read back off before connect returns")
         self.assertEqual(fake.pulses, [])
         with mock.patch.object(app, "release_shared_visa_manager"):
             c.disconnect()
         self.assertNotIn("SYST:LOC", fake.log, "not an Avtech command (review, 2026-10-13)")
         self.assertEqual(fake.log[-3:], ["trigger:source hold", "output off", "output?"])
         self.assertFalse(c.connected)
+
+    def test_an_output_that_does_not_read_back_off_fails_the_connect(self):
+        fake = FakeAvtech(stuck_on=True)
+        with self.assertRaisesRegex(RuntimeError, "did not read back off.*check the generator"):
+            self.connect(fake)
+        self.assertEqual(fake.pulses, [])
 
     def test_another_instrument_gets_nothing_but_the_identity_query(self):
         fake = FakeAvtech(identity="KEITHLEY INSTRUMENTS,MODEL 6221,1,A01")
@@ -247,6 +292,25 @@ class SourceExclusionTests(unittest.TestCase):
                                         ({"avtech_busy": True}, "6221", False), ({}, "6221", True)):
             with self.subTest(state=state, source=source):
                 self.assertIs(ready(self.stand_in(**state), source), expected)
+
+    def test_the_6221_stop_only_signals_a_running_6221_job(self):
+        """Second review: a second off queued behind a train cleared the busy
+        flag of the next train, and the Avtech could pulse during it."""
+        a = mock.Mock()
+        a.__dict__.update(k6221_busy=True, k6221_scan_running=False)
+        a.k6221_controller.connected = True
+        app.CombinedControlApp.stop_k6221(a)
+        a.k6221_stop_event.set.assert_called_once()
+        a.k6221_executor.submit.assert_not_called()
+
+    def test_a_failed_6221_off_keeps_the_avtech_waiting(self):
+        a = mock.Mock()
+        a.__dict__.update(closing=True)
+        app.CombinedControlApp._finish_k6221_off(a, RuntimeError("OUTP OFF: VI_ERROR_TMO"))
+        self.assertTrue(a.k6221_output_unknown)
+        a.k6221_output_var.set.assert_called_with("Output: check the 6221")
+        state = self.stand_in(k6221_output_unknown=True)
+        self.assertFalse(app.CombinedControlApp._cidwm_source_ready(state, "avtech"))
 
     def test_a_6221_disconnect_leaves_an_avtech_scan_running(self):
         a = mock.Mock()
