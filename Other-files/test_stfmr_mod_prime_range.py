@@ -1,7 +1,7 @@
 """STFMR page, Mod. start / Mod. end (user, 2026-10-13).
 
 The single "Mod. Hz" box became "Mod. start Hz" and "Mod. end Hz", both
-317.3 by default.  Equal, they give that one modulation frequency, as
+117.3 by default (user, 2026-10-14; 317.3 before).  Equal, they give that one modulation frequency, as
 before; different, every whole-number prime between them (no step), from
 start towards end, and the whole f x A sweep runs at each in turn.
 
@@ -114,7 +114,7 @@ class SweepTests(NoWindows):
 
 class PrimeListTests(NoWindows):
     def test_equal_boxes_give_that_one_value_as_before(self):
-        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_LFO_HZ, 317.3)
+        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_LFO_HZ, 117.3)   # user, 2026-10-14
         for start, end in (("317.3", "317.3"), (" 317.30", "317.3 "), (317.3, 317.3)):
             self.assertEqual(primes(start, end), (317.3,), (start, end))
         self.assertEqual(primes("1000", "1000"), (1000.0,), "not a prime, but the one value asked for")
@@ -531,12 +531,12 @@ class TableTests(NoWindows):
         self.assertFalse([t for t in everything if "step" in t.lower() and "Mod" in t], "no Mod. step box")
         self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 1)], list(range(10)))
 
-    def test_both_boxes_default_to_317_3(self):
+    def test_both_boxes_default_to_117_3(self):
         with open(app.__file__, encoding="utf-8") as source:
             text = source.read()
         for name in ("stfmr_lockin_mod_start_var", "stfmr_lockin_mod_end_var"):
             self.assertRegex(text, rf"self\.{name} = tk\.StringVar\(\s*value=f\"{{STFMR_LOCKIN_DEFAULT_LFO_HZ:g}}\"")
-        self.assertEqual(f"{app.STFMR_LOCKIN_DEFAULT_LFO_HZ:g}", "317.3")
+        self.assertEqual(f"{app.STFMR_LOCKIN_DEFAULT_LFO_HZ:g}", "117.3")   # user, 2026-10-14
         self.assertNotIn("stfmr_lockin_lfo_var", text, "every user of the old box was moved")
 
 

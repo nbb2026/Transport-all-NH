@@ -621,7 +621,7 @@ class InstrumentSafetyTests(unittest.TestCase):
         })
         self.assertEqual(app.STFMR_LOCKIN_DEFAULT_FREQUENCY_GHZ, 4.0)
         self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_DBM, 6.0)
-        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_LFO_HZ, 317.3)
+        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_LFO_HZ, 117.3)  # user, 2026-10-14
         self.assertEqual(app.STFMR_LOCKIN_MFLI_TIME_CONSTANT_S, 0.1)
         self.assertEqual(
             app.STFMR_LOCKIN_SR830_DEFAULT_REFERENCE_INPUT, "Sine"

@@ -22,7 +22,7 @@ The meter mode is locked during a scan; connecting an instrument in dual mode do
   from Stop A back to Start A. A fixed current (Start A = Stop A) has no such jump: Loop is then the number of
   readings at each frequency, and all but the first two are saved, so it needs a Loop of at least 3. Start refuses
   a run that would save nothing (two currents per loop, or a fixed current with Loop 1 or 2) (2026-10-13).
-- Modulation frequencies (2026-10-13): "Mod. start Hz" = "Mod. end Hz" (317.3 by default) is the one LFO
+- Modulation frequencies (2026-10-13): "Mod. start Hz" = "Mod. end Hz" (117.3 by default since 2026-10-14; 317.3 before) is the one LFO
   frequency, as before; otherwise every whole-number prime between them, from start towards end, with no step.
   The whole f × A sweep runs at each in turn, modulation outermost. At each change the 4886 goes to zero, the
   SMB100A LFO frequency changes (RF, AM and LFO stay on), the carrier returns to f start and, as at the start,

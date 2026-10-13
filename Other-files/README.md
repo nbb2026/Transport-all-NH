@@ -1,5 +1,16 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## STFMR: default modulation frequency 117.3 Hz (2026-10-14)
+
+- **The user's choice:** "Mod. start Hz" and "Mod. end Hz" now both start at
+  117.3 Hz (`STFMR_LOCKIN_DEFAULT_LFO_HZ`; it was 317.3 Hz), so a default
+  sweep modulates at 117.3 Hz. The idle Ref lamp falls back to 117.3 Hz when
+  Mod. start is not a number. Only the STFMR page uses this value; the PPMS
+  page's own 317.3 Hz is unchanged.
+- **Tests:** `test_stfmr_mod_prime_range` and
+  `test/test_instrument_safety_logic` check the constant and both boxes;
+  the CI GUI test `test_stfmr_field_output` checks the boxes show 117.3.
+
 ## RT-E: Angle scan with the Newmark NSC-A1 rotation stage (2026-10-13)
 
 - **What the user chose:** a third RT-E scan mode, "Angle", beside Field and
@@ -158,7 +169,7 @@
   also only pick the prime, ignore the step input."
 - **Boxes:** the single "Mod. Hz" box is now "Mod. start Hz" (its old cell,
   at the end of the f row) and "Mod. end Hz" under it (end of the A row);
-  both default to 317.3, so a default sweep is unchanged. There is no step
+  both default to 317.3 (117.3 since 2026-10-14, see above). There is no step
   box. "Wait/pt s" moves from under Mod. to the free cell right of Loop
   (SR830 row). Each row keeps five pairs: a sixth made the table too wide
   for the 1101 px window. The label column is wider for "Mod. start Hz:"

@@ -1978,9 +1978,10 @@ STFMR_FIELD_SETTLE_TARGET_REL_TOLERANCE = 0.02
 STFMR_FIELD_SETTLE_TIMEOUT_S = 15.0
 STFMR_LOCKIN_DEFAULT_FREQUENCY_GHZ = 4.0
 STFMR_LOCKIN_DEFAULT_POWER_DBM = 6.0
-STFMR_LOCKIN_DEFAULT_LFO_HZ = 317.3
+# 117.3 Hz by default (user, 2026-10-14; it was 317.3 Hz).
+STFMR_LOCKIN_DEFAULT_LFO_HZ = 117.3
 # Mod. start / Mod. end replace the single Mod. Hz box: equal, they give that
-# one modulation frequency (317.3 Hz by default, as before); different, every
+# one modulation frequency (117.3 Hz by default); different, every
 # whole-number prime between them, with no step, and the whole f x A sweep
 # runs at each in turn.  At most as many modulation frequencies as the
 # microwave sweep allows frequencies (10000), so a slip of a digit cannot

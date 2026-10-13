@@ -445,7 +445,7 @@ class FieldOutputTests(unittest.TestCase):
                  1: ("Mod. end Hz:", self.a.stfmr_lockin_mod_end_var),
                  2: ("Wait/pt s:", self.a.stfmr_lockin_delay_var)}
         self.assertEqual((self.a.stfmr_lockin_mod_start_var.get(), self.a.stfmr_lockin_mod_end_var.get()),
-                         ("317.3", "317.3"))
+                         ("117.3", "117.3"))   # user, 2026-10-14
         try:
             for width in (self.LAB_DEFAULT, LAB_WIDE):
                 self.arranged(width, "STFMR", self.a.stfmr_lockin_resource_widgets)
