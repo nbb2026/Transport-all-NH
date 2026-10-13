@@ -26,7 +26,8 @@ The meter mode is locked during a scan; connecting an instrument in dual mode do
   frequency, as before; otherwise every whole-number prime between them, from start towards end, with no step.
   The whole f × A sweep runs at each in turn, modulation outermost. At each change the 4886 goes to zero, the
   SMB100A LFO frequency changes (RF, AM and LFO stay on), the carrier returns to f start and, as at the start,
-  the SR830 must lock to the new frequency within 5 s before the 4886 comes back on; both meters then expect the
+  the SR830 must lock to the new frequency within 5 s, its readback nearer the new frequency than the old one
+  (neighbouring primes less than 0.5 % apart both pass the 0.5 % match), before the 4886 comes back on; both meters then expect the
   new frequency, and the start pre-read and the first two points are discarded as after a carrier change.
 - X, Y and Theta show both curves in one plot: MFLI as filled circles, SR830 as thin-edged hollow circles; the legend names instrument and frequency, and the modulation frequency when a sweep has several.
   Hollow circles are slightly larger for legibility, with a 0.75 px edge in the GUI; the legend uses the same marker style.

@@ -3085,10 +3085,22 @@ class STFMRSR830Controller(SafeVisaIdentityController):
         self,
         expected_frequency_hz: float,
         timeout_s: float = 5.0,
+        previous_frequency_hz: float | None = None,
     ) -> dict[str, object]:
+        """previous_frequency_hz: the modulation frequency just left, at a
+        change of an STFMR sweep's modulation frequency.  The 0.5 % match
+        alone also accepts the old frequency when the two are less than
+        0.5 % apart (1019 and 1021 Hz), and the first poll comes right after
+        LFO:FREQ, so the readback must also be nearer the new frequency than
+        the old one (user, 2026-10-13)."""
         expected = float(expected_frequency_hz)
         if not math.isfinite(expected) or expected <= 0:
             raise ValueError("SR830 expected reference frequency must be a finite positive number")
+        previous = None
+        if previous_frequency_hz is not None:
+            previous = float(previous_frequency_hz)
+            if not math.isfinite(previous) or previous == expected:
+                previous = None
         deadline = time.monotonic() + max(float(timeout_s), 0.1)
         frequency = math.nan
         status = 8
@@ -3100,7 +3112,10 @@ class STFMRSR830Controller(SafeVisaIdentityController):
                 status = int(round(float(
                     self.instrument.query("LIAS?").strip()
                 )))
-            if not (status & 8) and math.isclose(
+            left_previous = previous is None or (
+                abs(frequency - expected) < abs(frequency - previous)
+            )
+            if not (status & 8) and left_previous and math.isclose(
                 frequency,
                 expected,
                 rel_tol=5e-3,
@@ -3114,7 +3129,9 @@ class STFMRSR830Controller(SafeVisaIdentityController):
             time.sleep(0.1)
         raise RuntimeError(
             f"SR830 REF IN not locked: selected {self.reference_input}, "
-            f"expected {expected:g} Hz, readback {frequency:g} Hz, LIAS={status}; "
+            f"expected {expected:g} Hz"
+            + (f" (previous {previous:g} Hz)" if previous is not None else "")
+            + f", readback {frequency:g} Hz, LIAS={status}; "
             "please confirm that SMB100A LFO OUTPUT is connected to SR830 REF IN, "
             "and select the Sine/TTL edge matching the waveform"
         )
@@ -5572,8 +5589,10 @@ def nonlocal_prime_frequencies(start_hz, stop_hz) -> tuple[float, ...]:
 
 
 def _is_whole_number_prime(number: int) -> bool:
-    """Exact for every number below 3.3e24 (Miller-Rabin with the first 12
-    primes as bases), so for every STFMR modulation range."""
+    """Exact for every number below 3.18e23 (Miller-Rabin with the first 12
+    primes as bases; 318665857834031151167461 is the first composite that
+    passes them all), so for every STFMR prime range, which stops at 2**53
+    (user, 2026-10-13; it once said 3.3e24, which needs base 41 too)."""
     if number < 2:
         return False
     bases = (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37)
@@ -17778,11 +17797,18 @@ class CombinedControlApp:
             return []
         return recorder.close(outcome, **details)
 
+    def _stfmr_lockin_several_modulations(self) -> bool:
+        """True while the sweep runs at several modulation frequencies
+        (user, 2026-10-13)."""
+        return len(getattr(self, "stfmr_lockin_modulation_frequencies_hz", ())) > 1
+
     def _stfmr_lockin_pass_label(self, frequency_ghz: float) -> str:
-        """'5 GHz' in the status line, or '5 GHz, Mod. 307 Hz' when the sweep
-        runs at several modulation frequencies (user, 2026-10-13)."""
-        if len(getattr(self, "stfmr_lockin_modulation_frequencies_hz", ())) > 1:
-            return f"{frequency_ghz:g} GHz, Mod. {self.stfmr_lockin_expected_hz:g} Hz"
+        """'5 GHz' in the status line, or '5 GHz/307 Hz' when the sweep runs
+        at several modulation frequencies (user, 2026-10-13).  Short, as the
+        status label is 52 characters wide: '5 GHz, Mod. 307 Hz' pushed the
+        time left off its end (user, 2026-10-13)."""
+        if self._stfmr_lockin_several_modulations():
+            return f"{frequency_ghz:g} GHz/{self.stfmr_lockin_expected_hz:g} Hz"
         return f"{frequency_ghz:g} GHz"
 
     def _configure_stfmr_lockin_frequency(
@@ -17813,6 +17839,15 @@ class CombinedControlApp:
             1.0, 1.0 / max(self.stfmr_lockin_delay_s, 0.05)
         )
         expected_hz = self.stfmr_lockin_expected_hz
+        # The modulation frequency just left, which the SR830 must be seen to
+        # have left (see wait_for_reference; user, 2026-10-13).
+        previous_hz = (
+            self.stfmr_lockin_modulation_frequencies_hz[
+                self.stfmr_lockin_modulation_index - 1
+            ]
+            if modulation_change and self.stfmr_lockin_modulation_index > 0
+            else None
+        )
         if not self._stfmr_lockin_log_event(
             "frequency_configure", frequency_ghz=frequency_ghz,
             frequency_index=self.stfmr_lockin_frequency_index + 1,
@@ -17873,11 +17908,15 @@ class CombinedControlApp:
                 # frequency, that shows it locked before the 4886 comes back
                 # on.  The MFLI's external reference also follows by itself
                 # and, as at the start, its reading checks the frequency.
+                # The readback must also be nearer the new frequency than the
+                # old one: neighbouring primes less than 0.5 % apart both
+                # pass the 0.5 % match (user, 2026-10-13).
                 if modulation_change and meter in ("SR830", "MFLI + SR830"):
                     with visa_operation("SR830", "waiting for the reference to lock"):
                         self.stfmr_lockin_controllers["830"].wait_for_reference(
                             expected_hz,
                             timeout_s=5.0,
+                            previous_frequency_hz=previous_hz,
                         )
             if self.stfmr_lockin_stop_event.is_set():
                 return
@@ -17910,7 +17949,14 @@ class CombinedControlApp:
                 modulation_frequency_hz=expected_hz,
             ):
                 return
+            # With several modulation frequencies the label is longer, so
+            # the rest is shorter to stay within the 52-character status
+            # label; one modulation frequency reads as before
+            # (user, 2026-10-13).
             self.stfmr_lockin_status_var.set(
+                f"{self._stfmr_lockin_pass_label(frequency_ghz)}: start I="
+                f"{first_current:+.5g} A sent; start pre-read now"
+                if self._stfmr_lockin_several_modulations() else
                 f"{self._stfmr_lockin_pass_label(frequency_ghz)}: start current "
                 f"I={first_current:+.5g} A sent; running the start pre-read now"
             )
@@ -18347,10 +18393,14 @@ class CombinedControlApp:
                     )
                 )
             else:
+                # "~120 s left" with several modulation frequencies, whose
+                # longer label pushed "remaining about 120.0 s" off the
+                # 52-character status label (user, 2026-10-13).
                 self.stfmr_lockin_status_var.set(
                     f"{self._stfmr_lockin_pass_label(frequency_ghz)}; scanning {completed}/{total}; "
                     f"I={current:+.5g} A; "
-                    f"remaining about {remaining:.1f} s"
+                    + (f"~{remaining:.0f} s left" if self._stfmr_lockin_several_modulations()
+                       else f"remaining about {remaining:.1f} s")
                 )
             if done_in_frequency >= len(self.stfmr_lockin_points):
                 if not self._stfmr_lockin_log_event(
@@ -18382,8 +18432,10 @@ class CombinedControlApp:
                     self.stfmr_lockin_expected_hz = modulations[
                         self.stfmr_lockin_modulation_index
                     ]
+                    # Short enough for the 52-character status label, which
+                    # shows it through the lock wait (user, 2026-10-13).
                     self.stfmr_lockin_status_var.set(
-                        f"Mod. {finished_hz:g} Hz done; zeroing and switching to Mod. "
+                        f"Mod. {finished_hz:g} Hz done; zeroing; LFO to "
                         f"{self.stfmr_lockin_expected_hz:g} Hz at "
                         f"{self.stfmr_lockin_frequencies_ghz[0]:g} GHz"
                     )
@@ -18842,6 +18894,13 @@ class CombinedControlApp:
             # Wrap frequency legends into rows rather than clipping many carriers.
             entries = [(k, labels[k]) for k in series if labels.get(k)]
             legend_columns = 3 if meter == "MFLI + SR830" else 5
+            # Fewer columns when the widest label (its text starts 210 px
+            # into the column) and a 60 px gap do not fit one: "5.5 GHz,
+            # 317 Hz" of a sweep over several modulation frequencies ran into
+            # the next entry.  Carrier-only labels keep 5 or 3 columns
+            # (user, 2026-10-13).
+            widest = max((font.getlength(label) for _key, label in entries), default=0.0)
+            legend_columns = max(1, min(legend_columns, int(5150 // (210 + widest + 60))))
             legend_rows = max(1, (len(entries) + legend_columns - 1) // legend_columns)
             left, right, top, bottom = 800, 5950, 240 + legend_rows * 155, 3980
             image = PILImage.new("RGB", (6300, 4500 + max(0, top - 700)), "white")

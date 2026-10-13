@@ -17,6 +17,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _HERE = Path(__file__).resolve().parent
 for _path in (_HERE / "test", _HERE.parent):
@@ -53,8 +54,8 @@ class Recording(Device):
         self.calls.append(("modulation", hz))
         self.record("modulation", hz)
 
-    def wait_for_reference(self, expected, timeout_s=5.0):
-        self.calls.append(("wait_for_reference", expected, timeout_s))
+    def wait_for_reference(self, expected, timeout_s=5.0, previous_frequency_hz=None):
+        self.calls.append(("wait_for_reference", expected, timeout_s, previous_frequency_hz))
         self.record("wait_for_reference", expected)
 
     def set_frequency(self, value):
@@ -166,6 +167,19 @@ class PrimeListTests(NoWindows):
                                                         "at most 10000 modulation frequencies"):
                     primes(start, end)
 
+    def test_the_prime_test_is_exact_over_the_whole_capped_range(self):
+        """Review, 2026-10-13: 12 prime bases are exact below 3.18e23, the
+        first composite that passes them all, not 3.3e24; the 2**53 cap is
+        far below either."""
+        first_pseudoprime = 318665857834031151167461
+        self.assertEqual(399165290221 * 798330580441, first_pseudoprime)
+        self.assertLess(app.STFMR_LOCKIN_MAX_PRIME_MODULATION_HZ, first_pseudoprime)
+        self.assertIn("below 3.18e23", app._is_whole_number_prime.__doc__)
+        # Strong pseudoprimes to the first bases are still found composite.
+        for composite in (2047, 1373653, 3215031751, 3825123056546413051):
+            self.assertFalse(app._is_whole_number_prime(composite), composite)
+        self.assertTrue(app._is_whole_number_prime(2 ** 31 - 1))
+
     def test_a_prime_range_beyond_whole_float_numbers_is_refused(self):
         with self.assertRaisesRegex(ValueError, "must stay below 9007199254740992 Hz"):
             primes("1e300", "2e300")
@@ -226,8 +240,12 @@ class ModulationSweepTests(SweepTests):
             ("modulation", 313.0), ("frequency", 5.0), ("frequency", 6.0),
             ("rf_off",)])
         waits = [c for c in h.stfmr_lockin_controllers["830"].calls if c[0] == "wait_for_reference"]
-        self.assertEqual(waits, [("wait_for_reference", 307.0, 5.0), ("wait_for_reference", 311.0, 5.0),
-                                 ("wait_for_reference", 313.0, 5.0)], "re-checked as at the start")
+        # Re-checked as at the start, and at each change the SR830 must be
+        # seen to have left the modulation frequency before (review,
+        # 2026-10-13); the start has no frequency before it.
+        self.assertEqual(waits, [("wait_for_reference", 307.0, 5.0, None),
+                                 ("wait_for_reference", 311.0, 5.0, 307.0),
+                                 ("wait_for_reference", 313.0, 5.0, 311.0)])
         self.assertEqual(sum(c[0] == "configure" for c in h.stfmr_lockin_controllers["830"].calls), 1)
         # Each change: the 4886 to zero, then the LFO and the first carrier,
         # then the lock, and only then the 4886 back on at Start A.
@@ -273,9 +291,15 @@ class ModulationSweepTests(SweepTests):
                          ("completed", 12, True))
         self.assertEqual(h.progress[-1], (24, 24))
         statuses = h.stfmr_lockin_status_var.history
-        self.assertIn("Mod. 307 Hz done; zeroing and switching to Mod. 311 Hz at 5 GHz", statuses)
-        self.assertIn("Mod. 311 Hz done; zeroing and switching to Mod. 313 Hz at 5 GHz", statuses)
-        self.assertTrue(any(s.startswith("5 GHz, Mod. 311 Hz discarded start-transition point 1/2") for s in statuses))
+        self.assertIn("Mod. 307 Hz done; zeroing; LFO to 311 Hz at 5 GHz", statuses)
+        self.assertIn("Mod. 311 Hz done; zeroing; LFO to 313 Hz at 5 GHz", statuses)
+        self.assertTrue(any(s.startswith("5 GHz/311 Hz discarded start-transition point 1/2") for s in statuses))
+        self.assertIn("5 GHz/311 Hz: start I=-1 A sent; start pre-read now", statuses)
+        self.assertIn("5 GHz/313 Hz done; zeroing and switching to 6 GHz", statuses)
+        scanning = [s for s in statuses if "; scanning " in s]
+        self.assertTrue(scanning)
+        for status in scanning:
+            self.assertRegex(status, r"^[56] GHz/3(07|11|13) Hz; scanning \d+/24; I=[-+][0-9.]+ A; ~\d+ s left$")
         self.assertTrue(statuses[-1].startswith(
             "Multi-frequency scan complete: 2 frequencies, 3 modulation frequencies, 12 points saved"))
 
@@ -389,6 +413,11 @@ class DefaultSweepTests(SweepTests):
         self.assertEqual([int(r["index"]) for r in rows], [3, 4, 5, 8, 9, 10])
         statuses = h.stfmr_lockin_status_var.history
         self.assertFalse([s for s in statuses if "Mod." in s], "the status lines read as before")
+        self.assertIn("5 GHz: start current I=-1 A sent; running the start pre-read now", statuses)
+        scanning = [s for s in statuses if "; scanning " in s]
+        self.assertTrue(scanning)
+        for status in scanning:
+            self.assertRegex(status, r"^[56] GHz; scanning \d+/10; I=[-+][0-9.]+ A; remaining about \d+\.\d s$")
         self.assertEqual(statuses[-1], "Multi-frequency scan complete: 2 frequencies, 6 points saved; "
                                        "4886/SMB100A outputs OFF; CSV saved")
         series = h._stfmr_lockin_current_field_series(h.stfmr_lockin_rows, "MFLI", "mfli")
@@ -509,6 +538,250 @@ class TableTests(NoWindows):
             self.assertRegex(text, rf"self\.{name} = tk\.StringVar\(\s*value=f\"{{STFMR_LOCKIN_DEFAULT_LFO_HZ:g}}\"")
         self.assertEqual(f"{app.STFMR_LOCKIN_DEFAULT_LFO_HZ:g}", "317.3")
         self.assertNotIn("stfmr_lockin_lfo_var", text, "every user of the old box was moved")
+
+
+
+class ReferenceInstrument:
+    """An SR830 answering FREQ? with the given readings (the last repeats)
+    and LIAS? with 0 (no unlock latched)."""
+
+    def __init__(self, readings):
+        self.readings, self.queries = list(readings), []
+
+    def query(self, command):
+        self.queries.append(command)
+        if command == "FREQ?":
+            return str(self.readings.pop(0) if len(self.readings) > 1 else self.readings[0])
+        if command == "LIAS?":
+            return "0"
+        raise AssertionError(f"unexpected query {command}")
+
+
+def real_sr830(readings):
+    controller = app.STFMRSR830Controller(lambda _message: None)
+    controller.instrument = fake = ReferenceInstrument(readings)
+    return controller, fake
+
+
+class Sr830NeighbourTests(NoWindows):
+    """Review, 2026-10-13: at a modulation change the SR830 must be seen to
+    have left the old frequency.  The 0.5 % match alone accepts 1019 Hz for
+    1021 Hz, and the first poll comes right after LFO:FREQ.  The real
+    controller, on a fake instrument; each poll after the first waits its
+    0.1 s."""
+
+    def controller(self, readings):
+        return real_sr830(readings)
+
+    def test_the_old_frequency_is_not_taken_for_a_neighbour_less_than_half_a_percent_away(self):
+        self.assertTrue(math.isclose(1019.0, 1021.0, rel_tol=5e-3), "the 0.5 % match alone passes both")
+        self.assertEqual(primes("1018", "1022"), (1019.0, 1021.0))
+        # Still at the old frequency, then exactly between the two, then on
+        # the new one: only the last is taken.
+        controller, fake = self.controller([1019.0, 1020.0, 1020.998])
+        lock = controller.wait_for_reference(1021.0, timeout_s=5.0, previous_frequency_hz=1019.0)
+        self.assertEqual(lock["frequency_hz"], 1020.998)
+        self.assertEqual(fake.queries.count("FREQ?"), 3)
+        # Descending works the same way.
+        controller, fake = self.controller([1021.0, 1019.002])
+        self.assertEqual(controller.wait_for_reference(1019.0, previous_frequency_hz=1021.0)["frequency_hz"],
+                         1019.002)
+
+    def test_without_a_frequency_before_it_the_check_is_as_it_was(self):
+        """The start, and every other user of the wait, pass no previous
+        frequency: the first reading within 0.5 % is taken, as before."""
+        for previous in ({}, {"previous_frequency_hz": None}, {"previous_frequency_hz": 1021.0},
+                         {"previous_frequency_hz": math.nan}):
+            with self.subTest(previous=previous):
+                controller, fake = self.controller([1019.0, 1021.0])
+                self.assertEqual(controller.wait_for_reference(1021.0, **previous)["frequency_hz"], 1019.0)
+                self.assertEqual(fake.queries, ["FREQ?", "LIAS?"])
+
+    def test_an_sr830_left_on_the_old_frequency_is_an_error(self):
+        controller, _fake = self.controller([1019.0])
+        with self.assertRaisesRegex(
+                RuntimeError, r"^SR830 REF IN not locked: selected Sine, expected 1021 Hz \(previous 1019 Hz\), "
+                              r"readback 1019 Hz, LIAS=0; "):
+            controller.wait_for_reference(1021.0, timeout_s=0.1, previous_frequency_hz=1019.0)
+        controller, _fake = self.controller([317.0])
+        with self.assertRaisesRegex(RuntimeError, r"expected 311 Hz, readback 317 Hz"):
+            controller.wait_for_reference(311.0, timeout_s=0.1)
+
+    def test_the_sweep_stops_with_the_outputs_off_when_it_stays(self):
+        """The whole path: an SR830 still on 1019 Hz after the change to 1021 Hz."""
+        class StaysOnTheOld(Recording):
+            """The stand-in SR830, but its reference wait is the real one,
+            on an instrument that stays at 1019 Hz."""
+
+            def wait_for_reference(self, expected, timeout_s=5.0, previous_frequency_hz=None):
+                self.record("wait_for_reference", expected)
+                controller, _fake = real_sr830([1019.0])
+                controller.wait_for_reference(expected, timeout_s=0.1, previous_frequency_hz=previous_frequency_hz)
+
+        h = harness(self.tmp.name, meter="SR830", stop="5", end_current="0.5")
+        h.root = TimedRoot()
+        h.stfmr_lockin_mod_start_var.set("1018")
+        h.stfmr_lockin_mod_end_var.set("1022")
+        h.log = []
+        h.stfmr_lockin_controllers = {key: Recording(h, key, h.log) for key in ("kepco", "gauss", "smb")}
+        h.stfmr_lockin_controllers["830"] = StaysOnTheOld(h, "830", h.log)
+        h.stfmr_lockin_mfli_controller = Recording(h, "mfli", h.log)
+        h.start_stfmr_lockin_scan()
+        h.root.drain()
+        self.error.assert_called_once()
+        self.assertIn("expected 1021 Hz (previous 1019 Hz), readback 1019 Hz", self.error.call_args.args[1])
+        failed = h.log.index(("830", "wait_for_reference", 1021.0))
+        self.assertEqual(h.log[failed + 1:], [("kepco", "zero"), ("smb", "rf_off")],
+                         "the 4886 is not switched back on")
+        self.assertFalse(h.stfmr_lockin_running)
+
+
+def width_in_zeros(text):
+    """Text width in widths of "0", the unit of the status label's width=52.
+    Arial at 15 px stands in for the lab's Microsoft YaHei UI: on the
+    reviewed lines it measured a little wider (60.7 against 59.3)."""
+    try:
+        from PIL import ImageFont
+    except ImportError:
+        raise unittest.SkipTest("Pillow is needed to measure the status text")
+    for name in ("arial.ttf", "Arial.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf", "DejaVuSans.ttf"):
+        try:
+            font = ImageFont.truetype(name, 15)
+            break
+        except OSError:
+            continue
+    else:
+        raise unittest.SkipTest("no Arial or DejaVu Sans to measure the status text with")
+    return font.getlength(text) / font.getlength("0")
+
+
+class StatusWidthTests(SweepTests):
+    """Review, 2026-10-13: with several modulation frequencies "5 GHz, Mod.
+    311 Hz; scanning 123/480; I=+0.5 A; remaining about 120.0 s" was wider
+    than the 52-character status label, so the time left was never seen."""
+
+    LABEL = 52
+
+    def test_the_lines_of_a_sweep_over_several_modulation_frequencies_fit(self):
+        # Four-digit primes, and a run long enough for a five-digit time left.
+        h, recorder = self.sweep(start="1009", end="1013", start_only=True)
+        h.stfmr_lockin_started -= 5000.0
+        h.root.drain()
+        self.error.assert_not_called()
+        statuses = h.stfmr_lockin_status_var.history
+        reviewed = [s for s in statuses if "; scanning " in s or "start pre-read now" in s
+                    or "; LFO to " in s or "zeroing and switching to" in s]
+        self.assertIn("Mod. 1009 Hz done; zeroing; LFO to 1013 Hz at 5 GHz", reviewed)
+        self.assertIn("5 GHz/1013 Hz: start I=-1 A sent; start pre-read now", reviewed)
+        self.assertIn("5 GHz/1009 Hz done; zeroing and switching to 6 GHz", reviewed)
+        self.assertTrue([s for s in reviewed if re.search(r"; ~\d{4,} s left$", s)], "a long time left")
+        for status in reviewed:
+            with self.subTest(status=status):
+                self.assertLessEqual(width_in_zeros(status), self.LABEL)
+
+    def test_the_reviewed_example_fits_and_the_old_wording_did_not(self):
+        h = object.__new__(App)
+        h.stfmr_lockin_modulation_frequencies_hz = [307.0, 311.0, 313.0]
+        h.stfmr_lockin_expected_hz = 311.0
+        label = h._stfmr_lockin_pass_label(5.0)
+        self.assertEqual(label, "5 GHz/311 Hz")
+        self.assertLessEqual(width_in_zeros(f"{label}; scanning 123/480; I=+0.5 A; ~120 s left"), self.LABEL)
+        self.assertGreater(width_in_zeros(
+            "5 GHz, Mod. 311 Hz; scanning 123/480; I=+0.5 A; remaining about 120.0 s"), self.LABEL)
+        self.assertGreater(width_in_zeros("Mod. 307 Hz done; zeroing and switching to Mod. 311 Hz at 5 GHz"),
+                           self.LABEL)
+        h.stfmr_lockin_modulation_frequencies_hz = [317.3]
+        self.assertEqual(h._stfmr_lockin_pass_label(5.0), "5 GHz", "one modulation frequency: as before")
+
+
+def legend_rows(meter, carriers, modulations):
+    """Saved rows of a short run: every carrier at every modulation
+    frequency, three currents, one loop."""
+    rows = []
+    meters = ("MFLI", "SR830") if meter == "MFLI + SR830" else (meter,)
+    for modulation in modulations:
+        for carrier in carriers:
+            for current in (-1.0, 0.0, 1.0):
+                for name in meters:
+                    rows.append({
+                        "meter": name, "microwave_frequency_ghz": carrier, "loop": 1,
+                        "modulation_frequency_hz": modulation,
+                        "current_a": current, "field_g": 250.0 + 300.0 * current,
+                        "x_v": (current + carrier) * 1e-6, "y_v": (current - 1.0) * 1e-6,
+                        "phase_deg": 40.0 + current,
+                    })
+    return rows
+
+
+class PngLegendTests(NoWindows):
+    """Review, 2026-10-13: Save CSV's PNG legend had five fixed columns of
+    1030 px, and "5.5 GHz, 317 Hz" (text 210 px into its column) ran into
+    the next entry.  The real exporter, recording where each legend label
+    is drawn."""
+
+    def export(self, meter, carriers, modulations):
+        from PIL import ImageDraw
+        a = object.__new__(App)
+        a.stfmr_lockin_selected_meter = meter
+        a.stfmr_lockin_rows = legend_rows(meter, carriers, modulations)
+        real_text = ImageDraw.ImageDraw.text
+        drawn = []
+
+        def text(draw, xy, label, *args, **kwargs):
+            if kwargs.get("anchor") == "lm":     # the legend's labels only
+                drawn.append((draw, xy, label, kwargs["font"]))
+            return real_text(draw, xy, label, *args, **kwargs)
+
+        with mock.patch.object(ImageDraw.ImageDraw, "text", text):
+            self.runs = getattr(self, "runs", 0) + 1     # the exporter never overwrites
+            saved = a._export_stfmr_lockin_data_pngs(Path(self.tmp.name), f"run_{self.runs}")
+        self.assertEqual(len(saved), 4)
+        figures = {}
+        for draw, xy, label, font in drawn:
+            figures.setdefault(id(draw), []).append((xy, label, font))
+        self.assertEqual(len(figures), 4, "one legend per figure")
+        return list(figures.values())
+
+    def assert_apart(self, legend):
+        rows = {}
+        for (x, y), label, font in legend:
+            rows.setdefault(y, []).append((x, label, font))
+        for y, entries in rows.items():
+            entries.sort()
+            for (x, label, font), (next_x, next_label, _font) in zip(entries, entries[1:]):
+                # The next entry's colour line starts 210 px before its text.
+                self.assertLess(x + font.getlength(label), next_x - 210,
+                                f"{label!r} runs into {next_label!r}")
+            x, label, font = entries[-1]
+            self.assertLessEqual(x + font.getlength(label), 5950, f"{label!r} is past the plot's right edge")
+        return rows
+
+    def test_carrier_and_modulation_labels_stay_apart(self):
+        carriers, modulations = (5.5, 10.5, 12.5), (317.0, 1009.0)
+        for meter, columns in (("SR830", 4), ("MFLI", 4), ("MFLI + SR830", 3)):
+            with self.subTest(meter=meter):
+                # X, Y, Theta, then field vs current.
+                for figure, legend in enumerate(self.export(meter, carriers, modulations)):
+                    rows = self.assert_apart(legend)
+                    labels = {label for _xy, label, _font in legend}
+                    names = {f"{c:g} GHz, {m:g} Hz" for c in carriers for m in modulations}
+                    if meter == "MFLI + SR830" and figure < 3:
+                        # Both meters' curves; field vs current is the MFLI's only.
+                        names = {f"{n} {suffix}" for n in names for suffix in ("MFLI", "SR830")}
+                    self.assertEqual(labels, names)
+                    first = sorted(rows[min(rows)])
+                    self.assertEqual(len(first), columns, "fewer columns, the rest on the next rows")
+                    self.assertEqual(len(rows), math.ceil(len(names) / columns))
+
+    def test_carrier_only_legends_keep_five_or_three_columns(self):
+        for meter, columns in (("SR830", 5), ("MFLI + SR830", 3)):
+            with self.subTest(meter=meter):
+                for legend in self.export(meter, (5.0, 6.0, 7.0, 8.0, 9.0, 10.25), (317.3,)):
+                    rows = self.assert_apart(legend)
+                    first = sorted(rows[min(rows)])
+                    self.assertEqual(len(first), columns)
+                    self.assertAlmostEqual(first[1][0] - first[0][0], 5150 / columns)
+                    self.assertNotIn(" Hz", " ".join(label for _xy, label, _font in legend))
 
 
 if __name__ == "__main__":

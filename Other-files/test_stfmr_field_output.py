@@ -462,6 +462,15 @@ class FieldOutputTests(unittest.TestCase):
                             self.assertTrue(widget.winfo_ismapped())
                             self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), right + 1,
                                                  f"{text} is past the right edge")
+                            # The table frame hides whatever runs past its
+                            # own edge, which is 17 px inside the tab's
+                            # (padding and border), so a box cut by up to
+                            # 17 px passed the check above (review,
+                            # 2026-10-13).
+                            self.assertLessEqual(
+                                widget.winfo_rootx() + widget.winfo_width(),
+                                table.winfo_rootx() + table.winfo_width() + 1,
+                                f"{text} is cut by the parameter table's edge")
                         self.assertGreaterEqual(label.winfo_width(), label_font.measure(text), f"{text} is cut")
                         self.assertGreaterEqual(entry.winfo_width(), field_font.measure("0" * 6))
                         self.assertEqual(table.grid_slaves(row=row, column=10), [], "no sixth pair")

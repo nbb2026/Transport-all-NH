@@ -162,8 +162,13 @@
   box. "Wait/pt s" moves from under Mod. to the free cell right of Loop
   (SR830 row). Each row keeps five pairs: a sixth made the table too wide
   for the 1101 px window. The label column is wider for "Mod. start Hz:"
-  (about 28 px in the lab's Segoe UI 11 pt); in the 1101 px window the
-  number fields give way, down to six characters, if needed.
+  (about 33 px in Microsoft YaHei UI, the font the program picks on the lab
+  PC). In the 1101 px window on Windows the table was already about 17 px
+  too wide, so number columns 5 and 9 shrink: the f step, Step A, Mod.
+  start, Mod. end and Wait/pt boxes are about 64 px wide (about five digits
+  showing), with about 5 px left before the table runs past its box
+  (review, measured from the Windows CI screenshot). Watch the Windows CI
+  GUI run, not the Linux one (about 20 px to spare there).
 - **Which frequencies:** Mod. start = Mod. end gives that one value (any
   finite positive number, e.g. 317.3). Otherwise every whole-number prime
   between them, both included, from Mod. start towards Mod. end (descending
@@ -177,8 +182,11 @@
   change: the 4886 to zero (as at a carrier change), the SMB100A
   `LFO:FREQ` only (the command the start sends; RF, AM and LFO stay on),
   the carrier back to f start, the SR830 reference wait of the start (5 s,
-  at the new frequency; the MFLI follows its external reference by itself,
-  as at the start, and each reading checks the frequency), then the 4886
+  at the new frequency, and its readback must also be nearer the new
+  frequency than the old one: neighbouring primes less than 0.5 % apart,
+  such as 1019 and 1021 Hz, both pass the 0.5 % match, and the first poll
+  comes right after `LFO:FREQ`; the MFLI follows its external reference by
+  itself, as at the start, and each reading checks the frequency), then the 4886
   back on at Start A, the start pre-read and the first two readings
   discarded, as after a carrier change. Every read expects the modulation
   frequency in use. A failed LFO change or a lost lock stops the sweep with
@@ -199,11 +207,17 @@
   and the progress bar count every modulation frequency.
 - **Plots and status:** with several modulation frequencies each curve is
   named "5 GHz, 307 Hz" and has its own shade, in the live plots and in
-  the PNGs of Save CSV; with one, names and colours are as before. Status
-  lines name the modulation ("5 GHz, Mod. 311 Hz …", "Mod. 307 Hz done;
-  zeroing and switching to Mod. 311 Hz at 5 GHz") and the end status
-  counts the modulation frequencies; a one-frequency sweep's lines are as
-  before.
+  the PNGs of Save CSV; with one, names and colours are as before. The
+  PNG legend uses fewer columns (e.g. 4 instead of 5 on one meter) when its
+  widest label would run into the next entry; carrier-only legends keep 5
+  (3 in dual mode). The live plots' legend is one line, so with many
+  carrier and modulation pairs the later entries fall past the plot's right
+  edge, as many carriers already did; the PNGs show every entry. Status
+  lines name the modulation briefly, so they fit the 52-character status
+  label: "5 GHz/311 Hz; scanning 123/480; I=+0.5 A; ~120 s left", "5 GHz/311
+  Hz: start I=-3 A sent; start pre-read now", "Mod. 307 Hz done; zeroing;
+  LFO to 311 Hz at 5 GHz". The end status counts the modulation
+  frequencies; a one-frequency sweep's lines are as before.
 - **Idle Ref lamp:** compares the lock-in's reference with Mod. start (the
   one value when start = end).
 - **Docs:** README_STFMR_DUAL.md says how the modulation frequencies run and
@@ -227,8 +241,21 @@
   CI GUI test `test_stfmr_field_output.py` gains
   `test_mod_start_and_end_take_the_last_column_and_fit` (the three cells,
   defaults 317.3, nothing past the edge or cut in the 1101 px and 2000 px
-  windows; not run here: it needs a display). Every dialog is mocked and a
-  real Tk root fails the new tests.
+  windows, and also against the parameter table's own edge, which hides
+  what runs past it 17 px inside the tab's; not run here: it needs a
+  display). Every dialog is mocked and a real Tk root fails the new tests.
+- **Review fixes (2026-10-13), tested in `test_stfmr_mod_prime_range.py`:**
+  the real SR830 `wait_for_reference` on a fake instrument (1019 Hz is not
+  taken for 1021 Hz, nor the midpoint; descending; no previous frequency
+  as before; an SR830 left on the old frequency is an error, and in a sweep
+  it stops with the 4886 at zero and the RF off); the status lines of a
+  sweep over 1009 and 1013 Hz, with thousands of seconds left, fit 52
+  widths of "0" (measured in Arial 15 px, a little wider than YaHei UI);
+  the real PNG
+  exporter's legend labels never reach the next entry or the plot edge
+  (one meter, MFLI and dual) and carrier-only legends keep 5 / 3 columns;
+  the prime test's docstring now says exact below 3.18e23 (the first
+  composite passing the 12 bases), far above the 2^53 cap.
 
 ## MOKE-24: OVP margin warning, Zero on an output that is on (2026-10-13)
 
