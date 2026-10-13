@@ -5585,6 +5585,11 @@ def parse_ppms_macro(text):
     """Parse a deliberately limited, non-executable PPMS sequence dialect."""
     commands = []
     targets = {}
+    # Where the previous TEMP left the sample, for the 1 K/min check.  A SCAN
+    # may be a Temperature scan that ends anywhere, so it forgets this (the
+    # run then checks the live temperature); WAITFOR still uses
+    # targets["TEMP"] (review, 2026-10-13).
+    last_temp_k = None
     for line, raw in enumerate(text.splitlines(), 1):
         tokens = raw.strip().split()
         if not tokens or tokens[0].upper() in ("REM", "#") or raw.lstrip().startswith("#"):
@@ -5604,17 +5609,18 @@ def parse_ppms_macro(text):
                 # An omitted rate stays None: the run picks 1 or 10 K/min from
                 # the live temperature, so a warm-up from base temperature is
                 # not refused mid-macro.  An explicit rate after a TEMP at or
-                # below 9 K is checked against that target here, at Validate
-                # (review, 2026-10-13).
+                # below 9 K, with no SCAN in between, is checked against that
+                # target here, at Validate (review, 2026-10-13).
                 rate = values[1] if len(values) > 1 else None
                 approach = values[2] if len(values) > 2 else 0.
                 validate_ppms_temperature_command(
                     target, PPMS_TEMPERATURE_LOW_MAX_RATE_K_MIN if rate is None else rate,
-                    targets.get("TEMP"))
+                    last_temp_k)
                 if approach not in (0, 1):
                     raise ValueError("Temperature approach only supports 0/1")
                 values = (target, rate, int(approach))
                 targets["TEMP"] = target
+                last_temp_k = target
             elif op == "FIELD" and len(values) in (2, 4):
                 target, rate = validate_ppms_field_command(*values[:2])
                 approach, mode = values[2:] if len(values) == 4 else (0, 1)
@@ -5636,7 +5642,7 @@ def parse_ppms_macro(text):
                           targets.get("FIELD") if field else None,
                           targets.get("FIELD_MODE") if field else None)
             elif op == "SCAN" and not values:
-                pass
+                last_temp_k = None
             else:
                 raise ValueError("Unsupported command or parameter count; VSMDF/VSMMH/VSMMT cannot be used for transport measurements")
             commands.append((line, op, values))

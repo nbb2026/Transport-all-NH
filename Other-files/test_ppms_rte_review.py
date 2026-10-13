@@ -183,12 +183,33 @@ class WarmUpFromBaseTemperature(unittest.TestCase):
                 self.assertIn(f'without a rate: {rate:g} K/min', panel.thread_log.call_args.args[0])
 
     def test_macro_explicit_rates(self):
-        # An explicit rate is kept; after a TEMP at or below 9 K a fast warm-up
-        # is refused at Validate, before anything is sent.
+        # An explicit rate is kept; after a TEMP at or below 9 K with no SCAN
+        # in between, a fast warm-up is refused at Validate, before anything
+        # is sent.
         self.assertEqual(app.parse_ppms_macro('TMP TEMP 10 10 0')[0], (1, 'TEMP', (10, 10, 0)))
-        with self.assertRaisesRegex(ValueError, 'Line 3: .*1 K/min'):
-            app.parse_ppms_macro('TEMP 5\nSCAN\nTEMP 300 10')
-        self.assertEqual(app.parse_ppms_macro('TEMP 5\nSCAN\nTEMP 300 1')[-1], (3, 'TEMP', (300., 1., 0)))
+        for text in ('TEMP 5\nWAI WAITFOR 60 1 0 0 0 0\nTEMP 300 10',
+                     'TEMP 5\nFIELD 0 100\nWAIT 10\nTEMP 300 10'):
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, r'Line \d: .*1 K/min'):
+                app.parse_ppms_macro(text)
+        self.assertEqual(app.parse_ppms_macro('TEMP 5\nWAI WAITFOR 60 1 0 0 0 0\nTEMP 300 1')[-1],
+                         (3, 'TEMP', (300., 1., 0)))
+        # A SCAN in between may be a Temperature scan that warmed the sample
+        # (e.g. 5 -> 300 K), so Validate no longer assumes 5 K: the line
+        # parses (as at c3271af) and the run checks the live temperature.
+        commands = app.parse_ppms_macro('TMP TEMP 5 1 0\nWAI WAITFOR 60 1 0 0 0 0\nSCAN\nTMP TEMP 250 10 0')
+        self.assertEqual(commands[-1], (4, 'TEMP', (250., 10., 0)))
+        # WAITFOR still waits for the last TEMP target.
+        self.assertEqual(app.parse_ppms_macro('TEMP 5\nSCAN\nWAI WAITFOR 60 1 0 0 0 0')[-1],
+                         (3, 'WAITFOR', (60., 5., None, None)))
+        panel = self.macro_panel(300.)
+        panel._ppms_macro_operation('TEMP', commands[-1][2])
+        panel.ppms_environment_controller.set_temperature.assert_called_once_with(250., 10., 0)
+        # The same line after a SCAN that left the sample at base temperature
+        # is refused at run time, with nothing sent.
+        panel = self.macro_panel(5.)
+        with self.assertRaisesRegex(ValueError, '1 K/min'):
+            panel._ppms_macro_operation('TEMP', commands[-1][2])
+        panel.ppms_environment_controller.set_temperature.assert_not_called()
         # Starting at base temperature with no TEMP before it: still refused
         # at run time, with nothing sent (fails safe, as before).
         panel = self.macro_panel(5.)

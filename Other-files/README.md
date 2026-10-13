@@ -148,13 +148,18 @@
   rate defaulted to 10, passed Validate and stopped at that line during the
   run; now an omitted rate is chosen at run time from the live temperature
   (10 only when both it and the target are above 9 K; the log names it),
-  and an explicit `TEMP 300 10` after a `TEMP` at or below 9 K is refused at
-  Validate. The rate label now says "Start or target ≤9 K".
+  and an explicit `TEMP 300 10` after a `TEMP` at or below 9 K with no
+  `SCAN` in between is refused at Validate. After a `SCAN` (which may be a
+  Temperature scan that warmed the sample) Validate does not assume the old
+  target; the run checks the live temperature, as before. The rate label
+  now says "Start or target ≤9 K".
 - **Tests:** `test_ppms_rte_review.py` (the real RT-E worker with the real
   6221 configure and live update: descending, single-point and ascending
   plans write one `SOUR:CURR:RANG` and every amplitude; exit for every scan
   mode, on the app and through the PPMS page; Set T from 5 K and above 9 K;
-  macro TEMP with and without a rate at several live temperatures).
+  macro TEMP with and without a rate at several live temperatures; an
+  explicit `TEMP 250 10` after `TEMP 5` and a `SCAN` validates and is sent
+  at a live 300 K, refused with nothing sent at a live 5 K).
 
 ## MOKE magnet: Start scan says why it does not start (2026-10-13)
 
