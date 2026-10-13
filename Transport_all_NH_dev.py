@@ -1997,7 +1997,8 @@ STFMR_LOCKIN_SR830_TIME_CONSTANTS = {
 }
 STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT = "1 s"
 # At 12 dB/oct an SR830 output settles in about 5 time constants, so every
-# SR830 reading of a sweep waits at least this many, whatever Wait/pt says:
+# SR830 reading of a sweep but the discarded first of each frequency waits at
+# least this many, whatever Wait/pt says:
 # with the 1 s time constant the default 0.5 s wait read a lagged value
 # (user, 2026-10-13).
 STFMR_LOCKIN_SR830_SETTLE_TAUS = 5.0
@@ -18121,22 +18122,18 @@ class CombinedControlApp:
                 total - completed, 0
             )
             if discard_startup_point:
-                # Which of the two discarded reads this is, counted in its
-                # loop, or in its frequency for a fixed current, whose next
-                # read is at the same current (user, 2026-10-13).
+                # A fixed current's next read is at the same current, so its
+                # wording speaks of readings; a sweep's status is unchanged
+                # (user, 2026-10-13).
                 fixed_current = self.stfmr_lockin_points_per_loop <= 1
-                position = (
-                    index if fixed_current
-                    else index % self.stfmr_lockin_points_per_loop
-                )
                 self.stfmr_lockin_status_var.set(
                     f"{frequency_ghz:g} GHz discarded start-transition point "
-                    f"{position + 1}/2: "
+                    f"{index + 1}/2: "
                     f"I={current:+.5g} A, B={field_g:+.6g} G; "
                     + (
                         ("taking the second reading" if fixed_current
                          else "moving to the second current point")
-                        if position == 0
+                        if index == 0
                         else ("saving from the third reading" if fixed_current
                               else "saving from the third current point")
                     )

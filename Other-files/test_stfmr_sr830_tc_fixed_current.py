@@ -488,15 +488,17 @@ class FixedCurrentTests(NoWindows):
         self.assertEqual(h.root.reads, [1, 5000, 5000, 5000])
         self.assertEqual(events(recorder)[-1]["saved_points"], 2)
 
-    def test_a_sweep_still_discards_two_points_per_loop_and_counts_them_per_loop(self):
+    def test_a_sweep_still_discards_two_points_per_loop_with_its_old_status(self):
         h, recorder = self.run_sweep(meter="MFLI", stop="5", loop=2)       # 5 currents, 2 loops
         rows = read_csv(recorder.csv_path)
         self.assertEqual([int(r["index"]) for r in rows], [3, 4, 5, 8, 9, 10])
         discarded = [text for text in h.stfmr_lockin_status_var.history if "discarded start-transition" in text]
-        # Loop 2's were shown as points 6/2 and 7/2.
-        self.assertEqual([re.search(r"point (\d+)/2", text).group(1) for text in discarded], ["1", "2", "1", "2"])
+        # Only the fixed-current wording was approved, so a sweep's status is
+        # as on 5d91c14: loop 2's points still show as 6/2 and 7/2.
+        self.assertEqual([re.search(r"point (\d+)/2", text).group(1) for text in discarded], ["1", "2", "6", "7"])
         self.assertTrue(discarded[0].endswith("moving to the second current point"))
-        self.assertTrue(discarded[1].endswith("saving from the third current point"))
+        for text in discarded[1:]:
+            self.assertTrue(text.endswith("saving from the third current point"), text)
         self.assertIn("first two points of each loop discarded, about 6 points saved", self.message())
 
     def test_only_runs_that_would_save_nothing_are_refused_before_any_output(self):

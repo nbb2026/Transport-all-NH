@@ -47,10 +47,11 @@
   in the free cell under Loop and as wide as the Loop spinbox, so the table
   keeps its width in the 1101 px window; its column gives way in a narrower
   window only down to the dropdown's width. The default stays 1 s, so the
-  SR830 is set up exactly as before, still at 12 dB/oct. As for the MFLI TC,
-  Start reads it only when that lock-in is used; a value not in the list is
-  refused. The set-up reads OFLT back, as it does SENS (a mismatch stops the
-  sweep with the outputs off), and the dropdown is locked during a sweep.
+  SR830 gets the same set-up commands as before, still at 12 dB/oct, plus an
+  OFLT? read-back, as for SENS, that stops the sweep with the outputs off on
+  a mismatch. As for the MFLI TC, Start reads it only when that lock-in is
+  used; a value not in the list is refused, and the dropdown is locked during
+  a sweep.
 - **SR830 wait:** whenever the SR830 is read (SR830 alone or MFLI + SR830),
   each point and each re-read after a range change waits the longer of
   Wait/pt and 5 × TC (12 dB/oct settling). **With the default 1 s an SR830
@@ -73,12 +74,13 @@
   all but the first two are saved. Start refuses only a run that would save
   nothing (two currents per loop, or a fixed current with Loop 1 or 2) and
   says why; sweeps of 3 or more currents discard as before. The Start
-  confirmation, the saved-point estimate and the discarded-point status
-  (now 1/2 and 2/2 in every loop, where loop 2 showed 6/2) follow the rule,
-  and the plot legend names each frequency on its first saved loop (a
-  fixed-current run starts at loop 3, so its legend was empty).
-- **Docs:** README_STFMR_DUAL.md: the discard sentence, the SR830 wait and
-  the new CSV column.
+  confirmation and the saved-point estimate follow the rule, a fixed
+  current's discarded-point status speaks of readings (a sweep's is
+  unchanged, loop 2's still showing 6/2 and 7/2), and the plot legend names
+  each frequency on its first saved loop (a fixed-current run starts at
+  loop 3, so its legend was empty).
+- **Docs:** README_STFMR_DUAL.md: the discard sentence, the SR830 wait (but
+  for the discarded first point of each frequency) and the new CSV column.
 - **Tests:** `test_stfmr_sr830_tc_fixed_current.py` (the choices against
   the SR830's OFLT table; the set-up's commands in the old order with the
   chosen code, the OFLT read-back and a refused code; the waits of SR830,
@@ -86,8 +88,9 @@
   log and the CSV column, all through the real sweep code on the STFMR
   harness; the lock; the cell under Loop and its column floor, from the real
   page build on stand-in widgets; the discard rule, a fixed-current run end
-  to end, alone and in dual mode, with the 4886 commands and statuses; the
-  refusals before any output or file; the legend).
+  to end, alone and in dual mode, with the 4886 commands and statuses; a
+  sweep's discards and unchanged status; the refusals before any output or
+  file; the legend).
   `test_fmr_stfmr_minors.ShortLoopTests` now expects a fixed current to
   start. The harness in `test/test_stfmr_realtime_recording.py` has the
   SR830 TC box, and the fake SR830s in
