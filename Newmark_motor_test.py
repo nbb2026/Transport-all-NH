@@ -18,11 +18,13 @@ Usage (from a terminal in this folder):
     py Newmark_motor_test.py move --degrees 10     turn +10 deg at 5 deg/s (asks first)
     py Newmark_motor_test.py move --degrees -10 --speed 2
     py Newmark_motor_test.py stop                  STOP (decelerated), wait, say where it stopped
-    py Newmark_motor_test.py zero                  call this position 0 deg (PX=0; lost at power-off)
+    py Newmark_motor_test.py zero                  call this position 0 deg (PX=0; asks first; lost at
+                                                   power-off)
     py Newmark_motor_test.py clear                 clear a latched limit error (CLR)
     py Newmark_motor_test.py enable                motor driver on (EO=1; asks first)
     py Newmark_motor_test.py disable               motor driver off (EO=0)
-    py Newmark_motor_test.py home --direction +    find the home switch (HL+; asks first)
+    py Newmark_motor_test.py home --direction +    find the home switch (HL+; asks first; only where the
+                                                   whole search stays within +/-360 deg of the zero)
     py Newmark_motor_test.py move --degrees 10 --dry-run
                                                    the same on a simulated controller
 
@@ -39,17 +41,30 @@ below): anything else (STORE, RW, J+, POL=, ...) is refused before it
 reaches the controller, and nothing is ever stored to flash.
 
 Exit status: 0 done; 1 refused, not confirmed, or failed with the motor
-confirmed stopped; 2 a usage error (nothing sent); 3 the motion state is
-unknown: check the stage.
+confirmed stopped; 2 a usage error, such as a --dll-dir without
+PerformaxCom.dll (nothing sent); 3 the motion state is unknown: check the
+stage.
 
 SAFETY
   - Sample wires: every target stays within +/-360 deg of the zero (PX = 0),
     and moves are absolute, so 350 -> 0 goes back -350 deg, never across
     360.  Before the first move, set the zero where the wires hang free
-    ("zero").  The zero is lost when the controller is powered off.
-  - "home" turns up to a full turn in its direction: check the wires first.
+    ("zero", which asks).  The zero is lost when the controller is powered
+    off.
+  - "home" turns at most one turn + 10 deg to find the switch: PX is read
+    at every poll, and it is stopped (STOP) if the counter has not been
+    reset at a switch by then (no switch signal), or if it runs on more
+    than the slowing down + HCA + 10 deg after it; a time-out backs this
+    up.  It is refused unless all of that stays within +/-360 deg of the
+    zero (from the zero itself, first move 13 deg or more the other way at
+    5 deg/s: the refusal says how far).  Afterwards the zero, and with it
+    the +/-360 deg limit, is the home switch: the script says where the old
+    zero now is, so you can turn back there and run "zero" again.
   - Ctrl+C at any point sends STOP if a move may be running, waits until it
     has stopped (ABORT if STOP does not stop it) and says where it stopped.
+    While it stops and reports, a further Ctrl+C only asks for ABORT.
+  - A move counts as ended after three status reads in a row that say it is
+    not moving, with PX where it should be.
   - At most 20 deg/s (the stage allows 25 deg/s).
   - A move is refused while it moves, with a latched limit error, with a
     limit input on (the RM-5-110 has no limit switches: that is a polarity
@@ -62,6 +77,7 @@ import ctypes
 import math
 import os
 import re
+import signal
 import sys
 import time
 
@@ -96,12 +112,19 @@ FULL_STEPS_PER_DEG = FULL_STEPS_PER_TURN * GEAR_RATIO // 360    # 40; x DRVMS mi
 DEFAULT_SPEED = 5.0         # deg/s
 MIN_SPEED, MAX_SPEED = 0.1, 20.0
 ACC_MS = 300
+MIN_LSPD = 10               # pps; the manual's smallest low speed at these high speeds (Table A.0)
+MAX_ACC_MS = 5000           # the allowlist's ceiling for ACC= (the script sends 300)
+MAX_DRVMS = 500             # the driver's finest micro-stepping (manual: DRVMS 2 - 500)
 MAX_MOVE_DEG = 360.0        # one relative move
 CABLE_LIMIT_DEG = 360.0     # every target within +/-360 deg of the zero (sample wires)
 PX_LIMIT = 2 ** 27 - 1      # PX is a 28-bit signed number
 PX_SAFE = PX_LIMIT // 4     # targets stay far inside it
 POLL_S = 0.05
+IDLE_READS = 3              # MST must say "not moving" this many polls in a row before a move counts as ended
+SETTLE_S = 1.0              # not moving but PX not yet where it should be: wait this long before believing it
 REPORT_EVERY_S = 1.0
+HOME_MARGIN_DEG = 10.0      # home search: slack for the poll interval and the switch (user, 2026-10-13)
+HOME_LATE_S = 0.2           # home search: time between the last poll and the STOP taking hold
 RR_WAIT_S = 2.5             # the manual: no communication for 2 s after RR; half a second of margin
 STOP_WAIT_S = 10.0
 ABORT_WAIT_S = 3.0
@@ -121,7 +144,7 @@ READ_ONLY = frozenset("ID VER DN MST PX EO HSPD LSPD ACC MM PS POL IERR RZ HCA R
                       "DRVMS DRVRC DRVIC DRVIT R2".split())
 ACTIONS = frozenset("ABS INC EO=0 EO=1 STOP ABORT CLR RR".split())
 HOMING = frozenset(("HL+", "HL-"))          # "home" mode only
-NUMERIC = re.compile(r"(?:X|PX=)-?[0-9]{1,9}|(?:HSPD|LSPD|ACC)=[0-9]{1,7}")
+NUMERIC = re.compile(r"(X|PX=)(-?[0-9]{1,9})|(HSPD=|LSPD=|ACC=)([0-9]{1,7})")
 ALLOWED = (READ_ONLY, ACTIONS, HOMING, NUMERIC.pattern)
 INTEGER = re.compile(r"-?[0-9]{1,10}")
 NO_DEVICE_HELP = ("No Performax USB device found. Check the USB cable, that the NSC-A1 has its 24 V "
@@ -185,12 +208,40 @@ class MotionError(NscError):
         self.stopped, self.px, self.notes = stopped, px, list(notes)
 
 
-def check_allowed(command, homing=False):
-    """Raise CommandNotAllowed unless the command is on the list above."""
-    if (command in READ_ONLY or command in ACTIONS or (homing and command in HOMING)
-            or NUMERIC.fullmatch(command)):
+def max_hspd(steps_per_degree=None):
+    """The highest HSPD the allowlist lets through: MAX_SPEED at this scale, or
+    at the finest micro-stepping while the scale is not known yet."""
+    return round(MAX_SPEED * (steps_per_degree or FULL_STEPS_PER_DEG * MAX_DRVMS))
+
+
+def check_allowed(command, homing=False, steps_per_degree=None):
+    """Raise CommandNotAllowed unless the command is on the list above, with
+    its number in range.  The ranges are the last line of defence against a
+    units mistake in the caller (user, 2026-10-13): a target or a counter
+    value far inside the 28-bit range (and within +/-360 deg of the zero
+    once the scale is known), MIN_LSPD <= LSPD, HSPD <= MAX_SPEED, 1 <= ACC
+    <= MAX_ACC_MS."""
+    if command in READ_ONLY or command in ACTIONS or (homing and command in HOMING):
         return
-    raise CommandNotAllowed(f"{command!r} is not on this script's list of allowed commands; it was not sent")
+    match = NUMERIC.fullmatch(command)
+    if not match:
+        raise CommandNotAllowed(f"{command!r} is not on this script's list of allowed commands; it was not sent")
+    name, value = (match.group(1), int(match.group(2))) if match.group(1) else (match.group(3), int(match.group(4)))
+    top = max_hspd(steps_per_degree)
+    if name == "X":
+        low, high = (-PX_SAFE, PX_SAFE) if not steps_per_degree else (
+            -round(CABLE_LIMIT_DEG * steps_per_degree), round(CABLE_LIMIT_DEG * steps_per_degree))
+    elif name == "PX=":
+        low, high = -PX_SAFE, PX_SAFE
+    elif name == "HSPD=":
+        low, high = MIN_LSPD + 1, top
+    elif name == "LSPD=":
+        low, high = MIN_LSPD, top - 1
+    else:
+        low, high = 1, MAX_ACC_MS
+    if not low <= value <= high:
+        raise CommandNotAllowed(f"{command!r}: {value} is outside {low} - {high} for {name.rstrip('=')}; "
+                                "it was not sent")
 
 
 def command_buffer(command):
@@ -228,6 +279,12 @@ def describe_error(error):
     return str(error) or type(error).__name__
 
 
+def looks_like_id(reply):
+    """An ID reply ("Ace-Series-SDE"): it contains "SDE" but is not a device name
+    like "SDE01", the DN reply, which a stale reply could also bring (user, 2026-10-13)."""
+    return "SDE" in reply and not re.fullmatch(r"SDE[0-9]{2}", reply)
+
+
 # ---- loading the DLL (the tests replace load_performax) -------------------------
 def declare_functions(dll):
     """argtypes/restype of every function, from the manual's C prototypes."""
@@ -254,14 +311,22 @@ def dll_folder(dll_dir=None):
     return None
 
 
+def python_bits():
+    return ctypes.sizeof(ctypes.c_void_p) * 8
+
+
 def explain_load_error(path, error):
-    bits = ctypes.sizeof(ctypes.c_void_p) * 8
+    """The Windows error code, from OSError.winerror or else its exact "[WinError N]"
+    text (not any "193" in the message, which also holds the path)."""
     code = getattr(error, "winerror", None)
-    if code == 193 or "193" in str(error):
-        return (f"Could not load {path} (WinError 193): it is not a {bits}-bit DLL. This Python is "
-                f"{bits}-bit, so {DLL_NAME} and {SIUSB_NAME} must both be the 64-bit ones (Arcus "
-                f"\"USB 64-bit DLL v2.06\"), side by side.")
-    if code == 126 or "126" in str(error):
+    if code is None:
+        found = re.search(r"\[WinError (\d+)\]", str(error))
+        code = int(found.group(1)) if found else None
+    if code == 193:
+        return (f"Could not load {path} (WinError 193): it is not a 64-bit DLL. This Python is 64-bit, so "
+                f"{DLL_NAME} and {SIUSB_NAME} must both be the 64-bit ones (Arcus \"USB 64-bit DLL v2.06\"), "
+                "side by side.")
+    if code == 126:
         return (f"Could not load {path} (WinError 126): it, or the {SIUSB_NAME} it needs, was not found. "
                 f"Put the 64-bit {DLL_NAME} and {SIUSB_NAME} together in this script's folder or in --dll-dir.")
     return f"Could not load {path}: {error}"
@@ -277,6 +342,11 @@ def load_performax(dll_dir=None):
     if win_dll is None:
         raise PerformaxError(f"{DLL_NAME} is a Windows DLL: run this on the lab PC (64-bit Python 3.11 "
                              "on Windows), or try --dry-run")
+    if python_bits() != 64:
+        # The spec wants 64-bit Python, and the DLLs here are the 64-bit ones; a 32-bit
+        # PerformaxCom.dll would also need another calling convention (user, 2026-10-13).
+        raise PerformaxError(f"This is a {python_bits()}-bit Python: use 64-bit Python 3.11 "
+                             "(py -3.11-64 Newmark_motor_test.py ...), with the 64-bit DLLs")
     folder = dll_folder(dll_dir)
     path = DLL_NAME
     if folder is not None:
@@ -296,6 +366,38 @@ def load_performax(dll_dir=None):
 
 
 # ---- the controller ------------------------------------------------------------
+class HoldCtrlC:
+    """While a stop and its report run, Ctrl+C does not raise: a second press
+    there could cut them short and lose the "CHECK THE STAGE" message and exit
+    status 3.  A press then only asks the stop to go on to ABORT (user,
+    2026-10-13).  Nested holds share the outermost one.  Python lets only the
+    main thread set the handler; elsewhere (a worker thread) this does
+    nothing, and Ctrl+C is not delivered to that thread anyway."""
+
+    def __init__(self, nsc):
+        self.nsc = nsc
+        self.installed = False
+        self.previous = None
+
+    def __enter__(self):
+        nsc = self.nsc
+        if nsc.hold_depth == 0:
+            nsc.abort_asked = False
+            try:
+                self.previous = signal.signal(signal.SIGINT, nsc.ask_abort)
+                self.installed = True
+            except (ValueError, OSError, RuntimeError):     # not the main thread
+                pass
+        nsc.hold_depth += 1
+        return self
+
+    def __exit__(self, *_exc):
+        self.nsc.hold_depth -= 1
+        if self.installed:
+            signal.signal(signal.SIGINT, signal.default_int_handler if self.previous is None else self.previous)
+        return False
+
+
 class NSC:
     """The NSC-A1's commands over PerformaxCom.dll, printed as they are sent.
 
@@ -311,9 +413,20 @@ class NSC:
         self.identified = False
         self.need_resync = False
         self.motion_may_run = False     # a move command was sent and it has not been seen stopped since
+        self.motion_sent = False        # this run sent a move command (X, HL)
         self.stop_finished = False      # a stop sequence ran to its end (stopped or not)
         self.steps_per_degree = None
+        self.hold_depth = 0             # HoldCtrlC nesting
+        self.abort_asked = False        # Ctrl+C pressed during a hold: go on to ABORT
         self._no_flush_said = False
+
+    def hold_ctrl_c(self):
+        return HoldCtrlC(self)
+
+    def ask_abort(self, _signum, _frame):
+        """The SIGINT handler during a hold: only a flag (printing here could
+        collide with a print it interrupted)."""
+        self.abort_asked = True
 
     # ---- devices -------------------------------------------------------------
     def _product_string(self, index, option):
@@ -380,15 +493,18 @@ class NSC:
         return ok
 
     def close(self):
-        """STOP first if a move may still be running (bounded), then close the handle."""
+        """STOP first if a move may still be running (bounded), then close the
+        handle.  Returns (stopped, PX, notes) when it had to stop, else None."""
         if self.handle is None:
-            return
+            return None
+        outcome = None
         try:
-            if self.motion_may_run and not self.stop_finished:
-                self.echo("Closing while a move may be running: STOP first.")
-                self.stop_motion()
-        except BaseException:
-            pass
+            with self.hold_ctrl_c():
+                if self.motion_may_run and not self.stop_finished:
+                    self.echo("Closing while a move may be running: STOP first.")
+                    outcome = self.stop_motion()
+        except BaseException as error:
+            outcome = (False, None, [f"the stop on closing failed: {describe_error(error)}"])
         finally:
             try:
                 self.echo("> (close)")
@@ -396,11 +512,12 @@ class NSC:
             except BaseException:
                 pass
             self.handle = None
+        return outcome
 
     # ---- one command ---------------------------------------------------------
     def _transact(self, command, quiet=False):
         """Send one allowed command and return its reply (never repeated)."""
-        check_allowed(command, self.allow_homing)
+        check_allowed(command, self.allow_homing, self.steps_per_degree)
         write = command_buffer(command)
         if self.handle is None:
             raise NscError("the controller is not open")
@@ -440,7 +557,7 @@ class NSC:
         self.echo("  (replies may be out of step: flush, then ID and VER)")
         self._flush()
         identity = self._transact("ID")
-        if "SDE" not in identity:
+        if not looks_like_id(identity):
             raise OutOfStep(f"after a flush ID answered {identity!r}: replies are out of step")
         version = self._transact("VER")
         if version == identity:
@@ -480,7 +597,7 @@ class NSC:
             identity = self._transact("ID")
         except ControllerError as error:
             raise NotAnNsc(f"{error}: not an NSC-A1") from error
-        if "SDE" not in identity:
+        if not looks_like_id(identity):
             raise NotAnNsc(f"The device answered ID with {identity!r}, not an NSC-A1 (\"Ace-Series-SDE\"). "
                            "If it is the NSC-A1, the reply may be a stale one: unplug and replug the USB cable "
                            "and try again.")
@@ -541,6 +658,8 @@ class NSC:
 
     def set_speeds(self, hspd, lspd, acc):
         """Runtime registers (not stored): set, then read back."""
+        if not MIN_LSPD <= lspd < hspd:
+            raise CommandNotAllowed(f"LSPD {lspd} must be at least {MIN_LSPD} and below HSPD {hspd}; nothing was sent")
         self.set_ok(f"HSPD={hspd}")
         self.set_ok(f"LSPD={lspd}")
         self.set_ok(f"ACC={acc}")
@@ -558,26 +677,45 @@ class NSC:
         """X<target> or HL+/HL-.  Flagged before sending: a failed reply does not
         prove the move did not start, so it is never repeated, only stopped."""
         self.motion_may_run = True
+        self.motion_sent = True
         self.stop_finished = False
         self.set_ok(command)
 
-    def wait_motion(self, timeout_s, what="the move"):
-        """Poll MST every 50 ms until it is not moving; past the time-out, or on a
-        communication failure, STOP and raise.  Returns (seconds, PX, MST)."""
+    def wait_motion(self, timeout_s, what="the move", expect_px=None, watch=None):
+        """Poll MST and PX every 50 ms until it has ended; past the time-out, when
+        ``watch(px, now)`` gives a reason, or on a communication failure, STOP and
+        raise.  Returns (seconds, PX, MST).
+
+        Ended means IDLE_READS polls in a row not moving, and PX at expect_px
+        (or still elsewhere after SETTLE_S not moving).  One idle read is not
+        enough: the controller may set its moving bits a moment after its OK,
+        and HL may pause between its stages (user, 2026-10-13)."""
         spd = self.steps_per_degree
         started = _now()
         next_line, last, reason = started, None, None
+        idle, idle_since = 0, None
         try:
+            _sleep(POLL_S)
             while True:
                 mst = self.status(quiet=True)
+                px = self.number("PX", quiet=True)
                 now = _now()
-                if not mst & MOVING:
-                    break
+                if watch is not None:
+                    reason = watch(px, now)
+                    if reason is not None:
+                        break
+                if mst & MOVING:
+                    idle, idle_since = 0, None
+                else:
+                    idle += 1
+                    idle_since = now if idle_since is None else idle_since
+                    if idle >= IDLE_READS and (expect_px is None or px == expect_px
+                                               or now - idle_since >= SETTLE_S):
+                        break
                 if now - started > timeout_s:
-                    reason = f"{what} did not end within {timeout_s:.0f} s (3 x the expected time + 5 s)"
+                    reason = f"{what} did not end within {timeout_s:.0f} s"
                     break
                 if mst != last or now >= next_line:
-                    px = self.number("PX", quiet=True)
                     self.echo(f"  {now - started:6.1f} s  MST {mst} ({describe_status(mst)})  "
                               f"PX {px} ({angle(px, spd)})")
                     last, next_line = mst, now + REPORT_EVERY_S
@@ -602,8 +740,9 @@ class NSC:
         except BaseException as error:          # Ctrl+C included: the stop goes on
             notes.append(f"{command}: {describe_error(error)}")
 
-    def _wait_until_still(self, wait_s, notes):
-        """(True, PX) once MST shows it not moving; (False, None) after wait_s or a Ctrl+C."""
+    def _wait_until_still(self, wait_s, notes, escalate=False):
+        """(True, PX) once MST shows it not moving; (False, None) after wait_s or a
+        Ctrl+C (with ``escalate``, also a Ctrl+C held by HoldCtrlC)."""
         deadline = _now() + wait_s
         while True:
             try:
@@ -618,6 +757,9 @@ class NSC:
                 text = describe_error(error)
                 if text not in notes:
                     notes.append(text)
+            if escalate and self.abort_asked:
+                notes.append("Ctrl+C while waiting for the stop")
+                return False, None
             if _now() >= deadline:
                 return False, None
             try:
@@ -638,29 +780,36 @@ class NSC:
         Ctrl+C, as stopping is the safe state."""
         self.stop_finished = False
         notes = []
-        self._send_stop("STOP", notes)
-        stopped, px = self._wait_until_still(wait_s, notes)
-        if not stopped:
-            self.echo("Not stopped after STOP: ABORT")
-            self._send_stop("ABORT", notes)
-            stopped, px = self._wait_until_still(ABORT_WAIT_S, notes)
-        self.stop_finished = True       # close() repeats it only if this was cut short
+        with self.hold_ctrl_c():
+            self._send_stop("STOP", notes)
+            stopped, px = self._wait_until_still(wait_s, notes, escalate=True)
+            if not stopped:
+                self.echo("Not stopped after STOP: ABORT")
+                self._send_stop("ABORT", notes)
+                stopped, px = self._wait_until_still(ABORT_WAIT_S, notes)
+            self.stop_finished = True   # close() repeats it only if this was cut short
         return stopped, px, notes
 
 
 # ---- --dry-run: a simulated controller --------------------------------------------
 class SimulatedNSC:
     """An NSC-A1 that answers as its manual describes, with a stage that turns in
-    (simulated) time: DRVMS 250, so 10000 steps/deg; home switch at +37.5 deg."""
+    (simulated) time: DRVMS 250, so 10000 steps/deg; the home switch is 37.5 deg
+    on (+) from where the stage starts (PX ``px``).
 
-    def __init__(self, serials=("SIM-NSC-A1",), identity="Ace-Series-SDE"):
+    A motion is one segment {from, to, t0, t1} at a time, and HL queues the
+    rest of its stages (manual, Figure 6.6): at the switch the counter becomes
+    0, it runs on while it decelerates, comes back to the switch at low speed,
+    goes past it by HCA and comes back to it at low speed (counter 0)."""
+
+    def __init__(self, serials=("SIM-NSC-A1",), identity="Ace-Series-SDE", px=0):
         self.serials = list(serials)
         self.identity = identity
         self.version, self.name = "V231BL", "SDE01"
         self.handle = None
         self.calls = []             # DLL-level calls: ("timeouts", r, w), ("open", i), ("flush",), ("close", h)
         self.received = []          # every command, in order
-        self.px, self.eo, self.mm = 0, 1, 0
+        self.px, self.eo, self.mm = px, 1, 0
         self.hspd, self.lspd, self.acc = 1000, 100, 300
         self.inputs = 0             # MST input bits (3 home, 4/5 limit inputs, 8-10)
         self.latched = 0            # MST bits 6/7
@@ -668,7 +817,7 @@ class SimulatedNSC:
         self.driver = {"DRVMS": 250, "DRVRC": 2000, "DRVIC": 500, "DRVIT": 50}
         self.driver_read = False
         self.silent_until = -math.inf   # RR: no communication for 2 s
-        self.home_px = 375000           # the home switch, in counter steps
+        self.home_px = 375000 + px      # the home switch, in counter steps (+37.5 deg from where it started)
         self.motion = None
 
     # ---- the DLL's view ----------------------------------------------------
@@ -763,17 +912,28 @@ class SimulatedNSC:
             if command.startswith("X"):
                 target = int(command[1:]) if self.mm == 0 else self.px + int(command[1:])
                 self._start(target, now)
-            elif command == "HL+":
-                self._start(self.px + ((self.home_px - self.px) % self.turn() or self.turn()), now, homing=True)
             else:
-                self._start(self.px - ((self.px - self.home_px) % self.turn() or self.turn()), now, homing=True)
+                self._start_home(1 if command == "HL+" else -1, now)
             return "OK"
         return "?" + command
 
-    def _start(self, target, now, homing=False):
-        duration = abs(target - self.px) / max(self.hspd, 1) + self.acc / 1000 + (0.5 if homing else 0.0)
+    def _start(self, target, now, homing=False, queue=()):
+        duration = abs(target - self.px) / max(self.hspd, 1) + self.acc / 1000
         self.motion = {"from": self.px, "to": target, "t0": now, "t1": now + duration,
-                       "homing": homing, "stopping": False}
+                       "homing": homing, "stopping": False, "queue": list(queue)}
+
+    def _start_home(self, sign, now):
+        """HL+/HL-: to the switch (at most one turn), then the stages after it."""
+        turn = self.turn()
+        switch = self.px + sign * ((sign * (self.home_px - self.px)) % turn or turn)
+        overshoot = round((self.hspd + self.lspd) / 2 * self.acc / 1000)
+        hca = abs(self.registers["HCA"])
+        stages = [{"reset": True, "to": sign * overshoot, "duration": self.acc / 1000, "mst": 4},
+                  {"to": 0, "duration": overshoot / max(self.lspd, 1), "mst": 1}]
+        if hca:
+            stages += [{"to": -sign * hca, "duration": hca / max(self.hspd, 1) + self.acc / 1000},
+                       {"to": 0, "duration": hca / max(self.lspd, 1), "mst": 1}]
+        self._start(switch, now, homing=True, queue=stages)
 
     def _position(self, now):
         motion = self.motion
@@ -790,20 +950,31 @@ class SimulatedNSC:
         return motion["to"]
 
     def _advance(self, now):
-        if self.motion is not None and self._finished(now):
+        while self.motion is not None and self._finished(now):
             motion, self.motion = self.motion, None
-            if motion["homing"] and not motion["stopping"]:
+            self.px = self._end_position(motion)
+            queue = motion.get("queue") or []
+            if motion["stopping"] or not queue:
+                return
+            stage, t0 = queue[0], motion["t1"]
+            if stage.get("reset"):
                 self.px, self.home_px = 0, 0    # HL: the counter becomes 0 at the switch
-            else:
-                self.px = self._end_position(motion)
+            self.motion = {"from": self.px, "to": stage["to"], "t0": t0, "t1": t0 + stage["duration"],
+                           "homing": True, "stopping": False, "idle": stage.get("idle", False),
+                           "mst": stage.get("mst"), "queue": queue[1:]}
 
     def _status(self, now):
         bits = self.inputs | self.latched
         motion = self.motion
-        if motion is not None:
+        if motion is not None and not motion.get("idle"):
             ramp = self.acc / 1000
-            bits |= 2 if now - motion["t0"] < ramp else 4 if motion["t1"] - now < ramp else 1
-        elif (self.px - self.home_px) % self.turn() == 0:
+            if motion["stopping"]:
+                bits |= 4               # STOP decelerates (manual: "STOP will decelerate")
+            elif motion.get("mst"):
+                bits |= motion["mst"]   # an HL stage at one speed (low speed, or slowing down)
+            else:
+                bits |= 2 if now - motion["t0"] < ramp else 4 if motion["t1"] - now < ramp else 1
+        elif motion is None and (self.px - self.home_px) % self.turn() == 0:
             bits |= HOME_SWITCH
         return bits
 
@@ -814,9 +985,15 @@ class SimulatedNSC:
         if command == "ABORT":
             self.px, self.motion = self._position(now), None
             return
-        end = now + min(max(motion["t1"] - now, 0.0), self.acc / 1000)
-        here, there = self._position(now), self._position(end)
-        self.motion = dict(motion, **{"from": here, "to": there, "t0": now, "t1": end, "stopping": True})
+        # STOP: from the present speed down to LSPD within ACC, then stop (manual, "Stopping Motor").
+        ramp = min(max(motion["t1"] - now, 0.0), self.acc / 1000)
+        span = motion["t1"] - motion["t0"]
+        speed = 0.0 if span <= 0 or motion.get("idle") else abs(motion["to"] - motion["from"]) / span
+        here = self._position(now)
+        way = 1 if motion["to"] >= motion["from"] else -1
+        there = here + way * min(round((speed + min(self.lspd, speed)) / 2 * ramp), abs(motion["to"] - here))
+        self.motion = dict(motion, **{"from": here, "to": there, "t0": now, "t1": now + ramp, "stopping": True,
+                                      "idle": False, "queue": []})
 
 
 def _handle_value(handle):
@@ -890,6 +1067,90 @@ def speed_registers(speed, steps_per_degree):
     if hspd <= lspd:
         raise Refused(f"{speed:g} deg/s is too slow at {steps_per_degree} steps/deg (HSPD {hspd} pps)")
     return hspd, lspd, ACC_MS
+
+
+class HomePlan:
+    """The numbers of one home search HL+/HL- from PX ``start``, in steps and
+    seconds (user, 2026-10-13).
+
+    The switch is at most one turn ahead.  After it the counter is 0 there,
+    and the stage runs on by ``overshoot`` while it decelerates from HSPD to
+    LSPD, comes back, goes past by HCA and comes back (manual, Figure 6.6).
+    HomeWatch stops it (STOP, which decelerates by ``overshoot`` again) at
+    one turn + ``margin`` before the switch, or ``overshoot`` + |HCA| +
+    ``margin`` from it after.  So it stays between ``back`` and ``far``."""
+
+    def __init__(self, start, sign, steps_per_degree, hspd, lspd, acc_ms, hca):
+        self.start, self.sign, self.spd = start, sign, steps_per_degree
+        self.hspd, self.lspd = hspd, lspd
+        self.turn = round(360 * steps_per_degree)
+        self.hca = abs(hca)
+        self.margin = round(HOME_MARGIN_DEG * steps_per_degree)
+        self.overshoot = round((hspd + lspd) / 2 * acc_ms / 1000)
+        late = round(hspd * HOME_LATE_S)
+        self.ahead = self.turn + self.hca + 2 * self.overshoot + self.margin + late
+        self.behind = self.hca + 2 * self.overshoot + self.margin + late
+        self.far = start + sign * self.ahead
+        self.back = start - sign * self.behind
+        self.expected = ((self.turn + self.hca) / hspd + (self.overshoot + self.hca) / lspd + 4 * acc_ms / 1000)
+        self.timeout = 1.2 * self.expected + 2      # a back-up: the watch bounds it by travel first
+
+    def check_wires(self):
+        """Refuse unless every point it may reach is within +/-CABLE_LIMIT_DEG of the zero."""
+        limit = round(CABLE_LIMIT_DEG * self.spd)
+        over_far = self.sign * self.far - limit         # steps beyond the limit, ahead
+        over_back = -self.sign * self.back - limit      # steps beyond the limit, behind
+        if over_far <= 0 and over_back <= 0:
+            return
+        if self.ahead + self.behind > 2 * limit:
+            advice = "no start keeps it within the limit (is HCA too large?)"
+        else:
+            shift = -self.sign * math.ceil(over_far / self.spd) if over_far > 0 else \
+                self.sign * math.ceil(over_back / self.spd)
+            advice = f"first move it {abs(shift)} deg (move --degrees {shift:+d}), then search again"
+        raise Refused(f"a home search HL{'+' if self.sign > 0 else '-'} from {angle(self.start, self.spd)} may "
+                      f"reach {angle(self.back, self.spd)} to {angle(self.far, self.spd)} from the zero (one turn "
+                      f"to the switch, HCA = {self.hca} steps, the slowing down and a {HOME_MARGIN_DEG:g} deg "
+                      f"margin), beyond the +/-{CABLE_LIMIT_DEG:g} deg limit for the sample wires; {advice}")
+
+
+class HomeWatch:
+    """Bounds a home search by travel, not only by time (user, 2026-10-13).
+
+    The RM-5-110 turns without end and has no limit switches, so a home switch
+    that never triggers (unwired, wrong polarity, broken) would let HL turn on
+    and wind up the sample wires.  PX is read at every poll.  Before the
+    switch it counts on from the start: more than one turn + margin means no
+    switch, so STOP.  At the switch the controller sets the counter to 0,
+    seen as a step PX could not make by turning (backwards, or faster than
+    HSPD); from then on PX counts from the switch, and the rest of HL stays
+    within overshoot + |HCA| + margin of it.  A reset that looks like a
+    small step (a switch near the old zero) changes the count by less than
+    that step, which the margin covers."""
+
+    def __init__(self, plan, start, now):
+        self.plan, self.start = plan, start
+        self.last_px, self.last_time = start, now
+        self.switch = None      # PX (old count) at the poll before the counter reset: about where the switch is
+
+    def __call__(self, px, now):
+        """None while the search is within its bounds, else why it must be stopped."""
+        plan, spd = self.plan, self.plan.spd
+        if self.switch is None:
+            step = plan.sign * (px - self.last_px)
+            most = plan.hspd * (1.5 * max(now - self.last_time, 0.0) + 0.1)
+            if step < 0 or step > most:
+                self.switch = self.last_px
+            elif plan.sign * (px - self.start) > plan.turn + plan.margin:
+                return (f"no home switch within one turn: the home search turned {angle(abs(px - self.start), spd)} "
+                        "without the counter reset at the switch (is the home switch wired to the DB9 Signals "
+                        "connector, and is its polarity right in QuickMotion?)")
+        self.last_px, self.last_time = px, now
+        if self.switch is not None and abs(px) > plan.overshoot + plan.hca + plan.margin:
+            return (f"after the counter reset at the switch the home search went on to {angle(px, spd)} from it "
+                    f"(more than the slowing down + HCA + {HOME_MARGIN_DEG:g} deg); positions now count from the "
+                    "switch")
+        return None
 
 
 def mode_info(nsc, args):
@@ -982,7 +1243,7 @@ def mode_move(nsc, args):
         raise Refused(f"the position changed since the question (PX {start} -> {now})")
     timeout = 3 * (abs(steps) / hspd + 2 * acc_read / 1000) + 5
     nsc.start_motion(f"X{target}")
-    elapsed, end, mst = nsc.wait_motion(timeout, "the move")
+    elapsed, end, mst = nsc.wait_motion(timeout, "the move", expect_px=target)
     if mst & LIMIT_ERRORS:
         raise MotionError(f"it stopped with a limit error (MST {mst}: {describe_status(mst)})", True, end)
     if end != target:
@@ -1003,45 +1264,61 @@ def mode_home(nsc, args):
     nsc.check_ready()
     start, hca, rz = nsc.number("PX"), nsc.number("HCA"), nsc.number("RZ")
     hspd, lspd, acc = speed_registers(args.speed, spd)
-    turn = 360 * spd
     sign = 1 if args.direction == "+" else -1
-    expected = (turn + 2 * abs(hca)) / hspd + abs(hca) / lspd + 4 * acc / 1000
-    timeout = 3 * expected + 5
+    plan = HomePlan(start, sign, spd, hspd, lspd, acc, hca)
+    plan.check_wires()
     print(f"\nHome search HL{args.direction} at {args.speed:g} deg/s from {angle(start, spd)}: it turns "
-          f"{args.direction} until the home switch, up to one full turn (to {angle(start + sign * turn, spd)} "
-          f"from the zero), passes it by HCA = {hca} steps and comes back at low speed; the counter becomes 0 at "
-          f"the switch, which replaces the zero (RZ = {rz}).")
-    print("CABLES: the sample wires must be free to follow up to a full turn in that direction.")
-    print(f"It is stopped (STOP) if it has not finished within {timeout:.0f} s; Ctrl+C stops it at any point.")
+          f"{args.direction} until the home switch, at most one turn + {HOME_MARGIN_DEG:g} deg (it stops there "
+          f"if it finds no switch), passes it by HCA = {hca} steps and comes back at low speed (RZ = {rz}). "
+          f"All of it stays between {angle(plan.back, spd)} and {angle(plan.far, spd)} from the zero.")
+    print("CABLES: the sample wires must be free to follow up to one turn in that direction.")
+    print("AFTERWARDS the counter is 0 at the home switch: the zero, and the +/-360 deg wire limit of 'move', "
+          "then count from the switch, not from where the wires hang free.")
+    print(f"It is also stopped (STOP) if it has not finished within {plan.timeout:.0f} s; Ctrl+C stops it at any "
+          "point.")
     if not confirm(args.yes, "search the home switch"):
         print("Not moved.")
         return 1
-    nsc.set_speeds(hspd, lspd, acc)
+    acc_read = nsc.set_speeds(hspd, lspd, acc)
+    plan = HomePlan(start, sign, spd, hspd, lspd, acc_read, hca)     # the ACC the controller kept
+    plan.check_wires()
     nsc.check_ready()
     now = nsc.number("PX")
     if now != start:
         raise Refused(f"the position changed since the question (PX {start} -> {now})")
+    watch = HomeWatch(plan, start, _now())
     nsc.start_motion(f"HL{args.direction}")
-    elapsed, end, mst = nsc.wait_motion(timeout, "the home search")
+    elapsed, end, mst = nsc.wait_motion(plan.timeout, "the home search", expect_px=0, watch=watch)
     if mst & LIMIT_ERRORS:
         raise MotionError(f"it stopped with a limit error (MST {mst}: {describe_status(mst)})", True, end)
-    print(f"\nHome search done in {elapsed:.1f} s: PX {end} ({angle(end, spd)}), home switch input "
-          f"{'on' if mst & HOME_SWITCH else 'off'}.")
     if end != 0:
-        print("NOTE: the counter is not 0 after HL (the manual: 0 at the switch); please note this.")
-    print("The zero is now the home switch (runtime only: lost when the controller is powered off).")
+        raise MotionError(f"the home search ended at PX {end}, not 0 (the manual: the counter is 0 at the "
+                          "switch when HL ends)", True, end)
+    print(f"\nHome search done in {elapsed:.1f} s: PX 0 at the home switch, home switch input "
+          f"{'on' if mst & HOME_SWITCH else 'off (please note this)'}.")
+    if watch.switch is None:
+        print("No counter reset was seen on the way, so the home switch is within a few degrees of the old zero.")
+    else:
+        back = -watch.switch / spd
+        print(f"The home switch is about {angle(watch.switch, spd)} from the old zero (where the sample wires "
+              f"should hang free), so the old zero is now about {back:+.1f} deg.")
+        print("The zero, and the +/-360 deg wire limit of 'move', now count from the home switch. If the wires "
+              f"do not hang free here, turn back about {back:+.1f} deg (move --degrees {back:+.1f}) and run "
+              "'zero' there.")
+    print("(The counter is runtime only: lost when the controller is powered off.)")
     return 0
 
 
 def mode_stop(nsc, args):
     nsc.motion_may_run = True       # whatever turns it (QuickMotion, a run cut off)
-    stopped, px, notes = nsc.stop_motion()
-    if notes:
-        print("  (" + "; ".join(notes) + ")")
-    if not stopped:
-        print("\nMOTION STATE UNKNOWN: it could not be confirmed stopped. CHECK THE STAGE (switch the "
-              "controller's 24 V off if it is still turning).")
-        return 3
+    with nsc.hold_ctrl_c():
+        stopped, px, notes = nsc.stop_motion()
+        if notes:
+            print("  (" + "; ".join(notes) + ")")
+        if not stopped:
+            print("\nMOTION STATE UNKNOWN: it could not be confirmed stopped. CHECK THE STAGE (switch the "
+                  "controller's 24 V off if it is still turning).")
+            return 3
     try:
         nsc.read_driver()
     except NscError as error:
@@ -1059,6 +1336,18 @@ def mode_zero(nsc, args):
     except NscError as error:
         print(f"  (no angle: {error})")
     start = nsc.number("PX")
+    # Every move's wire check counts from this zero, so it is asked like enable (user, 2026-10-13).
+    where = f"{angle(start, nsc.steps_per_degree)} (PX {start})" if nsc.steps_per_degree else f"PX {start}"
+    print(f"\nThe stage is at {where} from the present zero. Calling this 0 deg moves the +/-360 deg limit of "
+          "every move with it: the sample wires must hang free here.")
+    if not confirm(args.yes, "call this position 0 deg"):
+        print("Zero not changed.")
+        return 1
+    mst = nsc.status()
+    if mst & MOVING:
+        raise Refused("it is moving; stop it first")
+    if nsc.number("PX") != start:
+        raise Refused("the position changed since the question")
     nsc.set_ok("PX=0")
     now = nsc.number("PX")
     if now != 0:
@@ -1140,12 +1429,14 @@ def run_mode(nsc, args):
         print(f"\nRefused: {error}. Nothing moved.")
         return 1
     except MotionError as error:
-        return report_stop(f"\n{error}", error.stopped, error.px, error.notes, nsc.steps_per_degree)
+        with nsc.hold_ctrl_c():
+            return report_stop(f"\n{error}", error.stopped, error.px, error.notes, nsc.steps_per_degree)
     except NscError as error:
         if nsc.motion_may_run:
-            print(f"\n{error}: STOP")
-            stopped, px, notes = nsc.stop_motion()
-            return report_stop("Stopped after the failure", stopped, px, notes, nsc.steps_per_degree)
+            with nsc.hold_ctrl_c():
+                print(f"\n{error}: STOP")
+                stopped, px, notes = nsc.stop_motion()
+                return report_stop("Stopped after the failure", stopped, px, notes, nsc.steps_per_degree)
         print(f"\nFailed: {error}")
         return 1
 
@@ -1154,12 +1445,28 @@ def after_interrupt(nsc, args):
     if nsc is None or not nsc.identified:
         print("\nStopped (Ctrl+C) before the controller was confirmed; nothing else was sent.")
         return 3 if args.mode == "stop" else 1
-    if not nsc.motion_may_run:
-        print("\nStopped (Ctrl+C); this run had not started a move.")
-        return 1
-    print("\nStopped (Ctrl+C): STOP")
-    stopped, px, notes = nsc.stop_motion()
-    return report_stop("Stopped (Ctrl+C)", stopped, px, notes, nsc.steps_per_degree)
+    with nsc.hold_ctrl_c():         # a second Ctrl+C asks for ABORT; it cannot cut the report short
+        if not nsc.motion_may_run:
+            if nsc.motion_sent or nsc.stop_finished:
+                print("\nStopped (Ctrl+C); no move is running (it was read back not moving).")
+            else:
+                print("\nStopped (Ctrl+C); this run had not started a move.")
+            return 1
+        print("\nStopped (Ctrl+C): STOP")
+        stopped, px, notes = nsc.stop_motion()
+        return report_stop("Stopped (Ctrl+C)", stopped, px, notes, nsc.steps_per_degree)
+
+
+def close_and_report(nsc):
+    """Close the controller; if close() had to stop a move (a run cut off in an
+    unforeseen way), report that stop like any other.  Returns its exit status,
+    or None when nothing had to be stopped."""
+    with nsc.hold_ctrl_c():
+        outcome = nsc.close()
+        if outcome is None:
+            return None
+        stopped, px, notes = outcome
+        return report_stop("Stopped on closing", stopped, px, notes, nsc.steps_per_degree)
 
 
 def parse_arguments(argv):
@@ -1194,45 +1501,62 @@ def parse_arguments(argv):
         parser.error(f"--speed must be within {MIN_SPEED:g} - {MAX_SPEED:g} deg/s")
     if args.serial is not None and not args.serial.strip():
         parser.error("--serial is empty")
+    if args.dll_dir is not None and not args.dry_run:
+        folder = os.path.abspath(args.dll_dir)
+        if not os.path.isfile(os.path.join(folder, DLL_NAME)):
+            parser.error(f"{DLL_NAME} is not in --dll-dir {folder}")
     return args
+
+
+DRY_RUN_START_PX = -200000      # the simulated stage starts at -20 deg, so a dry "home --direction +" can run
 
 
 def open_dll(args):
     if args.dry_run:
-        print("(dry run: a simulated NSC-A1 stands in for PerformaxCom.dll; nothing is sent to any hardware)")
-        return SimulatedPerformax(), "simulated"
+        print("(dry run: a simulated NSC-A1 stands in for PerformaxCom.dll; nothing is sent to any hardware; "
+              "its stage starts at -20 deg)")
+        return SimulatedPerformax(SimulatedNSC(px=DRY_RUN_START_PX)), "simulated"
     return load_performax(args.dll_dir)
+
+
+def run_session(args, session):
+    """Open the controller, confirm it and run the mode.  The NSC goes into
+    ``session`` as soon as it exists, for Ctrl+C and for closing."""
+    nothing = 3 if args.mode == "stop" else 1      # stop mode: not stopped means the state is unknown
+    try:
+        dll, where = open_dll(args)
+    except PerformaxError as error:
+        print(f"{error}\nNothing was sent.")
+        return nothing
+    print(f"DLL: {where}")
+    nsc = NSC(dll, allow_homing=args.mode == "home")
+    session.append(nsc)
+    try:
+        index = nsc.choose_device(args.serial)
+    except NscError as error:
+        print(f"{error}\nNothing was sent.")
+        return nothing
+    try:
+        nsc.open(index)
+        identity, version = nsc.identify()
+    except NscError as error:
+        print(f"{error}\nNothing else was sent.")
+        return nothing
+    print(f"NSC-A1 confirmed: {identity}, firmware {version}.")
+    return run_mode(nsc, args)
 
 
 def main(argv=None):
     args = parse_arguments(argv)
-    nsc = None
+    session, closing = [], None
     try:
-        try:
-            dll, where = open_dll(args)
-        except PerformaxError as error:
-            print(f"{error}\nNothing was sent.")
-            return 3 if args.mode == "stop" else 1
-        print(f"DLL: {where}")
-        nsc = NSC(dll, allow_homing=args.mode == "home")
-        try:
-            index = nsc.choose_device(args.serial)
-        except NscError as error:
-            print(f"{error}\nNothing was sent.")
-            return 3 if args.mode == "stop" else 1
-        try:
-            nsc.open(index)
-            identity, version = nsc.identify()
-        except NscError as error:
-            print(f"{error}\nNothing else was sent.")
-            return 3 if args.mode == "stop" else 1
-        print(f"NSC-A1 confirmed: {identity}, firmware {version}.")
-        return run_mode(nsc, args)
+        code = run_session(args, session)
     except KeyboardInterrupt:
-        return after_interrupt(nsc, args)
+        code = after_interrupt(session[0] if session else None, args)
     finally:
-        if nsc is not None:
-            nsc.close()
+        if session:
+            closing = close_and_report(session[0])
+    return code if closing is None else max(code, closing)
 
 
 if __name__ == "__main__":

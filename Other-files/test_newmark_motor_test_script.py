@@ -4,13 +4,16 @@
 No real DLL is ever loaded (also on the Windows CI, where ctypes.WinDLL
 exists): ctypes.WinDLL, os.add_dll_directory and the script's own loader are
 replaced for the whole module.  No serial or COM port, no window.  Time is a
-virtual clock, so a 10 s move takes no real time."""
+virtual clock, so a 10 s move takes no real time, and Ctrl+C is simulated (the
+script's signal module is a stand-in, so the process's own handler is never
+touched)."""
 import ast
 import ctypes
 import importlib.util
 import io
 import os
 import shutil
+import signal
 import tempfile
 import types
 import unittest
@@ -44,7 +47,12 @@ def tearDownModule():
 
 
 class Clock:
-    """Virtual time; a sleep at or after each time in ``interrupts`` raises Ctrl+C once."""
+    """Virtual time; a sleep at or after each time in ``interrupts`` raises Ctrl+C once.
+    Past LIMIT virtual seconds a sleep fails the test: a lost time-out then fails
+    at once instead of looping until the suite's watchdog (the longest run here
+    takes about 100 virtual seconds)."""
+
+    LIMIT = 1000.0
 
     def __init__(self, interrupts=()):
         self.t = 1000.0
@@ -54,10 +62,47 @@ class Clock:
         return self.t
 
     def sleep(self, seconds):
+        if self.t - 1000.0 > self.LIMIT:
+            raise AssertionError(f"more than {self.LIMIT:g} virtual seconds: a time-out that never fires?")
         if self.interrupts and self.t >= self.interrupts[0]:
             self.interrupts.pop(0)
             raise KeyboardInterrupt
         self.t += seconds
+
+
+class FakeSignals:
+    """The script's ``signal`` module: handlers are kept here, and press() is a
+    Ctrl+C, which raises KeyboardInterrupt unless the script holds Ctrl+C."""
+
+    SIGINT = signal.SIGINT
+    default_int_handler = staticmethod(signal.default_int_handler)
+
+    def __init__(self, refuse=False):
+        self.handler, self.refuse, self.installed = signal.default_int_handler, refuse, []
+
+    def signal(self, signum, handler):
+        if self.refuse:
+            raise ValueError("signal only works in main thread of the main interpreter")
+        previous, self.handler = self.handler, handler
+        self.installed.append(handler)
+        return previous
+
+    def press(self):
+        self.handler(self.SIGINT, None)
+
+
+class PressingOut(io.StringIO):
+    """stdout that presses Ctrl+C just before it writes text containing ``at``."""
+
+    def __init__(self, signals, at):
+        super().__init__()
+        self.signals, self.at, self.pressed = signals, at, 0
+
+    def write(self, text):
+        if self.at in text:
+            self.pressed += 1
+            self.signals.press()
+        return super().write(text)
 
 
 class Sim(script.SimulatedNSC):
@@ -89,6 +134,70 @@ class Runaway(Stuck):
 
     def _stop(self, command, now):
         pass
+
+
+class NoSwitch(Sim):
+    """HL never finds a home switch (unwired, wrong polarity): it turns on at HSPD."""
+
+    def _start_home(self, sign, now):
+        self._start(self.px + sign * 100 * self.turn(), now, homing=True)
+
+
+class RunsOnAfterTheSwitch(Sim):
+    """The counter is reset at the switch, but HL never comes back to it."""
+
+    def _start_home(self, sign, now):
+        turn = self.turn()
+        switch = self.px + sign * ((sign * (self.home_px - self.px)) % turn or turn)
+        self._start(switch, now, homing=True,
+                    queue=[{"reset": True, "to": sign * 10 * turn, "duration": 10 * turn / self.lspd}])
+
+
+class PausesInHl(Sim):
+    """HL stands still for ``pause`` s between its stages (PX off 0, MST not moving)."""
+
+    pause = 0.5
+
+    def _start_home(self, sign, now):
+        super()._start_home(sign, now)
+        queue = self.motion["queue"]
+        queue.insert(1, {"to": queue[0]["to"], "duration": self.pause, "idle": True})
+
+
+class HlEndsOffZero(Sim):
+    """HL ends with the counter at 123, not 0."""
+
+    def _start_home(self, sign, now):
+        super()._start_home(sign, now)
+        self.motion["queue"][-1]["to"] = 123
+
+
+class LateMovingBits(Sim):
+    """After X it answers OK but reads "not moving" for 0.08 s before it starts."""
+
+    def _start(self, target, now, homing=False, queue=()):
+        if homing:
+            return super()._start(target, now, homing, queue)
+        self.motion = {"from": self.px, "to": self.px, "t0": now, "t1": now + 0.08, "homing": False,
+                       "stopping": False, "idle": True,
+                       "queue": [{"to": target, "duration": abs(target - self.px) / self.hspd + self.acc / 1000}]}
+
+
+class Timed(Sim):
+    """Remembers when each command arrived."""
+
+    def __init__(self, **options):
+        super().__init__(**options)
+        self.times = []
+
+    def send_recv(self, handle, data):
+        reply = super().send_recv(handle, data)
+        if reply is not None:
+            self.times.append((self.received[-1], script._now()))
+        return reply
+
+    def time_of(self, command):
+        return next(t for c, t in self.times if c == command)
 
 
 class LosesSteps(Sim):
@@ -227,15 +336,25 @@ class CtypesDll:
         return int(self.controller.flush(handle))
 
 
-def run(argv, controller=None, dll=None, answer="yes", clock=None):
+def run(argv, controller=None, dll=None, answer="yes", clock=None, signals=None, press_at=None):
+    """main(argv) on a simulated controller; ``press_at``: a Ctrl+C just before
+    the script prints text containing it."""
     controller = Sim() if controller is None else controller
     dll = script.SimulatedPerformax(controller) if dll is None else dll
     clock = Clock() if clock is None else clock
+    signals = FakeSignals() if signals is None else signals
+    stdout = io.StringIO() if press_at is None else PressingOut(signals, press_at)
     answers = mock.Mock(side_effect=answer) if isinstance(answer, BaseException) else mock.Mock(return_value=answer)
     with mock.patch.object(script, "load_performax", return_value=(dll, "C:/lab/PerformaxCom.dll")), \
             mock.patch.object(script, "_now", clock.now), mock.patch.object(script, "_sleep", clock.sleep), \
-            mock.patch("builtins.input", answers), redirect_stdout(io.StringIO()) as out:
-        code = script.main(argv)
+            mock.patch.object(script, "signal", signals), mock.patch("builtins.input", answers), \
+            redirect_stdout(stdout) as out:
+        try:
+            code = script.main(argv)
+        except KeyboardInterrupt:       # a real one would end the program with a traceback
+            raise AssertionError(f"a Ctrl+C escaped main:\n{out.getvalue()}") from None
+    if press_at is not None:
+        assert out.pressed, f"{press_at!r} was never printed"
     return code, out.getvalue()
 
 
@@ -260,6 +379,20 @@ class UsageTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, 2)
                 loader.assert_not_called()
                 simulated.assert_not_called()
+
+    def test_a_dll_dir_without_the_dll_is_exit_2(self):
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        Path(folder, "SiUSBXp.dll").write_bytes(b"")
+        with mock.patch.object(script, "load_performax") as loader, redirect_stdout(io.StringIO()), \
+                mock.patch("sys.stderr", io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as caught:
+                script.main(["--dll-dir", folder])
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("PerformaxCom.dll is not in --dll-dir", err.getvalue())
+        loader.assert_not_called()
+        Path(folder, "PerformaxCom.dll").write_bytes(b"")
+        self.assertEqual(script.parse_arguments(["--dll-dir", folder]).dll_dir, folder)
 
     def test_negative_degrees_and_a_minus_direction_parse(self):
         args = script.parse_arguments(["move", "--degrees", "-10"])
@@ -292,6 +425,36 @@ class AllowlistTests(unittest.TestCase):
         script.check_allowed("HL+", homing=True)
         script.check_allowed("HL-", homing=True)
 
+    def test_numbers_out_of_range_are_refused(self):
+        for command in ("X999999999", "X-999999999", "PX=-999999999", "PX=33554432", "HSPD=9999999",
+                        "HSPD=400001", "HSPD=0", "HSPD=10", "LSPD=0", "LSPD=9", "ACC=0", "ACC=5001",
+                        "ACC=9999999"):
+            with self.subTest(command=command):
+                with self.assertRaises(script.CommandNotAllowed):
+                    script.check_allowed(command)
+        for command in ("X33554431", "PX=-33554431", "HSPD=400000", "HSPD=11", "LSPD=10", "ACC=1", "ACC=5000"):
+            with self.subTest(command=command):
+                script.check_allowed(command)
+
+    def test_once_the_scale_is_known_speed_and_target_are_bounded_by_it(self):
+        for command in ("HSPD=200001", "X3600001", "X-3600001"):
+            with self.subTest(command=command):
+                with self.assertRaises(script.CommandNotAllowed):
+                    script.check_allowed(command, steps_per_degree=10000)
+        for command in ("HSPD=200000", "X3600000", "X-3600000", "PX=0"):
+            script.check_allowed(command, steps_per_degree=10000)
+        controller = Sim()
+        nsc = script.NSC(script.SimulatedPerformax(controller), echo=lambda _t: None)
+        nsc.open(0)
+        nsc.steps_per_degree = 10000
+        with self.assertRaises(script.CommandNotAllowed):
+            nsc.set_speeds(250000, 25000, 300)
+        with self.assertRaises(script.CommandNotAllowed):
+            nsc.set_speeds(1000, 1000, 300)        # LSPD must be below HSPD
+        with self.assertRaises(script.CommandNotAllowed):
+            nsc.set_speeds(1000, 5, 300)           # and at least 10
+        self.assertEqual(controller.received, [])     # nothing reached the controller
+
     def test_a_command_of_64_bytes_or_more_is_refused(self):
         with self.assertRaises(script.CommandNotAllowed):
             script.command_buffer("A" * 64)
@@ -300,21 +463,33 @@ class AllowlistTests(unittest.TestCase):
         self.assertEqual(script.command_buffer("PX").raw, b"PX" + b"\0" * 62)
 
     def test_only_home_mode_may_send_hl(self):
-        controller = Sim()
-        code, _out = run(["move", "--degrees", "5", "--yes"], controller)
-        self.assertEqual(code, 0)
+        for argv in ([], ["move", "--degrees", "5", "--yes"], ["stop"], ["zero", "--yes"], ["clear"],
+                     ["enable", "--yes"], ["disable"], ["home", "--direction", "+", "--yes"]):
+            with self.subTest(argv=argv), mock.patch.object(script, "NSC", wraps=script.NSC) as made:
+                code, out = run(argv, Sim(px=-200000))
+                self.assertEqual(code, 0, out)
+                self.assertEqual(made.call_args.kwargs.get("allow_homing", False), argv[:1] == ["home"])
         self.assertFalse(script.NSC(None).allow_homing)
         nsc = script.NSC(script.SimulatedPerformax(Sim()), echo=lambda _t: None)
         nsc.open(0)
         with self.assertRaises(script.CommandNotAllowed):
             nsc.start_motion("HL+")
+        # A move run whose motion command were HL+ would not get it through.
+        controller = Sim()
+        original = script.NSC.start_motion
+        with mock.patch.object(script.NSC, "start_motion", lambda nsc, _command: original(nsc, "HL+")):
+            code, out = run(["move", "--degrees", "5", "--yes"], controller)
+        self.assertEqual(code, 1, out)
+        self.assertNotIn("HL+", controller.received)
+        self.assertIn("not on this script's list", out)
 
     def test_every_mode_sends_only_allowed_commands(self):
         for argv in ([], ["move", "--degrees", "-20", "--yes"], ["stop"], ["zero"], ["clear"], ["enable", "--yes"],
                      ["disable"], ["home", "--direction", "+", "--yes"]):
             with self.subTest(argv=argv):
-                controller = Sim()
-                run(argv, controller)
+                controller = Sim(px=-200000)
+                code, out = run(argv, controller)
+                self.assertEqual(code, 0, out)
                 for command in controller.received:
                     script.check_allowed(command, homing=argv[:1] == ["home"])
                 self.assertFalse([c for c in controller.received if c.startswith("?")])
@@ -387,6 +562,16 @@ class IdentityTests(unittest.TestCase):
         controller.version = "SDE-V231"
         code, out = run([], controller)
         self.assertEqual(code, 0, out)
+
+    def test_a_device_name_reply_is_not_an_id(self):
+        controller = Garbled("ID", "SDE01")
+        code, out = run(["move", "--degrees", "10", "--yes"], controller)
+        self.assertEqual(code, 1)
+        self.assertEqual(controller.received, ["ID"])
+        self.assertIn("not an NSC-A1", out)
+        self.assertTrue(script.looks_like_id("Ace-Series-SDE"))
+        for reply in ("SDE01", "SDE99", "V231BL", "Performax-4EX"):
+            self.assertFalse(script.looks_like_id(reply), reply)
 
     def test_ver_answering_like_id_means_out_of_step(self):
         controller = Garbled("VER", "Ace-Series-SDE")
@@ -523,6 +708,26 @@ class MoveTests(unittest.TestCase):
         self.assertIn("not the target 100000 (-7 steps)", out)
         self.assertIn("the motor is stopped", out)
 
+    def test_the_first_poll_waits_a_moment_after_the_move_command(self):
+        controller = Timed()
+        code, out = run(["move", "--degrees", "1", "--yes"], controller)
+        self.assertEqual(code, 0, out)
+        sent = [command for command, _t in controller.times]
+        moved = sent.index("X10000")
+        self.assertEqual(sent[moved + 1], "MST")
+        self.assertGreater(controller.times[moved + 1][1] - controller.times[moved][1], 0.9 * script.POLL_S)
+
+    def test_one_not_moving_read_does_not_end_the_move(self):
+        controller = LateMovingBits()
+        code, out = run(["move", "--degrees", "10", "--yes"], controller)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(controller.px, 100000)
+        self.assertIn("the target exactly", out)
+        self.assertNotIn("STOP", controller.received)
+        # It ended only after IDLE_READS reads in a row said "not moving".
+        tail = controller.received[controller.received.index("X100000") + 1:]
+        self.assertEqual(tail[-2 * script.IDLE_READS - 1:], ["MST", "PX"] * script.IDLE_READS + ["PX"])
+
     def test_a_timeout_sends_stop(self):
         controller = Stuck()
         code, out = run(["move", "--degrees", "1", "--yes"], controller)
@@ -628,11 +833,37 @@ class OtherModeTests(unittest.TestCase):
         code, out = run(["zero"], controller)
         self.assertEqual(code, 0, out)
         self.assertEqual(controller.px, 0)
+        self.assertIn("The stage is at +12.3450 deg (PX 123450) from the present zero", out)
+        self.assertIn("sample wires must hang free here", out)
         self.assertIn("PX 123450 (+12.3450 deg) -> 0", out)
         self.assertIn("lost when the controller is powered off", out)
         code, out = run(["zero"], self.moving(Sim()))
         self.assertEqual(code, 1)
         self.assertIn("Refused", out)
+
+    def test_zero_asks(self):
+        controller = Sim()
+        controller.px = 3000000
+        code, out = run(["zero"], controller, answer="no")
+        self.assertEqual((code, controller.px), (1, 3000000))
+        self.assertNotIn("PX=0", controller.received)
+        self.assertIn("Zero not changed", out)
+        controller = Sim()
+        controller.px = 3000000
+        code, out = run(["zero", "--yes"], controller, answer=AssertionError("asked"))
+        self.assertEqual((code, controller.px), (0, 0), out)
+
+    def test_the_simulated_stop_decelerates(self):
+        controller, clock = Sim(), Clock()
+        with mock.patch.object(script, "_now", clock.now):
+            controller.reply("X300000")
+            clock.t += 2.0
+            self.assertEqual(controller.reply("MST"), "1")
+            controller.reply("STOP")
+            clock.t += 0.1
+            self.assertEqual(controller.reply("MST"), "4")     # decelerating, not accelerating
+            clock.t += 1.0
+            self.assertEqual(controller.reply("MST"), "0")
 
     def test_clear(self):
         controller = Sim()
@@ -664,8 +895,7 @@ class OtherModeTests(unittest.TestCase):
         code, out = run(["enable"], controller, answer="yes")
         self.assertEqual((code, controller.eo), (0, 1))
         controller.eo = 0
-        with mock.patch("builtins.input", side_effect=AssertionError("asked")):
-            code, _out = run(["enable", "--yes"], controller)
+        code, _out = run(["enable", "--yes"], controller, answer=AssertionError("asked"))
         self.assertEqual((code, controller.eo), (0, 1))
         controller = Sim()
         code, out = run(["enable"], controller)
@@ -684,30 +914,120 @@ class OtherModeTests(unittest.TestCase):
 
 class HomeTests(unittest.TestCase):
     def test_home_plus_and_minus(self):
-        for direction in ("+", "-"):
+        for direction, px in (("+", -200000), ("-", 200000)):
             with self.subTest(direction=direction):
                 controller = Sim()
-                controller.px = 100000
+                controller.px = px
                 code, out = run(["home", "--direction", direction], controller)
                 self.assertEqual(code, 0, out)
                 self.assertEqual(controller.moves, [f"HL{direction}"])
                 self.assertEqual(controller.px, 0)
-                self.assertIn("full turn", out)
+                self.assertIn("at most one turn + 10 deg", out)
                 self.assertIn("CABLES", out)
+                self.assertIn("count from the switch, not from where the wires hang free", out)
                 self.assertIn("home switch input on", out)
                 self.assertIn("HSPD=50000", controller.received[:controller.received.index(f"HL{direction}")])
+                # The switch, +37.5 deg (or 37.5 - 360) in the old count, about one poll early.
+                switch = 37.5 if direction == "+" else 37.5 - 360
+                found = float(out.split("The home switch is about ")[1].split(" deg")[0])
+                self.assertLess(abs(found - switch), 0.5, out)
+                self.assertIn(f"the old zero is now about {-found:+.1f} deg", out)
+                self.assertIn(f"move --degrees {-found:+.1f}", out)
+
+    def test_home_with_hca(self):
+        controller = Sim()
+        controller.px, controller.registers["HCA"] = 200000, 20000
+        code, out = run(["home", "--direction", "-", "--yes"], controller)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(controller.px, 0)
+
+    def test_the_plan(self):
+        plan = script.HomePlan(-200000, 1, 10000, 50000, 5000, 300, -20000)
+        self.assertEqual((plan.turn, plan.hca, plan.overshoot, plan.margin), (3600000, 20000, 8250, 100000))
+        self.assertEqual((plan.ahead, plan.behind), (3600000 + 20000 + 16500 + 100000 + 10000, 146500))
+        self.assertEqual((plan.far, plan.back), (-200000 + plan.ahead, -346500))
+        self.assertAlmostEqual(plan.timeout, 1.2 * (3620000 / 50000 + 28250 / 5000 + 1.2) + 2)
+
+    def test_refused_where_it_could_take_the_wires_past_360(self):
+        for px, direction, advice in ((0, "+", "move --degrees -13"), (0, "-", "move --degrees +13"),
+                                      (-3500000, "+", "move --degrees +3"), (100000, "-", "move --degrees +3")):
+            with self.subTest(px=px, direction=direction):
+                controller = Sim()
+                controller.px = px
+                code, out = run(["home", "--direction", direction, "--yes"], controller)
+                self.assertEqual(code, 1, out)
+                self.assertIn("beyond the +/-360 deg limit for the sample wires", out)
+                self.assertIn(advice, out)
+                self.assertEqual(controller.moves, [])
+                self.assertFalse([c for c in controller.received if c.startswith("HSPD=")])
 
     def test_home_not_confirmed(self):
         controller = Sim()
+        controller.px = -200000
         code, out = run(["home", "--direction", "+"], controller, answer="")
         self.assertEqual(code, 1)
+        self.assertIn("Not moved", out)
         self.assertEqual(controller.moves, [])
+
+    def test_no_home_switch_is_stopped_after_one_turn(self):
+        controller = NoSwitch()
+        controller.px = -200000
+        code, out = run(["home", "--direction", "+", "--yes"], controller)
+        self.assertEqual(code, 1, out)
+        self.assertIn("no home switch within one turn", out)
+        self.assertIn("the motor is stopped (MST read back)", out)
+        self.assertEqual(after(controller.received, "HL+").count("STOP"), 1)
+        self.assertNotIn("ABORT", controller.received)
+        self.assertIsNone(controller.motion)
+        travel = controller.px - (-200000)
+        plan = script.HomePlan(-200000, 1, 10000, 50000, 5000, 300, 0)
+        self.assertGreater(travel, plan.turn)
+        self.assertLessEqual(travel, plan.turn + plan.margin + plan.overshoot + 5000)    # one poll at most
+        self.assertLessEqual(controller.px, plan.far)
+        self.assertLessEqual(controller.px, 3600000)                                     # the wire limit
+
+    def test_no_home_switch_the_other_way(self):
+        controller = NoSwitch()
+        controller.px = 3000000
+        code, out = run(["home", "--direction", "-", "--yes"], controller)
+        self.assertEqual(code, 1, out)
+        self.assertIn("no home switch within one turn", out)
+        self.assertTrue(3000000 - 3726500 <= controller.px < 3000000 - 3600000, controller.px)
+
+    def test_running_on_after_the_switch_is_stopped(self):
+        controller = RunsOnAfterTheSwitch()
+        controller.px = -200000
+        code, out = run(["home", "--direction", "+", "--yes"], controller)
+        self.assertEqual(code, 1, out)
+        self.assertIn("after the counter reset at the switch", out)
+        self.assertIn("positions now count from the switch", out)
+        self.assertIsNone(controller.motion)
+        self.assertLess(abs(controller.px), 8250 + 100000 + 3000)
+
+    def test_a_pause_between_hl_stages_does_not_end_it(self):
+        controller = PausesInHl()
+        controller.px = -200000
+        code, out = run(["home", "--direction", "+", "--yes"], controller)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(controller.px, 0)
+        self.assertIn("Home search done", out)
+        self.assertIn("MST 0 (not moving)  PX 8250", out)       # it did see the pause
+
+    def test_hl_ending_off_zero_is_a_failure(self):
+        controller = HlEndsOffZero()
+        controller.px = -200000
+        code, out = run(["home", "--direction", "+", "--yes"], controller)
+        self.assertEqual(code, 1, out)
+        self.assertIn("ended at PX 123, not 0", out)
+        self.assertIn("the motor is stopped", out)
+        self.assertNotIn("Home search done", out)
 
     def test_home_timeout_sends_stop(self):
         controller = Stuck()
+        controller.px = 200000
         code, out = run(["home", "--direction", "-", "--yes"], controller)
         self.assertEqual(code, 1, out)
-        self.assertIn("the home search did not end within", out)
+        self.assertIn("the home search did not end within 92 s", out)
         self.assertIn("STOP", after(controller.received, "HL-"))
 
 
@@ -785,6 +1105,7 @@ class CtrlCTests(unittest.TestCase):
 
     def test_during_the_home_search(self):
         controller = Sim()
+        controller.px = -200000
         code, out = run(["home", "--direction", "+", "--yes"], controller, clock=Clock(interrupts=(3.5,)))
         self.assertEqual(code, 1, out)
         self.assertIn("STOP", after(controller.received, "HL+"))
@@ -806,7 +1127,8 @@ class CtrlCTests(unittest.TestCase):
         controller = Sim()
         nsc = script.NSC(script.SimulatedPerformax(controller), echo=lambda _t: None)
         clock = Clock()
-        with mock.patch.object(script, "_now", clock.now), mock.patch.object(script, "_sleep", clock.sleep):
+        with mock.patch.object(script, "_now", clock.now), mock.patch.object(script, "_sleep", clock.sleep), \
+                mock.patch.object(script, "signal", FakeSignals()):
             nsc.open(0)
             nsc.identify()
             controller.reply("X300000")
@@ -814,10 +1136,83 @@ class CtrlCTests(unittest.TestCase):
             with mock.patch.object(nsc, "_wait_until_still", side_effect=KeyboardInterrupt):
                 with self.assertRaises(KeyboardInterrupt):
                     nsc.stop_motion()
-            nsc.close()
+            stopped, px, _notes = nsc.close()
         self.assertEqual(controller.received.count("STOP"), 2)
         self.assertIsNone(controller.motion)
+        self.assertEqual((stopped, px), (True, controller.px))
         self.assertEqual(controller.calls[-1][0], "close")
+
+    def test_a_stop_on_closing_is_reported(self):
+        # A mode that returned while its move may still run: close() stops it,
+        # and its outcome is printed and sets the exit status.
+        def leaves_it_running(nsc, _args):
+            nsc.read_driver()
+            nsc.set_ok("ABS")
+            nsc.start_motion("X300000")
+            return 0
+        for controller, code_wanted, text in ((Sim(), 1, "Stopped on closing; the motor is stopped (MST read back)"),
+                                              (Runaway(), 3, "Stopped on closing; MOTION STATE UNKNOWN")):
+            with self.subTest(controller=type(controller).__name__), \
+                    mock.patch.dict(script.MODES, {"move": leaves_it_running}):
+                code, out = run(["move", "--degrees", "30", "--yes"], controller)
+                self.assertEqual(code, code_wanted, out)
+                self.assertIn(text, out)
+                self.assertLess(out.index("STOP"), out.index("> (close)"))
+
+    def test_a_second_ctrl_c_while_it_reports_cannot_cut_it_short(self):
+        # Ctrl+C during the move, then again just as the handler prints: the
+        # second press only asks for ABORT, and the report is printed whole.
+        for press_at in ("Stopped (Ctrl+C): STOP", "Not stopped after STOP: ABORT"):
+            with self.subTest(press_at=press_at):
+                controller = Sim() if press_at.startswith("Stopped") else IgnoresStop()
+                code, out = run(["move", "--degrees", "30", "--yes"], controller, clock=Clock(interrupts=(4.0,)),
+                                press_at=press_at)
+                self.assertEqual(code, 1, out)
+                rest = after(controller.received, "X300000")
+                self.assertLess(rest.index("STOP"), rest.index("ABORT"))
+                self.assertIsNone(controller.motion)
+                self.assertIn(f"Stopped (Ctrl+C); the motor is stopped (MST read back) at "
+                              f"{controller.px / 10000:+.4f} deg (PX {controller.px}).", out)
+
+    def test_a_ctrl_c_on_the_unknown_report_keeps_it_and_exit_3(self):
+        controller = Runaway()
+        code, out = run(["move", "--degrees", "30", "--yes"], controller, clock=Clock(interrupts=(4.0,)),
+                        press_at="MOTION STATE UNKNOWN")
+        self.assertEqual(code, 3, out)
+        self.assertIn("MOTION STATE UNKNOWN: it could not be confirmed stopped. CHECK THE STAGE", out)
+        code, out = run(["stop"], OtherModeTests.moving(None, Runaway()), press_at="MOTION STATE UNKNOWN")
+        self.assertEqual(code, 3, out)
+        self.assertIn("CHECK THE STAGE", out)
+
+    def test_ctrl_c_is_held_only_while_stopping(self):
+        signals = FakeSignals()
+        controller = Sim()
+        code, out = run(["move", "--degrees", "30", "--yes"], controller, clock=Clock(interrupts=(4.0,)),
+                        signals=signals)
+        self.assertEqual(code, 1, out)
+        self.assertTrue(signals.installed)
+        self.assertIs(signals.handler, signal.default_int_handler)      # given back afterwards
+        # Where the handler cannot be set (not the main thread), the stop still runs.
+        controller = Sim()
+        code, out = run(["move", "--degrees", "30", "--yes"], controller, clock=Clock(interrupts=(4.0,)),
+                        signals=FakeSignals(refuse=True))
+        self.assertEqual(code, 1, out)
+        self.assertIsNone(controller.motion)
+        self.assertIn("the motor is stopped (MST read back)", out)
+
+    def test_after_a_finished_move_it_does_not_say_no_move_was_started(self):
+        controller = Sim()
+        original = script.NSC.wait_motion
+
+        def then_ctrl_c(nsc, *args, **kwargs):
+            original(nsc, *args, **kwargs)      # the move ends and is read back not moving
+            raise KeyboardInterrupt
+        with mock.patch.object(script.NSC, "wait_motion", then_ctrl_c):
+            code, out = run(["move", "--degrees", "10", "--yes"], controller)
+        self.assertEqual(code, 1, out)
+        self.assertIn("Stopped (Ctrl+C); no move is running (it was read back not moving).", out)
+        self.assertNotIn("had not started a move", out)
+        self.assertNotIn("STOP", controller.received)
 
     def test_during_stop_mode(self):
         controller = OtherModeTests.moving(None, Sim())
@@ -825,6 +1220,15 @@ class CtrlCTests(unittest.TestCase):
         code, out = run(["stop"], controller, dll=dll)
         self.assertEqual(code, 0, out)
         self.assertIsNone(controller.motion)
+
+    def test_after_a_confirmed_stop_in_stop_mode(self):
+        controller = OtherModeTests.moving(None, Sim())
+        dll = InterruptingDll(controller, "RR", delivered=False)   # Ctrl+C while it reads the scale afterwards
+        code, out = run(["stop"], controller, dll=dll)
+        self.assertEqual(code, 1, out)
+        self.assertIsNone(controller.motion)
+        self.assertIn("no move is running", out)
+        self.assertNotIn("had not started a move", out)
 
 
 class StaleReplyTests(unittest.TestCase):
@@ -853,6 +1257,18 @@ class StaleReplyTests(unittest.TestCase):
         self.assertIn("HSPD None pps, LSPD None pps, ACC None ms", summary)
         self.assertNotIn("RR", controller.received)
 
+    def test_without_flush_a_late_dn_reply_does_not_pass_for_an_id(self):
+        # DN's late "SDE01" contains "SDE": it must not let the resync say "back
+        # in step" while the replies are still one behind.
+        controller = Lagging("DN")
+        code, out = run([], controller, dll=NoFlushDll(controller))
+        self.assertEqual(code, 1, out)
+        self.assertNotIn("replies back in step", out)
+        self.assertIn("ID answered 'SDE01'", out)
+        summary = out[out.index("Summary"):]
+        self.assertIn("status: MST None", summary)
+        self.assertIn("position: PX None", summary)
+
     def test_without_flush_a_failure_before_the_move_moves_nothing(self):
         controller = Lagging("PX")
         code, out = run(["move", "--degrees", "10", "--yes"], controller, dll=NoFlushDll(controller))
@@ -877,10 +1293,10 @@ class StaleReplyTests(unittest.TestCase):
         self.assertIsNone(controller.motion)
 
     def test_rr_silence_answers_after_the_wait(self):
-        controller = Sim()
-        controller.silent_until = -1
+        controller = Timed()
         code, out = run(["move", "--degrees", "1", "--yes"], controller)
         self.assertEqual(code, 0, out)
+        self.assertGreaterEqual(controller.time_of("R2") - controller.time_of("RR"), 2.0)
         controller = Sim()
         with mock.patch.object(script, "RR_WAIT_S", 1.0):
             code, out = run(["move", "--degrees", "1", "--yes"], controller)
@@ -1010,8 +1426,26 @@ class LoaderTests(unittest.TestCase):
         error.winerror = 193
         with self.assertRaises(script.PerformaxError) as caught:
             self.load(error=error)
-        self.assertIn("64-bit", str(caught.exception))
+        self.assertIn("not a 64-bit DLL. This Python is 64-bit", str(caught.exception))
         self.assertIn("WinError 193", str(caught.exception))
+
+    def test_the_error_code_is_not_guessed_from_the_path(self):
+        error = OSError(r"[WinError 126] The specified module could not be found: C:\lab\run1930\PerformaxCom.dll")
+        error.winerror = 126
+        text = script.explain_load_error(r"C:\lab\run1930\PerformaxCom.dll", error)
+        self.assertIn("WinError 126", text)
+        self.assertNotIn("64-bit DLL. This Python", text)
+        # Without .winerror only the exact "[WinError N]" counts.
+        self.assertIn("WinError 193", script.explain_load_error("x.dll", OSError("[WinError 193] bad image")))
+        self.assertEqual(script.explain_load_error(r"C:\run193\x.dll", OSError("no such file")),
+                         r"Could not load C:\run193\x.dll: no such file")
+
+    def test_a_32_bit_python_is_refused(self):
+        with mock.patch.object(script, "python_bits", return_value=32), \
+                mock.patch.object(ctypes, "WinDLL", mock.Mock(side_effect=AssertionError("loaded")), create=True):
+            with self.assertRaises(script.PerformaxError) as caught:
+                REAL_LOADER(None)
+        self.assertIn("32-bit Python: use 64-bit Python 3.11", str(caught.exception))
 
     def test_missing_functions(self):
         (lib, _path), _loaded, _added = self.load(missing=("fnPerformaxComFlush",))
@@ -1031,6 +1465,7 @@ class DryRunTests(unittest.TestCase):
     def dry(self, argv):
         clock = Clock()
         with mock.patch.object(script, "_now", clock.now), mock.patch.object(script, "_sleep", clock.sleep), \
+                mock.patch.object(script, "signal", FakeSignals()), \
                 mock.patch("builtins.input", return_value="yes"), redirect_stdout(io.StringIO()) as out:
             code = script.main(argv + ["--dry-run"])
         return code, out.getvalue()
@@ -1043,6 +1478,9 @@ class DryRunTests(unittest.TestCase):
                 self.assertEqual(code, 0, out)
                 self.assertIn("dry run", out)
                 self.assertIn("> ID\n< Ace-Series-SDE", out)
+        code, out = self.dry(["home", "--direction", "-"])     # from -20 deg it could pass -360
+        self.assertEqual(code, 1, out)
+        self.assertIn("move --degrees +33", out)
 
 
 class StandaloneTests(unittest.TestCase):
@@ -1054,7 +1492,7 @@ class StandaloneTests(unittest.TestCase):
                 names.update(alias.name.split(".")[0] for alias in node.names)
             elif isinstance(node, ast.ImportFrom):
                 names.add(node.module.split(".")[0])
-        self.assertLessEqual(names, {"argparse", "ctypes", "math", "os", "re", "sys", "time"})
+        self.assertLessEqual(names, {"argparse", "ctypes", "math", "os", "re", "signal", "sys", "time"})
 
     def test_docstring_has_usage_safety_and_exit_codes(self):
         for text in ("Usage", "SAFETY", "Exit status", "--dry-run", "PerformaxCom.dll", "SiUSBXp.dll"):

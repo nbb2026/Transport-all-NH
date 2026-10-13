@@ -146,22 +146,42 @@
   the vendor's `PerformaxCom.dll` over USB, following the NSC-A1 manual
   rev 1.3, and prints every command and reply. Only a fixed list of commands
   can be sent: STORE, RW, J+, POL=, DRVMS= and the rest are refused before
-  they reach the controller, so nothing is ever stored to flash. Modes: no
-  argument = read only (devices, ID/VER/DN, MST decoded, EO, PX, speeds,
-  POL/IERR/RZ/HCA/RT/SL/EDIO/TOC, driver parameters via RR, steps/deg =
-  40 x DRVMS); `move --degrees D [--speed S]` (relative, |D| ≤ 360, default
-  5 deg/s, at most 20; sent as an absolute target, which must lie within
-  ±360° of the zero for the sample wires, so 350 → 0 goes back −350; asks
-  "yes"; PX must read back the target exactly); `stop`; `zero` (PX=0,
-  runtime only: lost when the controller is powered off); `clear` (CLR);
-  `enable` (EO=1, asks) / `disable` (EO=0); `home --direction +` or `-`
-  (HL+/HL−, up to a full turn, asks, STOP if it has not finished in time);
-  `--serial` (only with several Performax devices), `--dll-dir`, `--yes`,
-  `--dry-run` (a simulated controller; nothing sent). A move is refused while
-  it moves, with a latched limit error, with a limit input on at rest (a
-  polarity problem: fix it in QuickMotion), or with the driver off (EO=0).
-  Ctrl+C at any point sends STOP if a move may be running, waits until it
-  has stopped (ABORT if STOP does not stop it) and says where it stopped.
+  they reach the controller, so nothing is ever stored to flash; the numbers
+  are checked too (X and PX= far inside the 28-bit counter, and X within
+  ±360° once the scale is known; HSPD at most 20 deg/s; 10 ≤ LSPD < HSPD;
+  1 ≤ ACC ≤ 5000 ms). Modes: no argument = read only (devices, ID/VER/DN,
+  MST decoded, EO, PX, speeds, POL/IERR/RZ/HCA/RT/SL/EDIO/TOC, driver
+  parameters via RR, steps/deg = 40 x DRVMS); `move --degrees D [--speed
+  S]` (relative, |D| ≤ 360, default 5 deg/s, at most 20; sent as an
+  absolute target, which must lie within ±360° of the zero for the sample
+  wires, so 350 → 0 goes back −350; asks "yes"; it counts as ended after
+  three status reads in a row say not moving, and PX must read back the
+  target exactly); `stop`; `zero` (PX=0, asks, since every move's ±360°
+  limit counts from it; runtime only: lost when the controller is powered
+  off); `clear` (CLR); `enable` (EO=1, asks) / `disable` (EO=0);
+  `home --direction +` or `-` (HL+/HL−, asks; see below); `--serial` (only
+  with several Performax devices), `--dll-dir` (a folder without
+  `PerformaxCom.dll` is a usage error), `--yes`, `--dry-run` (a simulated
+  controller whose stage starts at −20°; nothing sent). A move is refused
+  while it moves, with a latched limit error, with a limit input on at rest
+  (a polarity problem: fix it in QuickMotion), or with the driver off
+  (EO=0). Ctrl+C at any point sends STOP if a move may be running, waits
+  until it has stopped (ABORT if STOP does not stop it) and says where it
+  stopped; while it stops and reports, a further Ctrl+C only asks for ABORT
+  and cannot cut the report (or exit status 3) short.
+- **`home`** (the RM-5-110 turns without end and has no limit switches, so
+  a home switch that never triggers must not wind up the wires): PX is read
+  at every poll. The controller sets the counter to 0 at the switch (manual,
+  Figure 6.6); if that has not happened within one turn + 10°, the search is
+  stopped (STOP) and reported as "no home switch within one turn"; after
+  the switch it is stopped if it runs on more than the slowing down + HCA +
+  10°; a time-out (1.2 × the expected time + 2 s) backs this up. It is
+  refused unless all of that stays within ±360° of the zero: from the zero
+  itself, first move about 13° the other way at 5 deg/s (the refusal prints
+  the `move` to make). It must end not moving with PX 0. Afterwards the zero,
+  and with it the ±360° limit of `move`, is the home switch; the script says
+  where the switch was found from the old zero and the `move` that turns
+  back there.
 - **Setup on the lab PC (64-bit Python 3.11):**
   1. Install the Performax USB driver ("Performax USB Setup 4.01.3", from
      Newmark/Arcus). With the controller on its 24 V supply and plugged in,
@@ -170,7 +190,8 @@
   2. From Arcus's "USB 64-bit DLL v2.06", put the 64-bit `PerformaxCom.dll`
      and `SiUSBXp.dll` together next to `Newmark_motor_test.py` (or in a
      folder given with `--dll-dir`). 32-bit DLLs do not load in 64-bit Python
-     (WinError 193); the script says so.
+     (WinError 193); the script says so, and it refuses a 32-bit Python
+     (use `py -3.11-64`).
   3. Close QuickMotion first: one program at a time on the USB device.
 - **First test:**
   1. `py Newmark_motor_test.py --dry-run` and
@@ -183,33 +204,51 @@
      note which way + turns (clockwise or counter-clockwise seen from above)
      and whether 5° looks right; then `move --degrees -5`.
   5. `move --degrees 30`, and Ctrl+C halfway: it should stop and say where.
-  6. Only then, if wanted: `home --direction +` (wires free for a full turn).
+  6. Only then, if wanted, back at the zero: `move --degrees -15`, then
+     `home --direction +` (wires free for a full turn). If the home switch is
+     not wired or its polarity is wrong, it stops by itself after one turn
+     + 10° ("no home switch within one turn"). After a home search the zero
+     is the home switch: if the wires do not hang free there, make the
+     `move` it prints (back to the old zero) and run `zero` again.
 - **Exit status:** 0 done; 1 refused, not confirmed, or failed with the
   motor confirmed stopped; 2 usage error (nothing sent); 3 motion state
   unknown (check the stage).
 - **Not yet tried on the hardware.** Things to check: whether the DLL has
   `fnPerformaxComFlush`, the reply framing (CR, a `#NN` prefix), the STOP
-  reply at rest, R2 = 1 after the 2.5 s wait following RR, DRVMS and the
-  direction of +.
+  reply at rest, R2 = 1 after the 2.5 s wait following RR, DRVMS, the
+  direction of +, and how HL behaves (the counter reset at the switch, PX 0
+  at the end, the home polarity).
 - **Tests:** `test_newmark_motor_test_script.py` (Tk-free; no real DLL is
   loaded on any OS, including the Windows CI: `ctypes.WinDLL`,
   `os.add_dll_directory` and the loader are replaced; time is a virtual
-  clock). Covered: every mode and `--dry-run`; usage errors are exit 2 with
-  nothing opened; the allowlist refuses STORE, RW, J+, DRVMS=, POL=, HL+
-  outside `home` and the rest, and commands of 64 bytes or more; 0, 1 and 2
-  devices, `--serial`; ID first (another device gets only `ID`), VER answering
-  like ID is out of step; info sends only read-only commands and RR; a failed
-  transaction is followed by flush, ID and VER and never repeated, and a stale
-  reply is never used (also without flush); the refusals (moving, latched
-  limit error, limit input, EO=0, beyond ±360°, speeds not read back, a
-  position changed since the question); a PX read-back that differs; a
-  time-out sends STOP, then ABORT, else exit 3; Ctrl+C at the question,
-  during RR, during and inside the move command, twice, before the
-  identity, in info, home and stop; the ctypes path through real ctypes
+  clock that fails a test past 1000 virtual seconds, so a lost time-out
+  fails instead of hanging; Ctrl+C goes through a stand-in signal module).
+  Covered: every mode and `--dry-run`; usage errors (also a `--dll-dir`
+  without the DLL) are exit 2 with nothing opened; the allowlist refuses
+  STORE, RW, J+, DRVMS=, POL=, HL+ outside `home` (checked for every mode in
+  `main`) and the rest, numbers out of range, and commands of 64 bytes or
+  more; 0, 1 and 2 devices, `--serial`; ID first (another device gets only
+  `ID`, and a DN-like "SDE01" is not an ID), VER answering like ID is out
+  of step; info sends only read-only commands and RR (R2 at least 2 s after
+  it); a failed transaction is followed by flush, ID and VER and never
+  repeated, and a stale reply is never used (also without flush, also a
+  late DN reply); the refusals (moving, latched limit error, limit input,
+  EO=0, beyond ±360°, speeds not read back, a position changed since the
+  question); one "not moving" read does not end a move; a PX read-back that
+  differs; a time-out sends STOP, then ABORT, else exit 3; `zero` asks;
+  `home` both ways, with HCA, the plan's numbers, refused where it could
+  pass ±360°, no home switch (stopped after one turn + 10°, both ways),
+  running on after the switch, a pause between HL stages, HL ending off 0, a
+  time-out; Ctrl+C at the question, during RR, during and inside the move
+  command, twice, before the identity, in info, home and stop, after a
+  finished move, a second Ctrl+C while it reports or before ABORT (the
+  report and exit 3 are kept), and a stop on closing reported; the
+  simulator's STOP reads "decelerating"; the ctypes path through real ctypes
   function pointers (argtypes, pointers, 64-byte NUL-terminated buffers,
   256-byte product strings, timeouts before Open, flush after it, the same
   handle closed); the loader (search order, SiUSBXp.dll first, WinError 193
-  explained, missing functions); standard-library imports only.
+  explained without guessing it from the path, 32-bit Python refused,
+  missing functions); standard-library imports only.
 
 ## Settings audit: last review notes (2026-10-13)
 
