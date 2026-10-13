@@ -28,6 +28,11 @@ class Root:
     def __init__(self):
         self.pending = {}
         self.counter = 0
+        self.idle_updates = 0
+
+    def update_idletasks(self):
+        # Save CSV redraws its status line before drawing the PNGs.
+        self.idle_updates += 1
 
     def after(self, _ms, callback):
         self.counter += 1
@@ -363,17 +368,29 @@ class StreamingTests(unittest.TestCase):
             h._export_stfmr_lockin_data_pngs(Path(self.tmp.name), 'STFMR_test')
 
     def test_manual_save_uses_data_export_without_imagegrab(self):
+        # Save CSV writes the CSV, then the four figures next to it with the
+        # data exporter, never a screen grab (user, 2026-10-13).
         h = harness(self.tmp.name)
         h.stfmr_lockin_rows = [{'index': 3, 'x_v': 1e-6}]
-        h._export_stfmr_lockin_data_pngs.return_value = tuple(Path(self.tmp.name) / s
-            for s in ('X.png', 'Y.png', 'theta.png', 'field_vs_current.png'))
+        def export(folder, stem):
+            self.assertEqual(Path(folder), Path(self.tmp.name))
+            self.assertEqual(len(read_csv(Path(folder) / (stem + '.csv'))), 1)
+            self.assertIn('Saving PNG', h.stfmr_lockin_status_var.get())
+            self.assertEqual(h.root.idle_updates, 1)
+            return tuple(Path(folder) / (stem + '_' + suffix + '.png')
+                         for suffix in ('X', 'Y', 'theta', 'field_vs_current'))
+        h._export_stfmr_lockin_data_pngs.side_effect = export
         with patch.object(app, 'ImageGrab', None), patch.object(
-                app.filedialog, 'askdirectory', return_value=self.tmp.name):
+                app.filedialog, 'askdirectory', return_value=self.tmp.name), \
+                patch.object(app.messagebox, 'showwarning') as warning:
             h.save_stfmr_lockin_results()
-        h._export_stfmr_lockin_data_pngs.assert_not_called()
+        h._export_stfmr_lockin_data_pngs.assert_called_once()
         csv_path = next(Path(self.tmp.name).glob('*.csv'))
-        self.assertEqual(list(Path(self.tmp.name).glob('*.png')), [])
+        self.assertEqual(h._export_stfmr_lockin_data_pngs.call_args.args[1], csv_path.stem)
         self.assertEqual(len(read_csv(csv_path)), 1)
+        self.assertEqual(h.stfmr_lockin_status_var.get(),
+                         'Saved: ' + csv_path.name + ' + 4 PNG')
+        warning.assert_not_called()
         self.error.assert_not_called()
 
     def test_close_ignores_inflight_callback(self):

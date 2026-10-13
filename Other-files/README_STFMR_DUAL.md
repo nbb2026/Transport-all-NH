@@ -42,10 +42,13 @@ GUI progress still advances per field point. The field and the two meters are no
 
 Row-by-row writing is unchanged: a disk failure on the second row may leave the first row behind, and the closing log
 reports an error; when handling abnormal or interrupted files, check for paired records and do not treat an unpaired row as a complete dual point.
-No PNG is written: neither the end of a sweep nor "Save CSV" (which writes the CSV only) exports one; the live CSV and log
-are the record, and the original single-meter files remain compatible. The program's 900 DPI exporter
-(`_export_stfmr_lockin_data_pngs`, both curves with their marker shapes) is not connected to the page
-(audit, 2026-10-13: this line used to say that PNGs were exported automatically and manually).
+The end of a sweep writes no PNG; the live CSV and log are the record, and the original single-meter files remain compatible.
+PNGs are written by "Save CSV" (user, 2026-10-13): it writes `STFMR_field_scan_<time>.csv` first, then four 900 DPI
+figures next to it, `..._X.png`, `..._Y.png`, `..._theta.png` and `..._field_vs_current.png`, drawn from the saved rows
+by `_export_stfmr_lockin_data_pngs` (both curves with their marker shapes in dual mode; the plots need not be on screen).
+The status line shows "Saving PNG…" while they are drawn (about a second; the page, Stop included, waits meanwhile). If they fail,
+the CSV is still saved: the status line and a warning name the PNG problem, and a figure written before it stays.
+Existing PNG files are never replaced.
 
 ## Verification
 

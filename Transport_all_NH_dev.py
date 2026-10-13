@@ -18647,7 +18647,7 @@ class CombinedControlApp:
         if not self.stfmr_lockin_rows:
             return
         folder = filedialog.askdirectory(
-            title="Select the folder for the STFMR CSV", parent=self.root,
+            title="Select the folder for the STFMR CSV and PNG figures", parent=self.root,
             initialdir=str(self.stfmr_lockin_save_directory),
         )
         if not folder:
@@ -18662,8 +18662,36 @@ class CombinedControlApp:
         except BaseException as error:
             messagebox.showerror("Save STFMR", str(error), parent=self.root)
             return
+        # Save CSV also writes the X, Y, Theta and field-vs-current figures
+        # next to the CSV (user, 2026-10-13); a sweep's end still writes the
+        # CSV only.  The data exporter, not the screen snapshot: it draws
+        # every saved row (both meters' curves in MFLI + SR830) at 900 DPI
+        # whether or not the plots are on screen, so the PNGs show what the
+        # CSV holds.  The figures come only after the CSV is written, so a
+        # PNG problem can neither lose the CSV nor report it as failed.
         self.stfmr_lockin_status_var.set(
-            f"Saved: {csv_path.name}"
+            f"Saved: {csv_path.name}; Saving PNG…"
+        )
+        # The large figures are drawn on this (Tk) thread, which holds the
+        # page for a moment: show the status before it does.
+        self.root.update_idletasks()
+        try:
+            png_paths = self._export_stfmr_lockin_data_pngs(
+                Path(folder), csv_path.stem
+            )
+        except BaseException as error:
+            self.stfmr_lockin_status_var.set(
+                f"Saved: {csv_path.name}; PNG not saved: {error}"
+            )
+            messagebox.showwarning(
+                "Save STFMR PNG",
+                f"The CSV was saved:\n{csv_path}\n\n"
+                f"The PNG figures were not (all) saved: {error}",
+                parent=self.root,
+            )
+            return
+        self.stfmr_lockin_status_var.set(
+            f"Saved: {csv_path.name} + {len(png_paths)} PNG"
         )
 
     def _on_stfmr_output_mode_changed(self, _event=None) -> None:

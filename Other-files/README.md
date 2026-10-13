@@ -100,6 +100,37 @@
   narrowest (not run here: it needs a display). Every dialog is mocked and a
   real Tk root fails the new tests.
 
+## STFMR: Save CSV also writes the PNG figures (2026-10-13)
+
+- **What was wrong:** the STFMR lock-in page's "Save CSV" wrote the CSV
+  only; the 900 DPI figure exporter (`_export_stfmr_lockin_data_pngs`) and
+  the screen-snapshot one (`_save_stfmr_lockin_plot_snapshots`) were never
+  called, so no PNG was written anywhere.
+- **What the user chose:** Save CSV also writes the PNGs; the end of a sweep
+  stays CSV only.
+- **The change:** after the CSV is written, Save CSV draws four figures next
+  to it, `STFMR_field_scan_<time>_X / _Y / _theta / _field_vs_current.png`,
+  with the data exporter: it draws every saved row (both meters' curves in
+  MFLI + SR830) at 900 DPI whether or not the plots are on screen, so the
+  PNGs show what the CSV holds. The snapshot one would grab the screen and
+  fails when a plot is hidden; it stays unused. The status line shows
+  "Saving PNG…" (redrawn before the figures are drawn on the Tk thread,
+  about a second; Stop waits that long if a sweep is running), then
+  "Saved: <csv> + 4 PNG". A PNG failure keeps the CSV and is reported on
+  its own: the status line reads "Saved: <csv>; PNG not saved: <error>" and
+  a "Save STFMR PNG" warning names the CSV and the PNG problem. The folder
+  dialog's title now says CSV and PNG figures; the exporter's style and the
+  button label are unchanged. README_STFMR_DUAL.md says so.
+- **Tests:** `test_stfmr_png_save.py` (the real Save CSV and the real
+  exporter on dual-meter rows: the CSV is complete and the status says
+  Saving PNG… before the first figure, four 900 DPI PNGs named after the
+  CSV; a PNG failure keeps all CSV rows, no error dialog, one warning naming
+  the CSV and the PNG error; a CSV that cannot be written shows the error
+  and draws no PNG). `test/test_stfmr_realtime_recording.py`
+  `test_manual_save_uses_data_export_without_imagegrab` now checks that the
+  manual save calls the exporter once, after the CSV, without ImageGrab
+  (it asserted no export); the sweep-end tests still assert no PNG.
+
 ## Settings audit: last review notes (2026-10-13)
 
 - **LED boxes:** a number too large for an integer (e.g. "1e400") raised
