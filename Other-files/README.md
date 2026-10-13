@@ -66,6 +66,36 @@
   `test_magnet_scan_start.py` (Start with '1,5', '0.5s', '' submits the
   scan); `test_moke_scan_zero.py` updated for the worker's new names.
 
+## CIDWM and MOKE-24: 6221 failed-off interlock; Current limit locked while connected (2026-10-13)
+
+- **CIDWM, what was wrong:** only the 6221's red button set the "6221
+  output unknown" interlock when its off failed. A failed off after Apply
+  ±I pulse, at the end of a 6221 pulse sign scan or while disconnecting left
+  the Avtech free to pulse the sample, and Apply ±I and Disconnect even
+  showed "Output: 0 mA / OFF". A pulse command that failed (a timeout, say)
+  and whose off then failed showed only the off error.
+- **CIDWM, the fix:** each of these finishes sets the interlock when the
+  6221 off failed (output "check the 6221") and clears it when an off
+  succeeded; after a failed Disconnect a reconnect (*RST and a checked
+  OUTP OFF) clears it, and the Avtech warning says so. The pulse error and
+  the failed off are both in the dialog (a readback mismatch whose own off
+  fails still shows only the off error: that check is in the 6221
+  controller, which MS-fourState.py copies).
+- **MOKE-24, what was wrong:** Connect is the only reader of "Current limit
+  (A)", but the field stayed editable while connected. A lowered limit
+  looked applied (and could be ticked as safe) while scans, manual writes,
+  the 21 mA refusal and the CSV kept the limit set at Connect.
+- **MOKE-24, the fix:** the field is locked from Connect to Disconnect, as
+  the Model list is, so it always shows the limit in use; the 21 mA
+  refusal says "Disconnect, then Connect with a lower Current limit".
+- **Tests:** `test_k6221_failed_off_interlock.py` (the real controller,
+  worker and finishes with a 6221 whose OUTP OFF times out: Apply ±I (both
+  errors kept), 0 A, the scan's final off, Disconnect; an off that works
+  frees the Avtech);
+  `test_moke24_current_limit.py` (locked while connecting, connected,
+  scanning or writing; editable after Disconnect and the next Connect uses
+  the new value; the refusal messages).
+
 ## MOKE magnet: Start scan says why it does not start (2026-10-13)
 
 - **User:** "the start scan cannot be used".

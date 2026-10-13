@@ -6019,9 +6019,12 @@ class Keithley2410Controller:
             abs(float(max_abs_voltage)) > KEITHLEY_LOW_SOURCE_RANGE_V
             and self.compliance_a > self.high_range_max_compliance_a
         ):
+            # Connect is the only reader of the page's Current limit, so the
+            # message says how to change it (review, 2026-10-13).
             raise ValueError(
                 f"{self.model} current protection in the {self.high_range_v:g} V source range is at most "
-                f"{self.high_range_max_compliance_a * 1e3:g} mA; current setting {self.compliance_a:g} A"
+                f"{self.high_range_max_compliance_a * 1e3:g} mA; current setting {self.compliance_a:g} A "
+                "(Disconnect, then Connect with a lower Current limit)"
             )
         with self.lock:
             if self.instrument is None:
@@ -6086,7 +6089,8 @@ class Keithley2410Controller:
         ):
             raise ValueError(
                 f"{self.model} current protection must not exceed "
-                f"{self.high_range_max_compliance_a * 1e3:g} mA above 20 V"
+                f"{self.high_range_max_compliance_a * 1e3:g} mA above 20 V; current setting "
+                f"{self.compliance_a:g} A (Disconnect, then Connect with a lower Current limit)"
             )
         with self.lock:
             if self.instrument is None:
@@ -21215,7 +21219,9 @@ class CombinedControlApp:
         # rows do in a narrow window; one line was too wide to sit beside
         # the output panel.  Which SourceMeter: its range above 20 V, the
         # current allowed there and the voltage limit and OVP follow the
-        # choice (KEITHLEY_MODELS); fixed while connected.
+        # choice (KEITHLEY_MODELS); fixed while connected, as is the Current
+        # limit, which only Connect reads (review, 2026-10-13: an edit made
+        # while connected looked applied but scans kept the old limit).
         settings = ttk.Frame(device)
         settings.grid(row=1, column=1, columnspan=5, sticky="w", pady=(4, 0))
         ttk.Label(settings, text="Model:").pack(side="left", padx=(0, 3))
@@ -21226,9 +21232,10 @@ class CombinedControlApp:
         self.keithley_model_combo.pack(side="left", padx=(0, 10))
         self.keithley_model_combo.bind("<<ComboboxSelected>>", lambda event: self._update_keithley_controls())
         ttk.Label(settings, text="Current limit (A):").pack(side="left", padx=(0, 3))
-        ttk.Entry(
+        self.keithley_compliance_entry = ttk.Entry(
             settings, textvariable=self.keithley_compliance_var, width=9
-        ).pack(side="left")
+        )
+        self.keithley_compliance_entry.pack(side="left")
 
         # The source output, as the STFMR page's KEPCO output: the safety
         # check, the manual controls with the red off button, the readback.
@@ -27104,6 +27111,12 @@ class CombinedControlApp:
                 f"±{KEITHLEY_MODELS[model]['max_abs_voltage_v']:g} V (hardware OVP "
                 f"{KEITHLEY_MODELS[model]['source_ovp_v']:g} V); the output is switched off on stop."
             )
+        if "keithley_compliance_entry" in self.__dict__:
+            # Connect is the only reader of the Current limit: a new limit
+            # needs Disconnect then Connect (review, 2026-10-13).
+            self.keithley_compliance_entry.configure(
+                state="disabled" if connected or connecting or running or manual_busy
+                else "normal")
         self.keithley_disconnect_button.configure(
             state=(
                 "normal"
@@ -28478,12 +28491,13 @@ class CombinedControlApp:
 
     def _finish_k6221_disconnect(self, error) -> None:
         self.k6221_busy = False
-        if error is None:
-            self.k6221_output_unknown = False
+        # A failed off while disconnecting keeps the Avtech waiting until a
+        # reconnect (*RST and a checked OUTP OFF) clears it (review, 2026-10-13).
+        self.k6221_output_unknown = error is not None
         if not (self.k6221_scan_running and self.__dict__.get("cidwm_scan_source") == "avtech"):
             self.k6221_scan_running = False
         self.k6221_connection_var.set("Not connected")
-        self.k6221_output_var.set("Output: 0 mA / OFF")
+        self.k6221_output_var.set("Output: 0 mA / OFF" if error is None else "Output: check the 6221")
         self._reset_k6221_readback()
         self.k6221_safety_var.set(False)
         if error is None:
@@ -28524,6 +28538,10 @@ class CombinedControlApp:
         )
         self.k6221_status_var.set("Configuring and running the set number of pulses…")
         self._update_k6221_controls()
+        # The worker sets this once an off succeeded; until then the finish
+        # keeps the Avtech waiting (review, 2026-10-13: a failed off after
+        # Apply ±I said "OFF" and let the Avtech pulse).
+        self.k6221_apply_off_confirmed = False
         future = self.k6221_executor.submit(
             self._k6221_output_worker,
             current_a,
@@ -28548,10 +28566,18 @@ class CombinedControlApp:
             result = self.k6221_controller.set_dc_pulse(
                 current_a, width_s, compliance_v, pulse_count
             )
-        except BaseException:
-            self.k6221_controller.output_off()
+        except BaseException as error:
+            try:
+                self.k6221_controller.output_off()
+            except BaseException as off_error:
+                # Both in the dialog: the off error alone hid why the pulse
+                # failed (review, 2026-10-13).
+                raise RuntimeError(f"{error}; then {off_error}") from error
+            self.k6221_apply_off_confirmed = True
             raise
         if current_a == 0.0:
+            # set_dc_pulse switched the output off for 0 A.
+            self.k6221_apply_off_confirmed = True
             self.post_ui(
                 lambda snapshot=dict(result): self._publish_k6221_readback(
                     snapshot
@@ -28563,6 +28589,7 @@ class CombinedControlApp:
             interrupted = self._wait_k6221_pulse_with_readback(result)
         finally:
             self.k6221_controller.output_off()
+            self.k6221_apply_off_confirmed = True
         result["interrupted"] = interrupted
         return result
 
@@ -28612,11 +28639,14 @@ class CombinedControlApp:
     def _finish_k6221_apply(self, future) -> None:
         self.k6221_busy = False
         self._reset_k6221_readback()
+        # Until an off succeeded, the Avtech does not pulse (review, 2026-10-13).
+        off = bool(self.__dict__.get("k6221_apply_off_confirmed"))
+        self.k6221_output_unknown = not off
         try:
             result = future.result()
         except BaseException as error:
             self.k6221_current_ma = 0.0
-            self.k6221_output_var.set("Output: 0 mA / OFF")
+            self.k6221_output_var.set("Output: 0 mA / OFF" if off else "Output: check the 6221")
             self.k6221_status_var.set(f"Pulse output failed: {error}")
             if not self.closing:
                 messagebox.showerror("Keithley 6221", str(error), parent=self.root)
@@ -29131,6 +29161,8 @@ class CombinedControlApp:
             self.avtech_output_var.set("Output: OFF" if off else "Output: check the Avtech")
         else:
             self.k6221_current_ma = 0.0
+            # A failed final off keeps the Avtech waiting (review, 2026-10-13).
+            self.k6221_output_unknown = not off
             self.k6221_output_var.set("Output: 0 mA / OFF" if off else "Output: check the 6221")
             self._reset_k6221_readback()
         try:
@@ -29249,8 +29281,11 @@ class CombinedControlApp:
         if self.avtech_busy or self.k6221_busy or self.k6221_scan_running:
             return
         if self.__dict__.get("k6221_output_unknown", False):
+            # After a failed Disconnect the red button is disabled, so a
+            # reconnect is the other way (review, 2026-10-13).
             messagebox.showwarning(
-                "Avtech", "The 6221's output state is unknown: switch it off first (its red button)",
+                "Avtech", "The 6221's output state is unknown: switch it off first "
+                "(its red button) or reconnect it",
                 parent=self.root,
             )
             return
