@@ -18,6 +18,10 @@ class WatchedResult(unittest.TextTestResult):
 
 
 def main() -> int:
+    # A crash (e.g. a segmentation fault inside Tk) prints the Python stack of
+    # every thread, so the log shows which test and line it was (CI,
+    # 2026-10-14: Linux ended with "Segmentation fault" and nothing else).
+    faulthandler.enable()
     faulthandler.dump_traceback_later(HANG_S, exit=True)
     suite = unittest.defaultTestLoader.discover(".", pattern="test_*.py")
     result = unittest.TextTestRunner(verbosity=2, resultclass=WatchedResult).run(suite)
