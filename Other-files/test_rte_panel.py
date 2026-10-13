@@ -375,9 +375,15 @@ class RTE(unittest.TestCase):
                 self.assertIs(panel.ppms_device_connect_buttons[key].parent, rack)
                 self.assertIs(panel.ppms_device_disconnect_buttons[key].parent, rack)
             self.assertEqual(measurement.options['text'], 'Measurement instruments')
-            for entry, _, _ in panel.rte_connection_widgets.values():
+            for key in ('kepco', 'gauss'):
+                entry = panel.rte_connection_widgets[key][0]
                 self.assertIs(entry.parent.parent, measurement)
                 self.assertNotIn('text', entry.parent.options)
+            # The Newmark stage's connection is in the RT-E scan box, beside
+            # or under the scan rows, not in the rack (user/CI, 2026-10-14).
+            block = panel.rte_connection_widgets['newmark'][0].parent
+            self.assertIs(block.parent, panel.rte_start_button.parent.parent)
+            self.assertEqual(block.parent.parent.options['text'], 'RT-E scan')
             self.assertNotIn('text', panel.ppms_instruments_frame.options)
             self.assertEqual(panel.zurich_harmonic.get(), '1+2+3')
             self.assertEqual(panel.zurich_resource.get(), 'DEV4414 (Super)')

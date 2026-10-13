@@ -208,13 +208,18 @@ class RecordingDLL:
 
 
 class Recorder(rte_tests.Widget):
-    """A stand-in widget that remembers every instance (for the page build)."""
+    """A stand-in widget that remembers every instance and where it was
+    gridded (for the page build)."""
 
     made = []
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.grid_options = {}
         Recorder.made.append(self)
+
+    def grid(self, **kwargs):
+        self.grid_options = dict(kwargs)
 
 
 class StageBase(unittest.TestCase):
@@ -239,7 +244,9 @@ class StageBase(unittest.TestCase):
         panel.rte_stage_live = Var("Stage: not connected")
         panel.rte_stage_target = Var("0")
         panel.rte_resources = {"newmark": Var("auto")}
-        panel.rte_connections = {"newmark": Var("Not connected")}
+        # No rte_connections["newmark"]: the stage line is the stage's only
+        # text since its controls moved to the scan box (user/CI, 2026-10-14),
+        # so a stray use of it fails here with AttributeError.
         panel.rte_drive_live = Var("")
         panel.rte_field_live = Var("")
         panel.ppms_environment_busy = False
@@ -643,7 +650,7 @@ class StageThreadAffinityTests(StageBase):
                 patch.object(app.messagebox, "askyesno", return_value=True):
             panel._rte_connect("newmark")
             self.settle(h, executor)
-            self.assertEqual(panel.rte_connections["newmark"].get(), "Connected")
+            self.assertTrue(h.stage.connected)
             self.assertEqual(panel.rte_stage_live.get(), "Stage: +0.000° (10000 steps/°)")
             panel._ppms_poll_timer()                # the idle read: MST and PX
             self.settle(h, executor)
@@ -1042,15 +1049,15 @@ class ManualStageControlTests(StageBase):
 
     def test_connect_with_a_failed_first_read_still_says_connected(self):
         # RR's reply is lost after it ran: the scale is not read, and the first
-        # read falls in RR's 2 s blackout.  The handle is open, so the row says
-        # Connected, like the lamp (user, 2026-10-13).
+        # read falls in RR's 2 s blackout.  The handle is open, so the lamp,
+        # which follows it, says connected (user, 2026-10-13), and the stage
+        # line that the read failed.
         h = self.make(ReplyLost("RR"))
         with patch.object(app.messagebox, "showerror") as showerror:
             h.panel._rte_connect("newmark")
             self.drain(h)
         showerror.assert_not_called()
         self.assertTrue(h.stage.connected)
-        self.assertEqual(h.panel.rte_connections["newmark"].get(), "Connected")
         self.assertTrue(h.panel.rte_stage_live.get().startswith("Stage read failed: ID: the USB transaction failed"),
                         h.panel.rte_stage_live.get())
         self.assertTrue(any("the first read after Connect failed" in str(call.args[0])
@@ -1059,30 +1066,29 @@ class ManualStageControlTests(StageBase):
     def test_a_disconnect_that_closed_without_a_confirmed_stop_says_not_connected(self):
         h = self.make(Runaway())
         h.stage.connect("auto")
-        h.panel.rte_connections["newmark"].set("Connected")
         h.panel.rte_stage_live.set("Stage: +0.000° (10000 steps/°)")
         h.sim._start(3000000, script._now())        # turning, and STOP and ABORT do nothing
         with patch.object(app.messagebox, "showerror") as showerror:
             h.panel._rte_disconnect("newmark")
             self.drain(h)
         self.assertFalse(h.stage.connected)
-        self.assertEqual(h.panel.rte_connections["newmark"].get(), "Not connected")
         self.assertEqual(h.panel.rte_stage_live.get(), "Stage: closed, STOP not confirmed")
         showerror.assert_called_once()
         self.assertIn("could not be confirmed stopped", showerror.call_args.args[1])
         self.assertIn("CHECK THE STAGE", showerror.call_args.args[1])
         self.assertLess(h.sim.received.index("STOP"), h.sim.received.index("ABORT"))
-        # Refused while still open (a call from another thread): the row stays Connected.
+        # Refused while still open (a call from another thread): the stage
+        # line keeps the reading, and the lamp stays on (from the handle).
         h = self.make()
         with ThreadPoolExecutor(max_workers=1) as other:
             other.submit(h.stage.connect, "auto").result(timeout=30)
-            h.panel.rte_connections["newmark"].set("Connected")
+            h.panel.rte_stage_live.set("Stage: +0.000° (10000 steps/°)")
             with patch.object(app.messagebox, "showerror") as showerror:
                 h.panel._rte_disconnect("newmark")
                 self.drain(h)
             self.assertIn("another thread", showerror.call_args.args[1])
             self.assertTrue(h.stage.connected)
-            self.assertEqual(h.panel.rte_connections["newmark"].get(), "Connected")
+            self.assertEqual(h.panel.rte_stage_live.get(), "Stage: +0.000° (10000 steps/°)")
             other.submit(h.stage.disconnect).result(timeout=30)
 
     def test_set_zero_asks_first(self):
@@ -1408,44 +1414,86 @@ class AnglePageTests(unittest.TestCase):
                 stack.enter_context(patch.object(app.tk, name, Var))
             stack.enter_context(patch.object(app, "ThreadPoolExecutor", ImmediateExecutor))
             stack.enter_context(patch.object(app.CombinedControlApp, "_create_connection_indicator",
-                                             lambda *a, **k: Recorder()))
+                                             lambda _self, parent, key: Recorder(parent, indicator=key)))
             stack.enter_context(patch.object(app.CombinedControlApp, "_set_connection_indicator", Mock()))
             stack.enter_context(patch.object(app.CombinedControlApp, "_draw_nonlocal_series", Mock()))
             return app.RTEPanel(parent, rte_tests.Widget())
 
-    def test_the_rack_row_and_the_stage_controls(self):
+    def test_the_stage_controls_are_a_block_in_the_scan_box(self):
+        """User/CI, 2026-10-14: a rack row and a row under the settings for
+        the stage took about 84 px of height in the 1101 px window, and every
+        plot fell below its 55 px minimum.  The stage's controls are now one
+        block of three rows in the RT-E scan box, paired with the scan rows
+        (beside them when they fit, under them otherwise); the rack and the
+        settings have none of them."""
         panel = self.build_page()
         entry, connect, disconnect = panel.rte_connection_widgets["newmark"]
+        block = entry.parent
+        rows = panel.rte_start_button.parent
+        self.assertIs(block.parent, rows.parent, "the block and the scan rows are one pair")
+        scan = rows.parent.parent
+        self.assertEqual(scan.options.get("text"), "RT-E scan")
+        # The rack keeps its four rows (KEPCO, LS475, 6221, 2400), no stage row.
         rack = panel.rte_connection_widgets["kepco"][0].parent
-        self.assertIs(entry.parent, rack)
+        self.assertEqual({w.grid_options["row"] for w in Recorder.made
+                          if w.parent is rack and "row" in w.grid_options}, {0, 1, 2, 3})
+        self.assertFalse([w for w in Recorder.made if w.options.get("text") == "Newmark stage"])
+        # Three rows level with the scan rows' three (mode/Start/End/Step;
+        # units/Loops/Settle s/Acquire s; Start scan/Stop/Save CSV as/Round trip).
+        self.assertEqual({w.grid_options["row"] for w in Recorder.made
+                          if w.parent is rows and "row" in w.grid_options}, {0, 1, 2})
+        labels = {w.options["text"]: w for w in Recorder.made
+                  if w.parent is block and "text" in w.options and "command" not in w.options}
+        buttons = {w.options.get("text"): w for w in Recorder.made if "command" in w.options}
+        move, zero, stop = buttons["Move stage"], buttons["Set stage 0°"], buttons["Stop stage"]
+        self.assertIs(stop, panel.rte_stage_stop_button)
+        target = next(w for w in Recorder.made if w.options.get("textvariable") is panel.rte_stage_target)
+        live = next(w for w in Recorder.made if w.options.get("textvariable") is panel.rte_stage_live)
+        lamp = next(w for w in Recorder.made if w.options.get("indicator") == "rte_newmark")
+        layout = {(w.grid_options["row"], w.grid_options["column"]): w for w in Recorder.made if w.parent is block}
+        self.assertEqual(layout, {
+            (0, 0): labels["Stage"], (0, 1): entry, (0, 2): connect, (0, 3): disconnect, (0, 4): lamp,
+            (1, 0): labels["Stage °"], (1, 1): target, (1, 2): move, (1, 3): stop,
+            (2, 0): zero, (2, 2): live})
         self.assertEqual(panel.rte_resources["newmark"].get(), "auto")
-        self.assertEqual(entry.options["width"], 18)
+        self.assertEqual((entry.options["width"], target.options["width"]), (9, 9))
         self.assertEqual((connect.options["text"], disconnect.options["text"]), ("Connect", "Disconnect"))
-        label = next(w for w in Recorder.made if w.options.get("text") == "Newmark stage")
-        self.assertIs(label.parent, rack)
-        self.assertEqual(label.options["width"], 13, "the rack's label column is not widened")
+        for button in (connect, disconnect, move, stop, zero):
+            # No taller than the entries beside them: the block costs no height.
+            self.assertEqual(button.options["style"], "Inline.TButton", button.options["text"])
+        # One live line, a fixed box, for the connection and the reading; the
+        # stage has no separate "Connected" label (the lamp shows it).
+        self.assertEqual(live.options["width"], 32)
         self.assertEqual(panel.rte_stage_live.get(), "Stage: not connected")
+        self.assertNotIn("newmark", panel.rte_connections)
+        self.assertEqual([w for w in Recorder.made if w.parent is block and "textvariable" in w.options
+                          and w.options["textvariable"] not in (panel.rte_resources["newmark"], panel.rte_stage_target)],
+                         [live])
+        # The status/progress row, the acquisition state and the field note
+        # stay full width under the pair.
+        self.assertIs(panel.ppms_field_scan_progress.parent.parent, scan)
+        note = next(w for w in Recorder.made if w.options.get("text") == "Field: KEPCO A; readback: signed LS475 G")
+        self.assertIs(note.parent.parent, scan)
+        self.assertEqual((rows.parent.grid_options["row"], panel.ppms_field_scan_progress.parent.grid_options["row"],
+                          note.parent.grid_options["row"]), (0, 1, 2))
         self.assertIsInstance(panel.rte_controllers["newmark"], app.NewmarkNSCA1Controller)
         self.assertEqual(panel.rte_controllers["newmark"].owner_scope, "RT-E")
         self.assertIsNone(panel.rte_controllers["newmark"].dll, "no DLL is loaded before Connect")
         combo = next(w for w in Recorder.made if w.options.get("textvariable") is panel.ppms_simple_mode)
         self.assertEqual(combo.options["values"], ("Field", "Current", "Angle"))
-        buttons = {w.options.get("text"): w for w in Recorder.made if "command" in w.options}
-        move, zero, stop = buttons["Move stage"], buttons["Set stage 0°"], buttons["Stop stage"]
-        self.assertIs(stop, panel.rte_stage_stop_button)
-        self.assertEqual(stop.options["state"], "disabled", "no stage connected")
+        # The button states are as they were in the rack and settings rows.
+        states = lambda: tuple(w.options["state"] for w in (entry, connect, disconnect, target, move, stop, zero))
+        self.assertEqual(states(), ("normal", "normal", "disabled", "normal", "normal", "disabled", "normal"),
+                         "no stage connected")
         stage = panel.rte_controllers["newmark"]
         stage.handle = object()         # connected, as far as the page can tell
         try:
             panel.ppms_environment_busy = True
             panel._update_ppms_control_ui()
-            self.assertEqual(stop.options["state"], "normal", "Stop stage works while busy")
-            for widget in (move, zero, entry):
-                self.assertEqual(widget.options["state"], "disabled")
+            self.assertEqual(states(), ("disabled",) * 5 + ("normal", "disabled"), "Stop stage works while busy")
             panel.ppms_environment_busy = False
             panel._update_ppms_control_ui()
-            self.assertEqual((move.options["state"], zero.options["state"], stop.options["state"]),
-                             ("normal", "normal", "normal"))
+            self.assertEqual(states(), ("disabled", "disabled", "normal", "normal", "normal", "normal", "normal"))
         finally:
             stage.handle = None
         panel.safe_close_ppms()

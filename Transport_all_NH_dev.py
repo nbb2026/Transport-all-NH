@@ -14442,7 +14442,8 @@ class CombinedControlApp:
         return max(int(minimum), int(round(float(value) * scale)))
 
     def _arrange_pair_by_width(
-        self, container, left, right, *, gap: int = 4, stack_gap: int | None = None
+        self, container, left, right, *, gap: int = 4, stack_gap: int | None = None,
+        right_width=None,
     ) -> None:
         """Place two sections side by side when both fit, otherwise stack them.
 
@@ -14450,20 +14451,19 @@ class CombinedControlApp:
         the screen width (826 px on a 1920 display).  There the 4886 output and
         the connection list do not fit on one row, and a fixed side-by-side
         layout would clip the right-hand one.  Re-evaluated on every resize.
+
+        ``right_width``, when given, is called for the right section's width
+        in place of _pair_natural_width.  RT-E's scan box passes its width
+        with its own pair stacked, so that pair can never change this one's
+        decision (user/CI, 2026-10-14; see RTEPanel.build_ppms_ui).
         """
         def arrange(_event=None) -> None:
             try:
-                # A LabelFrame's padding and border are not usable width.
-                # ttk returns padding as a tuple such as (7,) or a Tcl list.
-                raw = container.cget("padding") if "padding" in container.keys() else ()
-                padding = [int(float(str(v))) for v in container.tk.splitlist(raw)] or [0]
-                inset = padding[0] + (padding[2] if len(padding) > 2 else padding[0])
-                if container.winfo_class() == "TLabelframe":
-                    inset += 4
+                inset = self._pair_inset(container)
                 available = container.winfo_width() - inset
                 needed = (
                     self._pair_natural_width(left)
-                    + self._pair_natural_width(right)
+                    + (self._pair_natural_width(right) if right_width is None else int(right_width()))
                     + gap
                 )
             except (tk.TclError, ValueError):
@@ -14514,6 +14514,19 @@ class CombinedControlApp:
 
         container.bind("<Configure>", arrange, add="+")
         arrange()
+
+    @staticmethod
+    def _pair_inset(container) -> int:
+        """Width a pair's container takes for itself: a LabelFrame's padding
+        and border are not usable width (_arrange_pair_by_width's rule, kept
+        in one place since RT-E's scan box also needs it, 2026-10-14)."""
+        # ttk returns padding as a tuple such as (7,) or a Tcl list.
+        raw = container.cget("padding") if "padding" in container.keys() else ()
+        padding = [int(float(str(v))) for v in container.tk.splitlist(raw)] or [0]
+        inset = padding[0] + (padding[2] if len(padding) > 2 else padding[0])
+        if container.winfo_class() == "TLabelframe":
+            inset += 4
+        return inset
 
     @staticmethod
     def _pair_natural_width(section) -> int:
@@ -20870,6 +20883,11 @@ class CombinedControlApp:
         )
         style.configure("TButton", padding=(px(9, 5), px(6, 3)))
         style.configure("Compact.TButton", padding=(px(6, 4), px(5, 3)))
+        # As wide as a TButton, but no taller than an entry (42 px against
+        # 36 px in the 1101 px window): RT-E's stage buttons sit in rows of
+        # entries beside the scan rows, where full-height buttons in three
+        # rows made the scan box 12 px taller (user/CI, 2026-10-14).
+        style.configure("Inline.TButton", padding=(px(9, 5), px(3, 2)))
         style.configure("TLabel", padding=(0, px(2, 1)))
         style.configure("TCombobox", padding=(px(5, 3), px(5, 3)))
         style.configure("TSpinbox", padding=(px(5, 3), px(5, 3)))
@@ -41504,7 +41522,7 @@ def newmark_looks_like_id(reply):
 
 
 def newmark_stage_text(state):
-    """The RT-E rack's live stage line, e.g. "Stage: +12.345° (10000 steps/°)"."""
+    """The RT-E stage line (in the scan box), e.g. "Stage: +12.345° (10000 steps/°)"."""
     spd, px, mst = state.get("steps_per_degree"), state.get("px"), state.get("mst")
     text = f"Stage: {px / spd:+.3f}° ({spd} steps/°)" if spd else f"Stage: PX {px} (scale not read)"
     if mst is not None:
@@ -42374,30 +42392,8 @@ class RTEPanel(PPMSPanel):
             self._create_connection_indicator(group, 'ppms_' + key).grid(row=device_row, column=4, padx=3)
             status = self._ppms_compact_status(self.ppms_xy_vars[key]) if key in PPMS_SR830_KEYS else self.ppms_device_connection_vars[key]
             ttk.Label(group, textvariable=status, width=13).grid(row=device_row, column=5, sticky='w')
-        # The Newmark NSC-A1 rotation stage after the other rack rows, in the
-        # same columns (user, 2026-10-13).  "auto" takes the only Performax USB
-        # device; with several, its USB serial goes in the box.  The row says
-        # "Newmark stage": "Newmark NSC-A1" is wider than the 13-character
-        # label column, and widening that column would shift every row.
-        self.rte_resources['newmark'] = tk.StringVar(value='auto')
-        self.rte_connections['newmark'] = tk.StringVar(value='Not connected')
-        ttk.Label(rack, text='Newmark stage', width=13).grid(row=4, column=0, sticky='w')
-        entry = ttk.Entry(rack, textvariable=self.rte_resources['newmark'], width=18)
-        entry.grid(row=4, column=1)
-        connect = ttk.Button(rack, text='Connect', width=8, command=lambda: self._rte_connect('newmark'))
-        connect.grid(row=4, column=2)
-        disconnect = ttk.Button(rack, text='Disconnect', width=10, command=lambda: self._rte_disconnect('newmark'))
-        disconnect.grid(row=4, column=3)
-        self._create_connection_indicator(rack, 'rte_newmark').grid(row=4, column=4, padx=3)
-        ttk.Label(rack, textvariable=self.rte_connections['newmark'], width=13).grid(row=4, column=5, sticky='w')
-        self.rte_connection_widgets['newmark'] = (entry, connect, disconnect)
-        # The stage's live line beside its row, a fixed box like the field and
-        # KEPCO lines: "Stage: +12.345° (10000 steps/°)" or a read failure.
-        self.rte_stage_live = tk.StringVar(value='Stage: not connected')
-        live = ttk.Label(rack, textvariable=self.rte_stage_live, width=32)
-        live.grid(row=4, column=6, padx=(10, 0), sticky='w')
-        if laid_out:
-            live.configure(wraplength=32 * tkfont.nametofont('TkDefaultFont', root=live).measure('0'))
+        # The Newmark stage has no rack row: its controls are in the scan box
+        # (user/CI, 2026-10-14; see the stage block there).
         if laid_out:
             # Side by side in the widened lab window; stacked in the 1101 px
             # window the program opens with, where the two did not fit.
@@ -42457,25 +42453,6 @@ class RTEPanel(PPMSPanel):
         current_live = ttk.Label(params, textvariable=self.ppms_current_live_var, width=1, wraplength=0)
         current_live.grid(row=3, column=0, columnspan=4, sticky='ew')
         current_live.bind('<Configure>', lambda event: event.widget.configure(wraplength=max(100, event.width - 8)), add='+')
-        # Manual stage controls (user, 2026-10-13), a row of their own under
-        # the source settings and lock-in choices: a fifth row inside either
-        # of those would break their level rows side by side.  Move stage and
-        # Set stage 0° are edit widgets (locked while busy); Stop stage stays
-        # usable whenever the stage is connected, even during a move or scan.
-        stage_row = ttk.Frame(settings)
-        stage_row.grid(row=1, column=0, sticky='w', pady=(4, 0))
-        self.rte_stage_target = tk.StringVar(value='0')
-        ttk.Label(stage_row, text='Stage °').grid(row=0, column=0, sticky='e')
-        stage_entry = ttk.Entry(stage_row, textvariable=self.rte_stage_target, width=7)
-        stage_entry.grid(row=0, column=1, padx=3, sticky='ew')
-        self.rte_edit_widgets.append((stage_entry, 'normal'))
-        for column, label, callback in ((2, 'Move stage', self._rte_stage_move),
-                                        (4, 'Set stage 0°', self._rte_stage_set_zero)):
-            button = ttk.Button(stage_row, text=label, command=callback, width=11)
-            button.grid(row=0, column=column, padx=4)
-            self.rte_edit_widgets.append((button, 'normal'))
-        self.rte_stage_stop_button = ttk.Button(stage_row, text='Stop stage', command=self._rte_stage_stop, width=11)
-        self.rte_stage_stop_button.grid(row=0, column=3, padx=4)
         for grid_row, key in enumerate(PPMS_SR830_KEYS):
             # Share the safety row on the right to save one row of height.
             # The inherited Zurich controls follow SR830-3 at row 3.
@@ -42495,14 +42472,24 @@ class RTEPanel(PPMSPanel):
 
         scan = ttk.LabelFrame(controls, text='RT-E scan', padding=4)
         scan.grid(row=0, column=1, sticky='nsew', padx=(6, 0))
-        # Spare width goes to the empty column after the table, so the fields
-        # stay together and the status lines below take the extra room.
-        scan.columnconfigure(7, weight=1)
+        scan.columnconfigure(0, weight=1)
+        # The scan rows and the Newmark stage's block are a pair (user/CI,
+        # 2026-10-14): side by side when the scan box is wide (the full-width
+        # box of the 1101 px window, where the block takes the empty width
+        # right of the rows and no height), the block under the rows when the
+        # box is beside the settings (the 2000 px window, where the plots have
+        # height to spare).  The pair's frame fills the box, so it sees the
+        # width it has; each section keeps its own width, so the fields stay
+        # together and the spare width is right of the pair.
+        scan_body = ttk.Frame(scan)
+        scan_body.grid(row=0, column=0, sticky='ew')
+        scan_rows = ttk.Frame(scan_body)
+        scan_rows.grid(row=0, column=0, sticky='nw')
         self.ppms_simple_mode = tk.StringVar(value='Current')
         self.ppms_simple_range = [tk.StringVar(value=v) for v in ('0.01', '1', '0.01')]
         self.rte_scan_units = tk.StringVar(value='6221 mA RMS')
         self.rte_round_trip = tk.BooleanVar(value=False)
-        combo = ttk.Combobox(scan, textvariable=self.ppms_simple_mode, values=('Field', 'Current', 'Angle'), state='readonly', width=9)
+        combo = ttk.Combobox(scan_rows, textvariable=self.ppms_simple_mode, values=('Field', 'Current', 'Angle'), state='readonly', width=9)
         combo.grid(row=0, column=0)
         combo.bind('<<ComboboxSelected>>', self._rte_mode_changed)
         self.rte_edit_widgets.append((combo, 'readonly'))
@@ -42510,27 +42497,82 @@ class RTEPanel(PPMSPanel):
                      self.ppms_field_scan_stable_var, self.ppms_acquisition_time_var]
         for i, (label, variable) in enumerate(zip(('Start', 'End', 'Step', 'Loops', 'Settle s', 'Acquire s'), variables)):
             scan_row, scan_col = divmod(i, 3)
-            ttk.Label(scan, text=label).grid(row=scan_row, column=1 + 2*scan_col, sticky='e', padx=(4, 0))
-            entry = ttk.Entry(scan, textvariable=variable, width=6)
+            ttk.Label(scan_rows, text=label).grid(row=scan_row, column=1 + 2*scan_col, sticky='e', padx=(4, 0))
+            entry = ttk.Entry(scan_rows, textvariable=variable, width=6)
             entry.grid(row=scan_row, column=2 + 2*scan_col, padx=2, sticky='ew')
             self.rte_edit_widgets.append((entry, 'normal'))
-        ttk.Label(scan, textvariable=self.rte_scan_units).grid(row=1, column=0)
-        check = ttk.Checkbutton(scan, text='Round trip', variable=self.rte_round_trip)
+        ttk.Label(scan_rows, textvariable=self.rte_scan_units).grid(row=1, column=0)
+        check = ttk.Checkbutton(scan_rows, text='Round trip', variable=self.rte_round_trip)
         check.grid(row=2, column=5, columnspan=2)
         self.rte_edit_widgets.append((check, 'normal'))
-        self.rte_start_button = ttk.Button(scan, text='Start scan', command=self.start_ppms_field_scan)
+        self.rte_start_button = ttk.Button(scan_rows, text='Start scan', command=self.start_ppms_field_scan)
         self.rte_start_button.grid(row=2, column=0, sticky='ew')
-        self.ppms_field_scan_stop_button = ttk.Button(scan, text='Stop', command=self.stop_ppms_field_scan)
+        self.ppms_field_scan_stop_button = ttk.Button(scan_rows, text='Stop', command=self.stop_ppms_field_scan)
         self.ppms_field_scan_stop_button.grid(row=2, column=1, columnspan=2, sticky='ew')
-        self.ppms_field_scan_save_button = ttk.Button(scan, text='Save CSV as', command=self.save_ppms_field_scan_csv)
+        self.ppms_field_scan_save_button = ttk.Button(scan_rows, text='Save CSV as', command=self.save_ppms_field_scan_csv)
         self.ppms_field_scan_save_button.grid(row=2, column=3, columnspan=2, sticky='ew')
+        # The Newmark NSC-A1 rotation stage (user, 2026-10-13).  Its rack row
+        # and its row under the settings took about 84 px of height in the
+        # 1101 px window the program opens with, and every plot fell below
+        # its 55 px minimum ("Increase the window height").  Here it has
+        # three rows level with the scan rows and no taller than them: the
+        # first two are as tall as an entry (Inline buttons), the third holds
+        # one line of text (user/CI, 2026-10-14).
+        stage_box = ttk.Frame(scan_body)
+        stage_box.grid(row=0, column=1, sticky='nw')
+        # The live line spans the button columns and the lamp's; what it
+        # needs beyond them goes to the lamp's column, not into the buttons.
+        stage_box.columnconfigure(4, weight=1)
+        # "auto" takes the only Performax USB device; with several, its USB
+        # serial goes in the box (a longer serial scrolls inside it).
+        self.rte_resources['newmark'] = tk.StringVar(value='auto')
+        self.rte_stage_target = tk.StringVar(value='0')
+        ttk.Label(stage_box, text='Stage').grid(row=0, column=0, sticky='e', padx=(0, 3))
+        entry = ttk.Entry(stage_box, textvariable=self.rte_resources['newmark'], width=9)
+        entry.grid(row=0, column=1, sticky='ew')
+        connect = ttk.Button(stage_box, text='Connect', width=11, style='Inline.TButton',
+                             command=lambda: self._rte_connect('newmark'))
+        connect.grid(row=0, column=2, padx=2, sticky='ew')
+        disconnect = ttk.Button(stage_box, text='Disconnect', width=11, style='Inline.TButton',
+                                command=lambda: self._rte_disconnect('newmark'))
+        disconnect.grid(row=0, column=3, padx=2, sticky='ew')
+        self._create_connection_indicator(stage_box, 'rte_newmark').grid(row=0, column=4, padx=3, sticky='w')
+        # Locked and released like the rack rows' connection widgets.
+        self.rte_connection_widgets['newmark'] = (entry, connect, disconnect)
+        ttk.Label(stage_box, text='Stage °').grid(row=1, column=0, sticky='e', padx=(0, 3))
+        stage_entry = ttk.Entry(stage_box, textvariable=self.rte_stage_target, width=9)
+        stage_entry.grid(row=1, column=1, sticky='ew')
+        move = ttk.Button(stage_box, text='Move stage', width=11, style='Inline.TButton', command=self._rte_stage_move)
+        move.grid(row=1, column=2, padx=2, sticky='ew')
+        self.rte_stage_stop_button = ttk.Button(stage_box, text='Stop stage', width=11, style='Inline.TButton',
+                                                command=self._rte_stage_stop)
+        self.rte_stage_stop_button.grid(row=1, column=3, padx=2, sticky='ew')
+        zero = ttk.Button(stage_box, text='Set stage 0°', width=11, style='Inline.TButton',
+                          command=self._rte_stage_set_zero)
+        zero.grid(row=2, column=0, columnspan=2, sticky='ew')
+        # Move stage and Set stage 0° are edit widgets (locked while busy);
+        # Stop stage stays usable whenever the stage is connected, even
+        # during a move or scan (_update_ppms_control_ui).
+        for widget in (stage_entry, move, zero):
+            self.rte_edit_widgets.append((widget, 'normal'))
+        # One live line for the connection and the reading, the former status
+        # label and live line merged (the lamp shows the connection): "Stage:
+        # not connected", "Stage: +12.345° (10000 steps/°)", "Stage read
+        # failed: …", "Stage: stopping…".  A fixed box like the rack's field
+        # and KEPCO lines, so a new reading never shifts the block; a longer
+        # message, such as a failure or an unconfirmed STOP, wraps inside it.
+        self.rte_stage_live = tk.StringVar(value='Stage: not connected')
+        live = ttk.Label(stage_box, textvariable=self.rte_stage_live, width=32)
+        live.grid(row=2, column=2, columnspan=3, sticky='w', padx=(2, 0))
+        if laid_out:
+            live.configure(wraplength=32 * tkfont.nametofont('TkDefaultFont', root=live).measure('0'))
         # Status messages run to about a hundred characters and wrapped into
         # two lines when the label was one grid cell beside the progress bar.
         # Spanning the panel gives the text every pixel the progress bar does
         # not use, and width=1 keeps a long message from widening the panel
         # instead of using the space it has.
         scan_status = ttk.Frame(scan)
-        scan_status.grid(row=3, column=0, columnspan=8, sticky='ew')
+        scan_status.grid(row=1, column=0, sticky='ew')
         scan_status.columnconfigure(1, weight=1)
         self.ppms_field_scan_progress = ttk.Progressbar(scan_status, mode='determinate', length=110)
         self.ppms_field_scan_progress.grid(row=0, column=0, padx=(4, 8))
@@ -42544,14 +42586,32 @@ class RTEPanel(PPMSPanel):
         # side they did not fit beside fully shown settings, and the state
         # ("... 6221 output OFF") was cut.
         scan_notes = ttk.Frame(scan)
-        scan_notes.grid(row=4, column=0, columnspan=8, sticky='ew')
+        scan_notes.grid(row=2, column=0, sticky='ew')
         scan_notes.columnconfigure(0, weight=1)
         ttk.Label(scan_notes, textvariable=self.ppms_transport_status_var, width=1, wraplength=0).grid(row=0, column=0, sticky='ew')
         ttk.Label(scan_notes, text='Field: KEPCO A; readback: signed LS475 G').grid(row=1, column=0, sticky='w')
         if laid_out:
             controls_gap = 6
             self._arrange_pair_by_width(body, params, lockins, gap=0, stack_gap=4)
-            self._arrange_pair_by_width(controls, settings, scan, gap=controls_gap, stack_gap=4)
+            self._arrange_pair_by_width(scan_body, scan_rows, stage_box, gap=16, stack_gap=4)
+
+            def scan_stacked_width():
+                # The scan box's width with the stage block under the scan
+                # rows, from the parts' own requests (user/CI, 2026-10-14).
+                # The settings/scan pair decides by this, so the pair inside
+                # the scan box can never change that decision: nested pairs
+                # once fed back into each other at start-up (PAIR_FLIP_LIMIT).
+                # Judged by _pair_natural_width (the rows and the block side
+                # by side) it would stack at 2000 px; judged by the box's
+                # current request, both "side by side, block under the rows"
+                # and "stacked, block beside the rows" would be stable at
+                # 2000 px, so the layout would depend on the resize history.
+                # Now the outer pair follows the window width alone, and the
+                # inner pair the scan box's width, which the outer one sets.
+                return self._pair_inset(scan) + max(
+                    part.winfo_reqwidth() for part in (scan_rows, stage_box, scan_status, scan_notes))
+            self._arrange_pair_by_width(controls, settings, scan, gap=controls_gap, stack_gap=4,
+                                        right_width=scan_stacked_width)
 
             def keep_settings_room(_event=None):
                 # Side by side, the settings column is at least as wide as the
@@ -42562,11 +42622,12 @@ class RTEPanel(PPMSPanel):
                 # settings (padx), which grid takes off the settings' width,
                 # so it is added here.  Up to 4 px of slack keep a rounding
                 # pixel from holding it stacked, but only where the scan box
-                # still gets its own width.  The scan box takes the rest.
+                # still gets its own (stacked) width.  The scan box takes the
+                # rest, whatever its own pair does inside it.
                 room = 0
                 if getattr(controls, '_pair_side_by_side', False) is True:
                     room = self._pair_natural_width(settings) + controls_gap
-                    room = max(room, min(room + 4, controls.winfo_width() - self._pair_natural_width(scan)))
+                    room = max(room, min(room + 4, controls.winfo_width() - scan_stacked_width()))
                 controls.columnconfigure(0, minsize=room)
             controls.bind('<Configure>', keep_settings_room, add='+')
         self.ppms_plot_frame = ttk.LabelFrame(outer, text='RT-E measurement', padding=2)
@@ -42667,14 +42728,13 @@ class RTEPanel(PPMSPanel):
                     return newmark_stage_text(stage.read_state())
                 except Exception as error:
                     # Connected all the same (the handle is open, so the lamp,
-                    # Stop stage and Disconnect say so): the row says Connected
-                    # and the live line that the read failed (user, 2026-10-13).
+                    # Stop stage and Disconnect say so), and the stage line
+                    # says that the read failed (user, 2026-10-13).  The stage
+                    # has no separate "Connected" label since its controls
+                    # moved to the scan box (user/CI, 2026-10-14).
                     self.thread_log(f'RT-E {stage.label}: the first read after Connect failed: {error}')
                     return f'Stage read failed: {short_status_error(error, 60)}'
-            def connected(text):
-                self.rte_connections[key].set('Connected')
-                self.rte_stage_live.set(text)
-            self._rte_submit(connect_stage, connected)
+            self._rte_submit(connect_stage, self.rte_stage_live.set)
             return
         self._rte_submit(lambda: self.rte_controllers[key].connect(resource),
                          lambda identity: self.rte_connections[key].set('Connected'))
@@ -42687,14 +42747,14 @@ class RTEPanel(PPMSPanel):
                     stage.disconnect()
                 except Exception as error:
                     if stage.connected:
-                        raise       # still open: the row stays Connected
+                        raise       # still open: the lamp and the stage line stay as they are
                     return error    # closed, but its stop was not confirmed
                 return None
             def stage_disconnected(failure):
                 # From the closed handle, not only on success: a disconnect that
                 # closed the handle and then raised (stop not confirmed) left the
-                # row "Connected" with the lamp off (user, 2026-10-13).
-                self.rte_connections[key].set('Not connected')
+                # row "Connected" with the lamp off (user, 2026-10-13).  The
+                # stage line is now the only text for it (user/CI, 2026-10-14).
                 self.rte_stage_live.set('Stage: not connected' if failure is None
                                         else 'Stage: closed, STOP not confirmed')
                 if failure is not None:
@@ -43003,7 +43063,9 @@ class RTEPanel(PPMSPanel):
                 # fixed field (user, 2026-10-13).
                 stage = self.rte_controllers['newmark']
                 if not stage.connected:
-                    raise ValueError(f'Connect the {stage.label} (rack row "Newmark stage") for an angle scan')
+                    # Where its Connect is (the scan box since user/CI, 2026-10-14).
+                    raise ValueError(f'Connect the {stage.label} (the "Stage" row of the RT-E scan box) '
+                                     'for an angle scan')
                 if not stage.steps_per_degree:
                     raise ValueError(f'The stage scale was not read ({stage.scale_error}); fix that, then '
                                      'Disconnect and Connect the stage again')

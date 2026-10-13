@@ -48,18 +48,23 @@
   clean-up) runs on the RT-E page's single worker `rte-control`, never on
   the Tk thread; the controller refuses a call from any other thread before
   it reaches the DLL.
-- **Controls:** a rack row "Newmark stage" after the 6221 and 2400 rows,
-  in the same columns (address box "auto", Connect, Disconnect, lamp,
-  "Connected"/"Not connected"; "Newmark NSC-A1" is wider than the
-  13-character label column), and beside it the live line, e.g. "Stage:
-  +12.345° (10000 steps/°)", ", moving", a limit warning or a read failure
-  (read, PX and MST only, by the idle poll when the rack is idle). The row's
-  "Connected"/"Not connected" follows the USB handle, like the lamp: a
-  Connect whose first read fails still says "Connected", with "Stage read
-  failed: …"; a Disconnect that closed the handle but could not confirm the
-  stop says "Not connected", "Stage: closed, STOP not confirmed", and shows
-  the error (CHECK THE STAGE). Under
-  the RT-E settings, a row "Stage °" [box] **Move stage** (needs the safety
+- **Controls (in the RT-E scan box since 2026-10-14):** a block of three
+  rows level with the scan rows, right of them in the 1101 px window and
+  under them when the scan box is beside the settings (the 2000 px window):
+  "Stage" [address box, "auto"] **Connect** **Disconnect** lamp;
+  "Stage °" [box] **Move stage** **Stop stage**; **Set stage 0°** and the
+  stage line. "auto" takes the only Performax USB device; with several, its
+  USB serial goes in the box. The stage line is the stage's one text: "Stage:
+  not connected", the reading, e.g. "Stage: +12.345° (10000 steps/°)", ",
+  moving", a limit warning or a read failure (read, PX and MST only, by the
+  idle poll when the rack is idle), "Stage: stopping…" and the other
+  messages below; a fixed box, so a longer message (a failure, an
+  unconfirmed STOP) wraps inside it. The lamp follows the USB handle: a
+  Connect whose first read fails still lights it, with "Stage read failed:
+  …"; a Disconnect that closed the handle but could not confirm the stop
+  turns it off, says "Stage: closed, STOP not confirmed", and shows the
+  error (CHECK THE STAGE). The address box, Connect and Disconnect are
+  locked like the rack rows'. **Move stage** (needs the safety
   tick and an idle rack; the target within ±360° of the stage zero),
   **Stop stage** (usable whenever the stage is connected, even during a
   move or a scan: it sets the stop event the move loop watches, and that
@@ -67,7 +72,7 @@
   with no move or scan running it also queues STOP on the worker, and its
   result goes to the log; a STOP that could not be sent or confirmed, even
   after ABORT, also shows an error dialog (CHECK THE STAGE), because the
-  next idle read replaces the live line at once) and **Set stage 0°** (idle only; asks Yes/No first:
+  next idle read replaces the stage line at once) and **Set stage 0°** (idle only; asks Yes/No first:
   the ±360° wire limit moves with the zero; PX=0 is lost when the NSC-A1 is
   powered off). Move and Set 0 are locked while the rack is busy, like the
   other edit widgets. A move by hand also stops (STOP, "Stage: stopped at
@@ -131,12 +136,26 @@
   device. Try the stage with `Newmark_motor_test.py`
   first (direction of +, the scale), set the zero where the wires hang free,
   and only then scan.
-- **Window height:** the window's height is fixed, so in the 1101 px wide
-  window the program opens with, the Newmark rack row and the stage row
-  (about 86 px together) come off the plots: with the Zurich reading 1+2+3
-  the third plot row may be only a few pixels tall there. Widen the window
-  (2000 px at the lab) for the plots; still to be checked on the next CI
-  screenshot `RT-E_1101px.png`.
+- **Window height (user/CI, 2026-10-14):** the window's height is fixed.
+  The first layout (a rack row "Newmark stage" and a row "Stage °" under
+  the RT-E settings) took about 84 px of height in the 1101 px window the
+  program opens with, and on the CI screenshot `RT-E_1101px.png` (1101 ×
+  1300 px) every plot fell below its 55 px minimum ("Increase the window
+  height"). Now the block uses the empty width right of the scan rows
+  there (estimated from the Windows CI screenshots, Microsoft YaHei UI
+  11 pt: rows 539 px + gap 16 + block 441 = 996 of the box's 1069 px;
+  still to be checked on the next CI screenshot) and is no taller than the rows
+  (36 + 36 + 34 px against 36 + 36 + 42: its buttons have the style
+  `Inline.TButton`, as tall as an entry), so the plots have the height
+  they had before the stage (69 px canvases at 1101 × 1300 px on the
+  screenshot of d6674c9). In the 2000 px window the scan box is beside the
+  settings and too narrow, so the block goes under the scan rows (the scan
+  box grows by about 110 px there, where the plots have height to spare,
+  and the rack is one row shorter). The
+  settings/scan pair decides by the scan box's width with the block under
+  the rows, so the pair inside the scan box cannot change that decision
+  (nested pairs once looped at start-up) and the layout does not depend on
+  how the window was resized.
 - **Not yet tried on the hardware.**
 - **Tests:** `test_rte_angle_scan.py` (Tk-free; the fake DLL is
   `Newmark_motor_test.py`'s simulated controller behind the same ctypes
@@ -166,17 +185,23 @@
   runs on the worker, Stop stage when idle logged, and one that cannot be
   confirmed or sent logged with a dialog, a lost reply to `X` stopped, KEPCO Zero / OFF and
   6221 / 2400 OFF during a 72 s move: STOP first and their OFF within a
-  poll and a stop); the rack row after a failed first read and after a
+  poll and a stop); the stage line after a failed first read and after a
   Disconnect that closed without a confirmed stop; Start (refusals, every
   mode refused while the stage's last stop is unconfirmed, the
   confirmation, the submitted scan, the status lines, the stage line in a
   failure's dialog and log); the
-  defaults, the plot axis and the page build on stand-in widgets.
+  defaults, the plot axis and the page build on stand-in widgets (the
+  block's three rows in the scan box, none in the rack or the settings, one
+  stage line, the button states).
   `test_rte_panel.py`'s removed-mode plan check now refuses an Angle range
   beyond ±360° instead of every Angle plan; the other Field and Current
-  tests are unchanged. `test_panel_defaults.RTEStatusRowTests` (CI only:
+  tests are unchanged; its page build finds the stage's connection in the
+  scan box. `test_panel_defaults.RTEStatusRowTests` (CI only:
   it needs a display) also checks that the longest Angle status lines fit on
-  one line.
+  one line. `test_pair_layout_loop.RTEStageBlockTests` (CI only): the block
+  beside the scan rows at 1101 px and under them at 2000 px whatever the
+  resize history, no taller than the rows, a reading on one line, and all
+  nine plots at least 55 px tall at 1101 × 1300 px.
 
 ## STFMR: Mod. start / Mod. end, prime modulation frequencies (2026-10-13)
 
