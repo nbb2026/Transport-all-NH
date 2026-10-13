@@ -1951,6 +1951,13 @@ STFMR_LOCKIN_DEFAULT_RESOURCES = {
 }
 STFMR_KEPCO_MAX_CURRENT_A = 10.0
 STFMR_KEPCO_MAX_VOLTAGE_V = 20.0
+# Corrections allowed to the fixed-field frequency sweep's field feedback.
+# Each step stays capped at MAGNET_FIELD_ZERO_MAX_STEP_A, but the 12 of the
+# MOKE Gauss zeroing (small currents) stopped this ramp from 0 A at about
+# 6 A; these are enough to reach the 4886's full ±10 A (review, 2026-10-13).
+STFMR_FIELD_FEEDBACK_MAX_ITERATIONS = MAGNET_FIELD_ZERO_MAX_ITERATIONS + math.ceil(
+    STFMR_KEPCO_MAX_CURRENT_A / MAGNET_FIELD_ZERO_MAX_STEP_A
+)
 STFMR_GAUSS_POLL_INTERVAL_MS = 500
 STFMR_S_PARAMETERS = ("S11", "S12", "S21", "S22")
 STFMR_PNA_DISPLAY_WINDOW = 1
@@ -3102,7 +3109,13 @@ class STFMRSR830Controller(SafeVisaIdentityController):
             time.sleep(0.25)
             return float(self.instrument.query("PHAS?").strip())
 
-    def read_sample(self, expected_frequency_hz: float) -> dict[str, object]:
+    def read_sample(
+        self, expected_frequency_hz: float, auto_range: bool = True
+    ) -> dict[str, object]:
+        # auto_range=False reads only: the idle live display must not change
+        # the SR830 range.  It assumed SENS 13 and ignored the 'SR830
+        # autorange' tick until the first Start, so pressing Connect stepped
+        # the user's front-panel range (review, 2026-10-13).
         with self.lock:
             if self.instrument is None:
                 raise RuntimeError("SR830 is not connected")
@@ -3117,7 +3130,9 @@ class STFMRSR830Controller(SafeVisaIdentityController):
                 self.instrument.query("LIAS?")
             lias = int(round(float(self.instrument.query("LIAS?").strip())))
             sensitivity_used = int(self.sensitivity_index)
-            auto_range_action = self._auto_range_locked(r_value, lias)
+            auto_range_action = (
+                self._auto_range_locked(r_value, lias) if auto_range else ""
+            )
         reference_valid = not (lias & 8) and math.isclose(
             frequency,
             float(expected_frequency_hz),
@@ -13926,7 +13941,9 @@ class CombinedControlApp:
         self.stfmr_kepco_mode_var = tk.StringVar(value="Mode: --")
         self.stfmr_kepco_current_var = tk.StringVar(value="I: -- A")
         self.stfmr_kepco_voltage_var = tk.StringVar(value="V: -- V")
-        self.stfmr_kepco_output_var = tk.StringVar(value="OUTP: OFF")
+        # Unknown until this program sends the write-only 4886 something,
+        # as on the STFMR page (review, 2026-10-13).
+        self.stfmr_kepco_output_var = tk.StringVar(value="OUTP: --")
         self.stfmr_gauss_field_var = tk.StringVar(value="-- G")
         self.stfmr_gauss_status_var = tk.StringVar(value="Waiting for gaussmeter connection")
         self.stfmr_gauss_auto_var = tk.BooleanVar(value=True)
@@ -16998,13 +17015,15 @@ class CombinedControlApp:
                 sample = None
             elif meter == "SR830":
                 sample = self.stfmr_lockin_controllers["830"].read_sample(
-                    expected_hz
+                    expected_hz, auto_range=False
                 )
             else:
                 sample = self.stfmr_lockin_mfli_controller.read_mfli(expected_hz)
                 if meter == "MFLI + SR830":
                     sample = dict(sample)
-                    sample["_sr830"] = self.stfmr_lockin_controllers["830"].read_sample(expected_hz)
+                    sample["_sr830"] = self.stfmr_lockin_controllers["830"].read_sample(
+                        expected_hz, auto_range=False
+                    )
             return field, sample
 
         future = self.stfmr_lockin_executor.submit(operation)
@@ -18843,14 +18862,20 @@ class CombinedControlApp:
                 )
                 self._measure_stfmr_fmr_point()
                 return
-            if elapsed >= STFMR_FIELD_SETTLE_TIMEOUT_S:
+            # The settle timeout counts from the end of the requested wait:
+            # a fixed 15 s ended every scan with a 'Wait s' above 15 s at its
+            # first point, even with a stable field (review, 2026-10-13).
+            timeout_s = (
+                self.stfmr_fmr_field_settle_min_s + STFMR_FIELD_SETTLE_TIMEOUT_S
+            )
+            if elapsed >= timeout_s:
                 current = self.stfmr_fmr_currents[
                     self.stfmr_fmr_current_index
                 ]
                 self._finish_stfmr_fmr_scan(
                     error=RuntimeError(
                         f"After setting the 4886 to {current:+.6g} A the 475 field did not settle within "
-                        f"{STFMR_FIELD_SETTLE_TIMEOUT_S:g} s; "
+                        f"{timeout_s:g} s; "
                         "this transition point was not recorded; check the magnet response or increase the wait"
                     )
                 )
@@ -18987,10 +19012,15 @@ class CombinedControlApp:
                 pass
             self.stfmr_fmr_after_id = None
         shutdown_errors = []
+        kepco_off_text = "4886 zeroed/OFF"
         try:
             result = self.stfmr_controllers["kepco"].zero_output()
             self._apply_stfmr_kepco_readback(result)
         except BaseException as shutdown_error:
+            self._flag_stfmr_kepco_off_unconfirmed()
+            # Nor may the status line below report an OFF that failed
+            # (review, 2026-10-13).
+            kepco_off_text = "4886 zero/OFF NOT CONFIRMED"
             shutdown_errors.append(f"4886 zeroing failed: {shutdown_error}")
         if self.stfmr_fmr_rf_off_var.get():
             try:
@@ -19009,7 +19039,7 @@ class CombinedControlApp:
                 messagebox.showerror("STFMR FMR", str(error), parent=self.root)
         elif stopped:
             self.stfmr_fmr_status_var.set(
-                f"Scan stopped; {len(self.stfmr_fmr_rows)} points acquired, 4886 zeroed/OFF"
+                f"Scan stopped; {len(self.stfmr_fmr_rows)} points acquired, {kepco_off_text}"
             )
         else:
             self._set_stfmr_progress(
@@ -19018,7 +19048,7 @@ class CombinedControlApp:
                 len(self.stfmr_fmr_frequencies) * len(self.stfmr_fmr_currents),
             )
             self.stfmr_fmr_status_var.set(
-                f"Scan complete: {len(self.stfmr_fmr_rows)} points, 4886 zeroed/OFF"
+                f"Scan complete: {len(self.stfmr_fmr_rows)} points, {kepco_off_text}"
             )
         if shutdown_errors and not self.closing:
             messagebox.showwarning(
@@ -19043,7 +19073,7 @@ class CombinedControlApp:
         except BaseException as error:
             messagebox.showerror("STFMR fixed-field frequency sweep", str(error), parent=self.root)
             return
-        estimated = (2 + MAGNET_FIELD_ZERO_MAX_ITERATIONS) * settle + (
+        estimated = (2 + STFMR_FIELD_FEEDBACK_MAX_ITERATIONS) * settle + (
             len(frequencies) * 0.25
         )
         if not messagebox.askyesno(
@@ -19159,10 +19189,10 @@ class CombinedControlApp:
                 )
                 return
             self.stfmr_frequency_feedback_iteration += 1
-            if self.stfmr_frequency_feedback_iteration > MAGNET_FIELD_ZERO_MAX_ITERATIONS:
+            if self.stfmr_frequency_feedback_iteration > STFMR_FIELD_FEEDBACK_MAX_ITERATIONS:
                 self._finish_stfmr_frequency_scan(
                     error=RuntimeError(
-                        f"Target not reached after {MAGNET_FIELD_ZERO_MAX_ITERATIONS} corrections; "
+                        f"Target not reached after {STFMR_FIELD_FEEDBACK_MAX_ITERATIONS} corrections; "
                         f"{self.stfmr_frequency_target_field_g:+g}±"
                         f"{self.stfmr_frequency_tolerance_g:g} G"
                     )
@@ -19178,8 +19208,20 @@ class CombinedControlApp:
             )
             next_current = float(round(next_current, 4))
             if abs(next_current - current) < 0.0005:
+                # Say so when the field needs more than the 4886's ±10 A,
+                # rather than blaming the current resolution (review, 2026-10-13).
+                at_limit = (
+                    abs(current) >= STFMR_KEPCO_MAX_CURRENT_A - 0.0005
+                    and error_g / slope * current > 0
+                )
                 self._finish_stfmr_frequency_scan(
-                    error=RuntimeError("Field tolerance still not met at the 4886 current resolution")
+                    error=RuntimeError(
+                        f"Target {self.stfmr_frequency_target_field_g:+g} G needs more than the "
+                        f"4886's ±{STFMR_KEPCO_MAX_CURRENT_A:g} A; the field at {current:+g} A is "
+                        f"{field_g:+.5g} G"
+                        if at_limit
+                        else "Field tolerance still not met at the 4886 current resolution"
+                    )
                 )
                 return
             self._apply_stfmr_frequency_feedback_current(next_current)
@@ -19324,10 +19366,15 @@ class CombinedControlApp:
                 pass
             self.stfmr_frequency_after_id = None
         shutdown_errors = []
+        kepco_off_text = "4886 zeroed/OFF"
         try:
             result = self.stfmr_controllers["kepco"].zero_output()
             self._apply_stfmr_kepco_readback(result)
         except BaseException as shutdown_error:
+            self._flag_stfmr_kepco_off_unconfirmed()
+            # Nor may the status line below report an OFF that failed
+            # (review, 2026-10-13).
+            kepco_off_text = "4886 zero/OFF NOT CONFIRMED"
             shutdown_errors.append(f"4886 zeroing failed: {shutdown_error}")
         if self.stfmr_fmr_rf_off_var.get():
             try:
@@ -19346,7 +19393,7 @@ class CombinedControlApp:
                 messagebox.showerror("STFMR fixed-field frequency sweep", str(error), parent=self.root)
         elif stopped:
             self.stfmr_frequency_status_var.set(
-                f"Sweep stopped; {len(self.stfmr_frequency_rows)} points acquired, 4886 zeroed/OFF"
+                f"Sweep stopped; {len(self.stfmr_frequency_rows)} points acquired, {kepco_off_text}"
             )
         else:
             self._set_stfmr_progress(
@@ -19355,7 +19402,7 @@ class CombinedControlApp:
                 len(self.stfmr_frequency_points),
             )
             self.stfmr_frequency_status_var.set(
-                f"Sweep complete: {len(self.stfmr_frequency_rows)} points, 4886 zeroed/OFF"
+                f"Sweep complete: {len(self.stfmr_frequency_rows)} points, {kepco_off_text}"
             )
         if shutdown_errors and not self.closing:
             messagebox.showwarning(
@@ -19873,6 +19920,18 @@ class CombinedControlApp:
 
         future.add_done_callback(lambda _future: self.post_ui(finished))
 
+    def _flag_stfmr_kepco_off_unconfirmed(self) -> None:
+        """After a failed write: flag an output whose zero/OFF was not confirmed.
+
+        The 4886 cannot be read back, so the readout kept showing the old
+        "OUTP: OFF" after a failed Zero / OFF (review, 2026-10-13).  Only a
+        failed OFF attempt is flagged (ownership kept, OUTP OFF last sent); a
+        target refused before anything was sent leaves the readout as it is.
+        """
+        controller = self.stfmr_controllers["kepco"]
+        if controller.output_owned and controller.last_command == "OUTP OFF":
+            self.stfmr_kepco_output_var.set("OUTP: NOT CONFIRMED OFF")
+
     def _apply_stfmr_kepco_readback(self, result: dict[str, object]) -> None:
         mode = "Current" if result["mode"] == "CURR" else "Voltage"
         self.stfmr_kepco_mode_var.set(f"Mode: {mode}")
@@ -19909,6 +19968,7 @@ class CombinedControlApp:
                 mode, target, limit
             )
         except BaseException as error:
+            self._flag_stfmr_kepco_off_unconfirmed()
             self.stfmr_status_var.set(f"KEPCO write failed: {error}")
             if not self.closing:
                 messagebox.showerror("STFMR KEPCO", str(error), parent=self.root)
@@ -19921,12 +19981,28 @@ class CombinedControlApp:
     def read_stfmr_kepco_once(self) -> None:
         if not self.stfmr_controllers["kepco"].connected:
             return
+        controller = self.stfmr_controllers["kepco"]
+        if not controller.last_command:
+            # The 4886 cannot be read back: before this program has sent it
+            # anything its state is unknown, so show "--" rather than a
+            # made-up "Current, 0 A, OFF" (review, 2026-10-13).
+            self.stfmr_kepco_mode_var.set("Mode: --")
+            self.stfmr_kepco_current_var.set("I: -- A")
+            self.stfmr_kepco_voltage_var.set("V: -- V")
+            self.stfmr_kepco_output_var.set(
+                "OUTP: NOT CONFIRMED OFF" if controller.output_owned else "OUTP: --"
+            )
+            self.stfmr_status_var.set("Nothing sent to the 4886 yet; its state is unknown")
+            return
         try:
             result = self.stfmr_controllers["kepco"].readback()
         except BaseException as error:
             self.stfmr_status_var.set(f"KEPCO cached state read failed: {error}")
             return
         self._apply_stfmr_kepco_readback(result)
+        # After a failed Zero / OFF this showed "OUTP: ON" while the Zero
+        # button had left "NOT CONFIRMED OFF" (review, 2026-10-13).
+        self._flag_stfmr_kepco_off_unconfirmed()
         self.stfmr_status_var.set("Showing the last values sent by this program, not a 4886 hardware readback")
 
     def zero_stfmr_kepco_output(self) -> None:
@@ -19942,6 +20018,7 @@ class CombinedControlApp:
             # not switch on (front panel, LabVIEW, another page, a crash).
             result = self.stfmr_controllers["kepco"].force_output_off()
         except BaseException as error:
+            self._flag_stfmr_kepco_off_unconfirmed()
             self.stfmr_status_var.set(f"KEPCO zeroing failed: {error}")
             if not self.closing:
                 messagebox.showerror("STFMR KEPCO", str(error), parent=self.root)

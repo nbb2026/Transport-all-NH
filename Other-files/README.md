@@ -161,6 +161,41 @@
   explicit `TEMP 250 10` after `TEMP 5` and a `SCAN` validates and is sent
   at a live 300 K, refused with nothing sent at a live 5 K).
 
+## FMR / STFMR: long waits, fields above 6 A, idle SR830 reads, the 4886 readout (2026-10-13)
+
+- **FMR field sweep, 'Wait s' above 15 s:** the 475 settle timeout was a
+  fixed 15 s and was checked before the wait had ended, so every scan with
+  a longer wait stopped at its first point with "did not settle", even with
+  a stable field. The timeout now counts 15 s from the end of the requested
+  wait (16 s with the default 1 s first-point wait).
+- **Fixed-field frequency sweep, fields needing more than about 6 A:** the
+  field feedback reused the 12 corrections of the MOKE Gauss zeroing; at
+  0.5 A per step it could not get past 0.02 + 12 × 0.5 = 6.02 A, although
+  the 4886 allows ±10 A. It now has its own limit,
+  `STFMR_FIELD_FEEDBACK_MAX_ITERATIONS` = 12 + 10 A / 0.5 A = 32 (each step
+  still at most 0.5 A, the current still clamped to ±10 A; MOKE zeroing
+  unchanged). A field beyond ±10 A now ends with "needs more than the
+  4886's ±10 A" instead of "current resolution". The start dialog's time
+  estimate uses the new limit.
+- **STFMR idle live read changed the SR830 range:** the 0.5 s live display
+  (after Connect, no sweep running) autoranged from an assumed SENS 13 and
+  ignored the 'SR830 autorange' tick, so Connect stepped the front-panel
+  range one step per poll (and showed saturated values meanwhile). The live
+  display now reads only (`read_sample(..., auto_range=False)`); sweeps
+  still autorange as configured at Start.
+- **FMR tab 4886 readout:** it started at "OUTP: OFF" and Connect showed a
+  made-up "Current, 0 A, OFF" although nothing had been sent; a failed
+  Zero / OFF (or a failed Apply whose clean-up also failed) left the old
+  "OUTP: OFF", and "Show sent values" then said "OUTP: ON". Now, as on the
+  STFMR page: "--" until something is sent; "OUTP: NOT CONFIRMED OFF" after
+  any failed OFF, also at the end of an FMR or frequency scan, whose status
+  line no longer says "4886 zeroed/OFF" when the zeroing failed.
+- **Tests:** `test_fmr_stfmr_review.py` (fake clock and 475: a 20 s wait
+  measures, an unsettled field times out at 35 s; a 300 G/A fake magnet on
+  the real 4886 controller reaches ±9 A and stops at 10 A for 12 A; a fake
+  SR830 at SENS 26 gets no write from the idle timer, in SR830 and
+  MFLI + SR830 modes; a fake 4886 card stalling on OUTP OFF).
+
 ## MOKE magnet: Start scan says why it does not start (2026-10-13)
 
 - **User:** "the start scan cannot be used".
