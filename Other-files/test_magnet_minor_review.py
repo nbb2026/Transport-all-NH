@@ -3,7 +3,8 @@ instrument: the real methods run on stand-ins, every dialog is mocked.
 
 - Save CSV + PNG: the PNG shows the scan in the CSV (its channel, every
   row), not the page's plot (empty after Clear curve or an ROI nudge,
-  following the selector, the last 2000 points only).
+  following the selector, the last 2000 points only), and the grab waits
+  until that drawing is on the screen (Windows compositor frame).
 - The scan's field read reopens the gaussmeter once on a missed reply, as
   every other field read does (one FTDI timeout aborted the whole scan).
 - After Stop or an error the Target box shows the 0 A the scan wrote, so
@@ -15,6 +16,7 @@ instrument: the real methods run on stand-ins, every dialog is mocked.
   after each point's current was set."""
 import math
 from pathlib import Path
+import sys
 import tempfile
 import threading
 import types
@@ -152,6 +154,99 @@ class SaveSnapshotTests(unittest.TestCase):
         a.moke_field_rows["OUT"] = [(0.0, 1.0, 1.0, 10.0, 101.0), (1.0, 0.0, 0.0, 0.0, 100.0)]
         ((points, _texts),) = self.save(a)
         self.assertEqual(points, [OUT_COLOUR] * 2)
+
+
+class SnapshotOnScreenTests(unittest.TestCase):
+    """The grab waits until the redrawn scan is on the screen (review,
+    2026-10-13): on Windows the compositor shows a redraw only at its next
+    frame, so a grab straight after it saved the page's (cleared) plot."""
+
+    def setUp(self):
+        for patcher in (mock.patch.object(app, "np", np),
+                        mock.patch.object(app.messagebox, "showinfo"),
+                        mock.patch.object(app.messagebox, "showwarning"),
+                        mock.patch.object(app.messagebox, "showerror")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+        self.events = []
+
+    def save(self, platform, dwm_flush):
+        """Save CSV + PNG after Clear curve; the events up to the grab."""
+        events = self.events
+        rows = [scan_row(i, current) for i, current in enumerate((-1.0, 0.0, 1.0))]
+        a = save_app(rows, {"scan.channel_key": "OUT"})
+        bind(a, "wait_for_drawing_on_screen")
+        a.select_csv_save_directory.return_value = self.folder
+        # Tk paints the canvas here: record what it would paint.
+        a.root.update_idletasks.side_effect = (
+            lambda: events.append(("paint", a.moke_plot_canvas.points()))
+        )
+        a.save_plot_canvas_snapshot.side_effect = (
+            lambda canvas, _path: events.append(("grab", canvas.points()))
+        )
+
+        def gdi_flush():
+            events.append("GdiFlush")
+            return 1
+
+        windll = types.SimpleNamespace(
+            gdi32=types.SimpleNamespace(GdiFlush=gdi_flush),
+            dwmapi=types.SimpleNamespace(DwmFlush=dwm_flush),
+        )
+        fake_sys = types.SimpleNamespace(**{**vars(sys), "platform": platform})
+        with mock.patch.object(app, "sys", fake_sys), \
+                mock.patch.object(app, "ctypes", types.SimpleNamespace(windll=windll)), \
+                mock.patch.object(app, "time", types.SimpleNamespace(
+                    sleep=lambda seconds: events.append(("sleep", seconds)))):
+            a.save_magnet_scan_csv()
+            saved = a.submit_file_export.call_args.args[3]
+            saved(None)
+        app.messagebox.showinfo.assert_called_once()
+        self.assertIsNone(a.moke_plot_override)
+        self.assertEqual(a.moke_plot_canvas.points(), [], "the page's view is back")
+        return events
+
+    def test_windows_waits_for_the_compositor_frame_before_the_grab(self):
+        def dwm_flush():
+            self.events.append("DwmFlush")
+            return 0  # S_OK
+
+        scan = [OUT_COLOUR] * 3
+        self.assertEqual(
+            self.save("win32", dwm_flush),
+            [("paint", scan), "GdiFlush", "DwmFlush", ("grab", scan)],
+        )
+
+    def test_windows_without_dwmflush_sleeps_a_few_frames(self):
+        def dwm_flush():
+            raise AttributeError("function 'DwmFlush' not found")
+
+        scan = [OUT_COLOUR] * 3
+        self.assertEqual(
+            self.save("win32", dwm_flush),
+            [("paint", scan), "GdiFlush", ("sleep", 0.05), ("grab", scan)],
+        )
+
+    def test_windows_dwmflush_error_code_sleeps_a_few_frames(self):
+        def dwm_flush():
+            self.events.append("DwmFlush")
+            return -2145513471  # DWM_E_COMPOSITIONDISABLED
+
+        scan = [OUT_COLOUR] * 3
+        self.assertEqual(
+            self.save("win32", dwm_flush),
+            [("paint", scan), "GdiFlush", "DwmFlush", ("sleep", 0.05), ("grab", scan)],
+        )
+
+    def test_other_systems_only_let_tk_paint(self):
+        def dwm_flush():
+            raise AssertionError("DwmFlush is Windows only")
+
+        scan = [OUT_COLOUR] * 3
+        self.assertEqual(self.save("darwin", dwm_flush), [("paint", scan), ("grab", scan)])
 
 
 class Meter:

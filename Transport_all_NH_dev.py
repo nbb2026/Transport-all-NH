@@ -24089,6 +24089,28 @@ class CombinedControlApp:
             snapshot = ImageGrab.grab(bbox=bbox)
         snapshot.save(destination, format="PNG")
 
+    def wait_for_drawing_on_screen(self) -> None:
+        """Return once what Tk just drew is on the screen ImageGrab reads.
+
+        On Windows the desktop compositor (DWM) shows a window's new drawing
+        only at its next frame (about 16 ms), so a grab straight after a
+        redraw can save the picture from before it.  Needed only when the
+        snapshot shows something the page was not showing (review,
+        2026-10-13)."""
+        self.root.update_idletasks()
+        if sys.platform != "win32":
+            return
+        try:
+            # Tk's drawing may still sit in this thread's GDI batch.
+            ctypes.windll.gdi32.GdiFlush()
+            # Blocks until the compositor's next frame is on screen.
+            flushed = ctypes.windll.dwmapi.DwmFlush() == 0
+        except Exception:
+            flushed = False
+        if not flushed:
+            # No DwmFlush to wait on: give the compositor a few frames.
+            time.sleep(0.05)
+
     def select_csv_save_directory(
         self,
         title: str,
@@ -26933,6 +26955,9 @@ class CombinedControlApp:
             self.moke_plot_override = scan_plot
             try:
                 self._redraw_moke_plot()
+                # The scan is not what the page showed: let it reach the
+                # screen before the grab (review, 2026-10-13).
+                self.wait_for_drawing_on_screen()
                 self.save_plot_canvas_snapshot(self.moke_plot_canvas, snapshot_path)
             finally:
                 if self.moke_plot_override is not None:

@@ -39,7 +39,12 @@
   ROI nudge, shows the channel the selector is on now, and keeps only the
   last 2000 points, while the CSV held the whole scan. Now the plot draws
   the saved scan (its channel, every CSV row) for the snapshot, then goes
-  back to the page's view (also when the snapshot fails).
+  back to the page's view (also when the snapshot fails). Before the grab
+  it waits until that drawing is on the screen: on Windows the desktop
+  compositor shows a redraw only at its next frame (~16 ms), so a grab
+  straight after it could still save the page's plot (review); it now
+  flushes GDI and waits with DwmFlush (or 50 ms if that is unavailable).
+  Worth one check on the lab PC: Clear curve, then Save CSV + PNG.
 - **One gaussmeter timeout ended the scan:** the scan read the field
   without the reopen-and-retry every other field read has. Now it uses the
   same recovery (reopen that gaussmeter once, read again).
@@ -68,6 +73,8 @@
   field zeroing and Zero both now do.
 - **Tests:** `test_magnet_minor_review.py` (the PNG after Clear curve and a
   selector change, past 2000 points, a failed snapshot, no scan channel;
+  the grab after GdiFlush/DwmFlush on Windows, the 50 ms fallback when
+  DwmFlush is missing or fails, no wait elsewhere;
   a missed gaussmeter reply mid-scan; Target after Stop, after an error,
   not after a failed zero; Zero during Disconnect, a refused Disconnect,
   four presses during a Write and one during the zero, a zero not
