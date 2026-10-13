@@ -1,5 +1,25 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Settings audit: last review notes (2026-10-13)
+
+- **LED boxes:** a number too large for an integer (e.g. "1e400") raised
+  OverflowError, so the button again did nothing; it now shows Input error
+  like an empty box.
+- **PPMS Macro status:** a WAITFOR wait that is switched off showed "auto";
+  it now shows "-" (only a TEMP without a rate shows "auto").
+- **CIDWM 6221 scan Start:** the compliance was checked against the 6221's
+  last read-back width, which could sit just under 5 us; it is now checked
+  with the box's width only.
+- **STFMR Disconnect:** the row says "Disconnecting…" until the disconnect
+  ends, so a Read or Meter change meanwhile no longer enables Disconnect.
+- **Docs:** README_STFMR_DUAL.md no longer mentions a PNG and says the first
+  two points of each loop are discarded; the magnet section no longer says
+  Zero both now ticks Continuous.
+- **Tests:** `test_light_camera_inputs` ("1e400"),
+  `test_ppms_rte_review.MacroTempKeepsItsRate` (WAITFOR),
+  `test_k6221_failed_off_interlock.ScanWidthComplianceTests`,
+  `test_fmr_stfmr_minors.ConnectDuringSweepTests` (Disconnecting…).
+
 ## LED, MOKE motor, camera rows: bad boxes, Pulse on one channel, step range, CIDWM status (2026-10-13)
 
 - **LED, an empty or non-numeric box:** clearing a channel's Current (or
@@ -69,8 +89,8 @@
   max(settle + acquire, 2 x frames x exposure) + 0.5 s (0.7 s became
   1.3 s at 0.1 s / 0.1 s, 4 x 100 ms; the default 2 s / 1 s is unchanged).
 - **Left as is (needs a decision):** the end of a scan still ticks
-  Continuous although it was off before the scan, as Connect, Enable/zero,
-  field zeroing and Zero both now do.
+  Continuous although it was off before the scan, as Connect, Enable/zero
+  and field zeroing do.
 - **Tests:** `test_magnet_minor_review.py` (the PNG after Clear curve and a
   selector change, past 2000 points, a failed snapshot, no scan channel;
   the grab after GdiFlush/DwmFlush on Windows, the 50 ms fallback when

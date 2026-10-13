@@ -114,7 +114,8 @@ class LedInputTests(unittest.TestCase):
         )
         for label, press, names in buttons:
             for name in names:
-                for text in ("", "abc"):
+                # "1e400" overflows int() (review, 2026-10-13).
+                for text in ("", "abc", "1e400"):
                     with self.subTest(button=label, box=name, text=text):
                         a = led_page()
                         a.channel_vars[2][name].set(text)
@@ -127,7 +128,7 @@ class LedInputTests(unittest.TestCase):
                         a.run_task.assert_not_called()
 
     def test_set_continuous_current_with_a_bad_box(self):
-        for text in ("", "abc"):
+        for text in ("", "abc", "1e400"):
             with self.subTest(text=text):
                 a = led_page()
                 a.global_current_var.set(text)

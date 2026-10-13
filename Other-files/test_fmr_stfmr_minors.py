@@ -151,6 +151,24 @@ class ConnectDuringSweepTests(unittest.TestCase):
         self.assertEqual(row_states(a, "mfli"), ("normal", "disabled", "readonly"),
                          "the Zurich list is choosable again, not typable")
 
+    def test_a_disconnect_in_progress_keeps_its_buttons_disabled(self):
+        """Review, 2026-10-13: a row refresh while the SR830 disconnect was
+        queued (a Read, a Meter change) enabled its Disconnect again."""
+        a = lockin_app(connected=("kepco", "gauss", "smb", "830"), meter="SR830")
+        a.stfmr_lockin_controllers["830"].disconnect = mock.Mock()
+        a.disconnect_stfmr_lockin_device("830")
+        self.assertEqual(a.stfmr_lockin_connection_vars["830"].get(), "Disconnecting…")
+        a._update_stfmr_lockin_ui()
+        self.assertEqual(row_states(a, "830")[:2], ("disabled", "disabled"))
+        a.stfmr_lockin_controllers["830"].connected = False
+        with mock.patch.object(app.messagebox, "showerror") as error:
+            a.stfmr_lockin_executor.finish()
+        error.assert_not_called()
+        a.stfmr_lockin_controllers["830"].disconnect.assert_called_once_with()
+        self.assertEqual(a.stfmr_lockin_connection_vars["830"].get(), "Not connected")
+        a._update_stfmr_lockin_ui()
+        self.assertEqual(row_states(a, "830"), ("normal", "disabled", "normal"))
+
 
 class FakeSession:
     """A VISA session that answers *IDN? as the given instrument."""

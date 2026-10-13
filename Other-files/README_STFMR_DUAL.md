@@ -13,9 +13,9 @@ The meter mode is locked during a scan; connecting an instrument in dual mode do
 - Each instrument runs its own reference configuration and autorange. If either range changes, both current
   readings are discarded and the same point is re-read after the wait. In dual mode, any read failure, reference loss,
   invalid SR830 status, MFLI overload or invalid X/Y/Theta aborts the scan through the existing output-off sequence.
-- The start pre-read and the first two points of each frequency are discarded for both meters.
+- The start pre-read and the first two points of each loop (at each frequency) are discarded for both meters.
 - X, Y and Theta show both curves in one plot: MFLI as filled circles, SR830 as thin-edged hollow circles; the legend names instrument and frequency.
-  Hollow circles are slightly larger for legibility, with a 0.75 px edge in the GUI; legend and PNG use the same marker style.
+  Hollow circles are slightly larger for legibility, with a 0.75 px edge in the GUI; the legend uses the same marker style.
   Voltage, phase and reference readings are shown per meter. Idle readings are not appended to the scan curves.
 - The bottom-right plot is still setpoint current vs measured field, drawn once without repeated overlay.
 - Each instrument must have its own measurement input and reference wiring; the software does not route hardware signals.

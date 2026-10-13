@@ -328,6 +328,26 @@ class MacroTempKeepsItsRate(unittest.TestCase):
         self.assertEqual(seen, [('300.0', '10')])
         self.assertNotIn('None', ' '.join(statuses))
 
+    def test_a_waitfor_with_a_wait_switched_off_shows_a_dash(self):
+        # Review, 2026-10-13: "auto" read as if the field were waited for
+        # automatically; that wait is skipped.
+        commands = app.parse_ppms_macro('TEMP 300 1\nFIELD 100 50\nWAITFOR 10 1 0 0 0 0')
+        panel = app.CombinedControlApp.__new__(app.CombinedControlApp)
+        panel.closing = False
+        panel.ppms_macro_stop = threading.Event()
+        panel.ppms_macro_commands = iter(commands[2:])
+        panel.ppms_macro_status = Mock()
+        panel.ppms_macro_editor = Mock()
+        panel.thread_log = Mock()
+        panel._set_ppms_environment_ui = Mock()
+        panel.ppms_executor = Mock()        # the wait itself is not run here
+        panel._ppms_macro_next()
+        status = panel.ppms_macro_status.set.call_args.args[0]
+        self.assertTrue(status.startswith('Running line 3: WAITFOR 10.0 300.0 '), status)
+        self.assertNotIn('auto', status)
+        self.assertIn(' -', status)
+        panel.ppms_executor.submit.assert_called_once_with(panel._ppms_macro_operation, 'WAITFOR', commands[2][2])
+
 
 class RTEStartIgnoresUnusedKepcoBoxes(unittest.TestCase):
     """minor #23: the real RTEPanel.start_ppms_field_scan up to its submit."""

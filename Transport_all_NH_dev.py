@@ -16659,10 +16659,11 @@ class CombinedControlApp:
         # The device rows follow the sweep too.  Only Connect / Disconnect
         # re-checked them, so during a sweep the unused lock-in's Connect (and
         # every Disconnect) stayed enabled (audit, 2026-10-13).  A row still
-        # connecting keeps the disabled buttons Connect gave it.
+        # connecting or disconnecting keeps the disabled buttons its Connect
+        # or Disconnect gave it (review, 2026-10-13).
         for key, connect_button in self.stfmr_lockin_connect_buttons.items():
             status = self.stfmr_lockin_connection_vars[key].get()
-            if status == "Connecting…":
+            if status in ("Connecting…", "Disconnecting…"):
                 continue
             connected = status == "Connected"
             connect_button.configure(
@@ -16909,6 +16910,9 @@ class CombinedControlApp:
             else self.stfmr_lockin_controllers[key].disconnect
         )
         future = self.stfmr_lockin_executor.submit(operation)
+        # Until it finishes: a row refresh in the meantime (a Read, a Meter
+        # change) must not enable Disconnect again (review, 2026-10-13).
+        self.stfmr_lockin_connection_vars[key].set("Disconnecting…")
 
         def finished() -> None:
             try:
@@ -28532,7 +28536,12 @@ class CombinedControlApp:
         return controller._validate(0.0, controller.pulse_width_s, compliance_v, 1)[2]
 
     def _parse_k6221_width_compliance(self) -> tuple[float, float]:
-        compliance_v = self._parse_k6221_compliance()
+        # The compliance goes with the box's width here, not with the
+        # controller's last read-back width (review, 2026-10-13).
+        try:
+            compliance_v = float(self.k6221_compliance_var.get())
+        except (TypeError, ValueError) as error:
+            raise ValueError("6221 compliance must be a number") from error
         try:
             width_s = float(self.k6221_width_var.get()) / 1_000_000.0
         except (TypeError, ValueError) as error:
@@ -35637,9 +35646,11 @@ class CombinedControlApp:
             self._ppms_macro_finish("Macro completed.")
             return
         line, op, args = command
-        # A TEMP without a rate carries None; its rate is chosen at run time
-        # (review, 2026-10-13).
-        shown = ' '.join('auto' if arg is None else str(arg) for arg in args)
+        # A TEMP without a rate carries None; its rate is chosen at run time.
+        # A WAITFOR also carries None for a wait that is switched off, which
+        # is skipped, not automatic (review, 2026-10-13).
+        missing = 'auto' if op == 'TEMP' else '-'
+        shown = ' '.join(missing if arg is None else str(arg) for arg in args)
         self.ppms_macro_status.set(f"Running line {line}: {op} {shown}")
         self.ppms_macro_editor.tag_remove("active_line", "1.0", "end")
         self.ppms_macro_editor.tag_add("active_line", f"{line}.0", f"{line}.end")
@@ -38680,7 +38691,7 @@ class CombinedControlApp:
         # (audit, 2026-10-13).
         try:
             number = int(variable.get())
-        except (TypeError, ValueError, tk.TclError) as error:
+        except (TypeError, ValueError, OverflowError, tk.TclError) as error:
             raise ValueError(f"{name} must be an integer") from error
         if number < 0:
             raise ValueError(f"{name} must not be negative")

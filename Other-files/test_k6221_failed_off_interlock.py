@@ -193,5 +193,32 @@ class DisconnectTests(unittest.TestCase):
         self.assertTrue(avtech_pulsed(a))
 
 
+
+class ScanWidthComplianceTests(unittest.TestCase):
+    """Review, 2026-10-13: the scan's width and compliance parse checked the
+    compliance against the controller's last read-back width, so a width
+    stored just under 5 us refused a valid box width."""
+
+    def page(self, width_us, compliance_v):
+        a = bare_app()
+        a.k6221_controller = app.Keithley6221Controller(lambda _message: None)
+        a.k6221_width_var, a.k6221_compliance_var = Var(width_us), Var(compliance_v)
+        return a
+
+    def test_the_box_width_is_checked_not_the_last_read_back(self):
+        a = self.page("10", "20")
+        a.k6221_controller.pulse_width_s = 4.99995e-6
+        self.assertEqual(a._parse_k6221_width_compliance(), (10e-6, 20.0))
+
+    def test_bad_boxes_still_refused(self):
+        for width, compliance, message in (("10", "x", "compliance must be a number"),
+                                           ("x", "20", "pulse width must be a number"),
+                                           ("1", "20", "pulse width")):
+            with self.subTest(width=width, compliance=compliance):
+                with self.assertRaises(ValueError) as raised:
+                    self.page(width, compliance)._parse_k6221_width_compliance()
+                self.assertIn(message, str(raised.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
