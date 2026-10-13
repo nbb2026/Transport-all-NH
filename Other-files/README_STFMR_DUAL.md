@@ -33,7 +33,10 @@ GUI progress still advances per field point. The field and the two meters are no
 
 Row-by-row writing is unchanged: a disk failure on the second row may leave the first row behind, and the closing log
 reports an error; when handling abnormal or interrupted files, check for paired records and do not treat an unpaired row as a complete dual point.
-Automatic and manual PNG export include both curves with their marker shapes; the original single-meter files remain compatible.
+No PNG is written: neither the end of a sweep nor "Save CSV" (which writes the CSV only) exports one; the live CSV and log
+are the record, and the original single-meter files remain compatible. The program's 900 DPI exporter
+(`_export_stfmr_lockin_data_pngs`, both curves with their marker shapes) is not connected to the page
+(audit, 2026-10-13: this line used to say that PNGs were exported automatically and manually).
 
 ## Verification
 

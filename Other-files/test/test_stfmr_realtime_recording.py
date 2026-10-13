@@ -280,12 +280,19 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(events(recorder)[0]['settings']['sr830_ref_in'], 'Sine')
         self.error.assert_not_called()
 
-    def test_no_retained_points_still_leaves_header_and_log(self):
+    def test_a_loop_that_would_save_nothing_is_refused_before_any_output(self):
+        # -1 → -0.5 A is two points per loop, both discarded: this ran to
+        # 'completed' with 0 saved points, magnet and RF on meanwhile; it is
+        # now refused at Start (audit, 2026-10-13).
         h, recorder = self.start(stop='5', end_current='-0.5')
-        h.root.drain()
-        self.assertEqual(read_csv(recorder.csv_path), [])
-        self.assertEqual(events(recorder)[-1]['saved_points'], 0)
-        self.assertEqual(events(recorder)[-1]['outcome'], 'completed')
+        self.assertIsNone(recorder)
+        self.assertFalse(h.stfmr_lockin_running)
+        self.confirm.assert_not_called()
+        for key in ('kepco', 'smb', '830'):
+            self.assertEqual(h.stfmr_lockin_controllers[key].calls, [], key)
+        self.assertEqual(list(Path(self.tmp.name).iterdir()), [], 'no files')
+        self.error.assert_called_once()
+        self.assertIn('at least 3 current points', self.error.call_args.args[1])
 
     def test_manual_stop_preserves_live_csv(self):
         h, recorder = self.start()

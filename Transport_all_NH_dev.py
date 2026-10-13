@@ -2602,8 +2602,14 @@ class STFMRKepco4886Controller:
     only after the operator explicitly presses Apply or Zero/OFF.
     """
 
-    def __init__(self, logger: Callable[[str], None]) -> None:
+    def __init__(
+        self, logger: Callable[[str], None], owner_scope: str = "STFMR"
+    ) -> None:
         self.logger = logger
+        # The page that holds the session, named in a connection conflict:
+        # the FMR and RT-E pages' 4886 was also called "STFMR", which sent
+        # the operator to the wrong tab (audit, 2026-10-13).
+        self.owner_scope = str(owner_scope)
         self.resource_manager = None
         self.instrument = None
         self.resource_name = ""
@@ -2629,7 +2635,7 @@ class STFMRKepco4886Controller:
             if self.instrument is not None:
                 return self.identity
             acquire_instrument_lease(
-                resource_name, self, "STFMR / KEPCO BOP 4886 20-10"
+                resource_name, self, f"{self.owner_scope} / KEPCO BOP 4886 20-10"
             )
             manager = None
             instrument = None
@@ -3244,8 +3250,9 @@ class STFMRPNAFMRController:
         with self.lock:
             if self.instrument is not None:
                 return self.identity
+            # Only the FMR page uses the PNA (audit, 2026-10-13: was "STFMR").
             acquire_instrument_lease(
-                resource_name, self, "STFMR / Keysight PNA"
+                resource_name, self, "FMR / Keysight PNA"
             )
             manager = None
             instrument = None
@@ -13952,10 +13959,13 @@ class CombinedControlApp:
 
         self.stfmr_tab = None
         self.stfmr_controllers = {
-            "kepco": STFMRKepco4886Controller(self.thread_log),
+            "kepco": STFMRKepco4886Controller(self.thread_log, owner_scope="FMR"),
             "gauss": STFMRGauss475Controller(self.thread_log),
             "vna": STFMRPNAFMRController(self.thread_log),
         }
+        # These sit on the tab named "FMR"; a connection conflict named them
+        # "STFMR", the other tab (audit, 2026-10-13).
+        self.stfmr_controllers["gauss"].owner_scope = "FMR"
         self.stfmr_mfli_controller = NonLocalACController(self.thread_log)
         self.stfmr_executor = ThreadPoolExecutor(
             # NI-VISA/GPIB controller access is serialized.  Independent GUI
@@ -14134,7 +14144,8 @@ class CombinedControlApp:
         self.stfmr_lockin_delay_var = tk.StringVar(
             value=f"{STFMR_LOCKIN_DEFAULT_DELAY_S:g}"
         )
-        self.stfmr_lockin_loop_var = tk.IntVar(value=1)
+        # Text, parsed at Start like the other fields (audit, 2026-10-13).
+        self.stfmr_lockin_loop_var = tk.StringVar(value="1")
         self.stfmr_lockin_field_var = tk.StringVar(value="-- G")
         self.stfmr_lockin_gauss_continuous_var = tk.BooleanVar(value=True)
         self.stfmr_lockin_voltage_var = tk.StringVar(value="-- V")
@@ -16645,6 +16656,26 @@ class CombinedControlApp:
             self.stfmr_lockin_mfli_auto_range_check.configure(
                 state="disabled" if self.stfmr_lockin_running else "normal"
             )
+        # The device rows follow the sweep too.  Only Connect / Disconnect
+        # re-checked them, so during a sweep the unused lock-in's Connect (and
+        # every Disconnect) stayed enabled (audit, 2026-10-13).  A row still
+        # connecting keeps the disabled buttons Connect gave it.
+        for key, connect_button in self.stfmr_lockin_connect_buttons.items():
+            status = self.stfmr_lockin_connection_vars[key].get()
+            if status == "Connecting…":
+                continue
+            connected = status == "Connected"
+            connect_button.configure(
+                state="disabled" if connected or self.stfmr_lockin_running else "normal"
+            )
+            self.stfmr_lockin_disconnect_buttons[key].configure(
+                state="normal" if connected and not self.stfmr_lockin_running else "disabled"
+            )
+            widget = self.stfmr_lockin_resource_widgets[key]
+            widget.configure(
+                state="disabled" if connected or self.stfmr_lockin_running
+                else widget_idle_state(widget)
+            )
         meter_keys = self._stfmr_lockin_meter_keys(self.stfmr_lockin_meter_var.get())
         ready = all(
             self._stfmr_lockin_connected(key)
@@ -16806,6 +16837,11 @@ class CombinedControlApp:
         self.stfmr_lockin_status_var.set("KEPCO zeroed and output off")
 
     def connect_stfmr_lockin_device(self, key: str) -> None:
+        # As Disconnect: not during a sweep.  Connecting the unused lock-in
+        # switched the Meter selector, which left the live X/Y/theta plots
+        # blank for the rest of the sweep (audit, 2026-10-13).
+        if self.stfmr_lockin_running:
+            return
         resource = self.stfmr_lockin_resource_vars[key].get().strip()
         self.stfmr_lockin_connect_buttons[key].configure(state="disabled")
         self.stfmr_lockin_resource_widgets[key].configure(state="disabled")
@@ -16841,7 +16877,13 @@ class CombinedControlApp:
                     messagebox.showerror("STFMR instrument connection", str(error), parent=self.root)
                 return
             self._set_stfmr_lockin_device_ui(key, True)
-            if key in ("830", "mfli") and self.stfmr_lockin_meter_var.get() != "MFLI + SR830":
+            # A connect pressed just before Start may finish during the
+            # sweep, whose meter must not change (audit, 2026-10-13).
+            if (
+                key in ("830", "mfli")
+                and not self.stfmr_lockin_running
+                and self.stfmr_lockin_meter_var.get() != "MFLI + SR830"
+            ):
                 self.stfmr_lockin_meter_var.set(
                     "SR830" if key == "830" else "MFLI"
                 )
@@ -17191,7 +17233,20 @@ class CombinedControlApp:
         lfo_hz = float(self.stfmr_lockin_lfo_var.get())
         delay_s = float(self.stfmr_lockin_delay_var.get())
         limit_v = float(self.stfmr_lockin_limit_var.get())
-        loops = int(self.stfmr_lockin_loop_var.get())
+        # Parsed as text like the other fields.  As an IntVar a cleared box
+        # raised Tcl's 'expected floating-point number but got ""' and 2.5
+        # quietly became 2 loops (audit, 2026-10-13).
+        try:
+            loops_value = float(str(self.stfmr_lockin_loop_var.get()).strip())
+        except ValueError:
+            loops_value = math.nan
+        if not (
+            math.isfinite(loops_value)
+            and loops_value >= 1
+            and loops_value == int(loops_value)
+        ):
+            raise ValueError("Loop count must be a whole number of at least 1")
+        loops = int(loops_value)
         if not math.isfinite(lfo_hz) or lfo_hz <= 0:
             raise ValueError("Modulation frequency must be a finite positive number")
         if not math.isfinite(power_dbm) or power_dbm > 25:
@@ -17200,13 +17255,19 @@ class CombinedControlApp:
             raise ValueError("Wait per point must not be negative")
         if not 0 < limit_v <= STFMR_KEPCO_MAX_VOLTAGE_V:
             raise ValueError("4886 voltage limit must be within 0–20 V")
-        if loops < 1:
-            raise ValueError("Loop count must be at least 1")
         forward = self._build_stfmr_one_way_points(
             self.stfmr_lockin_start_var.get(),
             self.stfmr_lockin_stop_var.get(),
             self.stfmr_lockin_step_var.get(),
         )
+        if len(forward) < 3:
+            # The first two points of every loop are discarded, so a loop of
+            # one current (Start A = Stop A) or two switched the 4886 and the
+            # RF on and saved no point at all (audit, 2026-10-13).
+            raise ValueError(
+                f"Each loop needs at least 3 current points (Start A to Stop A in Step A "
+                f"gives {len(forward)}): the first two points of every loop are discarded"
+            )
         self.stfmr_lockin_points_per_loop = len(forward)
         points = forward * loops
         return points, frequencies_ghz, power_dbm, lfo_hz, delay_s, meter
@@ -19061,7 +19122,14 @@ class CombinedControlApp:
         kepco_off_text = "4886 zeroed/OFF"
         try:
             result = self.stfmr_controllers["kepco"].zero_output()
-            self._apply_stfmr_kepco_readback(result)
+            if self.stfmr_controllers["kepco"].last_command:
+                self._apply_stfmr_kepco_readback(result)
+            else:
+                # Ended before anything was sent to the 4886 (stopped or
+                # failed while the PNA was being set up): its state is
+                # unknown, so no made-up "0 A, OFF" (review, 2026-10-13).
+                kepco_off_text = "4886 not used"
+                self.read_stfmr_kepco_once()
         except BaseException as shutdown_error:
             self._flag_stfmr_kepco_off_unconfirmed()
             # Nor may the status line below report an OFF that failed
@@ -19415,7 +19483,14 @@ class CombinedControlApp:
         kepco_off_text = "4886 zeroed/OFF"
         try:
             result = self.stfmr_controllers["kepco"].zero_output()
-            self._apply_stfmr_kepco_readback(result)
+            if self.stfmr_controllers["kepco"].last_command:
+                self._apply_stfmr_kepco_readback(result)
+            else:
+                # Ended before anything was sent to the 4886 (stopped or
+                # failed while the PNA was being set up): its state is
+                # unknown, so no made-up "0 A, OFF" (review, 2026-10-13).
+                kepco_off_text = "4886 not used"
+                self.read_stfmr_kepco_once()
         except BaseException as shutdown_error:
             self._flag_stfmr_kepco_off_unconfirmed()
             # Nor may the status line below report an OFF that failed
@@ -19926,11 +20001,15 @@ class CombinedControlApp:
             self.stfmr_kepco_mode_var.set("Mode: --")
             self.stfmr_kepco_current_var.set("I: -- A")
             self.stfmr_kepco_voltage_var.set("V: -- V")
-            # A failed zero/OFF during disconnect leaves the output possibly on.
+            # A failed zero/OFF during disconnect leaves the output possibly
+            # on; with nothing ever sent the state is unknown, not OFF
+            # (review, 2026-10-13).
             self.stfmr_kepco_output_var.set(
                 "OUTP: NOT CONFIRMED OFF"
                 if self.stfmr_controllers["kepco"].output_owned
                 else "OUTP: OFF"
+                if self.stfmr_controllers["kepco"].last_command
+                else "OUTP: --"
             )
             return
         if key == "mfli":
@@ -19954,11 +20033,15 @@ class CombinedControlApp:
                 self.stfmr_kepco_mode_var.set("Mode: --")
                 self.stfmr_kepco_current_var.set("I: -- A")
                 self.stfmr_kepco_voltage_var.set("V: -- V")
-                # A failed zero/OFF during disconnect leaves the output possibly on.
+                # A failed zero/OFF during disconnect leaves the output possibly
+                # on; with nothing ever sent the state is unknown, not OFF
+                # (review, 2026-10-13).
                 self.stfmr_kepco_output_var.set(
                     "OUTP: NOT CONFIRMED OFF"
                     if self.stfmr_controllers["kepco"].output_owned
                     else "OUTP: OFF"
+                    if self.stfmr_controllers["kepco"].last_command
+                    else "OUTP: --"
                 )
             elif key == "gauss":
                 self.stfmr_gauss_field_var.set("-- G")
@@ -40716,6 +40799,7 @@ class RTEPanel(PPMSPanel):
         for controller in self.ppms_instrument_controllers.values():
             controller.owner_scope = 'RT-E'
         self.rte_controllers['gauss'].owner_scope = 'RT-E'
+        self.rte_controllers['kepco'].owner_scope = 'RT-E'
         self.ppms_plot_frame.configure(text='RT-E: X, Y, phase vs measured field / excitation current')
         # RT-E start-up defaults, which differ from the PPMS page (the user's
         # figure, 2026-10-07): 6221 0.1 mA RMS at 17.3 Hz, and the Zurich

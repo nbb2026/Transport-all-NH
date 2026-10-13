@@ -204,6 +204,51 @@
   stand-in in `test_ppms_field_persistent.py` now has a rate box. Every
   dialog is mocked.
 
+## FMR / STFMR: Connect during a sweep, tab names in conflicts, short loops, the Loop box, an unused 4886 (2026-10-13)
+
+- **STFMR, Connect during a sweep:** the Connect / Disconnect buttons were
+  only re-checked when a device connected or disconnected, so during a
+  sweep the unused lock-in's Connect stayed live; connecting it switched
+  the Meter selector, and the live X/Y/theta plots stayed blank for the
+  rest of the sweep. Now Connect does nothing while a sweep runs (as
+  Disconnect already did), a connect pressed just before Start no longer
+  changes the meter when it finishes during the sweep, and every device
+  row (Connect, Disconnect, address) is disabled from Start to the end of
+  the sweep, then restored (a row still connecting keeps its state).
+- **Connection conflicts named the wrong tab:** the KEPCO 4886, the LS475
+  and the PNA of the tab called "FMR" were labelled "STFMR", so the
+  message said to disconnect on the STFMR tab (both names read "STFMR /
+  KEPCO ..."). They are now "FMR / ..."; the RT-E page's 4886 is "RT-E /
+  ..." like its 475. The 4886 controller takes the page name
+  (`owner_scope`, default "STFMR").
+- **STFMR sweep with one or two currents per loop:** the first two points
+  of every loop are discarded, so Start A = Stop A (a fixed-current
+  frequency run) or a two-point loop switched the 4886 and the RF on and
+  saved nothing. Start now refuses it before any dialog, file or output:
+  "Each loop needs at least 3 current points ...".
+- **STFMR "Loop" box:** an IntVar, so a cleared box gave Tcl's 'expected
+  floating-point number but got ""' and 2.5 quietly ran 2 loops. It is now
+  text, read at Start: a whole number of at least 1 ("2.0" is 2), anything
+  else "Loop count must be a whole number of at least 1".
+- **FMR readout of a 4886 sent nothing:** an FMR scan or frequency sweep
+  stopped or failed while the PNA was set up (before the first 4886 write)
+  showed "Current, 0 A, OUTP: OFF" and "4886 zeroed/OFF"; Disconnect showed
+  "OUTP: OFF". Now the readout stays "--", the status says "4886 not used",
+  and Disconnect shows "OUTP: --" (OFF once something was sent and switched
+  off; NOT CONFIRMED OFF after a failed OFF, as before).
+- **README_STFMR_DUAL.md** said PNGs were exported automatically and by
+  Save CSV; neither happens (the exporter is not connected to the page, and
+  the recording tests assert no PNG). The line now says so.
+- **Tests:** `test_fmr_stfmr_minors.py` (Connect while sweeping and a
+  connect finishing during a sweep keep the meter and live rows; the rows
+  locked and restored; conflict messages for the FMR 4886, 475 and PNA,
+  with fake VISA sessions; one, two and three currents per loop; Loop text
+  "", 2.5, abc, 0, nan, "2.0"; both FMR scan ends before and after a 4886
+  write; Disconnect with nothing sent, after an Apply, after a failed OFF).
+  `test/test_stfmr_realtime_recording.py`: the two-point-loop run that
+  completed with 0 saved points is now checked to be refused with no
+  output or file.
+
 ## Camera: settings rows and saved images match the camera (2026-10-13)
 
 - **Refused click left the radio moved:** during a MOKE magnet, MOKE-24 or
