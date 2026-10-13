@@ -32,6 +32,50 @@
   code imports `tkinter.messagebox` itself, so its dialogs are mocked
   there), and a real Tk root fails the test instead of opening a window.
 
+## MOKE magnet: PNG of the saved scan, field-read recovery, Target after Stop, Zero presses (2026-10-13)
+
+- **Save CSV + PNG saved the page's plot, not the scan:** the PNG was a
+  screenshot of the page's plot, which is empty after Clear curve or an
+  ROI nudge, shows the channel the selector is on now, and keeps only the
+  last 2000 points, while the CSV held the whole scan. Now the plot draws
+  the saved scan (its channel, every CSV row) for the snapshot, then goes
+  back to the page's view (also when the snapshot fails).
+- **One gaussmeter timeout ended the scan:** the scan read the field
+  without the reopen-and-retry every other field read has. Now it uses the
+  same recovery (reopen that gaussmeter once, read again).
+- **Target box after Stop or an error:** a finished scan sets Target A to
+  0.000; after Stop or an error it kept the pre-scan value although the
+  scan wrote 0 A, so Up/Down stepped from it and Flip of 1.500 wrote
+  -1.5 A (still behind the safety tick). Now it shows 0.000 when that 0 A
+  write went out; the readback box is untouched (that 0 A is not read
+  back).
+- **Zero both now during Disconnect:** it queued behind the Disconnect
+  (which writes 0 A, then closes the ports) and then failed with a "not
+  connected" error dialog that replaced the Disconnect status. Now it is
+  refused on the status line while a Disconnect is queued or running.
+- **Zero both now pressed again and again:** each press queued another
+  zero (on a silent BOP each ran its own ~15 s recovery, the page busy
+  throughout). Now one zero queued or running is enough; further presses
+  only say so on the status line and leave nothing set for the next
+  command.
+- **Estimated duration:** the start dialog and the logged estimate counted
+  settle + acquire + 0.5 s per point, but each point also waits for a
+  camera average begun after its current was set. Now a point counts
+  max(settle + acquire, 2 x frames x exposure) + 0.5 s (0.7 s became
+  1.3 s at 0.1 s / 0.1 s, 4 x 100 ms; the default 2 s / 1 s is unchanged).
+- **Left as is (needs a decision):** the end of a scan still ticks
+  Continuous although it was off before the scan, as Connect, Enable/zero,
+  field zeroing and Zero both now do.
+- **Tests:** `test_magnet_minor_review.py` (the PNG after Clear curve and a
+  selector change, past 2000 points, a failed snapshot, no scan channel;
+  a missed gaussmeter reply mid-scan; Target after Stop, after an error,
+  not after a failed zero; Zero during Disconnect, a refused Disconnect,
+  four presses during a Write and one during the zero, a zero not
+  submitted; the estimate at 0.1 s / 0.1 s and at the default);
+  `test_magnet_zero_and_frames.py` and `test_moke_scan_zero.py` updated for
+  the new flags, the recovery read and the shared camera-block helper.
+  Every dialog is mocked.
+
 ## Camera: settings rows and saved images match the camera (2026-10-13)
 
 - **Refused click left the radio moved:** during a MOKE magnet, MOKE-24 or

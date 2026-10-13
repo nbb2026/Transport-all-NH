@@ -1198,6 +1198,10 @@ MAGNET_CURRENT_LIMIT_A = 10.0
 # at most two averaging blocks plus this long for one, then records NaN
 # (review, 2026-10-13).
 MAGNET_SCAN_FRAME_TIMEOUT_S = 10.0
+# The two magnet commands "Zero both now" must know about while they are
+# queued or running (audit/review, 2026-10-13).
+MAGNET_ZERO_BOTH_LABEL = "Zero both magnets (not a power-off)"
+MAGNET_DISCONNECT_LABEL = "Disconnect magnet devices"
 # Closed-loop Gauss-zeroing guardrails. The probe establishes the active
 # path's polarity instead of assuming a fixed wiring direction. Corrections
 # remain bounded so a bad/noisy reading cannot request one large current jump.
@@ -5594,6 +5598,21 @@ def build_current_scan_sequence(
                 (loop_index, point_index, len(cycle), float(target))
             )
     return sequence
+
+
+def camera_average_block_s(frame) -> float:
+    """Two averaging blocks of the camera (2 x frames x exposure): about the
+    longest a MOKE magnet scan point waits, after its current is set, for an
+    ROI average begun after the set.  0 without a usable frame (review,
+    2026-10-13)."""
+    try:
+        block_s = (
+            2.0 * float(frame.temporal_average_count)
+            * float(frame.exposure_ms) / 1000.0
+        )
+    except (AttributeError, TypeError, ValueError):
+        return 0.0
+    return block_s if math.isfinite(block_s) else 0.0
 
 
 def parse_ppms_macro(text):
@@ -13361,6 +13380,13 @@ class CombinedControlApp:
         # follows quickly (review, 2026-10-13).
         self.magnet_pending_tasks = 0
         self.magnet_abort_event = threading.Event()
+        # A "Zero both now" queued or running: further presses only say so
+        # (each press queued one more zero, and on a silent BOP each ran its
+        # own recovery).  A Disconnect queued or running: it writes 0 A
+        # first, and a zero queued behind it found the channels closed and
+        # showed an error dialog (audit/review, 2026-10-13).
+        self.magnet_zero_pending = False
+        self.magnet_disconnect_pending = False
         self.magnet_field_zero_active = False
         self.magnet_field_zero_stop_event = threading.Event()
         self.magnet_poll_inflight = False
@@ -13433,6 +13459,9 @@ class CombinedControlApp:
         self.moke_latest_roi_mean = None
         self.led_latest_roi_mean = None
         self.moke_field_rows = {"OUT": [], "IN": []}
+        # (channel key, rows) that the plot draws instead of the page's rows
+        # while "Save CSV + PNG" takes its snapshot (audit, 2026-10-13).
+        self.moke_plot_override = None
         self.moke_roi_edit_buttons = []
         self.roi_edit_step_vars = {
             "A": tk.StringVar(value="1"),
@@ -25072,6 +25101,10 @@ class CombinedControlApp:
             # now" included).
             self.magnet_pending_tasks = max(0, self.magnet_pending_tasks - 1)
             self.magnet_busy = self.magnet_pending_tasks > 0
+            if label == MAGNET_ZERO_BOTH_LABEL:
+                self.magnet_zero_pending = False
+            elif label == MAGNET_DISCONNECT_LABEL:
+                self.magnet_disconnect_pending = False
         if error is not None:
             self.append_magnet_log(f"ERROR {label}: {error}")
             if is_poll:
@@ -25207,7 +25240,11 @@ class CombinedControlApp:
                 self.magnet_current_vars[key].set("-- A")
                 self.magnet_field_vars[key].set("-- GS")
 
-        self._submit_magnet_task("Disconnect magnet devices", worker, success)
+        # "Zero both now" is refused while this is queued or running
+        # (audit/review, 2026-10-13).
+        self.magnet_disconnect_pending = True
+        if not self._submit_magnet_task(MAGNET_DISCONNECT_LABEL, worker, success):
+            self.magnet_disconnect_pending = False
 
     def _require_magnet_bop(self, key: str) -> MagnetKepcoBOP:
         bop = self.magnet_channels[key].bop
@@ -25676,6 +25713,24 @@ class CombinedControlApp:
         if self.magnet_scan_running:
             self.stop_magnet_scan()
             return
+        # Disconnect writes 0 A to every connected BOP before it closes the
+        # ports; a zero queued behind it found them closed and showed a false
+        # error dialog.  One zero queued or running is enough; each further
+        # press queued another (on a silent BOP, another 15 s recovery).  The
+        # first press already stopped a running write (audit/review,
+        # 2026-10-13).
+        if self.magnet_disconnect_pending:
+            self.magnet_status_var.set(
+                "Disconnect is running: it writes 0 A to every connected KEPCO "
+                "before closing the ports"
+            )
+            return
+        if self.magnet_zero_pending:
+            self.magnet_status_var.set(
+                "\"Zero both now\" is already queued or running (it sends 0 A "
+                "to both paths); pressing it again adds nothing"
+            )
+            return
         try:
             selected = self._selected_magnet_switch_key(required=True)
         except RuntimeError as error:
@@ -25737,9 +25792,11 @@ class CombinedControlApp:
                 "Note: this is not a hardware power-off"
             )
 
+        self.magnet_zero_pending = True
         if not self._submit_magnet_task(
-            "Zero both magnets (not a power-off)", worker, success, urgent=True
+            MAGNET_ZERO_BOTH_LABEL, worker, success, urgent=True
         ):
+            self.magnet_zero_pending = False
             self.magnet_abort_event.clear()
             if was_polling and not self.closing:
                 self.magnet_auto_poll_var.set(True)
@@ -26312,7 +26369,14 @@ class CombinedControlApp:
         loops = max(item[0] for item in sequence)
         points_per_loop = sequence[0][2]
         end_current = sequence[(points_per_loop - 1) // 2][3]
-        estimated_total_seconds = len(sequence) * (settle_s + collect_s + 0.5)
+        # A point also waits for an ROI average begun after its current was
+        # set (up to two averaging blocks), so short Settle/Acquire values
+        # take longer than settle + acquire (review, 2026-10-13).
+        point_seconds = max(
+            settle_s + collect_s,
+            camera_average_block_s(getattr(self.camera_window, "latest_frame", None)),
+        ) + 0.5
+        estimated_total_seconds = len(sequence) * point_seconds
         summary = (
             f"Scan channel: {label}\n"
             f"Current: {sequence[0][3]:g} A → {end_current:g} A → "
@@ -26416,10 +26480,9 @@ class CombinedControlApp:
         self.magnet_scan_progress.configure(
             maximum=max(self.magnet_scan_total_points, 1), value=0
         )
-        initial_point_seconds = settle_s + collect_s + 0.5
         self.magnet_scan_estimated_finish = (
             self.magnet_scan_start_monotonic
-            + initial_point_seconds * self.magnet_scan_total_points
+            + point_seconds * self.magnet_scan_total_points
         )
         if self.magnet_scan_eta_after_id is not None:
             try:
@@ -26465,7 +26528,8 @@ class CombinedControlApp:
         key: str,
         image_session: Path | None,
     ) -> None:
-        meter = self._require_gauss_meter(key)
+        # Refuse before the first write when the gaussmeter is not connected.
+        self._require_gauss_meter(key)
         try:
             for (
                 loop_index,
@@ -26513,16 +26577,7 @@ class CombinedControlApp:
                 # CIDWM scan waits for a frame newer than its pulse; no
                 # camera window, no wait (review, 2026-10-13).
                 camera = getattr(self, "camera_window", None)
-                frame = getattr(camera, "latest_frame", None)
-                try:
-                    block_s = (
-                        2.0 * float(frame.temporal_average_count)
-                        * float(frame.exposure_ms) / 1000.0
-                    )
-                except (AttributeError, TypeError, ValueError):
-                    block_s = 0.0
-                if not math.isfinite(block_s):
-                    block_s = 0.0
+                block_s = camera_average_block_s(getattr(camera, "latest_frame", None))
                 deadline = (
                     time.monotonic() + collect_s + block_s + MAGNET_SCAN_FRAME_TIMEOUT_S
                 )
@@ -26545,7 +26600,10 @@ class CombinedControlApp:
                 # Querying IQ a second time here only duplicated serial work
                 # and, on adapters that need retries, added several seconds to
                 # every point without improving the recorded value.
-                actual_field = meter.query_field()
+                # The field read reopens the gaussmeter once on a missed
+                # reply, as every other field read does; one FTDI timeout
+                # aborted the whole scan (audit, 2026-10-13).
+                actual_field = self._query_gauss_with_recovery(key)
                 if samples:
                     array = np.asarray(samples, dtype=np.float64)
                     mean_value = float(np.mean(array))
@@ -26606,6 +26664,13 @@ class CombinedControlApp:
                 self._require_magnet_bop(key).set_current(0.0)
             except BaseException:
                 pass
+            else:
+                # 0 A written: the Target box shows it, as after a finished
+                # scan.  Up/Down/Flip start from that box, so after Stop or
+                # an error they stepped from the pre-scan target (Flip of
+                # 1.500 wrote -1.5 A).  The readback box is left alone: this
+                # 0 A was not read back (audit, 2026-10-13).
+                self.post_ui(lambda: self.magnet_target_vars[key].set("0.000"))
             raise
         finally:
             with self.magnet_scan_data_lock:
@@ -26615,6 +26680,9 @@ class CombinedControlApp:
                     self._require_magnet_bop(key).set_current(0.0)
                 except BaseException:
                     pass
+                else:
+                    # As above: the Target box shows the 0 A just written.
+                    self.post_ui(lambda: self.magnet_target_vars[key].set("0.000"))
 
     def _magnet_scan_zero_readback(self, key: str, current: float) -> None:
         self.magnet_last_currents[key] = current
@@ -26837,6 +26905,17 @@ class CombinedControlApp:
             "MOKE magnetic-current scan parameter log",
             log_parameters,
         )
+        # The PNG shows the scan in the CSV: its channel and every row, as
+        # (time, target, readback, field, ROI mean) like the page's rows.
+        # It was a screenshot of the page's plot, which is empty after Clear
+        # curve or an ROI nudge, follows the selector and keeps only the
+        # last 2000 points (audit, 2026-10-13).
+        scan_key = self.magnet_scan_settings.get("scan.channel_key")
+        scan_plot = (
+            (scan_key, [(row[0], row[4], row[5], row[6], row[7]) for row in rows])
+            if scan_key in MAGNET_CHANNEL_LABELS
+            else None
+        )
         self.magnet_status_var.set(
             "Saving MOKE CSV and parameter log in the background; instrument control remains available"
         )
@@ -26850,10 +26929,20 @@ class CombinedControlApp:
             self.magnet_status_var.set(f"MOKE CSV/parameter log save failed: {error}")
             messagebox.showerror("MOKE current scan", str(error), parent=self.root)
 
-        def saved(_result) -> None:
+        def snapshot_scan() -> None:
+            self.moke_plot_override = scan_plot
             try:
                 self._redraw_moke_plot()
                 self.save_plot_canvas_snapshot(self.moke_plot_canvas, snapshot_path)
+            finally:
+                if self.moke_plot_override is not None:
+                    # Back to what the page shows.
+                    self.moke_plot_override = None
+                    self._redraw_moke_plot()
+
+        def saved(_result) -> None:
+            try:
+                snapshot_scan()
             except BaseException as error:
                 self.magnet_status_var.set(
                     f"CSV saved; Current / Field–ROI plot snapshot failed: {error}"
@@ -26978,8 +27067,15 @@ class CombinedControlApp:
             fill="#0068b5",
             font=(self.ui_font_family, 8, "bold"),
         )
-        selected_label = self.moke_field_source_var.get()
-        key = MAGNET_SWITCH_LABEL_TO_KEY.get(selected_label)
+        # "Save CSV + PNG" draws the saved scan here for its snapshot
+        # (audit, 2026-10-13).
+        override = self.moke_plot_override
+        if override is not None:
+            key, source_rows = override
+        else:
+            selected_label = self.moke_field_source_var.get()
+            key = MAGNET_SWITCH_LABEL_TO_KEY.get(selected_label)
+            source_rows = self.moke_field_rows.get(key, [])
         if key is None:
             canvas.create_text(
                 left + 4,
@@ -26997,7 +27093,7 @@ class CombinedControlApp:
             return
         rows = [
             row
-            for row in self.moke_field_rows[key]
+            for row in source_rows
             if (
                 len(row) >= 5
                 and np.isfinite(row[2])

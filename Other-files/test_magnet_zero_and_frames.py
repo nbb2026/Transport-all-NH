@@ -84,6 +84,7 @@ def magnet_app(executor=None):
         magnet_closed=False, closing=False, magnet_scan_running=False,
         magnet_field_zero_active=False, magnet_poll_inflight=False,
         magnet_busy=False, magnet_pending_tasks=0,
+        magnet_zero_pending=False, magnet_disconnect_pending=False,
         magnet_abort_event=threading.Event(),
         magnet_last_currents={"OUT": None, "IN": None},
     )
@@ -179,6 +180,7 @@ def scan_app(frame):
     a.post_ui = a.ui.append
     a.camera_window = types.SimpleNamespace(latest_frame=frame)
     a._require_gauss_meter = lambda key: types.SimpleNamespace(query_field=lambda: 12.0)
+    a.magnet_thread_log = lambda text: None
     a._require_magnet_bop = lambda key: types.SimpleNamespace(set_current=lambda value: None)
     a.set_at = []
 
@@ -192,7 +194,7 @@ def scan_app(frame):
     a.roi_live_sample_sum, a.roi_live_sample_count = 0.0, 0
     a.roi_live_last_sample_time = time.monotonic()
     a._roi_live_settings = lambda: (3600.0, 10)
-    bind(a, "ingest_moke_roi_sample", "_magnet_scan_worker")
+    bind(a, "ingest_moke_roi_sample", "_magnet_scan_worker", "_query_gauss_with_recovery")
     return a
 
 

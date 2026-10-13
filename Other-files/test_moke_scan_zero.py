@@ -15,7 +15,11 @@ methods = [n for c in tree.body if isinstance(c, ast.ClassDef)
            for n in c.body if isinstance(n, ast.FunctionDef) and n.name in names]
 assert len(methods) == len(names)
 # The worker now waits for an ROI sample newer than the point's current
-# (review, 2026-10-13); with no camera window it does not wait.
+# (review, 2026-10-13); with no camera window it does not wait.  Its wait
+# uses the module helper camera_average_block_s (audit, 2026-10-13).
+methods += [n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name == 'camera_average_block_s']
+assert len(methods) == len(names) + 1
 namespace = {'Path': Path, 'time': time, 'math': math,
              'MAGNET_SCAN_FRAME_TIMEOUT_S': 10.0}
 exec(compile(ast.Module(body=methods, type_ignores=[]), str(SOURCE), 'exec',
@@ -47,6 +51,9 @@ class ZeroTests(unittest.TestCase):
             if fail_field: raise RuntimeError('field error')
             return 12.
         app._require_gauss_meter = lambda key: types.SimpleNamespace(query_field=field)
+        # The scan's field read has the reconnect recovery (audit,
+        # 2026-10-13); here a failure that recovery cannot fix.
+        app._query_gauss_with_recovery = lambda key: field()
         app._require_magnet_bop = lambda key: types.SimpleNamespace(
             set_current=lambda value: app.calls.append(('fallback', key, value)))
         def write(key, value):
