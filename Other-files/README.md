@@ -1,5 +1,17 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MOKE magnet: Start scan says why it does not start (2026-10-13)
+
+- **User:** "the start scan cannot be used".
+- **Cause:** the scan code is unchanged since `38f351a`; two of Start's
+  refusals only wrote the page's status line, so Start looked dead. One
+  said "KEPCO not enabled" also when the real reason was the out-of-plane /
+  in-plane selector not confirmed on the page.
+- **Now:** every refusal is a dialog with its reason: the selector not
+  confirmed; the KEPCO of the selected path not enabled ("Enable/zero
+  (before writing)"); a magnet command still running; not connected.
+- **Test:** `test_magnet_scan_start.py`.
+
 ## Avtech_pulse_test.py: a standalone test of the Avtech generator (2026-10-13)
 
 - **User:** an individual test script for the Avtech pulse generator.

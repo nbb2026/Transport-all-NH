@@ -25978,20 +25978,30 @@ class CombinedControlApp:
         )
 
     def start_magnet_scan(self) -> None:
+        # Every refusal is a dialog that names its reason (user, 2026-10-13:
+        # "the start scan cannot be used"; a status-line message alone looked
+        # like nothing happening).
+        def refuse(reason: str) -> None:
+            self.magnet_status_var.set(reason)
+            messagebox.showwarning("MOKE current scan", reason, parent=self.root)
+
         if self.magnet_scan_running:
             return
         if self.magnet_busy:
-            self.magnet_status_var.set("Wait for the current magnet write to finish before starting a scan")
+            refuse("A magnet command is still running (see the magnet log); "
+                   "start the scan when it has finished")
             return
         if not self._magnet_devices_ready():
-            messagebox.showwarning(
-                "MOKE current scan", "Connect the KEPCO and gaussmeter first", parent=self.root
-            )
+            refuse("Connect the KEPCO and gaussmeter first")
             return
         if not self._magnet_bops_armed():
-            self.magnet_status_var.set(
-                "KEPCO not enabled; click \"Enable/zero (before writing)\" first"
-            )
+            selected = self._selected_magnet_switch_key()
+            if selected is None:
+                refuse("Set the physical selector to out-of-plane or in-plane, then confirm the "
+                       "matching option on this page")
+            else:
+                refuse(f"The {MAGNET_SWITCH_KEY_TO_LABEL[selected]} KEPCO is not enabled: click "
+                       "\"Enable/zero (before writing)\" first")
             return
         if self.moke_roi is None:
             messagebox.showwarning(
