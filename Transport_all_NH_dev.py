@@ -25943,8 +25943,12 @@ class CombinedControlApp:
         # recorded targets at that resolution (review, 2026-10-09).
         if step_a < 0.001:
             raise ValueError("Step must be at least 0.001 A (the KEPCO's 1 mA resolution)")
+        # Items are (loop, point, points per loop, current A): only the
+        # current is rounded (user, 2026-10-13: rounding the whole item
+        # raised TypeError and Start scan did nothing).
         sequence = [
-            round(value, 3) for value in build_current_scan_sequence(start_a, end_a, step_a, loops)
+            (loop, point, points, round(current, 3))
+            for loop, point, points, current in build_current_scan_sequence(start_a, end_a, step_a, loops)
         ]
         try:
             key = self._selected_magnet_switch_key(required=True)

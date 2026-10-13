@@ -10,7 +10,13 @@
 - **Now:** every refusal is a dialog with its reason: the selector not
   confirmed; the KEPCO of the selected path not enabled ("Enable/zero
   (before writing)"); a magnet command still running; not connected.
-- **Test:** `test_magnet_scan_start.py`.
+- **The real fault** (the user's traceback): `_parse_magnet_scan` rounded
+  each sequence item to 1 mA, but an item is (loop, point, points per loop,
+  current), so `round()` raised TypeError and the scan never started. It
+  came with the whole-program review fixes of 2026-10-09 (`ca5ee54`); no
+  test ran the parsing. Now only the current is rounded.
+- **Tests:** `test_magnet_scan_start.py` (the refusals; the parsing with
+  the user's 5 → −5 → 5 A, 0.1 A, 1 loop: 201 points; two loops).
 
 ## Avtech_pulse_test.py: a standalone test of the Avtech generator (2026-10-13)
 
