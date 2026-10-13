@@ -28,6 +28,14 @@
   only; one pulse and off; the other sign refused; "no" fires nothing;
   another instrument gets only `*IDN?`; a stuck output is exit 3; limits
   checked before anything is opened).
+- **Review** (one reviewer, each finding checked; all confirmed fixed):
+  every Ctrl+C path ends with the output off or "CHECK THE GENERATOR" (the
+  off sequence catches Ctrl+C as the program's controller does); before
+  the identity is confirmed nothing but `*IDN?` is sent; pulse mode puts
+  the trigger on hold and the output off (read back) before the question;
+  a pulse interrupted after the trigger says it fired; connection and
+  `*IDN?` errors are one line; the exit codes as documented; a negative
+  amplitude example (`--amplitude=-10`). Tests: 10.
 
 ## CIDWM: the Avtech AVR-E3-B pulse generator (2026-10-13)
 

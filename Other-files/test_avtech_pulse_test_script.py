@@ -71,7 +71,9 @@ class ScriptTests(unittest.TestCase):
         with mock.patch("builtins.input", return_value="no"):
             code, out = run(["pulse", "--amplitude", "20", "--width", "10"], generator)
         self.assertEqual((code, generator.pulses), (1, []))
-        self.assertEqual(generator.sent, ["*IDN?"])
+        # Before the question: the trigger on hold and the output off, read back.
+        self.assertEqual(generator.sent, ["*IDN?", "trigger:source hold", "output off", "output?"])
+        self.assertEqual((generator.output, generator.trigger), (0, "hold"))
 
     def test_another_instrument_gets_only_the_identity_query(self):
         generator = Recording(identity="KEITHLEY INSTRUMENTS,MODEL 6221,1,A01")
@@ -93,6 +95,65 @@ class ScriptTests(unittest.TestCase):
                     script.main(argv)
                 self.assertEqual(caught.exception.code, 2)
                 opened.assert_not_called()
+
+
+
+class Interrupted(Recording):
+    """Ctrl+C on the given calls (1 = *IDN?), counting clear, write and query."""
+
+    def __init__(self, at, **options):
+        super().__init__(**options)
+        self.at, self.calls = set(at), 0
+
+    def _tick(self):
+        self.calls += 1
+        if self.calls in self.at:
+            raise KeyboardInterrupt
+
+    def clear(self):
+        self._tick()
+        super().clear()
+
+    def write(self, command):
+        self._tick()
+        super().write(command)
+
+    def query(self, command):
+        self._tick()
+        return super().query(command)
+
+
+class CtrlCTests(unittest.TestCase):
+    """Review, 2026-10-13: every Ctrl+C path ends with the output off, or says
+    to check the generator; nothing but *IDN? before the identity."""
+
+    def test_before_the_identity_nothing_else_is_sent(self):
+        for argv in (["off"], ["pulse", "--amplitude", "10", "--width", "10", "--yes"]):
+            with self.subTest(argv=argv):
+                generator = Interrupted(at={1})
+                code, out = run(argv, generator)
+                self.assertEqual(code, 1)
+                self.assertEqual(generator.sent, [])  # *IDN? itself was interrupted
+                self.assertIn("nothing else was sent", out)
+
+    def test_ctrl_c_during_the_off_sequence_still_switches_off(self):
+        generator = Interrupted(at={2, 3})  # the first device clear, then the handler's
+        generator.output, generator.trigger = 1, "internal"
+        code, out = run(["off"], generator)
+        self.assertIn(code, (0, 1, 3))
+        self.assertEqual(generator.output, 0)
+        self.assertIn("output off", generator.sent)
+
+    def test_ctrl_c_after_the_pulse_says_it_fired(self):
+        probe = Recording()
+        run(["pulse", "--amplitude", "20", "--width", "10", "--yes"], probe)
+        # The call just after the trigger (counting the device clears too).
+        trigger_at = 1 + probe.sent.index("trigger:source immediate") + 3
+        generator = Interrupted(at={trigger_at + 2})
+        code, out = run(["pulse", "--amplitude", "20", "--width", "10", "--yes"], generator)
+        self.assertEqual(len(generator.pulses), 1)
+        self.assertIn("fired", out)
+        self.assertEqual(generator.output, 0)
 
 
 if __name__ == "__main__":

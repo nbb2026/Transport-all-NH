@@ -15,6 +15,7 @@ Usage (from a terminal in this folder):
     py Avtech_pulse_test.py                                  read only: identity and settings
     py Avtech_pulse_test.py off                              trigger on hold, output off (read back)
     py Avtech_pulse_test.py pulse --amplitude 10 --width 10  one pulse: +10 V, 10 ns (asks first)
+    py Avtech_pulse_test.py pulse --amplitude=-10 --width 10 one pulse: -10 V (-N units; note the "=")
     py Avtech_pulse_test.py pulse --amplitude 10 --width 10 --dry-run
                                                              the same on a simulated generator
 
@@ -23,8 +24,14 @@ Usage (from a terminal in this folder):
     --dry-run                    a simulated generator: prints every command, sends nothing
 
 Every command sent and every reply is printed ("> " sent, "< " received).
-Exit status: 0 done; 1 refused or failed with the output read back off;
-2 a usage error (nothing sent); 3 the output state is unknown: check the generator.
+Before the pulse question, pulse mode puts the trigger on hold and the output
+off (read back).  Ctrl+C at any point still ends with the output off, or with
+"CHECK THE GENERATOR"; before the identity is confirmed nothing else is sent.
+
+Exit status: 0 done (an overload is printed); 1 nothing fired (refused, not
+confirmed, not an Avtech, no connection, stopped) or a failed pulse with the
+output read back off; 2 a usage error (nothing sent); 3 the output state is
+unknown: check the generator.
 
 SAFETY
   - OUT needs a 50 ohm load; up to 100 V.  The generator cannot detect a
@@ -120,15 +127,15 @@ class Avtech:
         def clear():
             try:
                 self.clear()
-            except Exception as error:
-                failures.append(f"device clear: {error}")
+            except BaseException as error:  # Ctrl+C included, as the program's controller
+                failures.append(f"device clear: {error!r}")
 
         def send(command):
             try:
                 self.write(command)
                 return True
-            except Exception as error:
-                failures.append(f"{command}: {error}")
+            except BaseException as error:
+                failures.append(f"{command}: {error!r}")
                 return False
 
         clear()
@@ -143,8 +150,8 @@ class Avtech:
                         self.echo("  (read back off, after: " + "; ".join(failures) + ")")
                     return None
                 failures.append("the output did not read back off")
-            except Exception as error:
-                failures.append(f"output? failed: {error}")
+            except BaseException as error:
+                failures.append(f"output? failed: {error!r}")
             if attempt == 0:
                 clear()
                 send("output off")
@@ -200,16 +207,18 @@ class Avtech:
         problem = self.off_problem()
         try:
             self.errors(after)
-        except Exception as error:
-            others.append(f"its error queue could not be read: {error}")
+        except BaseException as error:
+            others.append(f"its error queue could not be read: {error!r}")
         overload = any(code == OVERLOAD_ERROR for code, _text in after)
         others += [text for code, text in after if code != OVERLOAD_ERROR]
         try:
             overload = overload or self.number("output:protection:tripped?") != 0
-        except Exception as error:
-            others.append(f"its overload state could not be read: {error}")
+        except BaseException as error:
+            others.append(f"its overload state could not be read: {error!r}")
             overload = True if overload else None
-        parts = [str(failure)] if failure is not None else []
+        parts = ([("stopped (Ctrl+C)" if isinstance(failure, KeyboardInterrupt)
+                   else str(failure) or type(failure).__name__)]
+                 if failure is not None else [])
         parts += [f"it reported {text}" for text in others]
         if problem is not None:
             parts.append(f"{problem}; CHECK THE GENERATOR")
@@ -324,12 +333,22 @@ def main(argv=None):
         if not (math.isfinite(width_s) and MIN_WIDTH_S * 0.999 <= width_s <= MAX_WIDTH_S * 1.001):
             parser.error("--width must be within 1 - 5000 ns")
 
-    avtech, manager = open_generator(args.resource, args.dry_run)
     try:
-        avtech.identity = avtech.query("*IDN?")
+        avtech, manager = open_generator(args.resource, args.dry_run)
+    except Exception as error:
+        print(f"Could not open {args.resource}: {error}. Nothing was sent.")
+        return 1
+    verified = False
+    try:
+        try:
+            avtech.identity = avtech.query("*IDN?")
+        except Exception as error:
+            print(f"{args.resource} did not answer *IDN?: {error}. Nothing else was sent.")
+            return 1
         if "AVTECH" not in avtech.identity.upper():
             print(f"{args.resource} is not an Avtech generator: {avtech.identity!r}. Nothing else was sent.")
             return 1
+        verified = True
         allowed = avtech.polarities
         print("Polarity: " + ("not in the model name; each pulse's sign is checked" if allowed is None else
                               {(1,): "positive only (-P)", (-1,): "negative only (-N)",
@@ -342,7 +361,12 @@ def main(argv=None):
             print("Trigger on hold, output off (read back)." if problem is None
                   else f"Output state unknown: {problem}. CHECK THE GENERATOR.")
             return 0 if problem is None else 3
-        # pulse
+        # pulse: first the trigger on hold and the output off, read back
+        problem = avtech.off_problem()
+        if problem is not None:
+            print(f"Output state unknown: {problem}. CHECK THE GENERATOR.")
+            return 3
+        print("Trigger on hold, output off (read back).")
         print(f"\nOne pulse: {args.amplitude:+g} V, {args.width:g} ns, on {args.resource}.")
         print("Is OUT terminated in 50 ohm (a scope or the sample with its 50 ohm termination)?")
         if not args.yes and input('Type "yes" to fire: ').strip().lower() != "yes":
@@ -362,7 +386,13 @@ def main(argv=None):
         if args.mode == "info":
             print("\nStopped; nothing was set (read only).")
             return 1
-        problem = avtech.off_problem()
+        if not verified:
+            print("\nStopped before the identity was confirmed; nothing else was sent.")
+            return 1
+        try:
+            problem = avtech.off_problem()
+        except BaseException as error:
+            problem = f"the off sequence was interrupted ({error!r})"
         print("\nStopped; output off (read back)." if problem is None
               else f"\nStopped; output state unknown: {problem}. CHECK THE GENERATOR.")
         return 3 if problem is not None else 1
