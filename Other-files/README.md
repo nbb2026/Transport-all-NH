@@ -128,6 +128,34 @@
   read-back failing (or with a Stop), and never show OFF without the 6221's
   own read-back.
 
+## PPMS / RT-E: descending current scans, exit keeps the field, warm-up from base (2026-10-13)
+
+- **RT-E Current scan starting at its largest current** (e.g. 0.1 → 0.01 mA,
+  or the single default 0.1 mA): the worker reserved the 6221 range as
+  (I·1e-3)·√2, the configure check computes √2·I·1e-3; the two can differ
+  by 1 ulp, so the scan failed at point 1 with "Invalid continuous current
+  sweep range" after the CSV was made. Now the worker uses the validator's
+  own expression, bit for bit; the strict check stays.
+- **Closing the program during a Temperature, Angle or Current PPMS scan**
+  ramped the field to 0 Oe in Driven mode. Now only Field and
+  Field+Temperature scans zero the field on exit, as the worker, the exit
+  dialog and `b458da8` already say; the others keep the magnet's setpoint
+  and mode. The PPMS and instruments are still disconnected.
+- **Warming up from at or below 9 K** (the limit is 1 K/min for the whole
+  ramp when the start or the target is ≤9 K): Set T refused the 10 K/min
+  the page fills in for T = 300; now Set T lowers it to 1 (the box shows 1),
+  as it already does for targets below 10 K. A macro `TEMP 300` without a
+  rate defaulted to 10, passed Validate and stopped at that line during the
+  run; now an omitted rate is chosen at run time from the live temperature
+  (10 only when both it and the target are above 9 K; the log names it),
+  and an explicit `TEMP 300 10` after a `TEMP` at or below 9 K is refused at
+  Validate. The rate label now says "Start or target ≤9 K".
+- **Tests:** `test_ppms_rte_review.py` (the real RT-E worker with the real
+  6221 configure and live update: descending, single-point and ascending
+  plans write one `SOUR:CURR:RANG` and every amplitude; exit for every scan
+  mode, on the app and through the PPMS page; Set T from 5 K and above 9 K;
+  macro TEMP with and without a rate at several live temperatures).
+
 ## MOKE magnet: Start scan says why it does not start (2026-10-13)
 
 - **User:** "the start scan cannot be used".

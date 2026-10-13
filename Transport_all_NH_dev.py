@@ -5601,9 +5601,16 @@ def parse_ppms_macro(text):
                 raise ValueError("Parameters must be finite values")
             if op == "TEMP" and len(values) in (1, 2, 3):
                 target = values[0]
-                rate = values[1] if len(values) > 1 else (1. if target <= PPMS_TEMPERATURE_LOW_BOUNDARY_K else 10.)
+                # An omitted rate stays None: the run picks 1 or 10 K/min from
+                # the live temperature, so a warm-up from base temperature is
+                # not refused mid-macro.  An explicit rate after a TEMP at or
+                # below 9 K is checked against that target here, at Validate
+                # (review, 2026-10-13).
+                rate = values[1] if len(values) > 1 else None
                 approach = values[2] if len(values) > 2 else 0.
-                validate_ppms_temperature_command(target, rate)
+                validate_ppms_temperature_command(
+                    target, PPMS_TEMPERATURE_LOW_MAX_RATE_K_MIN if rate is None else rate,
+                    targets.get("TEMP"))
                 if approach not in (0, 1):
                     raise ValueError("Temperature approach only supports 0/1")
                 values = (target, rate, int(approach))
@@ -14987,7 +14994,7 @@ class CombinedControlApp:
         self.ppms_temperature_set_button.grid(row=1, column=2, columnspan=2, sticky="w")
         ttk.Label(
             temperature_control,
-            text="5–10 K: ≤1 K/min; 10–380 K: ≤10 K/min",
+            text="Start or target ≤9 K: ≤1 K/min; else ≤10 K/min",
             style="Warning.TLabel",
         ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(5, 0))
 
@@ -35285,9 +35292,19 @@ class CombinedControlApp:
             raise PPMSScanCancelled("Macro stopped")
         remote = self.ppms_environment_controller
         if op == "TEMP":
-            current = remote.read_environment()
-            validate_ppms_temperature_command(args[0], args[1], current["temperature_k"])
-            remote.set_temperature(*args)
+            current = float(remote.read_environment()["temperature_k"])
+            target, rate, approach = args
+            if rate is None:
+                # TEMP without a rate: 10 K/min only when both the live
+                # temperature and the target are above 9 K (review, 2026-10-13).
+                rate = (PPMS_TEMPERATURE_MAX_RATE_K_MIN
+                        if math.isfinite(current)
+                        and min(current, target) > PPMS_TEMPERATURE_LOW_BOUNDARY_K
+                        else PPMS_TEMPERATURE_LOW_MAX_RATE_K_MIN)
+                self.thread_log(f"Macro TEMP {target:g} K without a rate: {rate:g} K/min "
+                                f"(live {current:g} K)")
+            validate_ppms_temperature_command(target, rate, current)
+            remote.set_temperature(target, rate, approach)
         elif op == "FIELD":
             remote.set_field(*args)
         else:
@@ -35393,6 +35410,13 @@ class CombinedControlApp:
             current = None
             if self.ppms_last_readback is not None:
                 current = float(self.ppms_last_readback["temperature_k"])
+                # Warming up from at or below 9 K is also limited to 1 K/min
+                # for the whole ramp; lower the rate the page filled in (10)
+                # instead of refusing it (review, 2026-10-13).
+                if (current <= PPMS_TEMPERATURE_LOW_BOUNDARY_K
+                        and rate > PPMS_TEMPERATURE_LOW_MAX_RATE_K_MIN):
+                    rate = PPMS_TEMPERATURE_LOW_MAX_RATE_K_MIN
+                    self.ppms_temperature_rate_var.set('1')
             validate_ppms_temperature_command(target, rate, current)
             approach = self._ppms_temperature_approach_code(
                 self.ppms_temperature_approach_var.get()
@@ -37848,7 +37872,12 @@ class CombinedControlApp:
                 pass
             self.ppms_poll_after_id = None
         errors = []
-        if scan_was_running and self.ppms_environment_controller.connected:
+        # Field scans only: the others keep the magnet's setpoint and mode on
+        # exit, as the worker's finally block and the exit dialog say
+        # (user, 2026-10-09; review, 2026-10-13).
+        if (scan_was_running
+                and getattr(self, "ppms_active_scan_mode", "") in ("Field", "Field+Temperature")
+                and self.ppms_environment_controller.connected):
             try:
                 rate = float(self.ppms_field_rate_var.get())
                 _target, rate = validate_ppms_field_command(0.0, rate)
@@ -40957,7 +40986,11 @@ class RTEPanel(PPMSPanel):
     def _rte_scan_worker(self, mode, plan, settings, limit, stable, duration):
         field_failure = False
         try:
-            sweep_peak = max(p[2] for p in plan) * 1e-3 * math.sqrt(2) if mode == 'Current' else None
+            # Same expression, in the same order, as the validator's peak_a:
+            # (I*1e-3)*sqrt2 could come out 1 ulp below sqrt2*I*1e-3, so a scan
+            # starting at its largest current failed the range check at Start
+            # (review, 2026-10-13).
+            sweep_peak = math.sqrt(2.0) * max(p[2] for p in plan) * 1e-3 if mode == 'Current' else None
             for index, (loop, point, target) in enumerate(plan, 1):
                 self._rte_wait(0)
                 point_settings = dict(settings)
