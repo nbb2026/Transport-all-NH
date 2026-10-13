@@ -135,6 +135,82 @@
   manual save calls the exporter once, after the CSV, without ImageGrab
   (it asserted no export); the sweep-end tests still assert no PNG.
 
+## Newmark_motor_test.py: a standalone test of the NSC-A1 rotation stage (2026-10-13)
+
+- **User:** an individual test script for the Newmark rotation stage that
+  turns the sample holder (wires attached) inside the RT-E magnet: NSC-A1
+  controller, RM-5-110 stage (72:1 worm gear, home switch, no encoder, no
+  limit switches), before an Angle scan on the RT-E page.
+- **`Newmark_motor_test.py`** (repository root; standard library only; no
+  COM port is opened): it talks to the NSC-A1 (an Arcus ACE-SDE) through
+  the vendor's `PerformaxCom.dll` over USB, following the NSC-A1 manual
+  rev 1.3, and prints every command and reply. Only a fixed list of commands
+  can be sent: STORE, RW, J+, POL=, DRVMS= and the rest are refused before
+  they reach the controller, so nothing is ever stored to flash. Modes: no
+  argument = read only (devices, ID/VER/DN, MST decoded, EO, PX, speeds,
+  POL/IERR/RZ/HCA/RT/SL/EDIO/TOC, driver parameters via RR, steps/deg =
+  40 x DRVMS); `move --degrees D [--speed S]` (relative, |D| ≤ 360, default
+  5 deg/s, at most 20; sent as an absolute target, which must lie within
+  ±360° of the zero for the sample wires, so 350 → 0 goes back −350; asks
+  "yes"; PX must read back the target exactly); `stop`; `zero` (PX=0,
+  runtime only: lost when the controller is powered off); `clear` (CLR);
+  `enable` (EO=1, asks) / `disable` (EO=0); `home --direction +` or `-`
+  (HL+/HL−, up to a full turn, asks, STOP if it has not finished in time);
+  `--serial` (only with several Performax devices), `--dll-dir`, `--yes`,
+  `--dry-run` (a simulated controller; nothing sent). A move is refused while
+  it moves, with a latched limit error, with a limit input on at rest (a
+  polarity problem: fix it in QuickMotion), or with the driver off (EO=0).
+  Ctrl+C at any point sends STOP if a move may be running, waits until it
+  has stopped (ABORT if STOP does not stop it) and says where it stopped.
+- **Setup on the lab PC (64-bit Python 3.11):**
+  1. Install the Performax USB driver ("Performax USB Setup 4.01.3", from
+     Newmark/Arcus). With the controller on its 24 V supply and plugged in,
+     Device Manager should list it (expected `USB\VID_1589&PID_A101`; worth
+     confirming).
+  2. From Arcus's "USB 64-bit DLL v2.06", put the 64-bit `PerformaxCom.dll`
+     and `SiUSBXp.dll` together next to `Newmark_motor_test.py` (or in a
+     folder given with `--dll-dir`). 32-bit DLLs do not load in 64-bit Python
+     (WinError 193); the script says so.
+  3. Close QuickMotion first: one program at a time on the USB device.
+- **First test:**
+  1. `py Newmark_motor_test.py --dry-run` and
+     `py Newmark_motor_test.py move --degrees 10 --dry-run` (no hardware).
+  2. `py Newmark_motor_test.py` (read only): ID "Ace-Series-SDE", MST not
+     moving and no limit bits, EO 1, and the scale line (e.g. "10000 steps/deg
+     (72:1 x 200 full steps x DRVMS 250 / 360)") against QuickMotion.
+  3. With the sample wires hanging free: `py Newmark_motor_test.py zero`.
+  4. `py Newmark_motor_test.py move --degrees 5 --speed 2`: watch the stage,
+     note which way + turns (clockwise or counter-clockwise seen from above)
+     and whether 5° looks right; then `move --degrees -5`.
+  5. `move --degrees 30`, and Ctrl+C halfway: it should stop and say where.
+  6. Only then, if wanted: `home --direction +` (wires free for a full turn).
+- **Exit status:** 0 done; 1 refused, not confirmed, or failed with the
+  motor confirmed stopped; 2 usage error (nothing sent); 3 motion state
+  unknown (check the stage).
+- **Not yet tried on the hardware.** Things to check: whether the DLL has
+  `fnPerformaxComFlush`, the reply framing (CR, a `#NN` prefix), the STOP
+  reply at rest, R2 = 1 after the 2.5 s wait following RR, DRVMS and the
+  direction of +.
+- **Tests:** `test_newmark_motor_test_script.py` (Tk-free; no real DLL is
+  loaded on any OS, including the Windows CI: `ctypes.WinDLL`,
+  `os.add_dll_directory` and the loader are replaced; time is a virtual
+  clock). Covered: every mode and `--dry-run`; usage errors are exit 2 with
+  nothing opened; the allowlist refuses STORE, RW, J+, DRVMS=, POL=, HL+
+  outside `home` and the rest, and commands of 64 bytes or more; 0, 1 and 2
+  devices, `--serial`; ID first (another device gets only `ID`), VER answering
+  like ID is out of step; info sends only read-only commands and RR; a failed
+  transaction is followed by flush, ID and VER and never repeated, and a stale
+  reply is never used (also without flush); the refusals (moving, latched
+  limit error, limit input, EO=0, beyond ±360°, speeds not read back, a
+  position changed since the question); a PX read-back that differs; a
+  time-out sends STOP, then ABORT, else exit 3; Ctrl+C at the question,
+  during RR, during and inside the move command, twice, before the
+  identity, in info, home and stop; the ctypes path through real ctypes
+  function pointers (argtypes, pointers, 64-byte NUL-terminated buffers,
+  256-byte product strings, timeouts before Open, flush after it, the same
+  handle closed); the loader (search order, SiUSBXp.dll first, WinError 193
+  explained, missing functions); standard-library imports only.
+
 ## Settings audit: last review notes (2026-10-13)
 
 - **LED boxes:** a number too large for an integer (e.g. "1e400") raised
