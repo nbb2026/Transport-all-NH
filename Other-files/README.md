@@ -2,6 +2,13 @@
 
 ## Lock-in settle: at least 1 x TC on every page (2026-10-14)
 
+- **STFMR SR830 range change:** the re-read after an SR830 autorange (SENS)
+  step waits at least 5 x the SR830 TC (`STFMR_LOCKIN_SR830_RANGE_SETTLE_TAUS`),
+  as the Non-local page does for its SR830s: a range step is a jump, not a
+  sweep step, and it is rare, so the 1 x TC point settle is not enough for it.
+  In MFLI + SR830 mode the longest of that, the point settle and 10 x MFLI TC
+  applies.
+
 - **The user's choice:** a default STFMR point (TC 1 s, Acquire s 2 s) took
   9 s: 7 s of settle (7 x TC) and 2 s of averaging. The user asked "3-4s is
   not okay?", was shown that at 3-4 s a point a sweep reading lags by only

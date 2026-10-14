@@ -340,9 +340,10 @@ class RangeAndFailureTests(Sweeps):
         h, recorder = self.sweep(meter="SR830", sr830=device, stop="5", tc="3 s")
         retries = [e for e in events(recorder) if e["event"] == "sr830_autorange_retry"]
         self.assertEqual([(e["point_index"], e["action"]) for e in retries], [(3, "SENS 13->14 (overload/high)")])
-        # The point settles 3 s (the effective settle, 1 x TC since the
-        # user's choice; 7 x TC before) again before its readings start over.
-        self.assertEqual(h.root.reads, [1, 3000, 3000, 3000, 3000, 3000])
+        # The points settle 3 s (1 x TC, the user's choice); the restart
+        # after the range change waits 5 x TC = 15 s (a jump, as on the
+        # Non-local page; user, 2026-10-14) before its readings start over.
+        self.assertEqual(h.root.reads, [1, 3000, 3000, 15000, 3000, 3000])
         rows = read_csv(recorder.csv_path)
         self.assertEqual(len(rows), 3)
         for row in rows:

@@ -347,9 +347,9 @@ class Sr830TimeConstantTests(NoWindows):
         h.stfmr_lockin_controllers["830"].retry_next = True   # the next read changes SENS
         h.root.drain()
         self.assertTrue(any(e["event"] == "sr830_autorange_retry" for e in events(recorder)))
-        # The re-read waits the effective settle, 1 x TC = 3 s since the
-        # user's 1 x TC (user, 2026-10-14; 7 x TC, and 5 x TC, before).
-        self.assertEqual(h.root.reads, [1] + [3000] * 5)
+        # Points wait 1 x TC = 3 s (the user's choice); the re-read after
+        # the SENS change waits 5 x TC = 15 s (user, 2026-10-14).
+        self.assertEqual(h.root.reads, [1, 3000, 3000, 3000, 15000, 3000])
         self.assertEqual(len(read_csv(recorder.csv_path)), 3)
 
     def test_dual_meter_points_and_both_re_reads_wait_too(self):

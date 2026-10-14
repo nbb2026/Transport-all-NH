@@ -1923,6 +1923,12 @@ NONLOCAL_IV6221_MAX_RANGE_STEPS = 30
 # (10 x MFLI TC) and the PPMS range steps (5 x TC) keep their own waits:
 # those handle jumps, not sweep steps, and are unchanged (user, 2026-10-14).
 LOCKIN_SETTLE_TAUS = 1.0
+# After an SR830 range (SENS) change on the STFMR page, the re-read waits
+# at least this many SR830 time constants, as the Non-local page does
+# (NONLOCAL_IV6221_RANGE_SETTLE_TAUS["sr830"]): a range step is a jump, not
+# a sweep step, and it is rare, so the 1 x TC point settle does not apply
+# to it (user, 2026-10-14).
+STFMR_LOCKIN_SR830_RANGE_SETTLE_TAUS = 5.0
 # SR830 OFLT codes 0-19 in seconds, to read the front-panel time constant.
 SR830_TIME_CONSTANTS_S = (
     10e-6, 30e-6, 100e-6, 300e-6, 1e-3, 3e-3, 10e-3, 30e-3, 100e-3, 300e-3,
@@ -19018,12 +19024,14 @@ class CombinedControlApp:
                         frequency_ghz=frequency_ghz, point_index=index + 1, dual=True, mfli_action=mfli_action):
                     return False
                 self.stfmr_lockin_status_var.set("SR830 autorange; re-reading both lock-ins after the wait, current dual-meter data not saved")
-                # The effective settle (at least LOCKIN_SETTLE_TAUS SR830
-                # time constants, 1 since the user's 1 x TC) and 10 MFLI time
-                # constants after the SENS change (user, 2026-10-14).
+                # The effective settle, STFMR_LOCKIN_SR830_RANGE_SETTLE_TAUS
+                # SR830 time constants and 10 MFLI time constants after the
+                # SENS change, whichever is longest (user, 2026-10-14).
                 self._restart_stfmr_lockin_point(max(
                     0.1, self.stfmr_lockin_effective_settle_s,
                     10 * self.stfmr_lockin_mfli_timeconstant_s,
+                    STFMR_LOCKIN_SR830_RANGE_SETTLE_TAUS
+                    * SR830_TIME_CONSTANTS_S[self.stfmr_lockin_sr830_time_constant_code],
                 ))
                 return False
             if not secondary.get("measurement_valid", secondary.get("reference_valid", False)):
@@ -19107,12 +19115,15 @@ class CombinedControlApp:
                     "old-range reading not saved, re-reading the current field point"
                 )
                 # The re-read after a SENS change waits the effective settle
-                # too, so at least LOCKIN_SETTLE_TAUS time constants: 1 since
-                # the user chose 1 x TC on every page (user, 2026-10-14; it
-                # was 7 earlier that day).
-                self._restart_stfmr_lockin_point(
-                    max(self.stfmr_lockin_effective_settle_s, 0.1)
-                )
+                # or STFMR_LOCKIN_SR830_RANGE_SETTLE_TAUS SR830 time
+                # constants, whichever is longer: a range step is a jump, so
+                # the user's 1 x TC point settle is not enough for it
+                # (user, 2026-10-14).
+                self._restart_stfmr_lockin_point(max(
+                    self.stfmr_lockin_effective_settle_s, 0.1,
+                    STFMR_LOCKIN_SR830_RANGE_SETTLE_TAUS
+                    * SR830_TIME_CONSTANTS_S[self.stfmr_lockin_sr830_time_constant_code],
+                ))
                 return False
             if not bool(sample.get("measurement_valid", valid)):
                 status = int(sample.get("status", 0))
