@@ -1,5 +1,19 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## STFMR: default powers 6-18 dBm, default currents -2 to 2 A (2026-10-14)
+
+- **The user's choice (from a screenshot of the page):** P start 6 dBm, P stop
+  18 dBm, P step 4 dB (a default sweep runs at 6, 10, 14 and 18 dBm), and
+  Start A -2, Stop A 2, Step A 0.02 (201 currents; it was -3 to 3 A in
+  0.01 A, 601 currents). The new constant `STFMR_LOCKIN_DEFAULT_POWER_STOP_DBM`
+  holds P stop; `STFMR_LOCKIN_DEFAULT_POWER_DBM` is P start.
+- **Time at the defaults** (MFLI, one carrier, one modulation, TC 1 s,
+  Settle 1 s, Acquire 2 s): about 200 x 3 s = 10 min per power, about 40 min
+  for the four powers.
+- **Tests:** `test_stfmr_power_sweep.PowerListTests`,
+  `test/test_instrument_safety_logic`, and the CI GUI test
+  `test_stfmr_field_output` check the boxes.
+
 ## Lock-in settle: at least 1 x TC on every page (2026-10-14)
 
 - **STFMR SR830 range change:** the re-read after an SR830 autorange (SENS)

@@ -2050,8 +2050,12 @@ STFMR_LOCKIN_DEFAULT_FREQUENCY_GHZ = 4.0
 # in the ST-FMR"; it was 6 dBm).  P start and P stop both start at 12, so a
 # default sweep runs at that one power; P step starts at 1 dB.  The step is
 # a level difference, so its unit is dB, not dBm (review, 2026-10-14).
-STFMR_LOCKIN_DEFAULT_POWER_DBM = 12.0
-STFMR_LOCKIN_DEFAULT_POWER_STEP_DB = 1.0
+# The user then set the defaults from a screenshot (2026-10-14): P start
+# 6 dBm, P stop 18 dBm, P step 4 dB, so a default sweep runs at 6, 10, 14
+# and 18 dBm.  STFMR_LOCKIN_DEFAULT_POWER_DBM is P start (the first power).
+STFMR_LOCKIN_DEFAULT_POWER_DBM = 6.0
+STFMR_LOCKIN_DEFAULT_POWER_STOP_DBM = 18.0
+STFMR_LOCKIN_DEFAULT_POWER_STEP_DB = 4.0
 # The SMB100A software limit, which configure(), set_power() and the power
 # list all enforce (it was a bare 25 in each place).
 STFMR_SMB100A_MAX_POWER_DBM = 25.0
@@ -2088,9 +2092,11 @@ STFMR_LOCKIN_MAX_MODULATION_FREQUENCIES = 10_000
 # there has no exact list; it also keeps the prime search well under a
 # second (user, 2026-10-13).
 STFMR_LOCKIN_MAX_PRIME_MODULATION_HZ = float(2 ** 53)
-STFMR_LOCKIN_DEFAULT_START_A = -3.0
-STFMR_LOCKIN_DEFAULT_STOP_A = 3.0
-STFMR_LOCKIN_DEFAULT_STEP_A = 0.01
+# The magnet current sweep's defaults: -2 A to 2 A in 0.02 A steps, 201
+# currents (user's screenshot, 2026-10-14; it was -3 to 3 A in 0.01 A).
+STFMR_LOCKIN_DEFAULT_START_A = -2.0
+STFMR_LOCKIN_DEFAULT_STOP_A = 2.0
+STFMR_LOCKIN_DEFAULT_STEP_A = 0.02
 # "Settle s" and "Acquire s" replace the "Wait/pt s" box (user, 2026-10-14:
 # "add a acquire time in the ST-FMR scan mode, default is 2s. also add a
 # settle time and default 1s. delete the delay time.").  After each current
@@ -14744,14 +14750,14 @@ class CombinedControlApp:
         self.stfmr_lockin_frequency_step_var = tk.StringVar(value="1")
         # Compatibility alias for older focused tests and helper code.
         self.stfmr_lockin_frequency_var = self.stfmr_lockin_frequency_start_var
-        # P start / P stop / P step replace the single Power dBm box; P start
-        # = P stop = 12 dBm gives one power, the default (user, 2026-10-14;
-        # see stfmr_power_levels).
+        # P start / P stop / P step replace the single Power dBm box; the
+        # defaults 6 to 18 dBm in 4 dB steps are the user's (2026-10-14; see
+        # stfmr_power_levels).
         self.stfmr_lockin_power_start_var = tk.StringVar(
             value=f"{STFMR_LOCKIN_DEFAULT_POWER_DBM:g}"
         )
         self.stfmr_lockin_power_stop_var = tk.StringVar(
-            value=f"{STFMR_LOCKIN_DEFAULT_POWER_DBM:g}"
+            value=f"{STFMR_LOCKIN_DEFAULT_POWER_STOP_DBM:g}"
         )
         self.stfmr_lockin_power_step_var = tk.StringVar(
             value=f"{STFMR_LOCKIN_DEFAULT_POWER_STEP_DB:g}"

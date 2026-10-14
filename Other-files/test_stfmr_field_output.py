@@ -471,7 +471,9 @@ class FieldOutputTests(unittest.TestCase):
         self.assertEqual((self.a.stfmr_lockin_mod_start_var.get(), self.a.stfmr_lockin_mod_end_var.get()),
                          ("117.3", "117.3"))   # user, 2026-10-14
         self.assertEqual((self.a.stfmr_lockin_power_start_var.get(), self.a.stfmr_lockin_power_stop_var.get(),
-                          self.a.stfmr_lockin_power_step_var.get()), ("12", "12", "1"))   # user, 2026-10-14
+                          self.a.stfmr_lockin_power_step_var.get()), ("6", "18", "4"))   # user, 2026-10-14
+        self.assertEqual((self.a.stfmr_lockin_start_var.get(), self.a.stfmr_lockin_stop_var.get(),
+                          self.a.stfmr_lockin_step_var.get()), ("-2", "2", "0.02"))
         self.assertIs(table.grid_slaves(row=1, column=1)[0], self.a.stfmr_lockin_power_start_entry)
         self.assertIs(table.grid_slaves(row=1, column=3)[0], self.a.stfmr_lockin_power_stop_entry)
         self.assertIs(table.grid_slaves(row=1, column=5)[0], self.a.stfmr_lockin_power_step_entry)

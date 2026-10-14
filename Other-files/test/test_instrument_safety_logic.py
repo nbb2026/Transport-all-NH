@@ -621,8 +621,9 @@ class InstrumentSafetyTests(unittest.TestCase):
         })
         self.assertEqual(app.STFMR_LOCKIN_DEFAULT_FREQUENCY_GHZ, 4.0)
         # 12 dBm by default (user, 2026-10-14; it was 6 dBm).
-        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_DBM, 12.0)
-        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_STEP_DB, 1.0)
+        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_DBM, 6.0)       # user, 2026-10-14
+        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_STOP_DBM, 18.0)
+        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_STEP_DB, 4.0)
         self.assertEqual(app.STFMR_LOCKIN_DEFAULT_LFO_HZ, 117.3)  # user, 2026-10-14
         # Every lock-in time constant starts at 1 s (user, 2026-10-14; was 0.1 s).
         self.assertEqual(app.STFMR_LOCKIN_MFLI_TIME_CONSTANT_S, 1.0)
