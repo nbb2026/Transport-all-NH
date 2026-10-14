@@ -174,7 +174,11 @@ def harness(folder, meter='MFLI', stop='6', end_current='1'):
     values = {
         # The sweep's safety confirmation is the tick in the 4886 output panel.
         'manual_safety': True, 'meter': meter, 'frequency_start': '5',
-        'frequency_stop': stop, 'frequency_step': '1', 'power': '10',
+        'frequency_stop': stop, 'frequency_step': '1',
+        # P start = P stop: one power (user, 2026-10-14; it was one Power
+        # dBm box).  10 dBm, not the page's 12, so the SMB100A calls the
+        # tests check keep their values.
+        'power_start': '10', 'power_stop': '10', 'power_step': '1',
         # Mod. start = Mod. end: one modulation frequency (2026-10-13).
         'mod_start': '317.3', 'mod_end': '317.3', 'limit': '10', 'loop': 1,
         # Settle s and Acquire s replace Wait/pt (user, 2026-10-14).  Settle

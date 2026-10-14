@@ -441,6 +441,11 @@ class Sr830TimeConstantTests(NoWindows):
         a.stfmr_lockin_settle_entry = settle = Widget("normal")
         a.stfmr_lockin_acquire_entry = acquire = Widget("normal")
         a.stfmr_lockin_mfli_timeconstant_entry = mfli_tc = Widget("normal")
+        # P start, P stop and P step too: the power list is read at Start
+        # (user, 2026-10-14).
+        powers = [Widget("normal") for _ in range(3)]
+        (a.stfmr_lockin_power_start_entry, a.stfmr_lockin_power_stop_entry,
+         a.stfmr_lockin_power_step_entry) = powers
         for running, state, entry_state in ((True, "disabled", "disabled"), (False, "readonly", "normal")):
             a.stfmr_lockin_running = running
             App._update_stfmr_lockin_ui(a)
@@ -448,28 +453,30 @@ class Sr830TimeConstantTests(NoWindows):
             self.assertEqual(a.stfmr_lockin_meter_combo.state, state, "locked as the meter is")
             self.assertEqual((settle.state, acquire.state, mfli_tc.state), (entry_state,) * 3,
                              f"running={running}")
+            self.assertEqual([w.state for w in powers], [entry_state] * 3, f"running={running}")
 
     def test_the_choice_sits_beside_its_ref_in_in_the_sr830_row(self):
         """The real page build, on stand-in widgets that keep their options
         and grid cells (the CI GUI tests check the drawn page).  Since
         2026-10-14 the table is in measurement order and the SR830 row reads
-        Meter, SR830 REF IN, SR830 TC, SR830 autorange (it sat under Loop)."""
+        Meter, SR830 REF IN, SR830 TC, SR830 autorange (it sat under Loop).
+        It is row 4 since the power row was added (user, 2026-10-14)."""
         page = build_stfmr_page()
         choice = page.app.stfmr_lockin_sr830_time_constant_combo
         table = choice.master
         self.assertIs(table, page.app.stfmr_lockin_meter_combo.master, "in the parameter table")
         self.assertEqual(choice.kind, "Combobox")
         self.assertEqual((choice.grid_options["row"], choice.grid_options["column"],
-                          choice.grid_options["sticky"]), (3, 5, "ew"))
+                          choice.grid_options["sticky"]), (4, 5, "ew"))
         self.assertEqual((choice.options["state"], choice.options["width"]), ("readonly", 6))
         self.assertEqual(choice.options["values"], tuple(app.STFMR_LOCKIN_SR830_TIME_CONSTANTS))
         self.assertIs(choice.options["textvariable"], page.app.stfmr_lockin_sr830_time_constant_var)
-        self.assertEqual(page.cell(table, 3, 4).options["text"], "SR830 TC:")
-        self.assertEqual(page.cell(table, 3, 2).options["text"], "SR830 REF IN:")
-        self.assertEqual(page.cell(table, 4, 2).options["text"], "MFLI TC s:", "the MFLI TC row")
-        self.assertIs(page.cell(table, 4, 3), page.app.stfmr_lockin_mfli_timeconstant_entry,
+        self.assertEqual(page.cell(table, 4, 4).options["text"], "SR830 TC:")
+        self.assertEqual(page.cell(table, 4, 2).options["text"], "SR830 REF IN:")
+        self.assertEqual(page.cell(table, 5, 2).options["text"], "MFLI TC s:", "the MFLI TC row")
+        self.assertIs(page.cell(table, 5, 3), page.app.stfmr_lockin_mfli_timeconstant_entry,
                       "kept, so a sweep can lock it (review, 2026-10-14)")
-        self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 3)],
+        self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 4)],
                          [0, 1, 2, 3, 4, 5, 6], "Meter, REF IN, TC, then the autorange tick")
         # Its column gives way, but not below the dropdown (70 px here; the
         # six-character floor is 50 px).  Column 7 now keeps the Loop
@@ -477,7 +484,7 @@ class Sr830TimeConstantTests(NoWindows):
         self.assertEqual(table.column_options[5], {"weight": 1, "minsize": 70})
         self.assertEqual(table.column_options[7], {"weight": 1, "minsize": 70})
         self.assertEqual(table.column_options[9], {"weight": 1, "minsize": 50})
-        loop = page.cell(table, 1, 7)
+        loop = page.cell(table, 2, 7)
         self.assertEqual((loop.kind, loop.options["width"]), ("Spinbox", 6))
         self.assertLessEqual(max(map(len, app.STFMR_LOCKIN_SR830_TIME_CONSTANTS)), 6)
 

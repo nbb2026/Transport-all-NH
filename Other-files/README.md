@@ -1,5 +1,134 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## STFMR: power start / stop / step, RF stays on, default 12 dBm (2026-10-14)
+
+- **The user asked:** "also add power start, stop, step in ST-FMR module",
+  "when sweep power, can you do not close the SMA100? like 6221 in the
+  current scan, just change its output value" and "the default power change
+  to 12dBm in the ST-FMR".
+- **Boxes:** "P start dBm", "P stop dBm" and "P step dBm" replace the single
+  "Power dBm" box (`stfmr_lockin_power_var` is gone). They start at 12, 12
+  and 1, so the default sweep runs at one power, 12 dBm
+  (`STFMR_LOCKIN_DEFAULT_POWER_DBM` 6 -> 12,
+  `STFMR_LOCKIN_DEFAULT_POWER_STEP_DB` 1). The labels read like the f labels
+  ("P start dBm:" as "f start GHz:"): "Power start dBm:" and its neighbours
+  would widen the table by about 45 px (Arial 15 px, for the lab's YaHei
+  UI), more than the 1101 px window has left on Windows. The three boxes are
+  read at Start and locked while a sweep runs, as Settle s and Acquire s are.
+- **Which powers** (`stfmr_power_levels`): the f start / f stop / f step
+  rules. P start = P stop gives that one power; otherwise from P start
+  towards P stop (descending when P start is larger) in P step, ending
+  exactly on P stop (0 to 5 in 2 gives 0, 2, 4, 5); the step's sign is
+  ignored and it must be above 0. Every power must be finite and at most
+  25 dBm (`STFMR_SMB100A_MAX_POWER_DBM`, the limit `configure()` already
+  had). At most 1000 powers (`STFMR_LOCKIN_MAX_POWERS`): each power is a
+  whole f x A sweep at every modulation frequency, about 1.5 h at the
+  defaults, so 1000 powers is already about two months (and 10 dB in the
+  generator's finest 0.01 dB steps); a longer list can only be a slipped
+  digit in P step. A word, an empty box, nan/inf, a step of 0, a power above
+  25 dBm or too many powers is refused with a message before any output
+  switches on or any file is made.
+- **Order:** modulation frequency (outermost), then power, then carrier,
+  then the 4886 current (innermost). Each (modulation, power, carrier) gets
+  a whole field sweep. At a power change, as at a carrier change, the 4886
+  is zeroed ("zeroing before the next carrier"), then
+  `STFMRSMB100AController.set_power` sends only `:POW <value>` (the format
+  `configure()` uses) and reads `:POW?` back; a read-back more than 0.01 dB
+  away (`STFMR_SMB100A_POWER_READBACK_TOLERANCE_DB`, the generator's level
+  resolution) raises, as a generator ignores a level it cannot set and
+  keeps the old one. RF, AM and LFO stay on, as with `set_frequency` and
+  `set_modulation_frequency`. The carrier goes back to f start, the 4886
+  comes back on at Start A, and the start pre-read and the first two
+  readings are discarded (the frequency and point indices start again; the
+  MFLI's first-point range check runs again too). There is no SR830
+  reference wait at a power change: the reference is the LFO, which it
+  leaves alone. At a modulation change with several powers the LFO is set,
+  then the first power again, then the carrier, then the reference wait,
+  then the 4886. The SMB100A is switched off only at the end, on Stop or on
+  an error, as before; a refused power ends the sweep through the usual
+  path (4886 zero, RF off) before the 4886 comes back on.
+- **The first power** is still set by `configure()` with the RF setup, as
+  the one power was, without a read-back (the default sweep sends exactly
+  what it sent). A first power the generator cannot set is therefore not
+  caught there; see "Known limits" below.
+- **Records:** the live CSV's existing `microwave_power_dbm` column (16th)
+  now carries each row's own power; no column is added and `index` runs on
+  across every pass. The run log's settings keep `power_dbm` (the first
+  power, for readers of older logs) and gain `powers_dbm`,
+  `power_start_dbm`, `power_stop_dbm`, `power_step_db` and
+  `rf_on_between_powers` (true). `frequency_configure` events name
+  `power_dbm`, `power_index` and `power_change`; `frequency_ready` names
+  `power_dbm` and, after a change, the SMB100A's `power_readback_dbm`;
+  `startup_point_discarded` and `frequency_complete` name `power_dbm`.
+- **Start confirmation:** a line after "Mod. Hz", "Power dBm: 12" for one
+  power, or e.g. "Power dBm: 10, 12, 14 (3 powers from 10 to 14 in 2 dB
+  steps); the whole f × A sweep runs at each, in this order, with the RF on
+  between them" (a long list shows its first five and last two). With
+  several modulation frequencies too, the Mod. line says "the whole P × f ×
+  A sweep runs at each". The point count and the estimate count every pass
+  (modulation frequencies x powers x carriers).
+- **Status lines:** with several powers the pass label names the power
+  ("5 GHz/12 dBm", "5 GHz/307 Hz/12 dBm") and the rest is shorter, to fit
+  the 52-character status label: "10 dBm done; zeroing; RF on, to 12 dBm at
+  5 GHz", "5 GHz/12 dBm: I=-1 A sent; pre-read now", "5 GHz/12 dBm; 7/24;
+  I=-0.5 A; ~5 s left", "5 GHz/12 dBm done; zeroing; to 6 GHz", and at the
+  end "... 2 frequencies, 3 powers, 12 points saved; ...". One power reads
+  exactly as before. A four-digit modulation frequency with "10.25 GHz" and
+  "-12.5 dBm" can still push the time left past the label's end.
+- **Plots:** with several powers each series name gains `_pow_<dBm>` after
+  the modulation part (`8_pow_12_freq_5_loop_1`,
+  `mfli_mod_307_pow_12_freq_5_loop_1`), each (carrier, modulation, power)
+  gets its own shade, and the legend reads "5 GHz, 12 dBm" or "5 GHz, 307
+  Hz, 12 dBm", in the live plots and the Save CSV PNGs. One power keeps the
+  old names and legend.
+- **The parameter table** (at most five pairs a row, as before):
+  1. f start GHz, f stop GHz, f step GHz.
+  2. P start dBm, P stop dBm, P step dBm.
+  3. Start A, Stop A, Step A, Loop, Comp. V.
+  4. Mod. start Hz, Mod. end Hz, Settle s, Acquire s.
+  5. Meter, SR830 REF IN, SR830 TC, SR830 autorange.
+  6. MFLI reference, MFLI TC s, MFLI autorange.
+
+  No five-row arrangement keeps the groups together: the six microwave
+  pairs need two rows and no other group fits beside three of them. The
+  sixth row (about 38 px) comes out of the plots, which are two rows of
+  two, so about 19 px each: from 143 px in the last Windows CI shot with
+  four rows, about 124 px with five, now about 105 px per plot canvas in
+  the 1101 x 1300 px window (about 145 px in the lab's 1380 px tall
+  window), above the 55 px minimum. The table is not wider: "P step dBm:"
+  is a few px wider than "f step GHz:" in column 4, and column 6 loses
+  "Power dBm:" (about 15 px).
+- **Timing at the page's defaults** (MFLI, 4 GHz, 12 dBm, 117.3 Hz, -3 to
+  3 A in 0.01 A = 601 currents, Loop 1, Settle 1 s, Acquire 2 s, both TCs
+  1 s) is unchanged: 600 x 7 s + 599 x 2 s = 5398 s, about 1.5 h. Each
+  further power adds one such pass per carrier and modulation frequency,
+  e.g. 0 to 12 dBm in 3 dB steps (5 powers) is about 7.5 h.
+- **Tests:** `test_stfmr_power_sweep.py` (new, 29 tests): the power list
+  (one value, up, down, the step, the f rules value for value, the 25 dBm
+  limit, bad text, the 1000 cap); `set_power` sending only `:POW` and
+  `:POW?`, its 0.01 dB tolerance and refusals; sweeps over three powers on
+  the shared harness (order, the SMB100A never off between powers, the 4886
+  zeroed and back on, discarded readings, rows, CSV header, events,
+  confirmation, estimate, statuses and their width, plot series, live
+  rows), modulation x power, dual meter, a refused power and Stop ending
+  with the outputs off, the real `STFMRSMB100AController` on a fake
+  generator through a whole sweep (one OUTPUT ON, OFF only at the end), the
+  default single-power sweep, refused boxes, and the table row. Updated:
+  `test_stfmr_mod_prime_range` and `test_stfmr_sr830_tc_fixed_current` (the
+  table rows; the lock test covers the power boxes), `test_fmr_stfmr_minors`,
+  `test/test_instrument_safety_logic` (12 dBm default; the power boxes),
+  the shared harness in `test/test_stfmr_realtime_recording` (P start = P
+  stop = 10 dBm, so the SMB100A calls other tests check keep their values)
+  and the CI GUI test `test_stfmr_field_output` (six rows, the power row,
+  the SR830 row at row 4; not run here: it needs a display).
+- **Known limits / to check at the lab:** not run on the instruments. Check
+  once that the lab SMB100A answers `:POW?` with a plain number (as R&S
+  generators do). The first power is not read back (see above); a read-back
+  there would add a query to the default sweep, so it is left for the user
+  to decide. Changing the level with the RF on may switch the generator's
+  attenuator; the 4886 is at zero and the next readings are discarded
+  meanwhile.
+
 ## STFMR: Settle s and Acquire s replace Wait/pt; 7 x TC settle; table in order (2026-10-14)
 
 - **The user asked:** "add a acquire time in the ST-FMR scan mode, default

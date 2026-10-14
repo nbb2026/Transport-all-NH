@@ -245,7 +245,10 @@ def inputs_app(start="-1", stop="1", step="0.5", loop="1"):
     a.stfmr_lockin_manual_safety_var = Var(True)
     a.stfmr_lockin_meter_var = Var("MFLI")
     for name, value in (("frequency_start", "5"), ("frequency_stop", "10"),
-                        ("frequency_step", "1"), ("power", "6"),
+                        ("frequency_step", "1"),
+                        # P start / P stop / P step replace Power dBm
+                        # (user, 2026-10-14).
+                        ("power_start", "6"), ("power_stop", "6"), ("power_step", "1"),
                         ("mod_start", "317.3"), ("mod_end", "317.3"),
                         # Settle s and Acquire s replace Wait/pt (user, 2026-10-14).
                         ("settle", "1"), ("acquire", "2"), ("limit", "10"), ("loop", loop),

@@ -620,7 +620,9 @@ class InstrumentSafetyTests(unittest.TestCase):
             "mfli": "dev4435",
         })
         self.assertEqual(app.STFMR_LOCKIN_DEFAULT_FREQUENCY_GHZ, 4.0)
-        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_DBM, 6.0)
+        # 12 dBm by default (user, 2026-10-14; it was 6 dBm).
+        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_DBM, 12.0)
+        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_STEP_DB, 1.0)
         self.assertEqual(app.STFMR_LOCKIN_DEFAULT_LFO_HZ, 117.3)  # user, 2026-10-14
         # Every lock-in time constant starts at 1 s (user, 2026-10-14; was 0.1 s).
         self.assertEqual(app.STFMR_LOCKIN_MFLI_TIME_CONSTANT_S, 1.0)
@@ -659,7 +661,10 @@ class InstrumentSafetyTests(unittest.TestCase):
         harness.stfmr_lockin_frequency_start_var = FakeVariable("5")
         harness.stfmr_lockin_frequency_stop_var = FakeVariable("7")
         harness.stfmr_lockin_frequency_step_var = FakeVariable("1")
-        harness.stfmr_lockin_power_var = FakeVariable("10")
+        # P start / P stop / P step replace Power dBm (user, 2026-10-14).
+        harness.stfmr_lockin_power_start_var = FakeVariable("10")
+        harness.stfmr_lockin_power_stop_var = FakeVariable("10")
+        harness.stfmr_lockin_power_step_var = FakeVariable("1")
         harness.stfmr_lockin_mod_start_var = FakeVariable("317.3")
         harness.stfmr_lockin_mod_end_var = FakeVariable("317.3")
         # Settle s and Acquire s replace Wait/pt (user, 2026-10-14).
@@ -670,9 +675,10 @@ class InstrumentSafetyTests(unittest.TestCase):
         harness.stfmr_lockin_start_var = FakeVariable("-1")
         harness.stfmr_lockin_stop_var = FakeVariable("1")
         harness.stfmr_lockin_step_var = FakeVariable("1")
-        points, frequencies, *_rest = harness._stfmr_lockin_inputs()
+        points, frequencies, powers, *_rest = harness._stfmr_lockin_inputs()
         self.assertEqual(points, [-1.0, 0.0, 1.0, -1.0, 0.0, 1.0])
         self.assertEqual(frequencies, [5.0, 6.0, 7.0])
+        self.assertEqual(powers, [10.0], "P start = P stop: one power")
         self.assertEqual(harness.stfmr_lockin_points_per_loop, 3)
 
     def test_stfmr_lockin_field_plot_does_not_join_loops(self):

@@ -5,7 +5,8 @@ Main program: `Magneto_Electro_Optical_Microwave_Transport_NH_dev.py`.
 Select `MFLI + SR830` under "Meter" on the STFMR page and connect both lock-ins plus the
 KEPCO 4886, LS475 and SMB100A. The single-meter `MFLI` and `SR830` modes remain.
 The meter mode is locked during a scan; connecting an instrument in dual mode does not switch back to single mode.
-Settle s, Acquire s, "SR830 TC" and "MFLI TC s" are read at Start and locked during a scan too (2026-10-14).
+Settle s, Acquire s, "SR830 TC" and "MFLI TC s" are read at Start and locked during a scan too (2026-10-14),
+and so are "P start dBm", "P stop dBm" and "P step dBm" (user, 2026-10-14).
 
 ## Acquisition and display
 
@@ -28,7 +29,7 @@ Settle s, Acquire s, "SR830 TC" and "MFLI TC s" are read at Start and locked dur
   12 dB/oct). Until 2026-10-14 an SR830 point waited the longer of Wait/pt and 5 × its time constant; the MFLI
   alone waited Wait/pt.
 - Discarded for both meters: the start pre-read, the first two points of each frequency (the 4886 has just gone
-  from 0 to Start A, with a new carrier) and the first two points of each later loop, which starts with the jump
+  from 0 to Start A, with a new carrier, power or modulation frequency) and the first two points of each later loop, which starts with the jump
   from Stop A back to Start A. A discarded point is one reading, with no Acquire s window; the first of each
   frequency follows the start pre-read at once, the second settles after its step as every later point does. A fixed current (Start A = Stop A) has no such jump: Loop is then the number of
   readings at each frequency, and all but the first two are saved, so it needs a Loop of at least 3. Start refuses
@@ -40,7 +41,18 @@ Settle s, Acquire s, "SR830 TC" and "MFLI TC s" are read at Start and locked dur
   the SR830 must lock to the new frequency within 5 s, its readback nearer the new frequency than the old one
   (neighbouring primes less than 0.5 % apart both pass the 0.5 % match), before the 4886 comes back on; both meters then expect the
   new frequency, and the start pre-read and the first two points are discarded as after a carrier change.
-- X, Y and Theta show both curves in one plot: MFLI as filled circles, SR830 as thin-edged hollow circles; the legend names instrument and frequency, and the modulation frequency when a sweep has several.
+- Microwave powers (user, 2026-10-14): "P start dBm", "P stop dBm" and "P step dBm" replace "Power dBm"; 12, 12
+  and 1 by default, so one power of 12 dBm (6 dBm before). Equal start and stop give that one power; otherwise the
+  list runs from start towards stop in the step and ends on stop, as the f list does; every power must be finite and
+  at most 25 dBm, and at most 1000 powers, or Start refuses before any output or file. The order is modulation
+  (outermost), power, carrier, current: the whole f × A sweep runs at each power. At each power change the 4886 goes
+  to zero, the SMB100A gets only `:POW <value>` and its level is read back (`:POW?`, more than 0.01 dB off stops the
+  scan with the outputs off); RF, AM and LFO stay on, like the 6221 in a current scan. The carrier returns to f
+  start, the 4886 comes back on at Start A, and the start pre-read and the first two points are discarded as after
+  a carrier change; there is no reference wait, as the LFO does not change. At a modulation change with several
+  powers the first power is set again before the reference wait. The SMB100A is switched off only at the end, on
+  Stop or on an error.
+- X, Y and Theta show both curves in one plot: MFLI as filled circles, SR830 as thin-edged hollow circles; the legend names instrument and frequency, and the modulation frequency and the power when a sweep has several (powers: 2026-10-14).
   Hollow circles are slightly larger for legibility, with a 0.75 px edge in the GUI; the legend uses the same marker style.
   Voltage, phase and reference readings are shown per meter. Idle readings are not appended to the scan curves.
 - The bottom-right plot is still setpoint current vs measured field, drawn once without repeated overlay.
@@ -57,6 +69,7 @@ Each row's X/Y/R/Theta and range parameters belong only to that instrument; the 
 (2026-10-14) are `settle_s`, `effective_settle_s` (the settle the point waited), `acquire_s` and `sample_count`
 (that meter's readings in the row's mean); every older column keeps its place.
 `modulation_frequency_hz` is the LFO frequency the row was read at (one per modulation pass; the column is not new).
+`microwave_power_dbm` is the SMB100A power the row was read at (one per power pass; the column is not new; 2026-10-14).
 `timestamp_iso` is each instrument's last read-completion time in the window, not a hardware-synchronous sample time.
 The log's `expected_saved_points` / `saved_points` count CSV rows, twice the number of field points in dual mode;
 GUI progress still advances per field point. The field and the two meters are not sampled at the same instant; allow for settling time.

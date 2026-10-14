@@ -203,7 +203,8 @@ class FieldOutputTests(unittest.TestCase):
         # One table, so fields share columns down the rows; separate
         # per-field groups (the old layout) would leave nothing to compare.
         # Four columns hold two or more fields since the table is in
-        # measurement order (2026-10-14): Comp. V alone ends row 1.
+        # measurement order (2026-10-14): Comp. V alone ends row 2 (row 1
+        # before the power row of 2026-10-14).
         self.assertGreaterEqual(compared, 4, "fields are not in one shared table")
         for column in range(0, 12, 2):
             for label in table.grid_slaves(column=column):
@@ -413,21 +414,23 @@ class FieldOutputTests(unittest.TestCase):
     def test_sr830_time_constant_sits_beside_its_ref_in_and_shows_every_choice(self):
         """User, 2026-10-14: the SR830 row reads Meter, SR830 REF IN, SR830
         TC, SR830 autorange (since 2026-10-13 the TC sat under Loop).  The
-        dropdown fills its column, as wide as f step, Step A and Settle s
-        above it, and "300 ms" is not cut."""
+        dropdown fills its column, as wide as f step, P step, Step A and
+        Settle s above it, and "300 ms" is not cut.  The SR830 row is row 4
+        since the power row (user, 2026-10-14)."""
         font = tkinter.font.nametofont("TkTextFont")
         choice = self.a.stfmr_lockin_sr830_time_constant_combo
         table = self.a.stfmr_lockin_meter_combo.master
-        above = [table.grid_slaves(row=row, column=5)[0] for row in (0, 1, 2)]
+        above = [table.grid_slaves(row=row, column=5)[0] for row in (0, 1, 2, 3)]
         try:
             for width in (self.LAB_DEFAULT, LAB_WIDE):
                 with self.subTest(width=width):
                     self.arranged(width, "STFMR", self.a.stfmr_lockin_resource_widgets)
                     self.assertTrue(choice.winfo_ismapped())
-                    self.assertEqual((int(choice.grid_info()["row"]), int(choice.grid_info()["column"])), (3, 5))
-                    (label,) = table.grid_slaves(row=3, column=4)
+                    self.assertEqual((int(choice.grid_info()["row"]), int(choice.grid_info()["column"])), (4, 5))
+                    (label,) = table.grid_slaves(row=4, column=4)
                     self.assertEqual(str(label.cget("text")), "SR830 TC:")
-                    self.assertIs(above[2], self.a.stfmr_lockin_settle_entry)
+                    self.assertIs(above[1], self.a.stfmr_lockin_power_step_entry)
+                    self.assertIs(above[3], self.a.stfmr_lockin_settle_entry)
                     for field in above:
                         self.assertEqual((choice.winfo_x(), choice.winfo_width()),
                                          (field.winfo_x(), field.winfo_width()))
@@ -446,27 +449,35 @@ class FieldOutputTests(unittest.TestCase):
         stage, at most five pairs (a sixth made the table too wide for the
         1101 px window the program opens with), every box and label whole in
         that window and in the 2000 px one.  Settle s (1) and Acquire s (2)
-        replace Wait/pt."""
+        replace Wait/pt.  P start / P stop / P step (12, 12, 1) replace
+        Power dBm in their own row under the f row, so the table has six
+        rows (user, 2026-10-14)."""
         field_font = tkinter.font.nametofont("TkTextFont")
         label_font = tkinter.font.nametofont("TkDefaultFont")
         table = self.a.stfmr_lockin_meter_combo.master
         rows = {
-            0: ("f start GHz:", "f stop GHz:", "f step GHz:", "Power dBm:"),
-            1: ("Start A:", "Stop A:", "Step A:", "Loop:", "Comp. V:"),
-            2: ("Mod. start Hz:", "Mod. end Hz:", "Settle s:", "Acquire s:"),
-            3: ("Meter:", "SR830 REF IN:", "SR830 TC:"),
-            4: ("MFLI reference:", "MFLI TC s:"),
+            0: ("f start GHz:", "f stop GHz:", "f step GHz:"),
+            1: ("P start dBm:", "P stop dBm:", "P step dBm:"),
+            2: ("Start A:", "Stop A:", "Step A:", "Loop:", "Comp. V:"),
+            3: ("Mod. start Hz:", "Mod. end Hz:", "Settle s:", "Acquire s:"),
+            4: ("Meter:", "SR830 REF IN:", "SR830 TC:"),
+            5: ("MFLI reference:", "MFLI TC s:"),
         }
-        ticks = {3: (6, "SR830 autorange"), 4: (4, "MFLI autorange")}
+        ticks = {4: (6, "SR830 autorange"), 5: (4, "MFLI autorange")}
         self.assertEqual((self.a.stfmr_lockin_settle_var.get(), self.a.stfmr_lockin_acquire_var.get()),
                          ("1", "2"))
         self.assertEqual((self.a.stfmr_lockin_mod_start_var.get(), self.a.stfmr_lockin_mod_end_var.get()),
                          ("117.3", "117.3"))   # user, 2026-10-14
-        self.assertIs(table.grid_slaves(row=2, column=5)[0], self.a.stfmr_lockin_settle_entry)
-        self.assertIs(table.grid_slaves(row=2, column=7)[0], self.a.stfmr_lockin_acquire_entry)
+        self.assertEqual((self.a.stfmr_lockin_power_start_var.get(), self.a.stfmr_lockin_power_stop_var.get(),
+                          self.a.stfmr_lockin_power_step_var.get()), ("12", "12", "1"))   # user, 2026-10-14
+        self.assertIs(table.grid_slaves(row=1, column=1)[0], self.a.stfmr_lockin_power_start_entry)
+        self.assertIs(table.grid_slaves(row=1, column=3)[0], self.a.stfmr_lockin_power_stop_entry)
+        self.assertIs(table.grid_slaves(row=1, column=5)[0], self.a.stfmr_lockin_power_step_entry)
+        self.assertIs(table.grid_slaves(row=3, column=5)[0], self.a.stfmr_lockin_settle_entry)
+        self.assertIs(table.grid_slaves(row=3, column=7)[0], self.a.stfmr_lockin_acquire_entry)
         # Kept so a sweep can lock it (review, 2026-10-14).
-        self.assertIs(table.grid_slaves(row=4, column=3)[0], self.a.stfmr_lockin_mfli_timeconstant_entry)
-        self.assertEqual(table.grid_slaves(row=5), [], "five rows")
+        self.assertIs(table.grid_slaves(row=5, column=3)[0], self.a.stfmr_lockin_mfli_timeconstant_entry)
+        self.assertEqual(table.grid_slaves(row=6), [], "six rows")
         try:
             for width in (self.LAB_DEFAULT, LAB_WIDE):
                 self.arranged(width, "STFMR", self.a.stfmr_lockin_resource_widgets)
@@ -535,8 +546,10 @@ class FieldOutputTests(unittest.TestCase):
 
     def test_the_plots_stay_drawable_in_the_default_window(self):
         """The fifth table row (2026-10-14) takes about 40 px from the
-        plots; in the window the program opens with (1101 px wide, the lab
-        screen's full height) each plot keeps at least 55 px of canvas."""
+        plots, and the sixth, the power row (user, 2026-10-14), as much
+        again (about 19 px from each plot, as they are two rows of two); in
+        the window the program opens with (1101 px wide, the lab screen's
+        full height) each plot keeps at least 55 px of canvas."""
         canvases = (self.a.stfmr_lockin_x_canvas, self.a.stfmr_lockin_y_canvas,
                     self.a.stfmr_lockin_theta_canvas, self.a.stfmr_lockin_canvas)
         try:

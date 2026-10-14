@@ -515,14 +515,18 @@ class TableTests(NoWindows):
         """User, 2026-10-14: the table is in measurement order, one row per
         stage: microwave, magnet sweep, modulation and timing (Mod. start,
         Mod. end, Settle s, Acquire s), SR830, MFLI; at most five pairs a
-        row.  (2026-10-13: Mod. start ended row 0, Mod. end row 1.)"""
+        row.  (2026-10-13: Mod. start ended row 0, Mod. end row 1.)  Since
+        P start / P stop / P step replaced Power dBm (user, 2026-10-14) the
+        microwave takes two rows, f then P, and every row below moved down
+        one (test_stfmr_power_sweep checks the power row)."""
         page = build_stfmr_page()
         a = page.app
         table = a.stfmr_lockin_meter_combo.master
         rows = {
-            0: ["f start GHz:", "f stop GHz:", "f step GHz:", "Power dBm:"],
-            1: ["Start A:", "Stop A:", "Step A:", "Loop:", "Comp. V:"],
-            2: ["Mod. start Hz:", "Mod. end Hz:", "Settle s:", "Acquire s:"],
+            0: ["f start GHz:", "f stop GHz:", "f step GHz:"],
+            1: ["P start dBm:", "P stop dBm:", "P step dBm:"],
+            2: ["Start A:", "Stop A:", "Step A:", "Loop:", "Comp. V:"],
+            3: ["Mod. start Hz:", "Mod. end Hz:", "Settle s:", "Acquire s:"],
         }
         for row, labels in rows.items():
             with self.subTest(row=row):
@@ -535,25 +539,25 @@ class TableTests(NoWindows):
                     self.assertIn(field.kind, ("Entry", "Spinbox"))
                     self.assertEqual(field.grid_options["sticky"], "ew")
         variables = {
-            (2, 1): a.stfmr_lockin_mod_start_var, (2, 3): a.stfmr_lockin_mod_end_var,
-            (2, 5): a.stfmr_lockin_settle_var, (2, 7): a.stfmr_lockin_acquire_var,
+            (3, 1): a.stfmr_lockin_mod_start_var, (3, 3): a.stfmr_lockin_mod_end_var,
+            (3, 5): a.stfmr_lockin_settle_var, (3, 7): a.stfmr_lockin_acquire_var,
         }
         for (row, column), variable in variables.items():
             field = page.cell(table, row, column)
             self.assertEqual((field.kind, field.options["width"]), ("Entry", 8))
             self.assertIs(field.options["textvariable"], variable)
-        self.assertIs(page.cell(table, 2, 5), a.stfmr_lockin_settle_entry)
-        self.assertIs(page.cell(table, 2, 7), a.stfmr_lockin_acquire_entry)
-        self.assertIs(page.cell(table, 4, 3), a.stfmr_lockin_mfli_timeconstant_entry)
-        self.assertEqual(page.cell(table, 1, 7).kind, "Spinbox", "Loop")
-        self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 3)], [0, 1, 2, 3, 4, 5, 6])
-        self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 4)], [0, 1, 2, 3, 4])
-        everything = [str(w.options.get("text", "")) for row in range(6) for w in page.in_row(table, row)]
-        self.assertEqual(page.in_row(table, 5), [], "five rows")
+        self.assertIs(page.cell(table, 3, 5), a.stfmr_lockin_settle_entry)
+        self.assertIs(page.cell(table, 3, 7), a.stfmr_lockin_acquire_entry)
+        self.assertIs(page.cell(table, 5, 3), a.stfmr_lockin_mfli_timeconstant_entry)
+        self.assertEqual(page.cell(table, 2, 7).kind, "Spinbox", "Loop")
+        self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 4)], [0, 1, 2, 3, 4, 5, 6])
+        self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 5)], [0, 1, 2, 3, 4])
+        everything = [str(w.options.get("text", "")) for row in range(7) for w in page.in_row(table, row)]
+        self.assertEqual(page.in_row(table, 6), [], "six rows")
         self.assertNotIn("Mod. Hz:", everything)
         self.assertNotIn("Wait/pt s:", everything, "Wait/pt is gone (user, 2026-10-14)")
         self.assertFalse([t for t in everything if "step" in t.lower() and "Mod" in t], "no Mod. step box")
-        for row in range(5):
+        for row in range(6):
             self.assertLessEqual(max(w.grid_options["column"] for w in page.in_row(table, row)), 9,
                                  "no sixth pair")
 
