@@ -98,6 +98,70 @@
 - **Not yet updated:** root `README.md` still says the Non-local TC
   defaults to 0.1 s.
 
+## PPMS: TC label and an SR830 TC choice (2026-10-14)
+
+- **Label (the user's request):** the Zurich MFLI row in "PPMS external
+  instruments" said "Time constant s"; it now says **TC (s)**, as RT-E's row
+  does. The row only gets narrower. The Zurich TC value and its default are
+  not part of this change.
+- **SR830 TC (the user's request):** the PPMS page had no control for the
+  SR830 time constant: Connect always set OFLT 10 (1 s) and OFSL 1
+  (12 dB/oct) on each SR830. There is now one **SR830 TC** dropdown for all
+  three SR830s, beside the **Macro** button in the free cell under the
+  Keithley 2400 (left of SR830-3). The cell is set by the wide Keithley rows
+  above it, so the dropdown takes no extra width in the 1101 px window the
+  program opens with or in the 2000 px window.
+  - **Choices:** the STFMR page's list and OFLT codes
+    (`STFMR_LOCKIN_SR830_TIME_CONSTANTS`): 1 ms to 10 s, OFLT 4 to 12. The
+    default is **1 s** (OFLT 10, `PPMS_SR830_DEFAULT_TIME_CONSTANT`), which
+    is what Connect always set before. The slope stays 12 dB/oct.
+  - **Connect** sends the chosen code where it always sent OFLT 10. The
+    command order is otherwise unchanged. It reads OFLT? back with the other
+    settings. On a mismatch the SR830 is disconnected and the error is shown,
+    as for any other setting. While a Connect runs, the dropdown is locked,
+    because the Connect has already read the choice.
+  - **A new choice** is sent to every connected SR830 on the PPMS worker
+    (the same path as a harmonic change): an OFLT write checked with *ESR?,
+    then an OFLT? read-back. An SR830 that is not connected gets the choice
+    when it connects. A changed time constant restarts autoranging for that
+    SR830: the low-signal count and the cool-down are reset, and idle
+    autorange waits 5 new time constants before ranging, as it does after a
+    range step. The range itself is kept. If an SR830 refuses the code, the
+    others are still changed, the error names that SR830 (choosing SR830 TC
+    again retries), and its time constant is recorded as unknown. The
+    dropdown is locked during a scan, any other PPMS command or an SR830
+    Connect. A change refused at such a time puts the dropdown back to the
+    value the SR830s were last sent.
+  - **CSV:** each scan row gets one new column per SR830, added last:
+    `sr830_<address>_time_constant_s`. It holds the time constant that SR830
+    last read back with OFLT? (at Connect or after an SR830 TC change). It is
+    left empty if that read-back failed. All earlier columns keep their
+    places. The program does not see a time constant changed on the SR830's
+    front panel.
+  - **RT-E** shares the SR830 set-up code but builds its own rack. It has no
+    such control and still sends OFLT 10 at Connect.
+- **Tests:** `test_ppms_sr830_tc.py` builds the real PPMS and RT-E pages on
+  stand-in widgets, with fake SR830s, and checks:
+  - the "TC (s)" label on both pages;
+  - the dropdown's default, choices, state and width, and its place beside
+    Macro under the 2400, left of SR830-3;
+  - that Connect sends each choice in the old command order and reads it
+    back, and that a mismatch is refused;
+  - the lock during a Connect;
+  - that a change is sent to every connected SR830 on the worker, never
+    from the Tk thread, with the autorange reset, and that the next Connect
+    sends the new choice;
+  - the refusal and the lock while busy, and a failed read-back on one
+    SR830;
+  - that RT-E has no control and sends OFLT 10;
+  - the new last CSV columns, through the real scan worker.
+
+  `test_sr830_filters.py` now expects `("OFLT", time_constant_code)` with a
+  default of 10. A new CI GUI test, `test_panel_defaults.PPMSRackTests`,
+  checks the label, and checks the dropdown beside Macro, left of SR830-3
+  and no wider than the Keithley row, in both windows. It was not run here
+  because it needs a display.
+
 ## STFMR: default modulation frequency 117.3 Hz (2026-10-14)
 
 - **The user's choice:** "Mod. start Hz" and "Mod. end Hz" now both start at

@@ -589,6 +589,75 @@ class NotebookTabTests(unittest.TestCase):
             root.destroy()
 
 
+class PPMSRackTests(unittest.TestCase):
+    """The PPMS rack (user, 2026-10-14): the Zurich row says "TC (s)", as on
+    RT-E, and one 'SR830 TC' dropdown for the three SR830s sits beside Macro,
+    under the Keithley 2400 and left of SR830-3, in the window the program
+    opens with and in the 2000 px one, without widening the rack."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.root = tk.Tk()
+        except tk.TclError as error:  # headless build server
+            raise unittest.SkipTest(f"no display: {error}")
+        cls.app = build_lab_app(app, cls.root)  # as the lab PC shows it
+        notebook = next(w for w in cls.app.__dict__.values()
+                        if isinstance(w, tk.ttk.Notebook))
+        for index in range(notebook.index("end")):
+            if notebook.tab(index, "text") == "PPMS":
+                notebook.select(index)
+        cls.root.update()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app.closing = True
+        cls.app.safe_close_hardware()
+        cls.root.destroy()
+
+    def show(self, width):
+        self.root.geometry(f"{width}x{lab_window(self.app)[1]}+0+0")
+        self.root.update()
+
+    def test_the_zurich_row_says_tc_s(self):
+        texts = []
+        pending = [self.app.ppms_panel.ppms_tab]
+        while pending:
+            widget = pending.pop()
+            pending.extend(widget.winfo_children())
+            try:
+                texts.append(str(widget.cget("text")))
+            except Exception:
+                pass
+        self.assertIn("TC (s)", texts)
+        self.assertNotIn("Time constant s", texts)
+        self.assertEqual(texts.count("SR830 TC"), 1)
+
+    def test_the_sr830_tc_dropdown_sits_beside_macro_in_both_windows(self):
+        panel = self.app.ppms_panel
+        combo = panel.ppms_sr830_time_constant_combo
+        row = combo.master
+        macro = next(w for w in row.winfo_children() if isinstance(w, tk.ttk.Button))
+        label = next(w for w in row.winfo_children() if isinstance(w, tk.ttk.Label))
+        self.assertEqual((str(macro.cget("text")), str(label.cget("text"))), ("Macro", "SR830 TC"))
+        self.assertEqual(panel.ppms_sr830_time_constant_var.get(), "1 s")
+        self.assertEqual(tuple(str(v) for v in combo.cget("values")),
+                         tuple(app.STFMR_LOCKIN_SR830_TIME_CONSTANTS))
+        self.assertEqual(str(combo.cget("state")), "readonly")
+        keithley = panel.ppms_device_resource_widgets["2400"].master
+        sr830_3 = panel.ppms_device_resource_widgets["830_c"].master
+        # Narrower than the Keithley row above it, so the column keeps its width.
+        self.assertLess(row.winfo_reqwidth(), keithley.winfo_reqwidth())
+        for width in (lab_window(self.app)[0], LAB_WIDE):
+            with self.subTest(width=width):
+                self.show(width)
+                self.assertTrue(combo.winfo_ismapped())
+                self.assertLess(macro.winfo_rootx() + macro.winfo_width(), label.winfo_rootx())
+                self.assertLessEqual(combo.winfo_rootx() + combo.winfo_width(), sr830_3.winfo_rootx())
+                self.assertGreater(combo.winfo_rooty(), keithley.winfo_rooty(), "under the 2400")
+                self.assertLess(abs(combo.winfo_rooty() - sr830_3.winfo_rooty()), 10, "SR830-3's row")
+
+
 class RTEStatusRowTests(unittest.TestCase):
     """The RT-E scan status stays on one line in the widened lab window.
 

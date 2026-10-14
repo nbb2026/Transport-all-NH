@@ -2032,6 +2032,11 @@ STFMR_LOCKIN_SR830_TIME_CONSTANTS = {
     "300 ms": 9, "1 s": 10, "3 s": 11, "10 s": 12,
 }
 STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT = "1 s"
+# The PPMS page's one 'SR830 TC' choice for its three SR830s uses the same
+# choices and OFLT codes.  Its default is 1 s (OFLT 10), the time constant
+# Connect always set before there was a choice; the user wants 1 s defaults.
+# RT-E has no such choice and keeps OFLT 10 at Connect (user, 2026-10-14).
+PPMS_SR830_DEFAULT_TIME_CONSTANT = "1 s"
 # At 12 dB/oct an SR830 output settles in about 5 time constants, so every
 # SR830 reading of a sweep but the discarded first of each frequency waits at
 # least this many, whatever Wait/pt says:
@@ -15639,11 +15644,18 @@ class CombinedControlApp:
                 width=13,
             ).grid(row=row, column=6, sticky="w", padx=(1, 8), pady=2)
 
+        # Macro and the 'SR830 TC' choice share one small frame, so the
+        # choice sits right beside Macro wherever Macro goes (user,
+        # 2026-10-14).
+        macro_row = ttk.Frame(instruments)
+        macro_row.grid(row=2, column=0, columnspan=2, sticky="e")
+        self.ppms_macro_row = macro_row
         ttk.Button(
-            instruments,
+            macro_row,
             text="Macro",
             command=self.open_ppms_macro,
-        ).grid(row=2, column=0, columnspan=2, sticky="e")
+        ).grid(row=0, column=0)
+        self._build_ppms_sr830_tc_choice(macro_row)
         for i, key in enumerate(PPMS_SR830_KEYS):
             ttk.Label(instruments, textvariable=self.ppms_xy_vars[key], style="LargeMetric.TLabel").grid(row=4 + i, column=0, columnspan=2, sticky="w", padx=5)
 
@@ -15877,9 +15889,12 @@ class CombinedControlApp:
             info = child.grid_info()
             if info and int(info.get("row", 0)) >= 4:
                 child.grid_remove()
-            elif isinstance(child, ttk.Button):
+            elif child is self.__dict__.get("ppms_macro_row"):
                 # Macro takes the free cell below the Keithley 2400; a
-                # column of its own made the rack too wide.
+                # column of its own made the rack too wide.  The 'SR830 TC'
+                # choice beside it is narrower than the Keithley rows above,
+                # so the cell, and the rack, keep their width (user,
+                # 2026-10-14).
                 child.grid_configure(row=2, column=0, rowspan=1, columnspan=1, sticky="w", padx=2)
         plot.configure(text="SR830-1 / SR830-2 / SR830-3: X, Y, θ vs scan variable")
         plot.master.rowconfigure(3, weight=1, minsize=220)
@@ -35995,6 +36010,9 @@ class CombinedControlApp:
         choices_ready = not self.ppms_environment_busy and not self.ppms_field_scan_running
         for widget, state in self.__dict__.get('ppms_lockin_choice_widgets', ()):
             widget.configure(state=state if choices_ready else 'disabled')
+        # Locked as the harmonic choices are, and during an SR830 Connect
+        # (user, 2026-10-14).
+        self._update_ppms_sr830_tc_state()
         self._update_ppms_scan_target_widgets(enabled)
         if hasattr(self, "ppms_field_scan_stop_button"):
             self.ppms_field_scan_stop_button.configure(
@@ -37323,6 +37341,156 @@ class CombinedControlApp:
             return
         future.add_done_callback(lambda f: self.post_ui(lambda: finished(f)))
 
+    def _build_ppms_sr830_tc_choice(self, master) -> None:
+        """The PPMS page's one 'SR830 TC' dropdown, for all three SR830s.
+
+        Connect sets the chosen time constant on an SR830 (it always set
+        1 s), and a new choice is set on every connected SR830 at once.  The
+        slope stays 12 dB/oct.  RT-E builds its own rack, without this
+        (user, 2026-10-14).
+        """
+        self.ppms_sr830_time_constant_var = tk.StringVar(value=PPMS_SR830_DEFAULT_TIME_CONSTANT)
+        # The choice the SR830s were last given: a refused change puts the
+        # dropdown back to it, so it never shows a value they were not sent.
+        self.ppms_sr830_time_constant_applied = PPMS_SR830_DEFAULT_TIME_CONSTANT
+        ttk.Label(master, text="SR830 TC").grid(row=0, column=1, padx=(12, 3))
+        combo = ttk.Combobox(
+            master,
+            textvariable=self.ppms_sr830_time_constant_var,
+            values=tuple(STFMR_LOCKIN_SR830_TIME_CONSTANTS),
+            state="readonly",
+            # Six characters hold the longest choice, "300 ms", as on STFMR.
+            width=6,
+        )
+        combo.grid(row=0, column=2)
+        combo.bind("<<ComboboxSelected>>", lambda _event: self._ppms_apply_sr830_time_constant())
+        self.ppms_sr830_time_constant_combo = combo
+
+    def _ppms_sr830_time_constant_code(self) -> int:
+        """The OFLT code Connect sets on a PPMS SR830: the 'SR830 TC'
+        choice, or 10 (1 s, as always) where there is no choice, i.e. RT-E
+        (user, 2026-10-14)."""
+        variable = self.__dict__.get("ppms_sr830_time_constant_var")
+        if variable is None:
+            return 10
+        label = str(variable.get()).strip()
+        if label not in STFMR_LOCKIN_SR830_TIME_CONSTANTS:
+            choices = ", ".join(STFMR_LOCKIN_SR830_TIME_CONSTANTS)
+            raise ValueError(f"SR830 TC must be one of: {choices}")
+        return STFMR_LOCKIN_SR830_TIME_CONSTANTS[label]
+
+    def _ppms_sr830_time_constant_idle(self) -> bool:
+        """Whether the 'SR830 TC' choice may change now: not during a scan,
+        another command or an SR830 Connect.  A Connect takes the choice
+        when it starts, so a change made during it would miss that SR830
+        (user, 2026-10-14)."""
+        return not (self.ppms_environment_busy or self.ppms_field_scan_running
+                    or self.__dict__.get("ppms_sr830_connecting"))
+
+    def _update_ppms_sr830_tc_state(self) -> None:
+        combo = self.__dict__.get("ppms_sr830_time_constant_combo")
+        if combo is not None:
+            combo.configure(state="readonly" if self._ppms_sr830_time_constant_idle() else "disabled")
+
+    def _ppms_apply_sr830_time_constant(self) -> None:
+        """Set a new 'SR830 TC' choice on every connected PPMS SR830.
+
+        OFLT is written and read back on the PPMS worker, as a harmonic
+        change is; an SR830 that is not connected gets the choice at
+        Connect.  While a scan, another command or an SR830 Connect runs the
+        change is refused and the dropdown goes back (user, 2026-10-14).
+        """
+        variable = self.__dict__.get("ppms_sr830_time_constant_var")
+        if variable is None:
+            return
+        previous = self.__dict__.get("ppms_sr830_time_constant_applied", PPMS_SR830_DEFAULT_TIME_CONSTANT)
+        label = str(variable.get()).strip()
+        if label not in STFMR_LOCKIN_SR830_TIME_CONSTANTS or not self._ppms_sr830_time_constant_idle():
+            variable.set(previous)
+            self._update_ppms_sr830_tc_state()
+            return
+        code = STFMR_LOCKIN_SR830_TIME_CONSTANTS[label]
+        controllers = self.ppms_instrument_controllers
+        if not any(controllers[key].connected for key in self._ppms_sr830_keys()):
+            self.ppms_sr830_time_constant_applied = label  # Connect sets it.
+            return
+        self.ppms_environment_busy = True
+        self._update_ppms_control_ui()
+
+        def work():
+            done, failures = [], []
+            for key in self._ppms_sr830_keys():
+                controller = controllers[key]
+                try:
+                    with controller.lock:
+                        if not controller.connected:
+                            continue  # Disconnected meanwhile; Connect sets the choice.
+                        self._ppms_set_sr830_time_constant(key, code)
+                    done.append(PPMS_SR830_LABELS[key])
+                except Exception as error:
+                    # The other SR830s still get the choice; this one's time
+                    # constant is reported as unknown.
+                    failures.append(f"{PPMS_SR830_LABELS[key]}: {error}")
+            if failures:
+                # " | ": short_status_error ends a status line at "; ".
+                raise RuntimeError(" | ".join(failures))
+            return done
+
+        def finished(future):
+            self.ppms_environment_busy = False
+            # Connect sets this choice from now on, also after a failure.
+            self.ppms_sr830_time_constant_applied = label
+            try:
+                done = future.result()
+                self.thread_log(
+                    f"PPMS SR830 TC {label} (OFLT {code}) set and confirmed by readback: "
+                    + (", ".join(done) or "no SR830 connected any more"))
+            except Exception as error:
+                self.thread_log(f"PPMS SR830 TC {label} update failed: {error}")
+                if not self.closing:
+                    messagebox.showerror(
+                        "SR830 TC update failed",
+                        f"{error}\n\nChoose SR830 TC again to retry, or reconnect that SR830.",
+                        parent=self.root,
+                    )
+            finally:
+                self._update_ppms_control_ui()
+        try:
+            future = self.ppms_executor.submit(work)
+        except Exception as error:
+            self.ppms_environment_busy = False
+            variable.set(previous)
+            self._update_ppms_control_ui()
+            messagebox.showerror("SR830 TC update failed", str(error), parent=self.root)
+            return
+        future.add_done_callback(lambda f: self.post_ui(lambda: finished(f)))
+
+    def _ppms_set_sr830_time_constant(self, key: str, code: int) -> None:
+        """OFLT ``code`` on one PPMS SR830, read back with OFLT? (worker)."""
+        controller = self.ppms_instrument_controllers[key]
+        verified = self.__dict__.setdefault("ppms_sr830_time_constant_codes", {})
+        with controller.lock:
+            verified.pop(key, None)  # Unknown until it reads back.
+            self._ppms_write_sr830_checked(key, f"OFLT {code}")
+            actual = int(round(self._ppms_query_numbers(key, "OFLT?", 1)[0]))
+            if actual != code:
+                raise RuntimeError(
+                    f"time constant readback mismatch: requested OFLT {code}, read {actual}")
+            verified[key] = actual
+            # The output now settles with the new time constant.  Autorange
+            # counts afresh, as a harmonic change restarts it on RT-E, and
+            # idle autorange waits 5 new time constants (12 dB/oct), as it
+            # does after a range step (_ppms_sr830_settle_s): the wait in
+            # hand was worked out from the old time constant.
+            state = getattr(self, "ppms_sr830_range_states", {}).get(key)
+            if state is not None:
+                state.low_range_count = state.range_cooldown = 0
+                state.low_range_peak = 0.0
+            if not hasattr(self, "ppms_idle_range_ready_at"):
+                self.ppms_idle_range_ready_at = {}
+            self.ppms_idle_range_ready_at[key] = (
+                time.monotonic() + max(.1, 5.0 * SR830_TIME_CONSTANTS_S[actual]))
+
     def _ppms_write_sr830_checked(self, key: str, command: str) -> None:
         controller = self.ppms_instrument_controllers[key]
         with controller.lock:
@@ -38536,6 +38704,18 @@ class CombinedControlApp:
                     )
                     result["lockin_reference"][key] = (f"{transport_sample[f'sr830_{address}_frequency_hz']:.5g} Hz / "
                         + ("LOCK reference locked" if transport_sample[f"sr830_{address}_reference_valid"] else "WARNING reference unlocked or frequency mismatch"))
+                # Each SR830's time constant in s, as it last read back with
+                # OFLT? (at Connect or an 'SR830 TC' change; empty if that
+                # failed).  New columns go last, so the columns older files
+                # have keep their places (user, 2026-10-14).
+                verified_codes = getattr(self, "ppms_sr830_time_constant_codes", {})
+                for key in tuple(transport_settings["active_lockins"]):
+                    address = self._ppms_sr830_address(
+                        self.ppms_instrument_controllers[key].resource_name
+                    )
+                    code = verified_codes.get(key)
+                    row[f"sr830_{address}_time_constant_s"] = (
+                        SR830_TIME_CONSTANTS_S[code] if code is not None else "")
                 # A later pass may drop a meter whose orders are done; keep the
                 # first row's columns so the live CSV stays aligned.
                 if self.ppms_field_scan_rows:
@@ -38739,16 +38919,28 @@ class CombinedControlApp:
                 "6221 output low stayed earth-grounded (OUTP:LTE? returned "
                 f"{state:g}); set TRIAX -> OUTPUT LOW -> FLOATING on the front panel")
 
-    def _initialize_ppms_sr830(self, key: str, harmonic: int) -> None:
-        """Apply the local SR830_read baseline without changing the 6221."""
+    def _initialize_ppms_sr830(self, key: str, harmonic: int, time_constant_code: int = 10) -> None:
+        """Apply the local SR830_read baseline without changing the 6221.
+
+        ``time_constant_code`` is the PPMS page's 'SR830 TC' choice; RT-E,
+        which has no such choice, keeps the 10 (1 s) Connect always set.
+        The slope stays 12 dB/oct (OFSL 1) (user, 2026-10-14).
+        """
         if harmonic not in (1, 2, 3):
             raise ValueError("SR830 harmonic must be 1, 2 or 3")
+        if time_constant_code not in STFMR_LOCKIN_SR830_TIME_CONSTANTS.values():
+            raise ValueError(f"SR830 time constant code {time_constant_code!r} is not an 'SR830 TC' choice")
+        time_constant_code = int(time_constant_code)
         controller = self.ppms_instrument_controllers[key]
         configuration = (
             ("FMOD", 0), ("RSLP", PPMS_SR830_REFERENCE_SLOPE), ("HARM", harmonic),
             ("ISRC", 1), ("IGND", 0), ("ICPL", 0), ("ILIN", 0), ("SYNC", 0),
-            ("SENS", 9), ("OFLT", 10), ("OFSL", 1), ("RMOD", 1), ("PHAS", 0),
+            ("SENS", 9), ("OFLT", time_constant_code), ("OFSL", 1), ("RMOD", 1), ("PHAS", 0),
         )
+        # The time constant each SR830 last read back, for the scan CSV;
+        # unknown until this Connect reads it back.
+        verified = self.__dict__.setdefault("ppms_sr830_time_constant_codes", {})
+        verified.pop(key, None)
         with controller.lock:
             controller.instrument.write("*CLS")
             for command, value in configuration:
@@ -38759,15 +38951,16 @@ class CombinedControlApp:
                 actual = self._ppms_query_numbers(key, f"{command}?", 1)[0]
                 if actual != expected:
                     raise RuntimeError(f"SR830 initialisation readback mismatch: {command}={actual}, expected {expected}")
+        verified[key] = time_constant_code
         getattr(self, "ppms_sr830_range_states", {}).pop(key, None)
         getattr(self, "ppms_idle_range_ready_at", {}).pop(key, None)
 
-    def _connect_and_initialize_ppms_device(self, key, resource, harmonic=None):
+    def _connect_and_initialize_ppms_device(self, key, resource, harmonic=None, time_constant_code=10):
         controller = self.ppms_instrument_controllers[key]
         identity = controller.connect(resource)
         try:
             if key in PPMS_SR830_KEYS:
-                self._initialize_ppms_sr830(key, harmonic)
+                self._initialize_ppms_sr830(key, harmonic, time_constant_code)
             elif key == "6221":
                 self._initialize_ppms_6221()
         except BaseException:
@@ -38781,6 +38974,7 @@ class CombinedControlApp:
         controller = self.ppms_instrument_controllers[key]
         resource = self.ppms_resource_vars[key].get().strip()
         harmonic = None
+        time_constant_code = 10
         if key in PPMS_SR830_KEYS:
             try:
                 address = self._ppms_sr830_address(resource)
@@ -38791,6 +38985,13 @@ class CombinedControlApp:
                 messagebox.showerror(
                     "PPMS SR830 address", str(error), parent=self.root
                 )
+                return
+            # The 'SR830 TC' choice, read here on the Tk thread as the
+            # harmonic is (user, 2026-10-14).
+            try:
+                time_constant_code = self._ppms_sr830_time_constant_code()
+            except ValueError as error:
+                messagebox.showerror("PPMS SR830 TC", str(error), parent=self.root)
                 return
             for other_key in self._ppms_sr830_keys():
                 if other_key == key:
@@ -38815,9 +39016,18 @@ class CombinedControlApp:
         if resource_widget is not None:
             resource_widget.configure(state="disabled")
         self.ppms_device_connection_vars[key].set("Connecting and initialising…" if harmonic is not None else "Connecting…")
-        future = self.ppms_executor.submit(self._connect_and_initialize_ppms_device, key, resource, harmonic)
+        future = self.ppms_executor.submit(
+            self._connect_and_initialize_ppms_device, key, resource, harmonic, time_constant_code)
+        if harmonic is not None:
+            # The 'SR830 TC' choice stays locked until this Connect ends.
+            self.__dict__.setdefault("ppms_sr830_connecting", set()).add(key)
+            self._update_ppms_sr830_tc_state()
 
         def finished() -> None:
+            connecting = self.__dict__.get("ppms_sr830_connecting")
+            if connecting is not None:
+                connecting.discard(key)
+                self._update_ppms_sr830_tc_state()
             try:
                 identity = future.result()
             except BaseException as error:
@@ -40800,7 +41010,9 @@ class PPMSPanel(CombinedControlApp):
         self.zurich_reference_combo = ttk.Combobox(row, textvariable=self.zurich_reference,
             values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS), state="readonly", width=12)
         self.zurich_reference_combo.grid(row=0, column=7 if compact else 3)
-        ttk.Label(row, text="TC (s)" if compact else "Time constant s").grid(row=0, column=8 if compact else 4, padx=(4, 2))
+        # "TC (s)" on the PPMS page too, as RT-E's row says; the row only
+        # gets narrower (user, 2026-10-14).
+        ttk.Label(row, text="TC (s)").grid(row=0, column=8 if compact else 4, padx=(4, 2))
         # Laid out as the SR830 harmonic rows above it.
         ttk.Label(self.ppms_settings_panel, text="Zurich harmonic").grid(row=3, column=13, sticky="e", padx=(12, 3))
         # Every meter's autorange status sits in one column, right of Measure.
