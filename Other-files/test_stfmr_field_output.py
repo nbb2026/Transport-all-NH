@@ -14,6 +14,8 @@ from unittest import mock
 from lab_screen import LAB_WIDE, build_lab_app, lab_window
 from test_ppms_motor_debug import app
 
+CI_SHOT_HEIGHT = 1300  # gui_checks.py's window height, the CI screenshots'
+
 
 class FakeVisaTimeout(Exception):
     def __init__(self):
@@ -457,7 +459,7 @@ class FieldOutputTests(unittest.TestCase):
         table = self.a.stfmr_lockin_meter_combo.master
         rows = {
             0: ("f start GHz:", "f stop GHz:", "f step GHz:"),
-            1: ("P start dBm:", "P stop dBm:", "P step dBm:"),
+            1: ("P start dBm:", "P stop dBm:", "P step dB:"),     # dB: review, 2026-10-14
             2: ("Start A:", "Stop A:", "Step A:", "Loop:", "Comp. V:"),
             3: ("Mod. start Hz:", "Mod. end Hz:", "Settle s:", "Acquire s:"),
             4: ("Meter:", "SR830 REF IN:", "SR830 TC:"),
@@ -544,21 +546,81 @@ class FieldOutputTests(unittest.TestCase):
         finally:
             self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
 
-    def test_the_plots_stay_drawable_in_the_default_window(self):
+    def test_the_plots_are_drawn_inside_their_canvases_in_the_default_window(self):
         """The fifth table row (2026-10-14) takes about 40 px from the
         plots, and the sixth, the power row (user, 2026-10-14), as much
-        again (about 19 px from each plot, as they are two rows of two); in
-        the window the program opens with (1101 px wide, the lab screen's
-        full height) each plot keeps at least 55 px of canvas."""
-        canvases = (self.a.stfmr_lockin_x_canvas, self.a.stfmr_lockin_y_canvas,
-                    self.a.stfmr_lockin_theta_canvas, self.a.stfmr_lockin_canvas)
+        again (about 19 px from each plot, as they are two rows of two).
+        Drawn against a 120 px minimum, the plots' x-axis titles and tick
+        labels were cut in any window under about 1326 px tall, such as the
+        CI screenshots' 1101 x 1300 px, where each canvas is about 105 px.
+        They are now drawn compact, at their real height, as the PPMS and
+        RT-E plots are (review, 2026-10-14).  In the 1101 px window, at the
+        lab screen's full height and at 1300 px, every text sits inside its
+        canvas, the x-axis title 10 px above its bottom, and each canvas
+        keeps at least the compact minimum of 55 px (at 1300 px checked on
+        Windows only, where the README's estimate comes from: other fonts
+        make the table taller)."""
+        a = self.a
+        canvases = {"X": a.stfmr_lockin_x_canvas, "Y": a.stfmr_lockin_y_canvas,
+                    "theta": a.stfmr_lockin_theta_canvas, "field vs current": a.stfmr_lockin_canvas}
+        titles = {"X": "Magnetic field (G)", "Y": "Magnetic field (G)", "theta": "Magnetic field (G)",
+                  "field vs current": "4886 set current (A)"}
+        # One carrier at 12 dBm, MFLI, five currents through 0 A: a legend
+        # entry ("4 GHz") and a "Field at 0 A" value to place as well.
+        rows = [{"meter": "MFLI", "loop": 1, "microwave_frequency_ghz": 4.0, "microwave_power_dbm": 12.0,
+                 "modulation_frequency_hz": 117.3, "field_g": 10.0 + 300.0 * current, "current_a": current,
+                 "x_v": 1e-6 * current, "y_v": 2e-6 - 1e-6 * current, "phase_deg": 10.0 + current}
+                for current in (-1.0, -0.5, 0.0, 0.5, 1.0)]
+        saved = (a.stfmr_lockin_live_rows, a.stfmr_lockin_rows, a.stfmr_lockin_meter_var.get(),
+                 a.stfmr_lockin_selected_meter)
+        on_windows = self.root.tk.call("tk", "windowingsystem") == "win32"
         try:
-            self.arranged(self.LAB_DEFAULT, "STFMR", self.a.stfmr_lockin_resource_widgets)
-            for canvas in canvases:
-                self.assertTrue(canvas.winfo_ismapped())
-                self.assertGreaterEqual(canvas.winfo_height(), 55)
+            a.stfmr_lockin_meter_var.set("MFLI")
+            a.stfmr_lockin_selected_meter = "MFLI"
+            a.stfmr_lockin_live_rows, a.stfmr_lockin_rows = list(rows), list(rows)
+            for height in (self.LAB_HEIGHT, CI_SHOT_HEIGHT):
+                self.arranged(self.LAB_DEFAULT, "STFMR", a.stfmr_lockin_resource_widgets)
+                self.root.geometry(f"{self.LAB_DEFAULT}x{height}+0+0")
+                for _ in range(3):
+                    self.root.update()
+                a._redraw_stfmr_lockin_live_plots()
+                a._redraw_stfmr_lockin_plot()
+                for name, canvas in canvases.items():
+                    with self.subTest(height=height, plot=name):
+                        self.assertTrue(canvas.winfo_ismapped())
+                        self.assertIs(canvas.ppms_compact_plot, True)
+                        canvas_height = canvas.winfo_height()
+                        if height == self.LAB_HEIGHT or on_windows:
+                            self.assertGreaterEqual(canvas_height, 55, "Increase the window height")
+                        texts = [i for i in canvas.find_all() if canvas.type(i) == "text"]
+                        self.assertTrue(texts)
+                        for item in texts:
+                            y = canvas.coords(item)[1]
+                            self.assertTrue(0 <= y < canvas_height, f"{canvas.itemcget(item, 'text')!r} at {y}")
+                        if canvas_height < 55:
+                            continue
+                        (title,) = [i for i in texts if canvas.itemcget(i, "text") == titles[name]]
+                        self.assertEqual(canvas.coords(title)[1], canvas_height - 10)
+                        # Every line of horizontal text (the x-axis title,
+                        # the tick labels, the legend, "Field at 0 A") lies
+                        # inside the canvas, give or take a pixel or two of
+                        # line spacing.  The rotated y-axis title is centred
+                        # on the plot and only its anchor is checked above:
+                        # "LS475 measured field (G)" is longer than a short
+                        # plot is tall, in either drawing.
+                        for item in texts:
+                            if float(canvas.itemcget(item, "angle") or 0.0):
+                                continue
+                            top, bottom = canvas.bbox(item)[1::2]
+                            self.assertGreaterEqual(top, -2, canvas.itemcget(item, "text"))
+                            self.assertLessEqual(bottom, canvas_height + 2, canvas.itemcget(item, "text"))
+                        self.assertIn("4 GHz", [canvas.itemcget(i, "text") for i in texts])
         finally:
-            self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
+            (a.stfmr_lockin_live_rows, a.stfmr_lockin_rows, meter, a.stfmr_lockin_selected_meter) = saved
+            a.stfmr_lockin_meter_var.set(meter)
+            self.arranged(LAB_WIDE, "STFMR", a.stfmr_lockin_resource_widgets)
+            a._redraw_stfmr_lockin_live_plots()
+            a._redraw_stfmr_lockin_plot()
 
     def test_fmr_plots_fill_the_page_down_to_the_status_line(self):
         self.arranged(LAB_WIDE, "FMR", self.a.stfmr_device_resource_widgets)

@@ -6,7 +6,8 @@ Select `MFLI + SR830` under "Meter" on the STFMR page and connect both lock-ins 
 KEPCO 4886, LS475 and SMB100A. The single-meter `MFLI` and `SR830` modes remain.
 The meter mode is locked during a scan; connecting an instrument in dual mode does not switch back to single mode.
 Settle s, Acquire s, "SR830 TC" and "MFLI TC s" are read at Start and locked during a scan too (2026-10-14),
-and so are "P start dBm", "P stop dBm" and "P step dBm" (user, 2026-10-14).
+and so are "P start dBm", "P stop dBm" and "P step dB" (user, 2026-10-14; "P step dB", a level difference, read
+"P step dBm" until the review of 2026-10-14).
 
 ## Acquisition and display
 
@@ -41,10 +42,14 @@ and so are "P start dBm", "P stop dBm" and "P step dBm" (user, 2026-10-14).
   the SR830 must lock to the new frequency within 5 s, its readback nearer the new frequency than the old one
   (neighbouring primes less than 0.5 % apart both pass the 0.5 % match), before the 4886 comes back on; both meters then expect the
   new frequency, and the start pre-read and the first two points are discarded as after a carrier change.
-- Microwave powers (user, 2026-10-14): "P start dBm", "P stop dBm" and "P step dBm" replace "Power dBm"; 12, 12
+- Microwave powers (user, 2026-10-14): "P start dBm", "P stop dBm" and "P step dB" replace "Power dBm"; 12, 12
   and 1 by default, so one power of 12 dBm (6 dBm before). Equal start and stop give that one power; otherwise the
   list runs from start towards stop in the step and ends on stop, as the f list does; every power must be finite and
-  at most 25 dBm, and at most 1000 powers, or Start refuses before any output or file. The order is modulation
+  at most 25 dBm, and at most 1000 powers, or Start refuses before any output or file. Each power is then rounded to
+  the SMB100A's 0.01 dB level steps and a repeat of the one before is dropped, which the Start confirmation says
+  (review, 2026-10-14: powers between the steps gave identical passes under different labels). The first power is
+  read back (`:POW?`) inside the SMB100A setup, right after it is sent and before "LFO ON" / "OUTPUT ON"; a wrong
+  or non-number reply stops the scan with nothing switched on (review, 2026-10-14). The order is modulation
   (outermost), power, carrier, current: the whole f × A sweep runs at each power. At each power change the 4886 goes
   to zero, the SMB100A gets only `:POW <value>` and its level is read back (`:POW?`, more than 0.01 dB off stops the
   scan with the outputs off); RF, AM and LFO stay on, like the 6221 in a current scan. The carrier returns to f
@@ -52,7 +57,7 @@ and so are "P start dBm", "P stop dBm" and "P step dBm" (user, 2026-10-14).
   a carrier change; there is no reference wait, as the LFO does not change. At a modulation change with several
   powers the first power is set again before the reference wait. The SMB100A is switched off only at the end, on
   Stop or on an error.
-- X, Y and Theta show both curves in one plot: MFLI as filled circles, SR830 as thin-edged hollow circles; the legend names instrument and frequency, and the modulation frequency and the power when a sweep has several (powers: 2026-10-14).
+- X, Y and Theta show both curves in one plot: MFLI as filled circles, SR830 as thin-edged hollow circles; the legend names instrument and frequency, and the modulation frequency and the power when a sweep has several (powers: 2026-10-14). Since the review of 2026-10-14 it names only what varies: with one carrier and several modulation frequencies or powers the carrier is left out ("12 dBm MFLI", "307 Hz, 12 dBm SR830"), so the one-line legend fits more entries.
   Hollow circles are slightly larger for legibility, with a 0.75 px edge in the GUI; the legend uses the same marker style.
   Voltage, phase and reference readings are shown per meter. Idle readings are not appended to the scan curves.
 - The bottom-right plot is still setpoint current vs measured field, drawn once without repeated overlay.

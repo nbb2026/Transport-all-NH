@@ -2021,27 +2021,36 @@ STFMR_FIELD_SETTLE_TARGET_ABS_TOLERANCE_G = 5.0
 STFMR_FIELD_SETTLE_TARGET_REL_TOLERANCE = 0.02
 STFMR_FIELD_SETTLE_TIMEOUT_S = 15.0
 STFMR_LOCKIN_DEFAULT_FREQUENCY_GHZ = 4.0
-# "P start dBm", "P stop dBm" and "P step dBm" replace the single "Power
+# "P start dBm", "P stop dBm" and "P step dB" replace the single "Power
 # dBm" box, and the default is 12 dBm (user, 2026-10-14: "also add power
 # start, stop, step in ST-FMR module" and "the default power change to 12dBm
 # in the ST-FMR"; it was 6 dBm).  P start and P stop both start at 12, so a
-# default sweep runs at that one power; P step starts at 1 dB.
+# default sweep runs at that one power; P step starts at 1 dB.  The step is
+# a level difference, so its unit is dB, not dBm (review, 2026-10-14).
 STFMR_LOCKIN_DEFAULT_POWER_DBM = 12.0
 STFMR_LOCKIN_DEFAULT_POWER_STEP_DB = 1.0
 # The SMB100A software limit, which configure(), set_power() and the power
 # list all enforce (it was a bare 25 in each place).
 STFMR_SMB100A_MAX_POWER_DBM = 25.0
-# set_power() reads the level back and refuses a difference of more than
-# this: the SMB100A sets its level in 0.01 dB steps, so a larger difference
-# means the generator did not take the new level (out of its range at this
-# carrier, say) and is still at the old one (user, 2026-10-14).
+# configure() and set_power() read the level back and refuse a difference of
+# more than this: the SMB100A sets its level in 0.01 dB steps, so a larger
+# difference means the generator did not take the new level (out of its
+# range at this carrier, say) and is still at the old one (user, 2026-10-14;
+# configure() too: review, 2026-10-14).
 STFMR_SMB100A_POWER_READBACK_TOLERANCE_DB = 0.01
+# The SMB100A's level resolution.  Every power of the list is rounded to it
+# and repeats are merged, so each pass is a level the generator can really
+# set and its label is the level that was sent (review, 2026-10-14).
+STFMR_SMB100A_POWER_RESOLUTION_DB = 0.01
 # At most 1000 powers in one sweep (user, 2026-10-14).  Each power is a whole
 # f x A sweep at every modulation frequency, about 1.5 h at the page's
-# defaults, so 1000 powers is already about two months; 1000 is also 10 dB in
-# the generator's finest 0.01 dB steps, or 0 to 25 dBm in 0.025 dB steps.  A
-# longer list can only be a slipped digit in P step (0.001 for 1), and it is
-# refused before any output or file.
+# defaults, so 1000 powers is already about two months.  1000 powers span
+# 9.99 dB in the generator's finest 0.01 dB steps (0 to 10 dBm would be 1001)
+# or 24.975 dB in 0.025 dB steps (0 to 25 dBm in 0.025 dB steps would be
+# 1001; review, 2026-10-14).  A longer list can only be a slipped digit in P
+# step (0.001 for 1), and it is refused before any output or file.  The cap
+# counts the list before rounding to 0.01 dB, so such a slip is refused, not
+# quietly merged into fewer powers (review, 2026-10-14).
 STFMR_LOCKIN_MAX_POWERS = 1000
 # 117.3 Hz by default (user, 2026-10-14; it was 317.3 Hz).
 STFMR_LOCKIN_DEFAULT_LFO_HZ = 117.3
@@ -3350,7 +3359,17 @@ class STFMRSMB100AController(SafeVisaIdentityController):
             owner_scope="STFMR",
         )
 
-    def configure(self, frequency_ghz: float, power_dbm: float, lfo_hz: float) -> None:
+    def configure(self, frequency_ghz: float, power_dbm: float, lfo_hz: float) -> float:
+        """Set up the carrier, the level and the AM, then switch them on.
+
+        The level is read back (":POW?") right after it is sent, before the
+        carrier and before "LFO ON" / "OUTPUT ON": a level the generator
+        refused (a typo, a front-panel :POW:LIM, below its minimum) raises
+        there, so the sweep ends with nothing switched on rather than with
+        the RF on at the previous level and the run labelled with the new
+        one (review, 2026-10-14).  Every write and its order are those of
+        the supplied LabVIEW trace; the query is the only addition.  Returns
+        the read-back in dBm."""
         frequency_ghz = float(frequency_ghz)
         power_dbm = float(power_dbm)
         lfo_hz = float(lfo_hz)
@@ -3360,6 +3379,8 @@ class STFMRSMB100AController(SafeVisaIdentityController):
             raise ValueError("SMB100A microwave frequency and low-frequency modulation frequency must be greater than 0")
         if power_dbm > STFMR_SMB100A_MAX_POWER_DBM:
             raise ValueError("SMB100A power software limit is 25 dBm")
+        power_command = f":POW {power_dbm:.6g}"
+        readback = math.nan
         with self.lock:
             if self.instrument is None:
                 raise RuntimeError("SMB100A is not connected")
@@ -3368,13 +3389,16 @@ class STFMRSMB100AController(SafeVisaIdentityController):
                 ":AM:DEPT:LIN 1.0E+2",
                 "LFO:VOLT 0.50 V",
                 f"LFO:FREQ {lfo_hz:.7g} Hz",
-                f":POW {power_dbm:.6g}",
+                power_command,
                 f"FREQ {frequency_ghz:.9g}GHz",
                 "LFO ON",
                 "OUTPUT ON",
                 "AM:STAT ON",
             ):
                 self.instrument.write(command)
+                if command == power_command:
+                    readback = self._read_back_power(power_command, power_dbm)
+        return readback
 
     def set_frequency(self, frequency_ghz: float) -> None:
         """Change only the carrier frequency while AM/LFO/RF remain enabled."""
@@ -3419,7 +3443,17 @@ class STFMRSMB100AController(SafeVisaIdentityController):
                 raise RuntimeError("SMB100A is not connected")
             command = f":POW {power_dbm:.6g}"
             self.instrument.write(command)
-            reply = str(self.instrument.query(":POW?")).strip()
+            return self._read_back_power(command, power_dbm)
+
+    def _read_back_power(self, command: str, power_dbm: float) -> float:
+        """Query ":POW?" after command set power_dbm, and raise unless the
+        reply is a number within STFMR_SMB100A_POWER_READBACK_TOLERANCE_DB
+        (0.01 dB, the generator's level resolution) of it.  One check for
+        configure()'s first power and set_power()'s later ones, so both
+        refuse the same replies (review, 2026-10-14).  The caller holds the
+        lock, so nothing is sent between the level and its read-back.
+        Returns the read-back in dBm."""
+        reply = str(self.instrument.query(":POW?")).strip()
         try:
             readback = float(reply)
         except ValueError:
@@ -5826,9 +5860,10 @@ def stfmr_modulation_summary(values, start_hz, end_hz, inner: str = "f × A") ->
     )
 
 
-def stfmr_power_levels(start_dbm, stop_dbm, step_db) -> tuple[float, ...]:
-    """The STFMR sweep's microwave powers in dBm, from P start dBm, P stop
-    dBm and P step dBm (user, 2026-10-14: "also add power start, stop, step
+def _stfmr_power_levels_unrounded(start_dbm, stop_dbm, step_db) -> tuple[float, ...]:
+    """The STFMR sweep's microwave powers in dBm as P start dBm, P stop dBm
+    and P step dB give them, before stfmr_power_levels rounds them to the
+    SMB100A's 0.01 dB (user, 2026-10-14: "also add power start, stop, step
     in ST-FMR module").
 
     The same rules as the f start / f stop / f step list
@@ -5844,12 +5879,12 @@ def stfmr_power_levels(start_dbm, stop_dbm, step_db) -> tuple[float, ...]:
     try:
         start, stop, step = (float(str(value).strip()) for value in (start_dbm, stop_dbm, step_db))
     except (TypeError, ValueError) as error:
-        raise ValueError("P start dBm, P stop dBm and P step dBm must be finite numbers") from error
+        raise ValueError("P start dBm, P stop dBm and P step dB must be finite numbers") from error
     step = abs(step)
     if not all(math.isfinite(value) for value in (start, stop, step)):
-        raise ValueError("P start dBm, P stop dBm and P step dBm must be finite numbers")
+        raise ValueError("P start dBm, P stop dBm and P step dB must be finite numbers")
     if step <= 0.0:
-        raise ValueError("P step dBm must be greater than 0 dB")
+        raise ValueError("P step dB must be greater than 0 dB")
     if max(start, stop) > STFMR_SMB100A_MAX_POWER_DBM:
         raise ValueError(
             f"SMB100A power must not exceed {STFMR_SMB100A_MAX_POWER_DBM:g} dBm "
@@ -5886,21 +5921,74 @@ def stfmr_power_levels(start_dbm, stop_dbm, step_db) -> tuple[float, ...]:
     return tuple(values)
 
 
+def stfmr_power_on_grid(power_dbm: float) -> float:
+    """power_dbm rounded to the SMB100A's level resolution
+    (STFMR_SMB100A_POWER_RESOLUTION_DB, 0.01 dB), halves away from zero
+    (12.005 -> 12.01), as text would round it: the binary float of 0.015
+    lies just below it, and round(0.015, 2) gives 0.01 (review,
+    2026-10-14).  -0.004 gives 0, not -0."""
+    power_dbm = float(power_dbm)
+    steps = math.floor(abs(power_dbm) / STFMR_SMB100A_POWER_RESOLUTION_DB + 0.5 + 1e-9)
+    # Two decimals, the resolution's, so 1201 x 0.01 prints as 12.01.
+    return float(round(math.copysign(steps * STFMR_SMB100A_POWER_RESOLUTION_DB, power_dbm), 2)) + 0.0
+
+
+def stfmr_power_levels(start_dbm, stop_dbm, step_db) -> tuple[float, ...]:
+    """The STFMR sweep's microwave powers in dBm, from P start dBm, P stop
+    dBm and P step dB (see _stfmr_power_levels_unrounded for the rules and
+    refusals; user, 2026-10-14).
+
+    Each power is then rounded to the SMB100A's 0.01 dB
+    (stfmr_power_on_grid) and a power equal to the one before it is
+    dropped: the generator sets its level in 0.01 dB steps, so 0 to 0.05 in
+    0.005 dB steps gave eleven passes at only six levels, five of them
+    repeats under different labels.  Rounding rather than refusing a P step
+    under 0.01 dB also covers a P start or P stop with a third decimal and a
+    step such as 0.015, which a step floor would let through with labels
+    the generator cannot set; each pass is now labelled with the level that
+    was sent and read back.  The confirmation says when powers were rounded
+    or merged (stfmr_power_summary; review, 2026-10-14)."""
+    levels: list[float] = []
+    for value in _stfmr_power_levels_unrounded(start_dbm, stop_dbm, step_db):
+        value = stfmr_power_on_grid(value)
+        # The list runs one way, so a repeat can only follow its twin.
+        if not levels or value != levels[-1]:
+            levels.append(value)
+    return tuple(levels)
+
+
 def stfmr_power_summary(values, start_dbm, stop_dbm, step_db) -> str:
     """The Start confirmation's power line (user, 2026-10-14), listed as
     the modulation line is: "Power dBm: 12" for one power; for several the
     list (a long one shows its first five and last two values), how it was
-    made, and that the RF stays on between them."""
+    made, and that the RF stays on between them.  When the boxes asked for
+    levels between the SMB100A's 0.01 dB steps it also says that they were
+    rounded and how many repeats were merged (review, 2026-10-14)."""
     values = [float(value) for value in values]
+    start, stop, step = (float(str(value).strip()) for value in (start_dbm, stop_dbm, step_db))
+    step = abs(step)
+    asked = _stfmr_power_levels_unrounded(start, stop, step)
+    merged = len(asked) - len(values)
+    note = ""
+    if merged > 0 or any(stfmr_power_on_grid(value) != value for value in asked):
+        note = f"rounded to the SMB100A's {STFMR_SMB100A_POWER_RESOLUTION_DB:g} dB steps"
+        if merged > 0:
+            note += f", {merged} repeated power{'' if merged == 1 else 's'} merged"
     if len(values) == 1:
-        return f"Power dBm: {values[0]:g}"
+        if not note:
+            return f"Power dBm: {values[0]:g}"
+        asked_text = (
+            f"from {start:g}" if start == stop
+            else f"{start:g} to {stop:g} in {step:g} dB steps"
+        )
+        return f"Power dBm: {values[0]:g} ({asked_text}, {note})"
     shown = [f"{value:g}" for value in values]
     if len(shown) > 12:
         shown = shown[:5] + ["…"] + shown[-2:]
     return (
-        f"Power dBm: {', '.join(shown)} ({len(values)} powers from {float(start_dbm):g} to "
-        f"{float(stop_dbm):g} in {abs(float(step_db)):g} dB steps); the whole f × A sweep "
-        "runs at each, in this order, with the RF on between them"
+        f"Power dBm: {', '.join(shown)} ({len(values)} powers from {start:g} to "
+        f"{stop:g} in {step:g} dB steps" + (f"; {note}" if note else "")
+        + "); the whole f × A sweep runs at each, in this order, with the RF on between them"
     )
 
 
@@ -16952,8 +17040,10 @@ class CombinedControlApp:
         self.stfmr_lockin_power_stop_entry = parameter(
             1, 1, "P stop dBm:", self.stfmr_lockin_power_stop_var
         )
+        # "P step dB:": the step is a level difference, in dB, not a level
+        # in dBm (review, 2026-10-14; it read "P step dBm:").
         self.stfmr_lockin_power_step_entry = parameter(
-            1, 2, "P step dBm:", self.stfmr_lockin_power_step_var
+            1, 2, "P step dB:", self.stfmr_lockin_power_step_var
         )
         # Row 2, magnet sweep: the 4886 currents, the loops over them and the
         # 4886's voltage compliance.
@@ -17000,7 +17090,7 @@ class CombinedControlApp:
         )
         # The SR830 time constant, beside its REF IN, as "MFLI TC s" is beside
         # the MFLI reference below.  Its label is no wider than "f step GHz:"
-        # and "P step dBm:" above, so the table keeps its width; the dropdown
+        # and "P step dB:" above, so the table keeps its width; the dropdown
         # is six characters wide ("300 ms" fits) and fills its column's
         # width.  The column still gives way in a too-narrow window, but only
         # down to this dropdown's width, so, like the others, it is never cut
@@ -17153,6 +17243,7 @@ class CombinedControlApp:
             highlightbackground="#b8c0c8", height=self._ui_px(190, 135),
         )
         self.stfmr_lockin_x_canvas.grid(row=0, column=0, sticky="nsew")
+        self._stfmr_lockin_compact_canvas(self.stfmr_lockin_x_canvas)
         self.stfmr_lockin_x_canvas.bind(
             "<Configure>", lambda _event: self._redraw_stfmr_lockin_live_plots(), add="+"
         )
@@ -17168,6 +17259,7 @@ class CombinedControlApp:
             highlightbackground="#b8c0c8", height=self._ui_px(190, 135),
         )
         self.stfmr_lockin_y_canvas.grid(row=0, column=0, sticky="nsew")
+        self._stfmr_lockin_compact_canvas(self.stfmr_lockin_y_canvas)
         self.stfmr_lockin_y_canvas.bind(
             "<Configure>", lambda _event: self._redraw_stfmr_lockin_live_plots(), add="+"
         )
@@ -17183,6 +17275,7 @@ class CombinedControlApp:
             highlightbackground="#b8c0c8", height=self._ui_px(190, 135),
         )
         self.stfmr_lockin_theta_canvas.grid(row=0, column=0, sticky="nsew")
+        self._stfmr_lockin_compact_canvas(self.stfmr_lockin_theta_canvas)
         self.stfmr_lockin_theta_canvas.bind(
             "<Configure>", lambda _event: self._redraw_stfmr_lockin_live_plots(), add="+"
         )
@@ -17198,11 +17291,27 @@ class CombinedControlApp:
             highlightbackground="#b8c0c8", height=self._ui_px(190, 135),
         )
         self.stfmr_lockin_canvas.grid(row=0, column=0, sticky="nsew")
+        self._stfmr_lockin_compact_canvas(self.stfmr_lockin_canvas)
         self.stfmr_lockin_canvas.bind(
             "<Configure>", lambda _event: self._redraw_stfmr_lockin_plot(), add="+"
         )
         self._redraw_stfmr_lockin_live_plots()
         self._redraw_stfmr_lockin_plot()
+
+    @staticmethod
+    def _stfmr_lockin_compact_canvas(canvas) -> None:
+        """Draw an STFMR plot at its real height, as the PPMS and RT-E plots
+        are (review, 2026-10-14).  The six-row table leaves each of the four
+        plots about 105 px in the 1101 x 1300 px window of the CI
+        screenshots, and _draw_nonlocal_series drew an unflagged canvas as
+        if it were at least 120 px tall, so the x-axis title and tick labels
+        fell below the canvas and were cut in any window under about
+        1326 px.  Compact keeps the axes inside the canvas (14 or 26 px
+        above, 44 px below the plot box) and below 55 px asks for a taller
+        window.  compact_legend_strip keeps the legend strip for a single
+        entry, as the STFMR legend names even one carrier."""
+        canvas.ppms_compact_plot = True
+        canvas.compact_legend_strip = True
 
     def _stfmr_lockin_connected(self, key: str) -> bool:
         if key == "mfli":
@@ -18527,16 +18636,21 @@ class CombinedControlApp:
             power_change=power_change,
         ):
             return
-        # The SMB100A's read-back of a changed power, for the run log.
+        # The SMB100A's read-back of the first or a changed power, for the
+        # run log.
         power_readback = {}
 
         def configure() -> None:
             if self.stfmr_lockin_stop_event.is_set():
                 return
             if initial:
-                # The first power, as the one power was set before.
+                # The first power, as the one power was set before, now read
+                # back before the RF is switched on: a level the SMB100A did
+                # not take raises inside configure(), before "LFO ON" and
+                # "OUTPUT ON", and the sweep ends with nothing switched on
+                # (review, 2026-10-14).
                 with visa_operation("SMB100A", "carrier and modulation setup"):
-                    self.stfmr_lockin_controllers["smb"].configure(
+                    power_readback["dbm"] = self.stfmr_lockin_controllers["smb"].configure(
                         frequency_ghz,
                         power_dbm,
                         self.stfmr_lockin_expected_hz,
@@ -18626,7 +18740,8 @@ class CombinedControlApp:
                 return
             self._show_stfmr_lockin_kepco_state()
             ready = {"power_dbm": power_dbm}
-            if power_change:
+            # The first power is read back too (review, 2026-10-14).
+            if initial or power_change:
                 ready["power_readback_dbm"] = power_readback.get("dbm")
             if not self._stfmr_lockin_log_event(
                 "frequency_ready", frequency_ghz=frequency_ghz,
@@ -19335,11 +19450,25 @@ class CombinedControlApp:
             # also names the power, so "scanning" is left out as well
             # (user, 2026-10-14).
             left = self._stfmr_lockin_duration_text(remaining)
+            # With several modulation frequencies and several powers the
+            # pass label names both ("10.25 GHz/1013 Hz/-12.5 dBm"), and the
+            # passes multiply into five-digit counts: "...; 12345/48000;
+            # I=-2.925 A; ~10.5 h left" is about 56 widths of "0" (Arial
+            # 15 px), past the 52-character label, and leaving out either
+            # "I=" or " left" alone still left 53 to 55.  So both go: the
+            # "A" still marks the current and the "~" the time left
+            # (review, 2026-10-14).
+            both = (
+                self._stfmr_lockin_several_modulations()
+                and self._stfmr_lockin_several_powers()
+            )
             self.stfmr_lockin_status_var.set(
                 f"{self._stfmr_lockin_pass_label(frequency_ghz)}; "
                 + ("" if self._stfmr_lockin_several_powers() else "scanning ")
-                + f"{completed}/{total}; I={current:+.5g} A; "
-                + (f"~{left} left" if self._stfmr_lockin_short_status()
+                + f"{completed}/{total}; "
+                + ("" if both else "I=") + f"{current:+.5g} A; "
+                + (f"~{left}" if both
+                   else f"~{left} left" if self._stfmr_lockin_short_status()
                    else f"remaining about {left}")
             )
         if done_in_frequency >= len(self.stfmr_lockin_points):
@@ -19495,15 +19624,31 @@ class CombinedControlApp:
         else:
             modulations = len(getattr(self, "stfmr_lockin_modulation_frequencies_hz", ()))
             powers = len(getattr(self, "stfmr_lockin_powers_dbm", ()))
-            self.stfmr_lockin_status_var.set(
-                f"Multi-frequency scan complete: {len(self.stfmr_lockin_frequencies_ghz)} frequencies, "
-                # Named only when there were several (user, 2026-10-13;
-                # powers 2026-10-14).
-                + (f"{modulations} modulation frequencies, " if modulations > 1 else "")
-                + (f"{powers} powers, " if powers > 1 else "")
-                + f"{len(self.stfmr_lockin_rows)} points saved; "
-                "4886/SMB100A outputs OFF; CSV saved"
-            )
+            carriers = len(self.stfmr_lockin_frequencies_ghz)
+            saved = len(self.stfmr_lockin_rows)
+            if modulations > 1 or powers > 1:
+                # The point count first: after "Multi-frequency scan
+                # complete: 2 frequencies, 3 powers, " it fell past the end
+                # of the 52-character status label, and with several
+                # modulation frequencies it already did.  The modulation
+                # frequencies and powers are named only when there were
+                # several (user, 2026-10-13 and 2026-10-14; review,
+                # 2026-10-14).
+                swept = [f"{carriers} frequenc{'y' if carriers == 1 else 'ies'}"]
+                if modulations > 1:
+                    swept.append(f"{modulations} modulation frequencies")
+                if powers > 1:
+                    swept.append(f"{powers} powers")
+                self.stfmr_lockin_status_var.set(
+                    f"Scan complete: {saved} points saved; {', '.join(swept)}; "
+                    "outputs OFF; CSV saved"
+                )
+            else:
+                # One modulation frequency and one power: as before.
+                self.stfmr_lockin_status_var.set(
+                    f"Multi-frequency scan complete: {carriers} frequencies, "
+                    f"{saved} points saved; 4886/SMB100A outputs OFF; CSV saved"
+                )
 
     def _redraw_stfmr_lockin_plot(self) -> None:
         canvas = self.stfmr_lockin_canvas
@@ -19582,6 +19727,17 @@ class CombinedControlApp:
                  else f"{low:+.1f} to {high:+.1f} G")
         width = max(canvas.winfo_width(), 330)
         height = max(canvas.winfo_height(), 120)
+        if getattr(canvas, "ppms_compact_plot", False) is True:
+            # The canvas as _draw_nonlocal_series drew it: its real size.
+            # Against the 120 px minimum the bottom spots lay below a
+            # shorter canvas, where nothing overlaps them, so the value was
+            # placed out of sight (review, 2026-10-14).  Too short to draw
+            # ("Increase the window height"), the value goes in the title.
+            width, height = canvas.winfo_width(), canvas.winfo_height()
+            if width <= 1 or height < 55:
+                if frame is not None:
+                    frame_title(value)
+                return
         # Every spot lies outside the plot box, so the curve is never covered:
         # the top strip beside the legend, then the bottom corners either side
         # of the x-axis title.  Each is checked against everything drawn.
@@ -19844,6 +20000,16 @@ class CombinedControlApp:
         for key, (frequency, loop) in parsed.items():
             group = (str(key).split("_freq_", 1)[0], frequency)
             first_loop[group] = min(loop, first_loop.get(group, loop))
+        # The legend names only what varies (review, 2026-10-14): at the
+        # 1101 px window the one-line legend ran off the plot after about
+        # three "5 GHz, 12 dBm" entries.  The modulation and power parts are
+        # there only when the rows hold several (see _stfmr_lockin_*_part),
+        # so only the carrier is left out, when every series has the same
+        # one and something else tells them apart: one carrier and one
+        # modulation frequency give "12 dBm", one carrier and several
+        # modulation frequencies "307 Hz" or "307 Hz, 12 dBm".  Several
+        # carriers keep the labels as before, and so does a carrier alone.
+        carriers = {frequency for frequency, _loop in parsed.values()}
         labels: dict[str, str] = {}
         colors: dict[str, str] = {}
         for key, (frequency, loop) in parsed.items():
@@ -19851,11 +20017,14 @@ class CombinedControlApp:
             power = power_of[key]
             colors[key] = frequency_colors[(frequency, modulation, power)]
             group = (str(key).split("_freq_", 1)[0], frequency)
-            name = (
-                f"{frequency:g} GHz"
-                + (f", {modulation:g} Hz" if modulation is not None else "")
-                + (f", {power:g} dBm" if power is not None else "")
-            )
+            parts = []
+            if len(carriers) > 1 or (modulation is None and power is None):
+                parts.append(f"{frequency:g} GHz")
+            if modulation is not None:
+                parts.append(f"{modulation:g} Hz")
+            if power is not None:
+                parts.append(f"{power:g} dBm")
+            name = ", ".join(parts)
             labels[key] = name if loop == first_loop[group] else ""
         dual = any(k.startswith("mfli_") for k in parsed) and any(k.startswith("8_") for k in parsed)
         if dual:
@@ -31698,7 +31867,15 @@ class CombinedControlApp:
                 (series_labels or {}).get(key, str(key).split("_loop_", 1)[0])
                 for key, rows in series.items() if rows
             }
-            if show_legend and len(legend_names) > 1:
+            # The STFMR plots name a lone carrier too ("4 GHz"), and an
+            # entry at y = 12 runs into a plot box that starts at 14, so a
+            # canvas flagged compact_legend_strip keeps the strip for one
+            # named entry as well (review, 2026-10-14).  The PPMS, RT-E and
+            # Non-local plots are left as they were.
+            one_named = any(legend_names) and (
+                getattr(canvas, "compact_legend_strip", False) is True
+            )
+            if show_legend and (len(legend_names) > 1 or one_named):
                 top = 26
         hide_x_labels = getattr(canvas, "ppms_hide_x_labels", False) is True
         if hide_x_labels:

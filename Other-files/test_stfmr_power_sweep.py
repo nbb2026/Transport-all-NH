@@ -4,12 +4,16 @@ The user asked: "also add power start, stop, step in ST-FMR module", "when
 sweep power, can you do not close the SMA100? like 6221 in the current scan,
 just change its output value" and "the default power change to 12dBm in the
 ST-FMR".  The single "Power dBm" box became "P start dBm", "P stop dBm" and
-"P step dBm" (12, 12, 1 by default: one power, 12 dBm).  The power list
-follows the f start / f stop / f step rules.  The sweep runs modulation
-(outermost), then power, then carrier, then the magnet current; at a power
-change the 4886 is zeroed, only the SMB100A's level changes (":POW", read
-back with ":POW?"), RF, AM and LFO stay on, the 4886 comes back on at Start
-A and the first two readings are discarded, as after a carrier change.
+"P step dB" (12, 12, 1 by default: one power, 12 dBm; the step's unit is dB:
+review, 2026-10-14).  The power list follows the f start / f stop / f step
+rules, each power rounded to the SMB100A's 0.01 dB and repeats merged
+(review, 2026-10-14).  The sweep runs modulation (outermost), then power,
+then carrier, then the magnet current; at a power change the 4886 is zeroed,
+only the SMB100A's level changes (":POW", read back with ":POW?"), RF, AM
+and LFO stay on, the 4886 comes back on at Start A and the first two
+readings are discarded, as after a carrier change.  The first power is read
+back too, inside configure(), before the RF is switched on (review,
+2026-10-14).
 
 No Tk window and no instrument: the real sweep runs on the shared STFMR
 harness (stand-in devices that record what they were sent, a Root that runs
@@ -39,6 +43,12 @@ levels = app.stfmr_power_levels
 class PowerRecording(Recording):
     """The modulation test's recording device, which also takes a power."""
 
+    def configure(self, *args):
+        super().configure(*args)
+        # The SMB100A's configure() returns its read-back of the first
+        # power (review, 2026-10-14); the stand-in takes every level.
+        return args[1] if self.name == "smb" else None
+
     def set_power(self, dbm):
         self.calls.append(("power", dbm))
         self.record("power", dbm)
@@ -47,17 +57,19 @@ class PowerRecording(Recording):
 
 class FakeSmb100a:
     """An SMB100A that keeps the level it was last sent and answers :POW?
-    with it.  refuses: levels it ignores (as a generator does with a level
-    out of its range), keeping the old one."""
+    with it, starting at 6 dBm (the last run's level, say).  refuses: levels
+    it ignores (as a generator does with a level out of its range), keeping
+    the old one.  sequence: every write and query, in order."""
 
-    def __init__(self, refuses=(), reply=None):
-        self.writes, self.queries = [], []
-        self.level = None
+    def __init__(self, refuses=(), reply=None, level=6.0):
+        self.writes, self.queries, self.sequence = [], [], []
+        self.level = level
         self.refuses = set(refuses)
         self.reply = reply
 
     def write(self, command):
         self.writes.append(command)
+        self.sequence.append(command)
         if command.startswith(":POW "):
             value = float(command.split()[1])
             if value not in self.refuses:
@@ -65,6 +77,7 @@ class FakeSmb100a:
 
     def query(self, command):
         self.queries.append(command)
+        self.sequence.append(command)
         if command != ":POW?":
             raise AssertionError(f"unexpected query {command}")
         if self.reply is not None:
@@ -120,11 +133,11 @@ class PowerListTests(NoWindows):
                                   ("12", "14", "nan"), (None, "12", "1")):
             with self.subTest(start=start, stop=stop, step=step):
                 with self.assertRaisesRegex(
-                        ValueError, r"^P start dBm, P stop dBm and P step dBm must be finite numbers$"):
+                        ValueError, r"^P start dBm, P stop dBm and P step dB must be finite numbers$"):
                     levels(start, stop, step)
         for start, stop in (("10", "14"), ("12", "12")):    # as f step: refused even for one value
             with self.subTest(start=start, stop=stop):
-                with self.assertRaisesRegex(ValueError, r"^P step dBm must be greater than 0 dB$"):
+                with self.assertRaisesRegex(ValueError, r"^P step dB must be greater than 0 dB$"):
                     levels(start, stop, "0")
 
     def test_the_list_is_capped_at_1000_powers(self):
@@ -155,6 +168,70 @@ class PowerListTests(NoWindows):
                                         "1 dB steps)"), long)
 
 
+class PowerResolutionTests(NoWindows):
+    """Review, 2026-10-14: the SMB100A sets its level in 0.01 dB steps, so
+    powers between them gave identical passes under different labels.  Each
+    power is rounded to 0.01 dB (halves away from zero) and a repeat of the
+    power before it is dropped; the confirmation says so."""
+
+    def test_powers_are_rounded_to_0_01_db_and_repeats_merged(self):
+        self.assertEqual(app.STFMR_SMB100A_POWER_RESOLUTION_DB, 0.01)
+        # Eleven asked, six levels the generator can set.
+        self.assertEqual(levels("0", "0.05", "0.005"), (0.0, 0.01, 0.02, 0.03, 0.04, 0.05))
+        self.assertEqual(levels("0.05", "0", "0.005"), (0.05, 0.04, 0.03, 0.02, 0.01, 0.0), "descending")
+        # A step of at least 0.01 dB off the grid: rounded, nothing merged.
+        self.assertEqual(levels("0", "0.1", "0.015"), (0.0, 0.02, 0.03, 0.05, 0.06, 0.08, 0.09, 0.1))
+        # The shorter last step lands on the grid point before it: merged.
+        self.assertEqual(levels("0", "0.104", "0.01")[-2:], (0.09, 0.1))
+        # A third decimal in P start or P stop, and the one-power case.
+        self.assertEqual(levels("12.005", "12.005", "1"), (12.01,))
+        self.assertEqual(levels("12", "12.004", "0.001"), (12.0,), "all five round to 12")
+        self.assertEqual(levels("-12.345", "-12.345", "1"), (-12.35,))
+        self.assertEqual(levels("-0.004", "0.02", "0.012"), (0.0, 0.01, 0.02))
+        self.assertEqual(f"{levels('-0.004', '-0.004', '1')[0]:g}", "0", "not -0")
+        # Already on the grid: unchanged (no float dust either).
+        self.assertEqual(levels("0", "1", "0.1"), tuple(n / 10 for n in range(11)))
+        self.assertEqual(levels("10", "-10", "2.5"), tuple(10 - 2.5 * n for n in range(9)))
+        for value in levels("-30", "25", "0.37"):
+            with self.subTest(value=value):
+                self.assertEqual(value, round(value, 2))
+                self.assertLessEqual(value, 25.0, "rounding never passes the 25 dBm limit")
+        self.assertEqual(levels("24.996", "24.996", "1"), (25.0,))
+        self.assertEqual(app.stfmr_power_on_grid(0.015), 0.02, "half away from zero, not round()'s 0.01")
+        self.assertEqual(app.stfmr_power_on_grid(-0.015), -0.02)
+
+    def test_the_cap_counts_the_powers_asked_for(self):
+        # 501 asked, 51 levels: within the cap, merged.
+        self.assertEqual(len(levels("0", "0.5", "0.001")), 51)
+        # A slipped digit (0.001 for 1): 5001 asked would round to 501
+        # levels, within the cap, but it is still refused rather than run.
+        with self.assertRaisesRegex(ValueError, r"gives more than 1000 powers; a sweep takes at most 1000"):
+            levels("0", "5", "0.001")
+
+    def test_the_confirmation_says_when_powers_were_rounded_or_merged(self):
+        summary = app.stfmr_power_summary
+        self.assertEqual(
+            summary(levels("0", "0.05", "0.005"), "0", "0.05", "0.005"),
+            "Power dBm: 0, 0.01, 0.02, 0.03, 0.04, 0.05 (6 powers from 0 to 0.05 in 0.005 dB steps; "
+            "rounded to the SMB100A's 0.01 dB steps, 5 repeated powers merged); the whole f × A sweep "
+            "runs at each, in this order, with the RF on between them")
+        self.assertEqual(
+            summary(levels("0", "0.1", "0.015"), "0", "0.1", "0.015"),
+            "Power dBm: 0, 0.02, 0.03, 0.05, 0.06, 0.08, 0.09, 0.1 (8 powers from 0 to 0.1 in 0.015 dB "
+            "steps; rounded to the SMB100A's 0.01 dB steps); the whole f × A sweep runs at each, in this "
+            "order, with the RF on between them")
+        self.assertEqual(summary(levels("12.005", "12.005", "1"), "12.005", "12.005", "1"),
+                         "Power dBm: 12.01 (from 12.005, rounded to the SMB100A's 0.01 dB steps)")
+        self.assertEqual(summary(levels("12", "12.004", "0.001"), "12", "12.004", "0.001"),
+                         "Power dBm: 12 (12 to 12.004 in 0.001 dB steps, rounded to the SMB100A's 0.01 dB "
+                         "steps, 4 repeated powers merged)")
+        self.assertIn("(2 powers from 0 to 0.01 in 0.005 dB steps; rounded to the SMB100A's 0.01 dB steps, "
+                      "1 repeated power merged)", summary(levels("0", "0.01", "0.005"), "0", "0.01", "0.005"))
+        # On the grid: no note, as before.
+        self.assertEqual(summary([12.0], "12", "12", "1"), "Power dBm: 12")
+        self.assertNotIn("rounded", summary(levels("10", "14", "2"), "10", "14", "2"))
+
+
 class Smb100aPowerTests(NoWindows):
     def controller(self, **options):
         controller = app.STFMRSMB100AController(lambda _message: None)
@@ -166,6 +243,7 @@ class Smb100aPowerTests(NoWindows):
         controller.configure(5.0, 12.0, 117.3)
         self.assertIn(":POW 12", fake.writes, "configure() sends the first power")
         fake.writes.clear()
+        fake.queries.clear()
         self.assertEqual(controller.set_power(14.0), 14.0)
         self.assertEqual(fake.writes, [":POW 14"], "no OUTPUT, AM or LFO ON/OFF")
         self.assertEqual(fake.queries, [":POW?"])
@@ -200,6 +278,50 @@ class Smb100aPowerTests(NoWindows):
                     with self.assertRaisesRegex(RuntimeError, "did not take the new power"):
                         controller.set_power(14.0)
 
+    def test_configure_reads_the_first_power_back_before_the_rf_is_switched_on(self):
+        """Review, 2026-10-14: the first power was set by configure() and
+        never read back, so a refused level left the RF on at the previous
+        level under the new label.  The commands and their order are the
+        LabVIEW trace's as before, with ':POW?' right after ':POW'."""
+        controller, fake = self.controller()
+        self.assertEqual(controller.configure(5.0, 12.0, 117.3), 12.0, "returns the read-back")
+        self.assertEqual(fake.sequence, [":AM:DEPT:LIN 1.0E+2", "LFO:VOLT 0.50 V", "LFO:FREQ 117.3 Hz",
+                                         ":POW 12", ":POW?", "FREQ 5GHz", "LFO ON", "OUTPUT ON", "AM:STAT ON"])
+        self.assertEqual(fake.writes, [":AM:DEPT:LIN 1.0E+2", "LFO:VOLT 0.50 V", "LFO:FREQ 117.3 Hz",
+                                       ":POW 12", "FREQ 5GHz", "LFO ON", "OUTPUT ON", "AM:STAT ON"],
+                         "every write and its order as before")
+
+    def test_configure_refuses_a_level_the_generator_did_not_take_with_nothing_switched_on(self):
+        for options, reply_text in (({"refuses": {12.0}}, "'6'"),       # still at the last level
+                                    ({"reply": "13.5"}, "'13.5'"),       # a front-panel :POW:LIM, say
+                                    ({"reply": ""}, "''"), ({"reply": "abc"}, "'abc'"),
+                                    ({"reply": "nan"}, "'nan'")):
+            with self.subTest(options=options):
+                controller, fake = self.controller(**options)
+                with self.assertRaisesRegex(RuntimeError, r"^SMB100A did not take the new power: sent ':POW 12', "
+                                                          rf":POW\? read back {re.escape(reply_text)}"):
+                    controller.configure(5.0, 12.0, 117.3)
+                self.assertEqual(fake.sequence, [":AM:DEPT:LIN 1.0E+2", "LFO:VOLT 0.50 V", "LFO:FREQ 117.3 Hz",
+                                                 ":POW 12", ":POW?"],
+                                 "no carrier, no LFO ON, no OUTPUT ON, no AM:STAT ON")
+        # Within 0.01 dB, the same tolerance as set_power().
+        controller, fake = self.controller(reply="12.01")
+        self.assertAlmostEqual(controller.configure(5.0, 12.0, 117.3), 12.01)
+        self.assertIn("OUTPUT ON", fake.writes)
+
+    def test_configure_and_set_power_share_one_read_back_check(self):
+        for reply, accepted in (("12", True), ("12.01", True), ("11.99", True), ("1.2E+01", True),
+                                ("12.02", False), ("11.98", False), ("", False), ("abc", False)):
+            for name, call in (("configure", lambda c: c.configure(5.0, 12.0, 117.3)),
+                               ("set_power", lambda c: c.set_power(12.0))):
+                with self.subTest(reply=reply, call=name):
+                    controller, _fake = self.controller(reply=reply)
+                    if accepted:
+                        self.assertAlmostEqual(call(controller), float(reply))
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "did not take the new power"):
+                            call(controller)
+
     def test_bad_values_send_nothing(self):
         controller, fake = self.controller()
         for bad in (math.nan, math.inf, -math.inf, 25.01, 30.0):
@@ -217,7 +339,8 @@ class PowerSweepCase(NoWindows):
     the harness's Acquire s 0.2 (three readings a point)."""
 
     def sweep(self, powers=("10", "14", "2"), mod=("117.3", "117.3"), meter="SR830", stop="6",
-              end_current="0.5", tc="100 ms", fail=None, smb=None, start_only=False):
+              end_current="0.5", tc="100 ms", fail=None, smb=None, start_only=False,
+              smb_type=PowerRecording, mfli_type=PowerRecording):
         h = harness(self.tmp.name, meter=meter, stop=stop, end_current=end_current)
         h.root = TimedRoot()
         h.stfmr_lockin_status_var = History()
@@ -230,10 +353,9 @@ class PowerSweepCase(NoWindows):
         h.stfmr_lockin_power_step_var.set(powers[2])
         h.log = []
         h.stfmr_lockin_controllers = {
-            key: PowerRecording(h, key, h.log) for key in ("kepco", "gauss", "smb", "830")}
-        if smb is not None:
-            h.stfmr_lockin_controllers["smb"] = smb
-        h.stfmr_lockin_mfli_controller = PowerRecording(h, "mfli", h.log)
+            key: PowerRecording(h, key, h.log) for key in ("kepco", "gauss", "830")}
+        h.stfmr_lockin_controllers["smb"] = smb if smb is not None else smb_type(h, "smb", h.log)
+        h.stfmr_lockin_mfli_controller = mfli_type(h, "mfli", h.log)
         if fail:
             device, call, value = fail
             (h.stfmr_lockin_controllers.get(device) or h.stfmr_lockin_mfli_controller
@@ -305,9 +427,12 @@ class PowerSweepTests(PowerSweepCase):
                           (12.0, 2, True, 5.0, False, False), (12.0, 2, False, 6.0, False, False),
                           (14.0, 3, True, 5.0, False, False), (14.0, 3, False, 6.0, False, False)])
         ready = [e for e in history if e["event"] == "frequency_ready"]
+        # The first power is read back by configure() and every changed one
+        # by set_power(); a carrier change sends no level (review,
+        # 2026-10-14: the first power was not read back).
         self.assertEqual([(e["power_dbm"], e.get("power_readback_dbm")) for e in ready],
-                         [(10.0, None), (10.0, None), (12.0, 12.0), (12.0, None), (14.0, 14.0), (14.0, None)])
-        self.assertNotIn("power_readback_dbm", ready[0], "only a changed power is read back")
+                         [(10.0, 10.0), (10.0, None), (12.0, 12.0), (12.0, None), (14.0, 14.0), (14.0, None)])
+        self.assertEqual(["power_readback_dbm" in e for e in ready], [True, False] * 3)
         self.assertEqual([(e["power_dbm"], e["saved_points"]) for e in history
                           if e["event"] == "frequency_complete"],
                          [(10.0, 2), (10.0, 2), (12.0, 2), (12.0, 2), (14.0, 2), (14.0, 2)])
@@ -359,17 +484,25 @@ class PowerSweepTests(PowerSweepCase):
         for status in scanning:
             self.assertRegex(status, r"^[56] GHz/1[024] dBm; \d+/24; I=[-+][0-9.]+ A; "
                                      r"~(\d+ s|\d+ min|\d+\.\d h) left$")
-        self.assertEqual(statuses[-1], "Multi-frequency scan complete: 2 frequencies, 3 powers, 12 points "
-                                       "saved; 4886/SMB100A outputs OFF; CSV saved")
+        # The point count first, so it stays within the 52-character label
+        # (review, 2026-10-14).
+        self.assertEqual(statuses[-1], "Scan complete: 12 points saved; 2 frequencies, 3 powers; outputs OFF; "
+                                       "CSV saved")
+        self.assertLessEqual(width_in_zeros(statuses[-1].split("; outputs OFF")[0]), 52)
         # The 52-character status label, with long labels and hours left
         # (Arial 15 px, a little wider than the lab's YaHei UI).
         long_run = [
             "10.5 GHz/-12.5 dBm; 1234/4800; I=-2.92 A; ~10.5 h left",
+            "10.25 GHz/-12.5 dBm; 12345/48000; I=-2.925 A; ~10.5 h left",
             "-12.5 dBm done; zeroing; RF on, to -10.5 dBm at 10.25 GHz",
             "10 GHz/12.5 dBm: I=-2.92 A sent; pre-read now",
             "10 GHz/12.5 dBm done; zeroing; to 11 GHz",
-            "10 GHz/313 Hz/12.5 dBm; 1234/4800; I=-2.92 A; ~10.5 h left",
-            "10 GHz/313 Hz/12.5 dBm: I=-2.92 A sent; pre-read now",
+            # Modulation and power both swept: no "I=" and no " left"
+            # (review, 2026-10-14).
+            "10 GHz/313 Hz/12.5 dBm; 1234/4800; -2.92 A; ~10.5 h",
+            "10.25 GHz/1013 Hz/-12.5 dBm; 12345/48000; -2.925 A; ~10.5 h",
+            "10.25 GHz/1013 Hz/-12.5 dBm: I=-2.925 A sent; pre-read now",
+            "10.25 GHz/1013 Hz/-12.5 dBm done; zeroing; to 10.5 GHz",
         ]
         for status in [s for s in statuses if "; zeroing" in s or "pre-read now" in s] + scanning + long_run:
             with self.subTest(status=status):
@@ -382,9 +515,11 @@ class PowerSweepTests(PowerSweepCase):
         self.assertEqual(set(series), {"8_pow_10_freq_5_loop_1", "8_pow_12_freq_5_loop_1",
                                        "8_pow_14_freq_5_loop_1"})
         labels, colors = App._stfmr_lockin_frequency_series_styles(series, "x_v")
-        self.assertEqual(labels, {"8_pow_10_freq_5_loop_1": "5 GHz, 10 dBm",
-                                  "8_pow_12_freq_5_loop_1": "5 GHz, 12 dBm",
-                                  "8_pow_14_freq_5_loop_1": "5 GHz, 14 dBm"})
+        # One carrier and one modulation frequency: only the power is named
+        # (review, 2026-10-14; it was "5 GHz, 10 dBm").
+        self.assertEqual(labels, {"8_pow_10_freq_5_loop_1": "10 dBm",
+                                  "8_pow_12_freq_5_loop_1": "12 dBm",
+                                  "8_pow_14_freq_5_loop_1": "14 dBm"})
         self.assertEqual(len(set(colors.values())), 3, "one shade per power")
         current = h._stfmr_lockin_current_field_series(h.stfmr_lockin_rows, "SR830", "8")
         self.assertEqual(set(current), set(series))
@@ -398,8 +533,9 @@ class PowerSweepTests(PowerSweepCase):
         self.assertEqual(set(series), {"mfli_mod_307_pow_-12.5_freq_5_loop_1", "mfli_mod_311_pow_-12.5_freq_5_loop_1",
                                        "mfli_mod_307_pow_0.25_freq_5_loop_1", "mfli_mod_311_pow_0.25_freq_5_loop_1"})
         labels, colors = App._stfmr_lockin_frequency_series_styles(series, "x_v")
-        self.assertEqual(labels["mfli_mod_311_pow_-12.5_freq_5_loop_1"], "5 GHz, 311 Hz, -12.5 dBm")
-        self.assertEqual(labels["mfli_mod_307_pow_0.25_freq_5_loop_1"], "5 GHz, 307 Hz, 0.25 dBm")
+        # One carrier: not named (review, 2026-10-14).
+        self.assertEqual(labels["mfli_mod_311_pow_-12.5_freq_5_loop_1"], "311 Hz, -12.5 dBm")
+        self.assertEqual(labels["mfli_mod_307_pow_0.25_freq_5_loop_1"], "307 Hz, 0.25 dBm")
         self.assertEqual(len(set(colors.values())), 4)
 
     def test_the_live_plot_rows_keep_their_power(self):
@@ -446,13 +582,21 @@ class PowerSweepTests(PowerSweepCase):
         statuses = h.stfmr_lockin_status_var.history
         self.assertIn("Mod. 307 Hz done; zeroing; LFO to 311 Hz at 5 GHz", statuses)
         self.assertIn("5 GHz/311 Hz/10 dBm: I=-1 A sent; pre-read now", statuses)
-        self.assertTrue(statuses[-1].startswith(
-            "Multi-frequency scan complete: 1 frequencies, 2 modulation frequencies, 2 powers, 8 points saved"))
+        # Both swept: the scanning lines drop "I=" and " left" (review,
+        # 2026-10-14).
+        scanning = [s for s in statuses if re.search(r"; \d+/16; ", s)]
+        self.assertEqual(len(scanning), 8)
+        for status in scanning:
+            self.assertRegex(status, r"^5 GHz/3(07|11) Hz/1[02] dBm; \d+/16; [-+][0-9.]+ A; "
+                                     r"~(\d+ s|\d+ min|\d+\.\d h)$")
+            self.assertLessEqual(width_in_zeros(status), 52)
+        self.assertEqual(statuses[-1], "Scan complete: 8 points saved; 1 frequency, 2 modulation frequencies, "
+                                       "2 powers; outputs OFF; CSV saved")
         series = h._stfmr_lockin_field_component_series(
             h.stfmr_lockin_rows, "SR830", "8", "x_v", group_frequency=True)
         self.assertEqual(set(series), {f"8_mod_{m}_pow_{p}_freq_5_loop_1" for m in (307, 311) for p in (10, 12)})
         labels, _colors = App._stfmr_lockin_frequency_series_styles(series, "x_v")
-        self.assertEqual(labels["8_mod_311_pow_12_freq_5_loop_1"], "5 GHz, 311 Hz, 12 dBm")
+        self.assertEqual(labels["8_mod_311_pow_12_freq_5_loop_1"], "311 Hz, 12 dBm")
 
     def test_a_dual_meter_sweep_saves_pairs_at_each_power(self):
         h, recorder = self.sweep(meter="MFLI + SR830", stop="5", powers=("12", "4", "4"))   # descending
@@ -489,6 +633,63 @@ class PowerSweepTests(PowerSweepCase):
         self.assertEqual(events(recorder)[-1]["outcome"], "stopped")
         self.error.assert_not_called()
 
+    def test_stop_during_a_power_change_never_switches_the_4886_back_on(self):
+        """Review, 2026-10-14: Stop pressed while the worker changes the
+        level (here set_power sets the stop event, as Stop does while a
+        worker call is in flight).  The 4886, already zeroed for the change,
+        is not switched back on; the sweep ends with the zero and the RF
+        off, and the run log says "stopped"."""
+        class StopDuringPower(PowerRecording):
+            def set_power(self, dbm):
+                result = super().set_power(dbm)
+                self.harness.stfmr_lockin_stop_event.set()
+                return result
+
+        h, recorder = self.sweep(smb_type=StopDuringPower)
+        self.error.assert_not_called()
+        self.assertFalse(h.stfmr_lockin_running)
+        at = h.log.index(("smb", "power", 12.0))
+        self.assertEqual(h.log[at - 1], ("kepco", "zero"), "zeroed for the change")
+        self.assertEqual([entry for entry in h.log[at:] if entry[:2] == ("kepco", "output")], [],
+                         "no 4886 output after the power command")
+        self.assertEqual(h.log[-2:], [("kepco", "zero"), ("smb", "rf_off")])
+        self.assertNotIn(("smb", "power", 14.0), h.log, "no further power")
+        self.assertEqual({float(r["microwave_power_dbm"]) for r in read_csv(recorder.csv_path)}, {10.0})
+        history = events(recorder)
+        self.assertEqual((history[-1]["outcome"], history[-1]["outputs_off"]), ("stopped", True))
+        self.assertTrue(h.stfmr_lockin_status_var.history[-1].startswith("Scan stopped; 4 points saved"))
+
+    def test_the_mfli_first_point_range_check_runs_again_after_each_power_change(self):
+        """Review, 2026-10-14: after a power change the MFLI's first reading
+        is again read with initial=True (its first-point range check), as at
+        a new carrier; the stand-in records each read_stfmr_mfli call."""
+        class RecordingMfli(PowerRecording):
+            def __init__(self, *args):
+                super().__init__(*args)
+                self.initial_reads = []
+
+            def read_stfmr_mfli(self, expected, **kwargs):
+                h = self.harness
+                self.initial_reads.append(
+                    (h.stfmr_lockin_power_dbm, h.stfmr_lockin_frequency_index, kwargs.get("initial", False)))
+                return super().read_stfmr_mfli(expected, **kwargs)
+
+        h, recorder = self.sweep(meter="MFLI", stop="5", mfli_type=RecordingMfli)
+        self.error.assert_not_called()
+        reads = h.stfmr_lockin_mfli_controller.initial_reads
+        self.assertEqual([power for power, _f, _initial in reads if _initial], [10.0, 12.0, 14.0],
+                         "one first-point check per power pass")
+        for power in (10.0, 12.0, 14.0):
+            with self.subTest(power=power):
+                in_pass = [initial for dbm, _f, initial in reads if dbm == power]
+                self.assertTrue(in_pass[0], "the first reading of the pass")
+                self.assertFalse(any(in_pass[1:]), "only the first")
+        # The stand-in MFLI ranges on that check, so the first point of each
+        # pass is read again (logged), as after a carrier change.
+        retries = [e for e in events(recorder) if e["event"] == "mfli_autorange_retry"]
+        self.assertEqual([e["action"] for e in retries], ["RANGE 0.03->0.1 V (STFMR frequency start)"] * 3)
+        self.assertEqual({float(r["microwave_power_dbm"]) for r in read_csv(recorder.csv_path)}, {10.0, 12.0, 14.0})
+
 
 class RealSmb100aSweepTests(PowerSweepCase):
     """The real SMB100A controller on a fake generator, through a whole
@@ -510,10 +711,42 @@ class RealSmb100aSweepTests(PowerSweepCase):
                                         ":POW 14", "FREQ 5GHz", "FREQ 6GHz"],
                          "between powers only the level and the carrier; nothing switched off")
         self.assertEqual(writes[-3:], ["AM:STAT OFF", "LFO OFF", "OUTPUT OFF"])
-        self.assertEqual(smb.instrument.queries, [":POW?", ":POW?"])
+        # The first power is read back too, right after it is sent and
+        # before the RF is switched on (review, 2026-10-14).
+        self.assertEqual(smb.instrument.queries, [":POW?", ":POW?", ":POW?"])
+        sequence = smb.instrument.sequence
+        self.assertEqual(sequence[3:6], [":POW 10", ":POW?", "FREQ 5GHz"])
+        self.assertLess(sequence.index(":POW?"), sequence.index("OUTPUT ON"))
+        for level in (":POW 12", ":POW 14"):
+            self.assertEqual(sequence[sequence.index(level) + 1], ":POW?")
         self.assertEqual(writes.count("OUTPUT ON"), 1)
         self.assertEqual(len(read_csv(recorder.csv_path)), 12)
-        self.assertEqual(events(recorder)[-1]["outcome"], "completed")
+        history = events(recorder)
+        self.assertEqual(history[-1]["outcome"], "completed")
+        self.assertEqual([e["power_readback_dbm"] for e in history
+                          if e["event"] == "frequency_ready" and "power_readback_dbm" in e], [10.0, 12.0, 14.0])
+
+    def test_a_first_power_the_generator_refused_ends_the_sweep_with_nothing_switched_on(self):
+        """Review, 2026-10-14: configure() reads the first power back before
+        "LFO ON" / "OUTPUT ON"; a refused level (a typo, a front-panel
+        :POW:LIM, below the unit's minimum) ends the sweep through the usual
+        path with the RF never switched on and the 4886 never on."""
+        smb = self.real(refuses={10.0})
+        h, recorder = self.sweep(smb=smb)
+        self.error.assert_called_once()
+        self.assertIn("SMB100A did not take the new power: sent ':POW 10', :POW? read back '6'",
+                      self.error.call_args.args[1])
+        self.assertEqual(smb.instrument.sequence, [
+            ":AM:DEPT:LIN 1.0E+2", "LFO:VOLT 0.50 V", "LFO:FREQ 117.3 Hz", ":POW 10", ":POW?",
+            "AM:STAT OFF", "LFO OFF", "OUTPUT OFF"], "nothing switched on, then the usual output-off")
+        self.assertEqual([c for c in h.stfmr_lockin_controllers["kepco"].calls if c[0] == "output"], [],
+                         "the 4886 never switched on")
+        self.assertEqual(h.stfmr_lockin_controllers["830"].calls, [], "the lock-in not set up either")
+        self.assertEqual(read_csv(recorder.csv_path), [])
+        history = events(recorder)
+        self.assertEqual((history[-1]["outcome"], history[-1]["outputs_off"]), ("error", True))
+        self.assertFalse([e for e in history if e["event"] == "frequency_ready"])
+        self.assertFalse(h.stfmr_lockin_running)
 
     def test_a_level_the_generator_ignored_stops_the_sweep_with_the_outputs_off(self):
         smb = self.real(refuses={14.0})
@@ -524,6 +757,7 @@ class RealSmb100aSweepTests(PowerSweepCase):
         writes = smb.instrument.writes
         self.assertEqual(writes[writes.index(":POW 14"):], [":POW 14", "AM:STAT OFF", "LFO OFF", "OUTPUT OFF"],
                          "no carrier change, the RF off")
+        self.assertEqual(smb.instrument.queries, [":POW?"] * 3, "the first power, 12 and the refused 14")
         kepco = h.stfmr_lockin_controllers["kepco"].calls
         self.assertEqual(kepco[-2:], [("zero",), ("zero",)], "zeroed before the change and at the end")
         self.assertEqual({float(r["microwave_power_dbm"]) for r in read_csv(recorder.csv_path)}, {10.0, 12.0})
@@ -566,10 +800,10 @@ class DefaultSweepTests(PowerSweepCase):
         for powers, text in (
                 (("26", "26", "1"), "SMB100A power must not exceed 25 dBm"),
                 (("20", "30", "5"), "SMB100A power must not exceed 25 dBm"),
-                (("abc", "12", "1"), "P start dBm, P stop dBm and P step dBm must be finite numbers"),
-                (("12", "", "1"), "P start dBm, P stop dBm and P step dBm must be finite numbers"),
-                (("nan", "12", "1"), "P start dBm, P stop dBm and P step dBm must be finite numbers"),
-                (("10", "14", "0"), "P step dBm must be greater than 0 dB"),
+                (("abc", "12", "1"), "P start dBm, P stop dBm and P step dB must be finite numbers"),
+                (("12", "", "1"), "P start dBm, P stop dBm and P step dB must be finite numbers"),
+                (("nan", "12", "1"), "P start dBm, P stop dBm and P step dB must be finite numbers"),
+                (("10", "14", "0"), "P step dB must be greater than 0 dB"),
                 (("0", "20", "0.001"), "a sweep takes at most 1000")):
             with self.subTest(powers=powers):
                 self.error.reset_mock()
@@ -581,6 +815,171 @@ class DefaultSweepTests(PowerSweepCase):
                 self.assertFalse(h.stfmr_lockin_running)
                 self.assertEqual(h.log, [], "nothing sent")
                 self.assertEqual(list(Path(self.tmp.name).iterdir()), [], "no files")
+
+
+class RoundedPowerSweepTests(PowerSweepCase):
+    def test_a_sweep_sends_and_labels_the_rounded_powers(self):
+        """Review, 2026-10-14: P start 10, P stop 10.01, P step 0.004 asks
+        for 10, 10.004, 10.008 and 10.01, which round to 10, 10, 10.01 and
+        10.01: two passes, sent as ':POW 10' and ':POW 10.01', read back,
+        and saved under those labels."""
+        smb = app.STFMRSMB100AController(lambda _message: None)
+        smb.instrument = FakeSmb100a()
+        h, recorder = self.sweep(powers=("10", "10.01", "0.004"), stop="5", smb=smb)
+        self.error.assert_not_called()
+        self.assertEqual([w for w in smb.instrument.writes if w.startswith(":POW")], [":POW 10", ":POW 10.01"])
+        self.assertEqual({float(r["microwave_power_dbm"]) for r in read_csv(recorder.csv_path)}, {10.0, 10.01})
+        self.assertIn("Power dBm: 10, 10.01 (2 powers from 10 to 10.01 in 0.004 dB steps; rounded to the "
+                      "SMB100A's 0.01 dB steps, 2 repeated powers merged)", self.message())
+        self.assertEqual(events(recorder)[0]["settings"]["powers_dbm"], [10.0, 10.01])
+
+
+def plot_rows(carriers=(5.0,), powers=(10.0,)):
+    """Saved SR830 rows: every power at every carrier, three fields."""
+    return [{"meter": "SR830", "loop": 1, "microwave_frequency_ghz": carrier, "microwave_power_dbm": power,
+             "modulation_frequency_hz": 117.3, "field_g": field, "current_a": field / 300.0,
+             "x_v": 1e-6 * (field + power), "y_v": 2e-6, "phase_deg": 10.0}
+            for power in powers for carrier in carriers for field in (-300.0, 0.0, 300.0)]
+
+
+class CompactPlotTests(NoWindows):
+    """Review, 2026-10-14: at 1101 x 1300 px (the CI screenshots) each
+    STFMR plot canvas is about 105 px tall, and _draw_nonlocal_series drew
+    an unflagged canvas as if it were at least 120 px tall, so the x-axis
+    title and tick labels were cut.  The four canvases are now drawn
+    compact, at their real height, as the PPMS and RT-E plots are."""
+
+    def canvas(self, height, width=520):
+        canvas = mock.Mock()
+        app.CombinedControlApp._stfmr_lockin_compact_canvas(canvas)
+        canvas.winfo_width.return_value = width
+        canvas.winfo_height.return_value = height
+        return canvas
+
+    def draw(self, canvas, rows):
+        a = object.__new__(App)
+        a._draw_plot_grid = mock.Mock()
+        a._draw_stfmr_lockin_frequency_component(canvas, rows, "SR830", "8", "x_v", "SR830 X",
+                                                 "Waiting for SR830 X data", auto_voltage_unit=True)
+
+    def test_the_page_flags_its_four_plots_compact(self):
+        a = build_stfmr_page().app
+        for name in ("stfmr_lockin_x_canvas", "stfmr_lockin_y_canvas", "stfmr_lockin_theta_canvas",
+                     "stfmr_lockin_canvas"):
+            with self.subTest(canvas=name):
+                canvas = getattr(a, name)
+                self.assertIs(canvas.ppms_compact_plot, True)
+                self.assertIs(canvas.compact_legend_strip, True)
+
+    def test_titles_and_axes_fit_the_real_canvas_height(self):
+        for height in (60, 80, 105, 119, 145):
+            for rows, legend in ((plot_rows(), "5 GHz"), (plot_rows(powers=(10.0, 12.0, 14.0)), "10 dBm"),
+                                 (plot_rows(carriers=(5.0, 6.0)), "5 GHz")):
+                with self.subTest(height=height, legend=legend):
+                    canvas = self.canvas(height)
+                    self.draw(canvas, rows)
+                    top, bottom = canvas.create_rectangle.call_args.args[1::2]
+                    # The legend strip above the plot even for one entry
+                    # ("5 GHz" alone would run into a box starting at 14),
+                    # 44 px below it for the tick labels and the title (a
+                    # sliver of a plot under about 75 px, but nothing cut).
+                    self.assertEqual((top, bottom), (26, max(27, height - 44)))
+                    texts = canvas.create_text.call_args_list
+                    for call in texts:
+                        self.assertGreaterEqual(call.args[1], 0)
+                        self.assertLess(call.args[1], height, call.kwargs.get("text"))
+                    title = [c for c in texts if c.kwargs.get("text") == "Magnetic field (G)"]
+                    self.assertEqual(title[0].args[1], height - 10, "the x-axis title inside the canvas")
+                    self.assertIn(legend, [c.kwargs.get("text") for c in texts])
+
+    def test_an_unflagged_canvas_still_draws_against_120_px(self):
+        """What the STFMR plots did before: the title at 110 px on a 105 px
+        canvas, cut off."""
+        canvas = self.canvas(105)
+        canvas.ppms_compact_plot = False
+        canvas.compact_legend_strip = False
+        self.draw(canvas, plot_rows())
+        title = [c for c in canvas.create_text.call_args_list if c.kwargs.get("text") == "Magnetic field (G)"]
+        self.assertEqual(title[0].args[1], 110)
+
+    def test_too_short_a_canvas_asks_for_a_taller_window(self):
+        canvas = self.canvas(54)
+        self.draw(canvas, plot_rows())
+        self.assertEqual([c.kwargs.get("text") for c in canvas.create_text.call_args_list],
+                         ["Increase the window height"])
+
+    def test_the_field_at_0_a_stays_on_a_short_canvas(self):
+        """The 'Field at 0 A' value is placed against the real canvas: on a
+        105 px canvas its bottom spots were at 110 px (the 120 px minimum
+        less 10), below the canvas, where nothing overlapped them, so the
+        value was placed out of sight."""
+        class Frame:
+            def __init__(self):
+                self.text = "Measured field vs 4886 current (field sweep only)"
+
+            def winfo_class(self):
+                return "TLabelframe"
+
+            def cget(self, _name):
+                return self.text
+
+            def configure(self, text):
+                self.text = text
+
+        class ShortCanvas(app.tk.Canvas):
+            """Without Tk: the top strip is taken (by the legend, say), so
+            the value must go to a bottom corner."""
+
+            def __init__(self, height, compact=True):
+                self.master, self.height, self.items = Frame(), height, {}
+                if compact:
+                    app.CombinedControlApp._stfmr_lockin_compact_canvas(self)
+
+            def winfo_width(self):
+                return 520
+
+            def winfo_height(self):
+                return self.height
+
+            def create_text(self, x, y, **options):
+                self.items[1] = dict(options, x=x, y=y)
+                return 1
+
+            def coords(self, _item, x, y):
+                self.items[1].update(x=x, y=y)
+
+            def itemconfigure(self, _item, **options):
+                self.items[1].update(options)
+
+            def bbox(self, _item):
+                item = self.items[1]
+                return (item["x"] - 100, item["y"] - 7, item["x"], item["y"] + 7)
+
+            def find_overlapping(self, x0, y0, x1, y1):
+                return (1, 2) if y0 < 20 else (1,)
+
+            def delete(self, _item):
+                self.items.pop(1, None)
+
+        series = {"8_freq_5_loop_1": [(-1.0, -290.0), (1.0, 310.0)]}
+        a = object.__new__(App)
+        for height in (60, 105, 145):
+            with self.subTest(height=height):
+                canvas = ShortCanvas(height)
+                a._label_field_at_zero_current(canvas, series)
+                self.assertEqual(canvas.items[1]["text"], "Field at 0 A: +10.0 G")
+                self.assertEqual(canvas.items[1]["y"], height - 10, "inside the canvas")
+                self.assertEqual(canvas.master.text, "Measured field vs 4886 current (field sweep only)")
+        # Too short to draw: the value goes in the plot's title bar.
+        canvas = ShortCanvas(50)
+        a._label_field_at_zero_current(canvas, series)
+        self.assertEqual(canvas.items, {})
+        self.assertEqual(canvas.master.text, "Measured field vs 4886 current (field sweep only); "
+                                             "field at 0 A: +10.0 G")
+        # Unflagged, as before: against 120 px, so at 110 px.
+        canvas = ShortCanvas(105, compact=False)
+        a._label_field_at_zero_current(canvas, series)
+        self.assertEqual(canvas.items[1]["y"], 110)
 
 
 class TableTests(NoWindows):
@@ -596,8 +995,9 @@ class TableTests(NoWindows):
                          ["f start GHz:", "f stop GHz:", "f step GHz:"])
         power = page.in_row(table, 1)
         self.assertEqual([w.grid_options["column"] for w in power], [0, 1, 2, 3, 4, 5])
+        # "P step dB:": a level difference (review, 2026-10-14).
         self.assertEqual([w.options.get("text", "") for w in power[0::2]],
-                         ["P start dBm:", "P stop dBm:", "P step dBm:"])
+                         ["P start dBm:", "P stop dBm:", "P step dB:"])
         for field, variable, entry in zip(
                 power[1::2],
                 (a.stfmr_lockin_power_start_var, a.stfmr_lockin_power_stop_var, a.stfmr_lockin_power_step_var),
@@ -615,10 +1015,10 @@ class TableTests(NoWindows):
 
     def test_the_power_labels_are_no_wider_than_the_columns_they_join(self):
         """The 1101 px window has little room left on Windows, so each power
-        label is no wider than the widest label already in its column, but
-        for "P step dBm:" against "f step GHz:" (a few px), which the
-        column 6 label "Power dBm:" leaving more than pays for.  Arial 15 px
-        stands in for the lab's YaHei UI."""
+        label is no wider than the widest label already in its column, and
+        "P step dB:" (review, 2026-10-14; "P step dBm:" was a few px wider
+        than "f step GHz:") is no wider either; the column 6 label "Power
+        dBm:" is gone.  Arial 15 px stands in for the lab's YaHei UI."""
         try:
             from PIL import ImageFont
         except ImportError:
@@ -634,9 +1034,10 @@ class TableTests(NoWindows):
         width = font.getlength
         self.assertLessEqual(width("P start dBm:"), width("MFLI reference:"))
         self.assertLessEqual(width("P stop dBm:"), width("SR830 REF IN:"))
+        self.assertLessEqual(width("P step dB:"), width("f step GHz:"))
         widest_before = {4: max(map(width, ("f step GHz:", "Step A:", "Settle s:", "SR830 TC:"))),
                          6: max(map(width, ("Power dBm:", "Loop:", "Acquire s:")))}
-        widest_now = {4: max(map(width, ("f step GHz:", "P step dBm:", "Step A:", "Settle s:", "SR830 TC:"))),
+        widest_now = {4: max(map(width, ("f step GHz:", "P step dB:", "Step A:", "Settle s:", "SR830 TC:"))),
                       6: max(map(width, ("Loop:", "Acquire s:")))}
         self.assertLess(sum(widest_now.values()), sum(widest_before.values()), "the table is not wider")
 

@@ -933,10 +933,34 @@ class InstrumentSafetyTests(unittest.TestCase):
         self.assertEqual(canvas.options["fill"], "#9aa0a6")
 
     def test_stfmr_smb100a_setup_matches_supplied_trace(self):
+        class FakeSMB100A(FakeSharedVisaInstrument):
+            """Answers :POW? with the level last sent, and keeps every
+            write and query in order."""
+
+            def __init__(self, identity):
+                super().__init__(identity)
+                self.level, self.sequence = "6", []
+
+            def write(self, command):
+                super().write(command)
+                self.sequence.append(command)
+                if command.startswith(":POW "):
+                    self.level = command.split()[1]
+
+            def query(self, command):
+                if command == ":POW?":
+                    self.sequence.append(command)
+                    return self.level
+                return super().query(command)
+
         controller = app.STFMRSMB100AController(lambda _message: None)
-        fake = FakeSharedVisaInstrument("Rohde&Schwarz,SMB100A,TEST,1.0")
+        fake = FakeSMB100A("Rohde&Schwarz,SMB100A,TEST,1.0")
         controller.instrument = fake
-        controller.configure(5.0, 10.0, 317.3)
+        self.assertEqual(controller.configure(5.0, 10.0, 317.3), 10.0)
+        # The first power is read back right after it is sent, before the
+        # carrier and the RF are switched on (review, 2026-10-14); the
+        # writes are the trace's, in its order.
+        self.assertEqual(fake.sequence[3:6], [":POW 10", ":POW?", "FREQ 5GHz"])
         self.assertEqual(fake.commands, [
             ":AM:DEPT:LIN 1.0E+2",
             "LFO:VOLT 0.50 V",

@@ -206,9 +206,17 @@ class Smb100aTests(NoWindows):
     class Instrument:
         def __init__(self):
             self.writes = []
+            self.level = "6"
 
         def write(self, command):
             self.writes.append(command)
+            if command.startswith(":POW "):
+                self.level = command.split()[1]
+
+        def query(self, command):
+            # configure() reads the first power back (review, 2026-10-14).
+            assert command == ":POW?", command
+            return self.level
 
     def test_only_the_lfo_frequency_is_sent_as_configure_sends_it(self):
         controller = app.STFMRSMB100AController(lambda _message: None)
@@ -305,8 +313,11 @@ class ModulationSweepTests(SweepTests):
             # The time left in s, min or h (review, 2026-10-14).
             self.assertRegex(status, r"^[56] GHz/3(07|11|13) Hz; scanning \d+/24; I=[-+][0-9.]+ A; "
                                      r"~(\d+ s|\d+ min|\d+\.\d h) left$")
-        self.assertTrue(statuses[-1].startswith(
-            "Multi-frequency scan complete: 2 frequencies, 3 modulation frequencies, 12 points saved"))
+        # The point count first: after the carriers and the modulation
+        # frequencies it fell past the 52-character label (review,
+        # 2026-10-14).
+        self.assertEqual(statuses[-1], "Scan complete: 12 points saved; 2 frequencies, 3 modulation "
+                                       "frequencies; outputs OFF; CSV saved")
 
     def test_the_csv_keeps_its_columns(self):
         """The rows already had a modulation_frequency_hz column, so no
@@ -355,8 +366,10 @@ class ModulationSweepTests(SweepTests):
         self.assertEqual(set(series), {"mfli_mod_13_freq_5_loop_1", "8_mod_13_freq_5_loop_1",
                                        "mfli_mod_11_freq_5_loop_1", "8_mod_11_freq_5_loop_1"})
         labels, colors = App._stfmr_lockin_frequency_series_styles(series, "x_v")
-        self.assertEqual(labels["mfli_mod_13_freq_5_loop_1"], "5 GHz, 13 Hz MFLI")
-        self.assertEqual(labels["8_mod_11_freq_5_loop_1"], "5 GHz, 11 Hz SR830")
+        # One carrier: the legend names only what varies (review,
+        # 2026-10-14; it was "5 GHz, 13 Hz MFLI").
+        self.assertEqual(labels["mfli_mod_13_freq_5_loop_1"], "13 Hz MFLI")
+        self.assertEqual(labels["8_mod_11_freq_5_loop_1"], "11 Hz SR830")
         self.assertNotEqual(colors["mfli_mod_13_freq_5_loop_1"], colors["mfli_mod_11_freq_5_loop_1"])
         current = h._stfmr_lockin_current_field_series(h.stfmr_lockin_rows, "MFLI + SR830", "mfli")
         self.assertEqual(set(current), {"mfli_mod_13_freq_5_loop_1", "mfli_mod_11_freq_5_loop_1"})
@@ -524,7 +537,7 @@ class TableTests(NoWindows):
         table = a.stfmr_lockin_meter_combo.master
         rows = {
             0: ["f start GHz:", "f stop GHz:", "f step GHz:"],
-            1: ["P start dBm:", "P stop dBm:", "P step dBm:"],
+            1: ["P start dBm:", "P stop dBm:", "P step dB:"],     # dB: review, 2026-10-14
             2: ["Start A:", "Stop A:", "Step A:", "Loop:", "Comp. V:"],
             3: ["Mod. start Hz:", "Mod. end Hz:", "Settle s:", "Acquire s:"],
         }

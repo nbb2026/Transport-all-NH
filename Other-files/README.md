@@ -6,14 +6,16 @@
   "when sweep power, can you do not close the SMA100? like 6221 in the
   current scan, just change its output value" and "the default power change
   to 12dBm in the ST-FMR".
-- **Boxes:** "P start dBm", "P stop dBm" and "P step dBm" replace the single
+- **Boxes:** "P start dBm", "P stop dBm" and "P step dB" replace the single
   "Power dBm" box (`stfmr_lockin_power_var` is gone). They start at 12, 12
   and 1, so the default sweep runs at one power, 12 dBm
   (`STFMR_LOCKIN_DEFAULT_POWER_DBM` 6 -> 12,
   `STFMR_LOCKIN_DEFAULT_POWER_STEP_DB` 1). The labels read like the f labels
   ("P start dBm:" as "f start GHz:"): "Power start dBm:" and its neighbours
   would widen the table by about 45 px (Arial 15 px, for the lab's YaHei
-  UI), more than the 1101 px window has left on Windows. The three boxes are
+  UI), more than the 1101 px window has left on Windows. The step is a
+  level difference, so its label is "P step dB:" (review, 2026-10-14; it
+  read "P step dBm:"), and the messages name it so. The three boxes are
   read at Start and locked while a sweep runs, as Settle s and Acquire s are.
 - **Which powers** (`stfmr_power_levels`): the f start / f stop / f step
   rules. P start = P stop gives that one power; otherwise from P start
@@ -23,11 +25,25 @@
   25 dBm (`STFMR_SMB100A_MAX_POWER_DBM`, the limit `configure()` already
   had). At most 1000 powers (`STFMR_LOCKIN_MAX_POWERS`): each power is a
   whole f x A sweep at every modulation frequency, about 1.5 h at the
-  defaults, so 1000 powers is already about two months (and 10 dB in the
-  generator's finest 0.01 dB steps); a longer list can only be a slipped
-  digit in P step. A word, an empty box, nan/inf, a step of 0, a power above
-  25 dBm or too many powers is refused with a message before any output
-  switches on or any file is made.
+  defaults, so 1000 powers is already about two months (1000 powers span
+  9.99 dB in the generator's finest 0.01 dB steps; 0 to 10 dBm would be
+  1001); a longer list can only be a slipped digit in P step. A word, an empty box,
+  nan/inf, a step of 0, a power above 25 dBm or too many powers is refused
+  with a message before any output switches on or any file is made.
+- **0.01 dB resolution** (review, 2026-10-14): the SMB100A sets its level in
+  0.01 dB steps, so powers between them gave identical passes under
+  different labels. Each power is rounded to 0.01 dB
+  (`stfmr_power_on_grid`, halves away from zero: 12.005 -> 12.01; the
+  binary float of 0.015 is just below it, so `round()` would give 0.01) and
+  a repeat of the power before it is dropped: 0 to 0.05 in 0.005 dB steps
+  gives 0, 0.01, ..., 0.05, six passes, not eleven. Chosen over refusing a
+  P step under 0.01 dB because rounding also covers a third decimal in P
+  start or P stop and a step such as 0.015, which a step floor would let
+  through under labels the generator cannot set; every pass is now labelled
+  with the level that was sent and read back. The 1000-power cap counts the
+  list before rounding, so a slipped digit (0 to 5 in 0.001) is still
+  refused, not merged into 501 powers. Rounding never passes 25 dBm (25 is
+  on the grid); it can put a power up to 0.005 dB beyond P start or P stop.
 - **Order:** modulation frequency (outermost), then power, then carrier,
   then the 4886 current (innermost). Each (modulation, power, carrier) gets
   a whole field sweep. At a power change, as at a carrier change, the 4886
@@ -48,22 +64,32 @@
   an error, as before; a refused power ends the sweep through the usual
   path (4886 zero, RF off) before the 4886 comes back on.
 - **The first power** is still set by `configure()` with the RF setup, as
-  the one power was, without a read-back (the default sweep sends exactly
-  what it sent). A first power the generator cannot set is therefore not
-  caught there; see "Known limits" below.
+  the one power was, and is now read back there too (review, 2026-10-14):
+  `:POW?` right after `:POW` and before the carrier, "LFO ON" and "OUTPUT
+  ON", with the same 0.01 dB check as `set_power` (one shared helper,
+  `_read_back_power`). A refused level (a typo, a front-panel `:POW:LIM`,
+  below the unit's minimum) or a reply that is not a number raises there,
+  so the sweep ends through the usual path (4886 zero, though it was never
+  switched on; RF/AM/LFO off) with nothing switched on, instead of
+  running with the RF on at the previous level under the new label. Every
+  other command and its order are the trace's, as before; the default
+  sweep now sends one query more.
 - **Records:** the live CSV's existing `microwave_power_dbm` column (16th)
   now carries each row's own power; no column is added and `index` runs on
   across every pass. The run log's settings keep `power_dbm` (the first
   power, for readers of older logs) and gain `powers_dbm`,
   `power_start_dbm`, `power_stop_dbm`, `power_step_db` and
-  `rf_on_between_powers` (true). `frequency_configure` events name
-  `power_dbm`, `power_index` and `power_change`; `frequency_ready` names
-  `power_dbm` and, after a change, the SMB100A's `power_readback_dbm`;
+  `rf_on_between_powers` (true); `powers_dbm` holds the rounded powers.
+  `frequency_configure` events name `power_dbm`, `power_index` and
+  `power_change`; `frequency_ready` names `power_dbm` and, at the first
+  power and after each change, the SMB100A's `power_readback_dbm`;
   `startup_point_discarded` and `frequency_complete` name `power_dbm`.
 - **Start confirmation:** a line after "Mod. Hz", "Power dBm: 12" for one
   power, or e.g. "Power dBm: 10, 12, 14 (3 powers from 10 to 14 in 2 dB
   steps); the whole f × A sweep runs at each, in this order, with the RF on
-  between them" (a long list shows its first five and last two). With
+  between them" (a long list shows its first five and last two). When the
+  boxes asked for levels between 0.01 dB steps it adds "rounded to the
+  SMB100A's 0.01 dB steps" and, if any, "N repeated powers merged". With
   several modulation frequencies too, the Mod. line says "the whole P × f ×
   A sweep runs at each". The point count and the estimate count every pass
   (modulation frequencies x powers x carriers).
@@ -71,19 +97,43 @@
   ("5 GHz/12 dBm", "5 GHz/307 Hz/12 dBm") and the rest is shorter, to fit
   the 52-character status label: "10 dBm done; zeroing; RF on, to 12 dBm at
   5 GHz", "5 GHz/12 dBm: I=-1 A sent; pre-read now", "5 GHz/12 dBm; 7/24;
-  I=-0.5 A; ~5 s left", "5 GHz/12 dBm done; zeroing; to 6 GHz", and at the
-  end "... 2 frequencies, 3 powers, 12 points saved; ...". One power reads
-  exactly as before. A four-digit modulation frequency with "10.25 GHz" and
-  "-12.5 dBm" can still push the time left past the label's end.
+  I=-0.5 A; ~5 s left", "5 GHz/12 dBm done; zeroing; to 6 GHz". With
+  several modulation frequencies and several powers the scanning line also
+  drops "I=" and " left" (review, 2026-10-14): "10.25 GHz/1013 Hz/-12.5
+  dBm; 12345/48000; -2.925 A; ~10.5 h" fits (51.8 widths of "0" in Arial
+  15 px), and dropping only one of them still left 53.4 or 54.6. With
+  several modulation frequencies or powers the end line puts the point
+  count first: "Scan complete: 12 points saved; 2 frequencies, 3 powers;
+  outputs OFF; CSV saved" (after "Multi-frequency scan complete: 2
+  frequencies, 3 powers, " the count fell past the label's end, and with
+  several modulation frequencies it already did). One power and one
+  modulation frequency read exactly as before. Six-digit totals or "~100.5
+  h" can still cut the time left.
 - **Plots:** with several powers each series name gains `_pow_<dBm>` after
   the modulation part (`8_pow_12_freq_5_loop_1`,
-  `mfli_mod_307_pow_12_freq_5_loop_1`), each (carrier, modulation, power)
-  gets its own shade, and the legend reads "5 GHz, 12 dBm" or "5 GHz, 307
-  Hz, 12 dBm", in the live plots and the Save CSV PNGs. One power keeps the
-  old names and legend.
+  `mfli_mod_307_pow_12_freq_5_loop_1`) and each (carrier, modulation,
+  power) gets its own shade. The legend names only what varies (review,
+  2026-10-14; the one-line legend ran off the 1101 px plot after about
+  three "5 GHz, 12 dBm" entries): one carrier and one modulation frequency
+  give "12 dBm", one carrier and several modulation frequencies "307 Hz" or
+  "307 Hz, 12 dBm" (that is, a modulation sweep at one carrier now drops
+  "5 GHz, " too); several carriers keep "5 GHz, 12 dBm" or "5 GHz, 307 Hz,
+  12 dBm", and a lone carrier with nothing else swept keeps "5 GHz". Live
+  plots and Save CSV PNGs alike. One power keeps the old series names.
+- **Plot height** (review, 2026-10-14): the four STFMR canvases are drawn
+  compact (`ppms_compact_plot`, as the PPMS and RT-E plots), at their real
+  height: drawn as if at least 120 px tall, their x-axis titles and tick
+  labels were cut in any window under about 1326 px, e.g. the CI
+  screenshots' 1101 x 1300 px (about 105 px per canvas). Compact puts the
+  plot box 26 px from the top (the legend strip; `compact_legend_strip`
+  keeps it for a single entry such as "4 GHz", which the PPMS rule left at
+  14 px, under the entry) and 44 px from the bottom, and below 55 px shows
+  "Increase the window height". The "Field at 0 A" value is placed against
+  the real height too (its bottom spots were below a short canvas, out of
+  sight); too short to draw, it goes in the plot's title.
 - **The parameter table** (at most five pairs a row, as before):
   1. f start GHz, f stop GHz, f step GHz.
-  2. P start dBm, P stop dBm, P step dBm.
+  2. P start dBm, P stop dBm, P step dB.
   3. Start A, Stop A, Step A, Loop, Comp. V.
   4. Mod. start Hz, Mod. end Hz, Settle s, Acquire s.
   5. Meter, SR830 REF IN, SR830 TC, SR830 autorange.
@@ -95,15 +145,17 @@
   two, so about 19 px each: from 143 px in the last Windows CI shot with
   four rows, about 124 px with five, now about 105 px per plot canvas in
   the 1101 x 1300 px window (about 145 px in the lab's 1380 px tall
-  window), above the 55 px minimum. The table is not wider: "P step dBm:"
-  is a few px wider than "f step GHz:" in column 4, and column 6 loses
-  "Power dBm:" (about 15 px).
+  window), above the 55 px compact minimum, and the plots are drawn at that
+  real height (see "Plot height"), so their axis titles fit in both. The
+  table is not wider: "P step dB:" is no wider than "f step GHz:" in
+  column 4, and column 6 loses "Power dBm:" (about 15 px).
 - **Timing at the page's defaults** (MFLI, 4 GHz, 12 dBm, 117.3 Hz, -3 to
   3 A in 0.01 A = 601 currents, Loop 1, Settle 1 s, Acquire 2 s, both TCs
   1 s) is unchanged: 600 x 7 s + 599 x 2 s = 5398 s, about 1.5 h. Each
   further power adds one such pass per carrier and modulation frequency,
   e.g. 0 to 12 dBm in 3 dB steps (5 powers) is about 7.5 h.
-- **Tests:** `test_stfmr_power_sweep.py` (new, 29 tests): the power list
+- **Tests:** `test_stfmr_power_sweep.py` (new, 29 tests; 44 with the review
+  fixes): the power list
   (one value, up, down, the step, the f rules value for value, the 25 dBm
   limit, bad text, the 1000 cap); `set_power` sending only `:POW` and
   `:POW?`, its 0.01 dB tolerance and refusals; sweeps over three powers on
@@ -120,14 +172,30 @@
   the shared harness in `test/test_stfmr_realtime_recording` (P start = P
   stop = 10 dBm, so the SMB100A calls other tests check keep their values)
   and the CI GUI test `test_stfmr_field_output` (six rows, the power row,
-  the SR830 row at row 4; not run here: it needs a display).
+  the SR830 row at row 4; not run here: it needs a display). Review fixes
+  (2026-10-14), in `test_stfmr_power_sweep.py` unless named: `configure()`
+  reads the first power back before the RF is on, refuses a wrong or
+  non-number reply with nothing switched on, and shares the 0.01 dB check
+  with `set_power`; a refused first power ends a sweep with nothing on; the
+  0.01 dB rounding, merging, cap and confirmation note, and a sweep sending
+  the rounded levels; Stop during a power change (no 4886 output after the
+  level, the log ends with the zero then `rf_off`, outcome "stopped"); the
+  MFLI's first-point check (`initial=True`) on the first reading of each
+  power pass; the end line, both-swept scanning lines and their width; the
+  legends; the compact drawing (titles, axes and the "Field at 0 A" value
+  inside the real canvas height); `test_stfmr_mod_prime_range` (legend, end
+  line, "P step dB:", the fake SMB100A answers `:POW?`),
+  `test/test_instrument_safety_logic` (the trace with `:POW?` after `:POW`)
+  and the CI GUI test `test_stfmr_field_output` (at 1101 px, at the lab
+  height and at 1300 px, every text inside each STFMR canvas and the x-axis
+  title 10 px above its bottom; "P step dB:").
 - **Known limits / to check at the lab:** not run on the instruments. Check
   once that the lab SMB100A answers `:POW?` with a plain number (as R&S
-  generators do). The first power is not read back (see above); a read-back
-  there would add a query to the default sweep, so it is left for the user
-  to decide. Changing the level with the RF on may switch the generator's
-  attenuator; the 4886 is at zero and the next readings are discarded
-  meanwhile.
+  generators do): every sweep, the default one included, now reads its
+  first power back and stops with nothing switched on if it cannot.
+  Changing the level with the RF on may switch the generator's attenuator;
+  the 4886 is at zero and the next readings are discarded meanwhile. Below
+  about 75 px a compact plot box is a sliver (nothing is cut).
 
 ## STFMR: Settle s and Acquire s replace Wait/pt; 7 x TC settle; table in order (2026-10-14)
 
