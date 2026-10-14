@@ -112,6 +112,9 @@ class WaitsAtTheNewDefaults(NoWindows):
         tc = app.NONLOCAL_MFLI_TIME_CONSTANT_S
         self.assertEqual(app.NONLOCAL_IV6221_FIRST_SETTLE_TAUS * tc, 10.0)          # far jumps (was 1 s)
         self.assertEqual(app.NONLOCAL_IV6221_RANGE_SETTLE_TAUS["mfli"] * tc, 10.0)  # after a range step
+        # Other points: max(Settle s, 7 x TC) = 7 s (Settle s 0.5 s alone
+        # before; user, 2026-10-14; test_nonlocal_lockin_settle has the rest).
+        self.assertEqual(app.CombinedControlApp._nonlocal_lockin_settle_s(app.NONLOCAL_IV6221_SETTLE_S, [tc]), 7.0)
 
     def test_ppms_zurich_range_wait_falls_back_to_1_s(self):
         """After a Zurich range change the PPMS / RT-E reading waits
@@ -169,7 +172,10 @@ class DefaultSetupsAtTheNewTc(NoWindows):
         self.assertRegex(text, r"for key, measured in \(\('830_a', False\), \('830_b', False\),\s*"
                                r"\('830_c', False\), \('zurich', True\)\):")
 
-    def test_a_default_6221_iv_point_sees_about_a_quarter_of_its_step(self):
+    def test_a_default_6221_iv_point_saw_about_a_quarter_of_its_step(self):
+        """Before 2026-10-14 a 6221-IV point waited Settle s alone.  Since
+        then it waits at least 7 x TC (7 s), and sees 99 % of its step
+        (user, 2026-10-14); the last lines check that."""
         self.assertEqual(app.NONLOCAL_LOCKIN_FILTER_ORDER, 2)       # 12 dB/oct
         settle, acquire = app.NONLOCAL_IV6221_SETTLE_S, app.NONLOCAL_IV6221_ACQUIRE_S
         self.assertEqual((settle, acquire), (0.5, 1.0))
@@ -196,6 +202,12 @@ class DefaultSetupsAtTheNewTc(NoWindows):
         lag = sum(steps_behind(t) for t in times) / len(times)
         self.assertGreater(lag, 1.0)
         self.assertLess(lag, 1.3)
+
+        # Now: each point waits max(Settle s, 7 x TC) = 7 s first.
+        wait = app.CombinedControlApp._nonlocal_lockin_settle_s(settle, [tau])
+        self.assertEqual(wait, 7.0)
+        self.assertGreater(mean_seen(wait, tau), 0.99)
+        self.assertGreater(_step_seen(wait, tau), 0.99)                    # 99 % at the first reading
 
     def test_stfmr_mfli_alone_reads_after_seven_time_constants(self):
         """With Wait/pt (0.5 s) a default MFLI point saw 9 % of its step; it

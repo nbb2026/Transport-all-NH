@@ -154,6 +154,84 @@
 - **Not yet verified:** on the lab PC with the instruments (the read pace a
   real GPIB bus allows, the MFLI at 50 Hz), and the CI screenshots.
 
+## Non-local: lock-in readings settle at least 7 x TC (2026-10-14)
+
+- **The user's choice:** "every lock-in reading waits at least 7 x TC (99 %
+  settled at 12 dB/oct) after a change, on every page; Wait/pt or Settle s
+  still apply when longer; ... the Start confirmation shows the wait". This
+  section covers the Non-local page: 6221-IV and Gate-VI. 2400-IV and
+  |R| vs time read the Keithley (DC, no lock-in) and are unchanged. The
+  factor is the shared `LOCKIN_SETTLE_TAUS = 7.0`; the wait is
+  `CombinedControlApp._nonlocal_lockin_settle_s`.
+- **Which time constant:** the slowest among the lock-ins the scan
+  measures. The Zurich: the rack's "TC (s)" box. A Gate-VI SR830: the 1 s
+  Gate-VI writes (OFLT 10, now `NONLOCAL_VI_SR830_TIME_CONSTANT_CODE`). A
+  6221-IV SR830: its front-panel value, read with OFLT?
+  (`NonLocalACController.read_sr830_time_constants`, a query only). The
+  2182A is not a lock-in.
+- **6221-IV:**
+  - **Every point** now waits max(Settle s, 7 x TC) after its current step,
+    then averages Acquire s. At the defaults (the Zurich alone, TC 1 s,
+    Settle 0.5 s, Acquire 1 s) that is 7 s; it was 0.5 s. The first reading
+    then shows 99 % of the step (it was about 26 % on average).
+  - **Far points:** the first point of each pass and each loop's jump back
+    to Start still wait max(Settle s, 10 x TC) = 10 s
+    (`NONLOCAL_IV6221_FIRST_SETTLE_TAUS`), and in a frequency scan at least
+    5 periods.
+  - **Start:** with an SR830 ticked Measure, Start first reads its
+    front-panel TC on the page's worker thread (as the rack's Zurich poll
+    reads), then shows the confirmation. A failed read shows a warning and
+    starts nothing; a second click meanwhile is ignored. The scan reads the
+    TC again at its set-up and waits the longer of the two, so it never
+    waits less than the confirmation said.
+  - **Confirmation:** "Each point waits 7 s after its current step (7 × the
+    slowest lock-in TC, Zurich TC 1 s, or Settle 0.5 s if longer), then
+    averages Acquire 1 s" and "The first point of each pass waits 10 s
+    (10 × TC)" (with "and each loop's jump back to Start" for one-way
+    loops). The estimate counts each point's wait, the far points and the
+    first point's second window. The default 100-point scan is about
+    13 min 54 s (99 x 8.3 s + 11.3 s + 1 s); it showed 3 min 11 s. With an
+    SR830 front panel at 3 s each point waits 21 s and the far points 30 s.
+  - **Records:** the CSV has a new last column, `settle_waited_s` (the wait
+    before each point was read). The parameter log adds `point_settle_s`,
+    `first_settle_s`, `lockin_time_constant_s`, `slowest_lockin` and
+    `sr830_time_constants_s`.
+  - **Unchanged:** the Settle s and Acquire s defaults, and the autorange
+    re-settle (5 x TC of that SR830, 10 x TC of the Zurich), which follows
+    a range step, not a current step.
+- **Gate-VI:**
+  - **Each point:** the lock-ins start from zero when the 6221 read current
+    switches on after the pulse. The reading now starts max(6221 pre-run s,
+    7 x TC) after that, and in a frequency scan at least 5 periods. At the
+    defaults (pre-run 5 s, SR830 1 s, Zurich TC 1 s) that is 7 s; it was
+    5 s. The scan uses the time constants read back after its set-up when
+    they are longer.
+  - **Later SR830 orders** still wait max(pre-run, 10 x TC) = 10 s
+    (`NONLOCAL_VI_HARMONIC_SETTLE_TAUS`), already more than 7 x TC.
+  - **Confirmation:** a new line, "Each point: the 6221 runs 7 s before the
+    reading (7 × the slowest lock-in TC 1 s = 7 s, or 6221 pre-run 5 s if
+    longer), then reads Measure 30 s". The estimate counts it. The default
+    scan (±100 V in 10 V steps, 41 points x 2 loops) takes 54.4 s per point,
+    about 1 h 14 min 37 s in all; it was 1 h 11 min 53 s.
+  - **Records:** `VI_raw.csv` and `VI_summary.csv` have a new last column,
+    `settle_waited_s`: the pre-run, or the order's settle for an SR830's
+    later orders. `VI_parameters.log` adds `lockin_time_constant_s`,
+    `lockin_settle_s` and `effective_settle_s`.
+  - **The 2182A alone** (a DC run) keeps the 6221 pre-run.
+- **Tests:** `test_nonlocal_lockin_settle.py` (new, Tk-free) checks the
+  rule, the 6221-IV waits, estimate, confirmation, SR830 read and records,
+  and the Gate-VI pre-run, estimate, confirmation, worker waits and CSV
+  columns. Tests of other timing turn the 7 x TC wait off
+  (`LOCKIN_SETTLE_TAUS` patched to 0): `test_nonlocal_6221_iv`,
+  `test_nonlocal_frequency_scan`, `test_nonlocal_gate_vi_harmonics`,
+  `test_nonlocal_pulse_gate_6221` and `test_nonlocal_minor_review`. The
+  6221-IV far-jump test now expects 21 s ordinary points at a 3 s TC,
+  `test_nonlocal_gate_vi_loops` expects the new last column, and
+  `test_lockin_time_constant_defaults` checks the 7 s default wait. No CI
+  GUI expectation names these texts.
+- **Supersedes:** the 6221-IV "Other points wait Settle s" and Gate-VI "No
+  Gate-VI wait comes from the Zurich TC" notes in the next section.
+
 ## Lock-in time constants: every default is 1 s (2026-10-14)
 
 - **The user's choice:** "all default lock-in time constant change to 1s".
@@ -218,9 +296,13 @@
     sweep each reading lags the current by about one point, and a round
     trip can show a hysteresis that is not in the sample. Raise Settle s
     to about 5 s for settled points (about 97 % of each step).
+    (Superseded the same day: every point now waits at least 7 x TC; see
+    "Non-local: lock-in readings settle at least 7 x TC" above.)
   - **Non-local Gate-VI:** the Zurich runs at 1 s (the log shows
     τ = 1 s). No Gate-VI wait comes from the Zurich TC. The 10 τ settle
     between SR830 orders uses the SR830s' 1 s, as before (10 s).
+    (Superseded the same day: each reading now waits at least 7 x TC after
+    the 6221 switches on; see the section above.)
   - **PPMS and RT-E, Zurich:** after a range change the reading waits
     max(0.2 s, 10 x TC) = 10 s (it was 1 s), at most 4 times per point, so
     up to about 40 s before "Zurich autorange did not settle". With idle

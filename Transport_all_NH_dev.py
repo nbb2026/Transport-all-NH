@@ -1730,6 +1730,11 @@ NONLOCAL_VI_2410_CURRENT_COMPLIANCE_A = KEITHLEY_DEFAULT_COMPLIANCE_A
 NONLOCAL_VI_READ_CURRENT_RMS_MA = 1.0
 NONLOCAL_VI_FREQUENCY_HZ = NONLOCAL_FREQUENCY_HZ
 NONLOCAL_VI_SAMPLE_HZ = 1.0
+# "6221 pre-run s": how long the 6221 read current runs before each point's
+# reading.  The reading waits at least LOCKIN_SETTLE_TAUS x the slowest
+# lock-in time constant measured instead when that is longer (7 s at the
+# 1 s time constants), because the lock-ins start from zero when the 6221
+# switches on after the pulse (user, 2026-10-14).
 NONLOCAL_VI_6221_SETTLE_S = 5.0
 # Measure/pt s default (user's figure, 2026-10-11; was 50, before that 100).
 NONLOCAL_VI_MEASURE_S = 30.0
@@ -1744,6 +1749,11 @@ NONLOCAL_VI_ZURICH_HARMONIC_CHOICES = tuple(PPMS_ZURICH_MODE_ORDERS)
 # After an SR830 switches to its next order its filter settles this many
 # time constants (Gate-VI sets 1 s), or the Settle s if that is longer.
 NONLOCAL_VI_HARMONIC_SETTLE_TAUS = 10.0
+# The time constant Gate-VI writes to its SR830s (OFLT code 10 = 1 s).  The
+# Start confirmation and estimate work out the read settle from it before the
+# SR830 is set up; the scan then also uses the value read back (user,
+# 2026-10-14).
+NONLOCAL_VI_SR830_TIME_CONSTANT_CODE = 10
 # The lock-in channel each order's voltage-vs-pulse plot shows (user,
 # 2026-10-09: X for the 1st harmonic, Y for the 2nd; the 3rd, odd as the
 # 1st, X).  The CSV keeps the mean X, Y and R of every order.
@@ -1830,11 +1840,12 @@ NONLOCAL_IV6221_STEP_MA = 0.01
 NONLOCAL_IV6221_CURRENT_MA = 0.1      # RT-E's RTE_TRANSPORT_CURRENT_RMS_MA (Set 6221)
 NONLOCAL_IV6221_FREQUENCY_HZ = NONLOCAL_FREQUENCY_HZ   # RT-E's RTE_TRANSPORT_FREQUENCY_HZ
 NONLOCAL_IV6221_COMPLIANCE_V = 50.0
-# Settle s and Acquire s do not follow the Zurich TC.  At the rack's 1 s
-# default TC an ordinary point is averaged 0.5-1.5 TC after its step, which
-# shows only about a quarter of the step, so a sweep lags by about a point.
-# They were left as they were because only the time-constant defaults were
-# asked to change; about 5 s of Settle s gives settled points (user,
+# Settle s is the shortest wait after each current step.  Every point waits
+# at least LOCKIN_SETTLE_TAUS x the slowest time constant measured instead
+# (the Zurich TC, each SR830's front-panel one), so at the 1 s defaults a
+# point waits 7 s, 99 % settled, and is then averaged over Acquire s.  With
+# Settle s alone a point was averaged 0.5-1.5 TC after its step and showed
+# only about a quarter of it, so the curve lagged by about a point (user,
 # 2026-10-14).
 NONLOCAL_IV6221_SETTLE_S = 0.5
 NONLOCAL_IV6221_ACQUIRE_S = 1.0
@@ -8659,6 +8670,24 @@ class NonLocalACController:
             f"{last_response!r}"
         ) from last_error
 
+    def read_sr830_time_constants(self, keys) -> dict[str, float]:
+        """Each SR830's time constant in seconds, read with OFLT? (nothing
+        is written).  6221-IV keeps the front-panel time constant, and each
+        point's wait follows it, so its Start reads it before the
+        confirmation shows the wait (user, 2026-10-14).  An SR830 that is not
+        connected, or a code outside 0-19, raises."""
+        values = {}
+        with self.lock:
+            for key in keys:
+                key = str(key)
+                if key not in self.lockins:
+                    raise RuntimeError(f"SR830 #{key} is not connected")
+                code = int(self._query_sr830_numbers(key, "OFLT?", 1)[0])
+                if not 0 <= code < len(SR830_TIME_CONSTANTS_S):
+                    raise RuntimeError(f"SR830 #{key} time-constant readback is invalid: OFLT {code}")
+                values[key] = SR830_TIME_CONSTANTS_S[code]
+        return values
+
     def _ensure_resource_manager(self):
         if pyvisa is None:
             raise RuntimeError("pyvisa is missing; please run: py -m pip install pyvisa pyvisa-py")
@@ -10078,7 +10107,8 @@ class NonLocalACController:
                 # 6221-IV keeps the front-panel time constant, as RT-E and
                 # PPMS do; Gate-VI sets 1 s.
                 time_constant = (
-                    () if sr830_front_panel_time_constant else ("OFLT 10", "OFSL 1")
+                    () if sr830_front_panel_time_constant
+                    else (f"OFLT {NONLOCAL_VI_SR830_TIME_CONSTANT_CODE}", "OFSL 1")
                 )
                 for command in (
                     "FMOD 0", "RSLP 2", f"HARM {harmonic}", "ISRC 1",
@@ -32457,7 +32487,19 @@ class CombinedControlApp:
             for index in range(1, max((len(lockin_orders[key]) for key in lockin_configs), default=1))
         ]
         # Gate-VI sets the SR830s' time constant to 1 s (configure).
-        harmonic_settle_s = max(settings["settle_s"], NONLOCAL_VI_HARMONIC_SETTLE_TAUS * 1.0)
+        sr830_tau_s = SR830_TIME_CONSTANTS_S[NONLOCAL_VI_SR830_TIME_CONSTANT_CODE]
+        harmonic_settle_s = max(settings["settle_s"], NONLOCAL_VI_HARMONIC_SETTLE_TAUS * sr830_tau_s)
+        # The lock-ins start from zero when the 6221 read current switches on
+        # after each pulse, so every reading waits at least
+        # LOCKIN_SETTLE_TAUS x the slowest time constant measured (the
+        # SR830s' 1 s, the rack's Zurich TC), or the 6221 pre-run s if that
+        # is longer.  The 2182A alone has none (user, 2026-10-14).
+        lockin_taus = (
+            ([sr830_tau_s] if lockin_configs else [])
+            + ([mfli_config["timeconstant_s"]] if mfli_config else [])
+        )
+        settings["lockin_time_constant_s"] = max(lockin_taus, default=0.0)
+        settings["lockin_settle_s"] = self._nonlocal_lockin_settle_s(0.0, lockin_taus)
         settings["sample_interval_s"] = 1.0 / settings["sample_hz"]
         # The hold and a couple of reads while the current is chosen.
         resistance_estimate_s = NONLOCAL_VI_RES_HOLD_S + 2 * NONLOCAL_VI_RES_SAMPLE_INTERVAL_S
@@ -32477,13 +32519,59 @@ class CombinedControlApp:
         return settings
 
     @staticmethod
+    def _nonlocal_lockin_settle_s(wait_s: float, time_constants_s) -> float:
+        """The wait before a Non-local lock-in reading after the swept
+        quantity changes: LOCKIN_SETTLE_TAUS x the slowest of the time
+        constants given (the lock-ins the scan measures), or ``wait_s`` (the
+        page's Settle s or 6221 pre-run s) if that is longer.  At 12 dB/oct
+        a step has then settled to 99 % (user, 2026-10-14).  Time constants
+        that are unknown (NaN, None) or not above 0 are skipped, so with no
+        lock-in it is ``wait_s``."""
+        taus = []
+        for value in time_constants_s:
+            try:
+                tau = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(tau) and tau > 0:
+                taus.append(tau)
+        return max(float(wait_s), LOCKIN_SETTLE_TAUS * max(taus, default=0.0))
+
+    @staticmethod
     def _nonlocal_vi_pre_run_s(settings: dict, frequency_hz: float) -> float:
-        """The 6221's run before each read: "6221 pre-run s", and in a
+        """The 6221's run before each read: "6221 pre-run s", at least
+        LOCKIN_SETTLE_TAUS x the slowest lock-in time constant measured
+        (``settings["lockin_settle_s"]``, user, 2026-10-14), and in a
         frequency scan at least 5 periods of the frequency, as the microwave
         test program waits."""
+        wait_s = max(float(settings["settle_s"]), float(settings.get("lockin_settle_s", 0.0)))
         if not settings.get("frequency_scan"):
-            return float(settings["settle_s"])
-        return max(float(settings["settle_s"]), NONLOCAL_FSCAN_SETTLE_PERIODS / float(frequency_hz))
+            return wait_s
+        return max(wait_s, NONLOCAL_FSCAN_SETTLE_PERIODS / float(frequency_hz))
+
+    def _nonlocal_vi_settle_text(self, settings: dict) -> str:
+        """The Start confirmation's line on the wait before each reading
+        (user, 2026-10-14: the confirmation shows the wait)."""
+        waits = [self._nonlocal_vi_pre_run_s(settings, frequency) for frequency in settings["frequencies"]]
+        shortest, longest = min(waits), max(waits)
+        wait_text = (
+            f"{shortest:g} s" if math.isclose(shortest, longest)
+            else f"{shortest:g}–{longest:g} s"
+        )
+        tau_s = float(settings.get("lockin_time_constant_s", 0.0))
+        rule = (
+            f"{LOCKIN_SETTLE_TAUS:g} × the slowest lock-in TC {tau_s:g} s = "
+            f"{float(settings['lockin_settle_s']):g} s, or 6221 pre-run "
+            f"{float(settings['settle_s']):g} s if longer"
+            if tau_s > 0 else
+            f"6221 pre-run {float(settings['settle_s']):g} s; no lock-in measured"
+        )
+        if settings.get("frequency_scan"):
+            rule += f", and at least {NONLOCAL_FSCAN_SETTLE_PERIODS:g} periods of each frequency"
+        return (
+            f"Each point: the 6221 runs {wait_text} before the reading ({rule}), "
+            f"then reads Measure {float(settings['measure_s']):g} s\n"
+        )
 
     def start_nonlocal_vi_scan(self) -> None:
         if self.nonlocal_keithley_task is not None:
@@ -32604,7 +32692,8 @@ class CombinedControlApp:
             + 
             f"Resistance gate: {settings['gate_resistance_ohm'] / 1e6:g} MΩ\n"
             f"{lockin_description}\n"
-            f"Estimated total time: {self._format_duration(settings['estimated_s'])}\n\n"
+            + self._nonlocal_vi_settle_text(settings)
+            + f"Estimated total time: {self._format_duration(settings['estimated_s'])}\n\n"
             + self._nonlocal_vi_high_voltage_note(settings)
             + (
                 "Confirm the interlock wiring and the Trigger Link, then start?"
@@ -32688,6 +32777,8 @@ class CombinedControlApp:
             "SR830_sensitivity_index", "MFLI_input_range_V",
             "MFLI_input_utilization", "auto_range_action",
             "2410_output_state", "6221_trigger_link_line", "loop",
+            # The wait before the reading's window (user, 2026-10-14).
+            "settle_waited_s",
         )
 
     @staticmethod
@@ -32704,6 +32795,8 @@ class CombinedControlApp:
             "pulse_gate_resistance_Ohm", "post_resistance_source_current_A",
             "post_resistance_voltage_V", "post_resistance_current_A",
             "post_resistance_Ohm", "6221_trigger_link_line", "loop",
+            # The wait before the order's readings (user, 2026-10-14).
+            "settle_waited_s",
         )
 
     def _nonlocal_vi_shutdown_outputs(self) -> tuple[str, ...]:
@@ -32841,7 +32934,25 @@ class CombinedControlApp:
                         source.configure_third_harmonic(tc_s, rate=rate)
                     source.disable_unused_ppms_demods("+".join(map(str, orders["mfli"])))
 
+            def lockin_settle_from(readbacks):
+                """LOCKIN_SETTLE_TAUS x the slowest time constant read back
+                (each SR830's OFLT?, the Zurich's), never below the settle the
+                Start confirmation showed (user, 2026-10-14)."""
+                taus = [
+                    readbacks.get(key, {}).get("time_constant_s")
+                    for key in settings["lockin_configs"]
+                ]
+                if settings["mfli_config"]:
+                    taus.append(readbacks.get("mfli", {}).get(
+                        "timeconstant_s", settings["mfli_config"]["timeconstant_s"]
+                    ))
+                return max(
+                    float(settings.get("lockin_settle_s", 0.0)),
+                    self._nonlocal_lockin_settle_s(0.0, taus),
+                )
+
             frequency, lockin_readbacks = configure_at(frequencies[0])
+            lockin_settle_s = lockin_settle_from(lockin_readbacks)
             # The harmonic orders of each meter (the 2182A has none).
             orders = {
                 key: tuple(settings.get("lockin_orders", {}).get(key) or (
@@ -32913,6 +33024,12 @@ class CombinedControlApp:
             parameter_lines.append(
                 f"gate_keithley_identity={self.nonlocal_vi_2410_controller.identity}"
             )
+            # The wait before each point's reading, from the time constants
+            # read back (the CSVs' last column, settle_waited_s, has each
+            # reading's; user, 2026-10-14).
+            parameter_lines.append(
+                f"effective_settle_s={max(self._nonlocal_vi_pre_run_s(settings, frequencies[0]), lockin_settle_s):g}"
+            )
             (run_directory / "VI_parameters.log").write_text(
                 "\n".join(parameter_lines) + "\n", encoding="utf-8"
             )
@@ -32939,6 +33056,7 @@ class CombinedControlApp:
                     source.output_off()
                     source.confirm_output_off("before the next frequency")
                     frequency, lockin_readbacks = configure_at(set_frequency)
+                    lockin_settle_s = lockin_settle_from(lockin_readbacks)
                     set_up_zurich_orders(lockin_readbacks)
                     source.output_off()
                     source.confirm_output_off("after setting up the next frequency")
@@ -32953,7 +33071,9 @@ class CombinedControlApp:
                             f"Frequency {n}/{len(frequencies)}: {value:g} Hz; the pulse scan starts again"
                         )
                     )
-                pre_run_s = self._nonlocal_vi_pre_run_s(settings, set_frequency)
+                # At least LOCKIN_SETTLE_TAUS x the slowest time constant read
+                # back after the 6221 switches on (user, 2026-10-14).
+                pre_run_s = max(self._nonlocal_vi_pre_run_s(settings, set_frequency), lockin_settle_s)
                 for loop_index, loop_point, pulse_voltage_v in (
                     (loop, point, voltage)
                     for loop in range(1, loops + 1)
@@ -33050,7 +33170,12 @@ class CombinedControlApp:
                             for key in settings["measurement_keys"]
                             for order in orders[key]
                         }
+                        # The wait before each pass's readings, for the CSVs
+                        # (user, 2026-10-14): the pre-run, then each order's
+                        # settle.
+                        pass_settles = {}
                         for pass_index, pass_keys in enumerate(read_passes):
+                            pass_settles[pass_index] = pre_run_s
                             if pass_index:
                                 # The SR830s' next order (user, 2026-10-09: an
                                 # SR830 reads 1+2 one after the other): switched,
@@ -33062,9 +33187,11 @@ class CombinedControlApp:
                                     for key in pass_keys
                                 ]
                                 tau_s = max((tau for tau in taus if math.isfinite(tau)), default=1.0)
-                                if self.nonlocal_vi_stop_event.wait(
-                                    max(settings["settle_s"], NONLOCAL_VI_HARMONIC_SETTLE_TAUS * tau_s)
-                                ):
+                                # 10 τ, already longer than LOCKIN_SETTLE_TAUS τ.
+                                pass_settles[pass_index] = max(
+                                    settings["settle_s"], NONLOCAL_VI_HARMONIC_SETTLE_TAUS * tau_s
+                                )
+                                if self.nonlocal_vi_stop_event.wait(pass_settles[pass_index]):
                                     raise NonLocalVIStopped()
                                 self.nonlocal_vi_2410_controller.confirm_output_off(
                                     "before the next harmonic read"
@@ -33125,6 +33252,7 @@ class CombinedControlApp:
                                             sample.get("input_utilization", ""),
                                             sample["auto_range"], 0,
                                             settings["marker_line"], loop_index,
+                                            pass_settles[pass_index],
                                         )
                                     )
                                     samples[(key, order)].append(sample)
@@ -33205,6 +33333,12 @@ class CombinedControlApp:
                         mean = statistics.fmean(values)
                         std = statistics.pstdev(values) if len(values) > 1 else 0.0
                         harmonic = order if order is not None else config.get("harmonic", "")
+                        # The wait before this order's readings: an SR830's
+                        # later orders are read in later passes.
+                        settle_waited_s = pass_settles.get(
+                            orders[key].index(order) if key in settings["lockin_configs"] else 0,
+                            pre_run_s,
+                        )
                         summary = {
                             "point_index": point_index,
                             "loop": loop_index,
@@ -33259,6 +33393,7 @@ class CombinedControlApp:
                             ),
                             "gate_resistance": gate_resistance,
                             "post_resistance": dict(post_resistance),
+                            "settle_waited_s": settle_waited_s,
                         }
                         summary_writer.writerow(
                             (
@@ -33278,6 +33413,7 @@ class CombinedControlApp:
                                 post_resistance["current_a"],
                                 post_resistance["resistance_ohm"],
                                 settings["marker_line"], loop_index,
+                                settle_waited_s,
                             )
                         )
                         with self.nonlocal_vi_data_lock:
@@ -35347,41 +35483,159 @@ class CombinedControlApp:
             self.nonlocal_vi_status_var.set(f"{text}; 6221 / 2400 OFF or a scan switches it off")
         self._update_nonlocal_vi_controls()
 
+    @staticmethod
+    def _nonlocal_iv6221_far_point(loop: int, point: int, round_trip: bool) -> bool:
+        """The first point of a pass, or the jump back to Start at a new
+        loop without a round trip: these wait first_settle_s."""
+        return point == 1 and (loop == 1 or not round_trip)
+
+    def _nonlocal_iv6221_timing(self, settings: dict, sr830_time_constants: dict) -> dict:
+        """The waits of a 6221-IV scan, from the time constants of the
+        lock-ins it measures: each SR830's front-panel one (read with OFLT?)
+        and the rack's Zurich TC (user, 2026-10-14):
+        point_settle_s: every point after its current step waits
+            max(Settle s, LOCKIN_SETTLE_TAUS x the slowest TC);
+        first_settle_s: the far points wait
+            max(Settle s, NONLOCAL_IV6221_FIRST_SETTLE_TAUS x the slowest TC);
+        lockin_time_constant_s / slowest_lockin: that TC and its meter."""
+        taus = {
+            key: sr830_time_constants.get(key, math.nan) for key in settings["lockin_configs"]
+        }
+        if settings["mfli_config"]:
+            taus["mfli"] = settings["mfli_config"]["timeconstant_s"]
+        known = {}
+        for key, value in taus.items():
+            try:
+                tau = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(tau) and tau > 0:
+                known[key] = tau
+        slowest = max(known, key=known.get, default="")
+        tau_s = known.get(slowest, 0.0)
+        settle_s = float(settings["settle_s"])
+        point_settle_s = self._nonlocal_lockin_settle_s(settle_s, [tau_s])
+        return {
+            "sr830_time_constants_s": {key: float(value) for key, value in sr830_time_constants.items()},
+            "lockin_time_constant_s": tau_s,
+            "slowest_lockin": NONLOCAL_METER_NAMES.get(slowest, ""),
+            "point_settle_s": point_settle_s,
+            "first_settle_s": max(settle_s, NONLOCAL_IV6221_FIRST_SETTLE_TAUS * tau_s, point_settle_s),
+        }
+
+    def _nonlocal_iv6221_estimate_s(self, settings: dict) -> float:
+        """The scan's duration as the Start confirmation counts it: every
+        point its wait (point_settle_s; first_settle_s at the far points, or
+        5 periods of a scanned frequency if longer), Acquire s and about
+        0.3 s of reads, and the first point of each pass one more window."""
+        plan = settings["plan"]
+        far_points = sum(
+            1 for loop, point, _value in plan
+            if self._nonlocal_iv6221_far_point(loop, point, settings.get("round_trip", False))
+        )
+        ordinary = len(plan) - far_points
+        acquire_s = float(settings["acquire_s"])
+        point_settle_s = float(settings["point_settle_s"])
+        total = 0.0
+        for frequency in settings["frequencies"]:
+            far_settle_s = max(
+                float(settings["first_settle_s"]), point_settle_s,
+                NONLOCAL_FSCAN_SETTLE_PERIODS / float(frequency) if settings.get("frequency_scan") else 0.0,
+            )
+            total += len(settings["passes"]) * (
+                ordinary * (point_settle_s + acquire_s + 0.3)
+                + far_points * (far_settle_s + acquire_s + 0.3)
+                + acquire_s
+            )
+        return total
+
     def start_nonlocal_iv6221(self) -> None:
         if not self._nonlocal_iv6221_ready():
             return
+        if self.__dict__.get("nonlocal_iv6221_tc_reading"):
+            return  # the last Start is still reading the SR830 time constants
         try:
             settings = self._parse_nonlocal_iv6221_settings()
         except ValueError as error:
             messagebox.showwarning("6221-IV", str(error), parent=self.root)
             return
+        sr830 = tuple(key for key in settings["measured"] if key != "mfli")
+        if not sr830:
+            self._confirm_nonlocal_iv6221(settings, {})
+            return
+        # Each point waits LOCKIN_SETTLE_TAUS x the slowest time constant,
+        # and an SR830 keeps its front-panel one, so it is read (OFLT?, a
+        # query only) before the confirmation shows the wait.  Off the Tk
+        # thread, as the rack's Zurich poll reads (user, 2026-10-14).
+        controller = self.nonlocal_vi_ac_controller
+        self.nonlocal_iv6221_tc_reading = True
+        self.nonlocal_iv6221_status_var.set("Reading the SR830 front-panel time constants (OFLT?)")
+        try:
+            future = self.nonlocal_vi_executor.submit(controller.read_sr830_time_constants, sr830)
+        except BaseException:
+            self.nonlocal_iv6221_tc_reading = False
+            raise
+        future.add_done_callback(
+            lambda done: self.post_ui(lambda: self._nonlocal_iv6221_time_constants_read(settings, done))
+        )
+
+    def _nonlocal_iv6221_time_constants_read(self, settings: dict, future) -> None:
+        """Tk thread: the SR830 time constants are read; show the
+        confirmation with the wait they give."""
+        self.nonlocal_iv6221_tc_reading = False
+        if self.closing or self.nonlocal_vi_closed:
+            return
+        error = future.exception()
+        if error is not None:
+            self.nonlocal_iv6221_status_var.set("6221-IV not started: the SR830 time constant was not read")
+            messagebox.showwarning(
+                "6221-IV", f"Cannot read the SR830 front-panel time constant: {error}", parent=self.root
+            )
+            return
+        time_constants = future.result()
+        self.nonlocal_iv6221_status_var.set(
+            "SR830 front-panel TC: "
+            + ", ".join(f"{NONLOCAL_METER_NAMES[key]} {value:g} s" for key, value in time_constants.items())
+        )
+        # A scan, Set 6221 or a connection may have begun meanwhile.
+        if not self._nonlocal_iv6221_ready():
+            return
+        self._confirm_nonlocal_iv6221(settings, time_constants)
+
+    def _confirm_nonlocal_iv6221(self, settings: dict, sr830_time_constants: dict) -> None:
+        """The Start confirmation, the folder and the parameter log, then
+        the scan.  ``sr830_time_constants`` are the measured SR830s' front-
+        panel time constants in seconds (none when only the Zurich measures)."""
+        settings.update(self._nonlocal_iv6221_timing(settings, sr830_time_constants))
         points = len(settings["plan"])
         frequencies = settings["frequencies"]
         total = points * len(settings["passes"]) * len(frequencies)
-        # Each pass also settles its first point for 10 time constants (the
-        # Zurich's TC; an SR830's front-panel one adds to this) and checks it
-        # in a second window; in a frequency scan, at each frequency, at
-        # least 5 of its periods.
-        first_settle_s = (
-            NONLOCAL_IV6221_FIRST_SETTLE_TAUS * float(settings["mfli_config"]["timeconstant_s"])
-            if settings["mfli_config"] else 0.0
-        )
-        estimate = self._format_scan_duration(
-            total * (settings["settle_s"] + settings["acquire_s"] + 0.3)
-            + len(settings["passes"]) * sum(
-                max(first_settle_s, NONLOCAL_FSCAN_SETTLE_PERIODS / frequency
-                    if settings["frequency_scan"] else 0.0) + settings["acquire_s"]
-                for frequency in frequencies
-            )
-        )
+        estimate = self._format_scan_duration(self._nonlocal_iv6221_estimate_s(settings))
         frequency_text = (
             f"Frequency scan: {len(frequencies)} prime(s), {frequencies[0]:g}–{frequencies[-1]:g} Hz, "
             "the whole scan at each (6221 off and set up again in between)"
             if settings["frequency_scan"] else f"{settings['frequency_hz']:g} Hz"
         )
         meters = ", ".join(
-            f"{NONLOCAL_METER_NAMES[key]} {self.nonlocal_iv6221_harmonic_vars[key].get()}"
+            f"{NONLOCAL_METER_NAMES[key]} {'+'.join(map(str, settings['orders'][key]))}"
             for key in settings["measured"]
+        )
+        tau_s = settings["lockin_time_constant_s"]
+        source_of_tau = (
+            "Zurich TC" if settings["slowest_lockin"] == NONLOCAL_METER_NAMES["mfli"]
+            else f"{settings['slowest_lockin']} front panel"
+        )
+        rule_text = (
+            f"{LOCKIN_SETTLE_TAUS:g} × the slowest lock-in TC, {source_of_tau} {tau_s:g} s, "
+            f"or Settle {settings['settle_s']:g} s if longer"
+            if tau_s > 0 else f"Settle {settings['settle_s']:g} s"
+        )
+        far_text = (
+            "The first point of each pass"
+            + ("" if settings["round_trip"] or settings["loops"] < 2 else " and each loop's jump back to Start")
+            + f" waits {settings['first_settle_s']:g} s ({NONLOCAL_IV6221_FIRST_SETTLE_TAUS:g} × TC"
+            + (f", at least {NONLOCAL_FSCAN_SETTLE_PERIODS:g} periods of each frequency" if settings["frequency_scan"] else "")
+            + ")\n"
         )
         if not messagebox.askyesno(
             "Start the 6221-IV scan?",
@@ -35393,8 +35647,10 @@ class CombinedControlApp:
             + (f" × {len(frequencies)} frequencies" if len(frequencies) > 1 else "")
             + f"\n{frequency_text}, compliance {settings['compliance_v']:g} V, "
             f"Trigger Link line {settings['marker_line']}\n"
-            f"Settle {settings['settle_s']:g} s, acquire {settings['acquire_s']:g} s per point\n"
-            f"Lock-ins (harmonic): {meters}\n"
+            f"Each point waits {settings['point_settle_s']:g} s after its current step "
+            f"({rule_text}), then averages Acquire {settings['acquire_s']:g} s\n"
+            + far_text
+            + f"Lock-ins (harmonic): {meters}\n"
             f"Estimated time: about {estimate}\n\n"
             "The scan writes a run folder, with a live CSV and the parameter log, "
             "in the folder you choose next. The 6221 is switched off at the end.",
@@ -35495,8 +35751,10 @@ class CombinedControlApp:
                 name = f"SR830_{key}"
                 header += [f"{name}_harmonic", f"{name}_X_V", f"{name}_Y_V", f"{name}_R_V",
                            f"{name}_theta_deg", f"{name}_samples", f"{name}_discarded"]
-        # How many readings of the point found the 6221 in compliance.
-        return header + ["compliance_readings"]
+        # How many readings of the point found the 6221 in compliance, and
+        # the wait after its current step before it was read (user,
+        # 2026-10-14).
+        return header + ["compliance_readings", "settle_waited_s"]
 
     def _nonlocal_iv6221_read_point(self, source, frequency: float, keys, settings: dict, stop):
         """Each meter's valid readings over Acquire s, as RT-E takes them.
@@ -35691,8 +35949,17 @@ class CombinedControlApp:
                 if settings["mfli_config"]:
                     taus.append(float(settings["mfli_config"]["timeconstant_s"]))
                 longest_tau = max((tau for tau in taus if math.isfinite(tau)), default=0.0)
+                # Every other point waits at least LOCKIN_SETTLE_TAUS x that
+                # time constant after its current step, or Settle s if that
+                # is longer; never less than the Start confirmation showed
+                # (user, 2026-10-14).
+                point_settle = max(
+                    self._nonlocal_lockin_settle_s(settings["settle_s"], taus),
+                    float(settings.get("point_settle_s", 0.0)),
+                )
                 long_settle = max(
-                    float(settings["settle_s"]), NONLOCAL_IV6221_FIRST_SETTLE_TAUS * longest_tau
+                    float(settings["settle_s"]), NONLOCAL_IV6221_FIRST_SETTLE_TAUS * longest_tau,
+                    point_settle, float(settings.get("first_settle_s", 0.0)),
                 )
                 if scanning:
                     # And at least 5 periods of the new frequency, as the
@@ -35712,11 +35979,11 @@ class CombinedControlApp:
                     range_settle_s["mfli"] = NONLOCAL_IV6221_RANGE_SETTLE_TAUS["mfli"] * float(
                         settings["mfli_config"]["timeconstant_s"]
                     )
-                return frequency, long_settle, dict(
+                return frequency, long_settle, point_settle, dict(
                     settings, frequency_hz=set_frequency, range_settle_s=range_settle_s
                 )
 
-            frequency, long_settle, point_settings = set_up(frequencies[0])
+            frequency, long_settle, point_settle, point_settings = set_up(frequencies[0])
             with Path(csv_path).open("x", newline="", encoding="utf-8-sig") as file:
                 writer = csv.writer(file)
                 writer.writerow(self._nonlocal_iv6221_header(settings))
@@ -35741,7 +36008,7 @@ class CombinedControlApp:
                                 f"{n}/{len(frequencies)}, {value:g} Hz"
                             )
                         )
-                        frequency, long_settle, point_settings = set_up(set_frequency)
+                        frequency, long_settle, point_settle, point_settings = set_up(set_frequency)
                     running = False
                     for run in passes:
                         if stop.is_set():
@@ -35766,8 +36033,9 @@ class CombinedControlApp:
                                     f"6221 ON: {value:.4g} mA RMS / {hz:g} Hz"
                                 )
                             )
-                            far = point == 1 and (loop == 1 or not settings.get("round_trip"))
-                            if stop.wait(long_settle if far else float(settings["settle_s"])):
+                            far = self._nonlocal_iv6221_far_point(loop, point, settings.get("round_trip"))
+                            settle_waited = long_settle if far else point_settle
+                            if stop.wait(settle_waited):
                                 raise InterruptedError("6221-IV scan stopped")
                             if loop == 1 and point == 1:
                                 # The reference lock, at the start of each pass;
@@ -35844,6 +36112,7 @@ class CombinedControlApp:
                                 "elapsed_s": time.monotonic() - started,
                                 "series": {name: result for name, result in results.items()},
                                 "discarded": sum(discarded.values()), "windows": windows,
+                                "settle_waited_s": settle_waited,
                             }
                             csv_row = [
                                 index, run["pass"], loop, point, f"{target:.10g}", f"{actual_ma:.10g}",
@@ -35870,6 +36139,7 @@ class CombinedControlApp:
                                     # This SR830's orders ended in an earlier pass.
                                     csv_row += ["", "", "", "", "", "", ""]
                             csv_row.append(compliance)
+                            csv_row.append(f"{settle_waited:.6g}")
                             writer.writerow(csv_row)
                             file.flush()
                             self.post_ui(lambda data=row: self._append_nonlocal_iv6221_point(data))

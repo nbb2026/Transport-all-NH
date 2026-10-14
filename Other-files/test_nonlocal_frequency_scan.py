@@ -111,7 +111,10 @@ class IV6221Tests(unittest.TestCase):
         a.nonlocal_iv6221_source_var, a.nonlocal_iv6221_point_var = Var(), Var()
         self.sources = []
         a.nonlocal_iv6221_source_var.set = self.sources.append
+        # The 7-time-constant point settle (user, 2026-10-14) is off here,
+        # so the 5-period wait shows.
         for name, value in (("NONLOCAL_IV6221_FIRST_SETTLE_TAUS", 0.0),
+                            ("LOCKIN_SETTLE_TAUS", 0.0),
                             ("NONLOCAL_IV6221_REFERENCE_WAIT_S", 0.0)):
             patcher = mock.patch.object(app, name, value)
             patcher.start()
@@ -249,6 +252,13 @@ class StepFakeAC(FakeAC):
 
 
 class GateVITests(unittest.TestCase):
+    def setUp(self):
+        # The 7-time-constant read settle (user, 2026-10-14) is off here, so
+        # the 5-period pre-run shows; test_nonlocal_lockin_settle has it.
+        patcher = mock.patch.object(app, "LOCKIN_SETTLE_TAUS", 0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def make(self, start="11", stop="13", tick=True, sr830="1", zurich="2"):
         a = gate_page(sr830, zurich)
         a.nonlocal_vi_ac_controller = StepFakeAC()

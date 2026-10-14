@@ -192,6 +192,13 @@ class RecordingVar(Var):
 
 
 class GateWorkerTests(unittest.TestCase):
+    def setUp(self):
+        # Without the 7-time-constant read settle (user, 2026-10-14): Gate-VI
+        # counts 1 s for its SR830s, which would wait 7 s per point here.
+        patcher = mock.patch.object(app, "LOCKIN_SETTLE_TAUS", 0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def run_scan(self, gate_megohm, result):
         a = gate_page("1", "2")
         a.nonlocal_vi_gate_resistance_var.set(gate_megohm)

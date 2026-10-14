@@ -55,9 +55,11 @@ class LoopTests(unittest.TestCase):
         self.assertEqual([row[5] for row in a.nonlocal_vi_resistance_rows], ["", 1, 1, 1, 2, 2, 2])
         a.nonlocal_vi_progress.configure.assert_called_with(value=6)
 
-    def test_the_csv_headers_end_with_the_loop(self):
-        self.assertEqual(app.CombinedControlApp._nonlocal_vi_raw_header()[-1], "loop")
-        self.assertEqual(app.CombinedControlApp._nonlocal_vi_summary_header()[-1], "loop")
+    def test_the_csv_headers_end_with_the_loop_then_the_settle(self):
+        # The settle each reading waited was appended after the loop (user,
+        # 2026-10-14: new columns only at the end).
+        self.assertEqual(app.CombinedControlApp._nonlocal_vi_raw_header()[-2:], ("loop", "settle_waited_s"))
+        self.assertEqual(app.CombinedControlApp._nonlocal_vi_summary_header()[-2:], ("loop", "settle_waited_s"))
 
     def test_in_a_frequency_scan_the_loops_run_at_each_frequency(self):
         a = self.page("2", tick=True)
