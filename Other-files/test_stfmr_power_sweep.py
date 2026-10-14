@@ -335,8 +335,10 @@ class Smb100aPowerTests(NoWindows):
 
 
 class PowerSweepCase(NoWindows):
-    """A sweep on the shared harness, with recording devices; Settle s 0.5,
-    the harness's Acquire s 0.2 (three readings a point)."""
+    """A sweep on the shared harness, with recording devices; Settle s 0.05,
+    below 1 x the 100 ms SR830 TC so the TC sets each settle (user,
+    2026-10-14: 1 x TC; Settle s was 0.5 under the 7 x TC rule), and the
+    harness's Acquire s 0.2 (three readings a point)."""
 
     def sweep(self, powers=("10", "14", "2"), mod=("117.3", "117.3"), meter="SR830", stop="6",
               end_current="0.5", tc="100 ms", fail=None, smb=None, start_only=False,
@@ -344,7 +346,7 @@ class PowerSweepCase(NoWindows):
         h = harness(self.tmp.name, meter=meter, stop=stop, end_current=end_current)
         h.root = TimedRoot()
         h.stfmr_lockin_status_var = History()
-        h.stfmr_lockin_settle_var.set("0.5")
+        h.stfmr_lockin_settle_var.set("0.05")
         h.stfmr_lockin_sr830_time_constant_var = Variable(tc)
         h.stfmr_lockin_mod_start_var.set(mod[0])
         h.stfmr_lockin_mod_end_var.set(mod[1])
@@ -461,10 +463,10 @@ class PowerSweepTests(PowerSweepCase):
                       "sweep runs at each, in this order, with the RF on between them\n", text)
         self.assertIn("about 12 points saved", text)
         # 3 powers x 2 carriers = 6 passes of 4 readings; all but each pass's
-        # first settle max(Settle s 0.5, 7 x 100 ms) = 0.7 s, and each of the
-        # 12 saved points averages 0.2 s.
-        self.assertIn("Estimated at least 15.0 s (18 settles of 0.7 s + 12 averages of 0.2 s).", text)
-        self.assertEqual(h.root.reads, [1, 700, 700, 700] * 6)
+        # first settle max(Settle s 0.05, 1 x 100 ms) = 0.1 s, and each of
+        # the 12 saved points averages 0.2 s.
+        self.assertIn("Estimated at least 4.2 s (18 settles of 0.1 s + 12 averages of 0.2 s).", text)
+        self.assertEqual(h.root.reads, [1, 100, 100, 100] * 6)
         settings = events(recorder)[0]["settings"]
         self.assertEqual((settings["powers_dbm"], settings["power_dbm"], settings["power_start_dbm"],
                           settings["power_stop_dbm"], settings["power_step_db"],
@@ -578,7 +580,7 @@ class PowerSweepTests(PowerSweepCase):
         text = self.message()
         self.assertIn("Mod. Hz: 307, 311 (2 primes from 307 to 311); the whole P × f × A sweep runs at each, "
                       "in this order\nPower dBm: 10, 12 (2 powers from 10 to 12 in 2 dB steps)", text)
-        self.assertIn("Estimated at least 10.0 s (12 settles of 0.7 s + 8 averages of 0.2 s).", text)
+        self.assertIn("Estimated at least 2.8 s (12 settles of 0.1 s + 8 averages of 0.2 s).", text)
         statuses = h.stfmr_lockin_status_var.history
         self.assertIn("Mod. 307 Hz done; zeroing; LFO to 311 Hz at 5 GHz", statuses)
         self.assertIn("5 GHz/311 Hz/10 dBm: I=-1 A sent; pre-read now", statuses)

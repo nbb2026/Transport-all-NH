@@ -182,8 +182,10 @@ def harness(folder, meter='MFLI', stop='6', end_current='1'):
         # Mod. start = Mod. end: one modulation frequency (2026-10-13).
         'mod_start': '317.3', 'mod_end': '317.3', 'limit': '10', 'loop': 1,
         # Settle s and Acquire s replace Wait/pt (user, 2026-10-14).  Settle
-        # 0 leaves the 7 x TC rule (7 s at the 1 s TCs below) as the settle;
-        # Acquire 0.2 s is three readings a point (0, 0.1 and 0.2 s).
+        # 0 leaves the LOCKIN_SETTLE_TAUS x TC rule (1 s at the 1 s TCs
+        # below, the user's 1 x TC; 7 s under the earlier 7 x TC rule) as
+        # the settle; Acquire 0.2 s is three readings a point (0, 0.1 and
+        # 0.2 s).
         'settle': '0', 'acquire': '0.2',
         'start': '-1', 'stop': end_current, 'step': '0.5',
         'sr830_reference': 'Sine', 'sr830_auto_range': True,

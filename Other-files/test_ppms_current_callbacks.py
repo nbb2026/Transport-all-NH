@@ -44,7 +44,8 @@ class CurrentCallbacks(unittest.TestCase):
                     if command == 'HARM?':
                         return (harmonics[key],)
                     # OFLT?: every scan start reads each SR830's time
-                    # constant for the 7 x TC wait (user, 2026-10-14); this
+                    # constant for the LOCKIN_SETTLE_TAUS x TC wait (1 x TC,
+                    # user, 2026-10-14); this
                     # stand-in, without an 'SR830 TC' box, used to skip it.
                     return ({'SOUR:WAVE:AMPL?': settings['peak_a'], 'CURR:COMP?': 50.,
                              'SOUR:WAVE:FREQ?': 317.3, 'FMOD?': 0, 'RSLP?': 1,

@@ -87,9 +87,11 @@ class SweepTests(NoWindows):
         h = harness(self.tmp.name, meter=meter, stop=stop, end_current=end_current)
         h.root = TimedRoot()
         h.stfmr_lockin_status_var = History()
-        # Settle s 0.5 and the harness's Acquire s 0.2 (three readings a
+        # Settle s 0.05 and the harness's Acquire s 0.2 (three readings a
         # point); Settle s and Acquire s replace Wait/pt (user, 2026-10-14).
-        h.stfmr_lockin_settle_var.set("0.5")
+        # Settle s is below 1 x the 100 ms SR830 TC, so the TC sets each
+        # settle (user, 2026-10-14: 1 x TC; it was 0.5 under 7 x TC).
+        h.stfmr_lockin_settle_var.set("0.05")
         h.stfmr_lockin_sr830_time_constant_var = Variable(tc)
         h.stfmr_lockin_mod_start_var.set(start)
         h.stfmr_lockin_mod_end_var.set(end)
@@ -340,10 +342,10 @@ class ModulationSweepTests(SweepTests):
                       "the whole f × A sweep runs at each, in this order\n", text)
         self.assertIn("about 12 points saved", text)
         # 3 x 2 passes of 4 readings; all but each pass's first settle
-        # max(Settle s 0.5, 7 x the 100 ms TC) = 0.7 s, and each of the 12
+        # max(Settle s 0.05, 1 x the 100 ms TC) = 0.1 s, and each of the 12
         # saved points averages 0.2 s (2026-10-14; 0.5 s Wait/pt before).
-        self.assertIn("Estimated at least 15.0 s (18 settles of 0.7 s + 12 averages of 0.2 s).", text)
-        self.assertEqual(h.root.reads, [1, 700, 700, 700] * 6)
+        self.assertIn("Estimated at least 4.2 s (18 settles of 0.1 s + 12 averages of 0.2 s).", text)
+        self.assertEqual(h.root.reads, [1, 100, 100, 100] * 6)
         settings = events(recorder)[0]["settings"]
         self.assertEqual((settings["modulation_frequencies_hz"], settings["modulation_start_hz"],
                           settings["modulation_end_hz"], settings["modulation_frequency_hz"],
@@ -739,8 +741,9 @@ class StatusWidthTests(SweepTests):
         self.assertEqual(h._stfmr_lockin_pass_label(5.0), "5 GHz", "one modulation frequency: as before")
 
     def test_hours_left_fit_at_the_new_pace(self):
-        """Review, 2026-10-14: at about 9 s a point (7 s settle, 2 s
-        average) a sweep over 7 carriers, 4207 points, showed "remaining
+        """Review, 2026-10-14: at about 9 s a point (7 s settle under the
+        earlier 7 x TC rule, 2 s average) a sweep over 7 carriers, 4207
+        points, showed "remaining
         about 33000.0 s", about as wide as the label itself; the time left
         is now in s, min or h, as the Start estimate is."""
         h, recorder = self.sweep(start="317.3", end="317.3", start_only=True)

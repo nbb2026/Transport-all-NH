@@ -30,17 +30,21 @@ Entry point: `../Transport_all_NH_dev.py`, tab **RT-E**, class `RTEPanel`.
 - Supports forward/reverse ranges, an optional round trip, loop count, settle
   time and acquisition duration. Field scans use the existing STFMR field
   stability tolerance, consecutive-read count and timeout.
-- Each point's reading waits max(Settle s, 7 x the slowest lock-in time
+- Each point's reading waits max(Settle s, 1 x the slowest lock-in time
   constant measured) after its field, current, angle or harmonic change
-  (2026-10-14): 7 s at the 1 s defaults. The Field/Current status line and
+  (2026-10-14): 1 s at the 1 s defaults. The user chose 1 x TC on every
+  page ("change all to 1*TC please"; it was 7 x TC earlier that day): a
+  sweep reading lags by only a fraction of a step, and the first point of
+  each pass still takes agreeing windows. The Field/Current status line and
   the Angle Yes/No show the wait and the shortest duration; CSV rows end
   with `effective_settle_s` and `slowest_lockin_tc_s`. Each scan start (and
   Set I) reads every measured SR830's time constant with OFLT? (a query, no
   write), so one changed on the front panel since Connect is waited for,
   logged, recorded in `slowest_lockin_tc_s`, and shown on the status line
-  during that wait ("Each reading now waits 70 s: 7 x 10 s TC of
-  SR830-1"). See "RT-E and PPMS: lock-in readings settle at least 7 x TC"
-  in `README.md`.
+  during that wait ("Each reading now waits 10 s: 1 x 10 s TC of
+  SR830-1"). See "Lock-in settle: at least 1 x TC on every page" and the
+  superseded "RT-E and PPMS: lock-in readings settle at least 7 x TC" in
+  `README.md`.
 
 ## Saving and lifecycle
 

@@ -13,8 +13,10 @@ the 5-time-constant wait a change sets; each scan reads OFLT? for its CSV
 column; the scan-start confirmation notes a Settle s shorter than 5 long
 time constants; and a mouse-wheel turn over the dropdown does nothing.
 That note is superseded by the user's rule of the same day: every reading
-waits at least 7 time constants, and the confirmation shows the wait.  For
-that wait RT-E's scan start reads OFLT? too (a query, no write).
+waits at least LOCKIN_SETTLE_TAUS time constants (7 at first, then 1 x TC,
+the user's later choice that day: "change all to 1*TC please"), and the
+confirmation shows the wait.  For that wait RT-E's scan start reads OFLT?
+too (a query, no write).
 
 No Tk window and no instrument: the real pages are built on stand-in
 widgets, and the SR830s are fakes that answer from the commands they were
@@ -521,7 +523,7 @@ class CsvTests(NoWindows):
     def run_point(self, codes):
         """One point of the real PPMS scan worker, with SR830-1 and SR830-3.
         The stop event moves a clock instead of waiting: the point waits
-        7 time constants of the slower SR830 first (user, 2026-10-14)."""
+        1 time constant of the slower SR830 first (user, 2026-10-14)."""
         obj = app.CombinedControlApp.__new__(app.CombinedControlApp)
         obj.closing = False
         obj.ppms_field_scan_stop_event = self.event = ClockEvent(Clock())
@@ -564,16 +566,16 @@ class CsvTests(NoWindows):
         self.assertEqual(header[-6:], ["sr830_8_harmonic", "sr830_10_harmonic",
                                        "sr830_8_time_constant_s", "sr830_10_time_constant_s",
                                        "effective_settle_s", "slowest_lockin_tc_s"])
-        self.assertEqual(values[-4:], ["0.1", "1.0", "7.0", "1.0"])
-        self.assertEqual(self.event.waits, [7.0], "7 x 1 s (SR830-3), not Settle s 0")
+        self.assertEqual(values[-4:], ["0.1", "1.0", "1.0", "1.0"])
+        self.assertEqual(self.event.waits, [1.0], "1 x 1 s (SR830-3), not Settle s 0")
 
     def test_a_time_constant_that_did_not_read_back_is_left_empty(self):
         header, values = self.run_point({"830_a": 12})
         self.assertEqual(header[-4:-2], ["sr830_8_time_constant_s", "sr830_10_time_constant_s"])
         # SR830-3's time constant is unknown: the wait counts it with the
         # value Connect sets (1 s), and SR830-1's 10 s is the longer one.
-        self.assertEqual(values[-4:], ["10.0", "", "70.0", "10.0"])
-        self.assertEqual(self.event.waits, [70.0])
+        self.assertEqual(values[-4:], ["10.0", "", "10.0", "10.0"])
+        self.assertEqual(self.event.waits, [10.0])
 
 
 
@@ -848,7 +850,8 @@ class ScanStartTimeConstantTests(NoWindows):
 
     def test_rte_reads_it_too(self):
         """RT-E has no such choice and no per-SR830 column, but each reading
-        waits 7 of these time constants (user, 2026-10-14), so it reads
+        waits LOCKIN_SETTLE_TAUS (1) of these time constants (user,
+        2026-10-14), so it reads
         OFLT? at the scan start too: one query, the same writes."""
         panel = self.connected(build_rte_panel)
         sr830 = self.configure(panel)
@@ -866,15 +869,16 @@ class ScanStartTimeConstantTests(NoWindows):
         message = panel.thread_log.call_args.args[0]
         self.assertTrue(message.startswith("RT-E SR830-1: the time constant reads 10 s (OFLT 12), "
                                            "not the 1 s last set"), message)
-        self.assertEqual(panel._ppms_lockin_settle(0.5, ("830_a",), False), (70.0, 10.0, "SR830-1"))
+        self.assertEqual(panel._ppms_lockin_settle(0.5, ("830_a",), False), (10.0, 10.0, "SR830-1"))
 
 
 class StartSettleTests(NoWindows):
     """The scan-start confirmation used to note a Settle s shorter than 5
     time constants of a 3 s or 10 s choice, and the scan itself was not
     changed.  Since the user's rule of 2026-10-14 every reading waits at
-    least 7 time constants of the slowest lock-in instead, and the
-    confirmation shows that wait (more in test_lockin_settle_rte_ppms.py)."""
+    least 1 time constant of the slowest lock-in instead (7 at first that
+    day), and the confirmation shows that wait (more in
+    test_lockin_settle_rte_ppms.py)."""
 
     def settle(self, label, settle_s, lockins=("830_a",), build=build_ppms_panel):
         panel, _ttk = build()
@@ -882,16 +886,17 @@ class StartSettleTests(NoWindows):
             panel.ppms_sr830_time_constant_var.set(label)
         return panel._ppms_lockin_settle(settle_s, lockins, False)
 
-    def test_every_choice_waits_7_time_constants_or_settle_s(self):
+    def test_every_choice_waits_1_time_constant_or_settle_s(self):
         for label, code in app.STFMR_LOCKIN_SR830_TIME_CONSTANTS.items():
             with self.subTest(label=label):
                 tau = app.SR830_TIME_CONSTANTS_S[code]
                 settle, slowest, meter = self.settle(label, 0.5)
                 self.assertEqual((slowest, meter), (tau, "SR830-1"))
-                self.assertAlmostEqual(settle, max(0.5, 7.0 * tau))
-        self.assertEqual(self.settle(None, 0.5)[0], 7.0, "the 1 s default: 7 s, not 0.5 s")
+                self.assertAlmostEqual(settle, max(0.5, 1.0 * tau))
+        self.assertEqual(self.settle(None, 0.5)[0], 1.0, "the 1 s default: 1 s, not 0.5 s")
+        self.assertEqual(self.settle("3 s", 0.5)[0], 3.0, "a 3 s choice: 3 s")
         self.assertEqual(self.settle("10 s", 100.0)[0], 100.0, "a longer Settle s is kept")
-        self.assertEqual(self.settle(None, 0.5, build=build_rte_panel)[0], 7.0, "RT-E: OFLT 10 = 1 s")
+        self.assertEqual(self.settle(None, 0.5, build=build_rte_panel)[0], 1.0, "RT-E: OFLT 10 = 1 s")
         self.assertEqual(self.settle("10 s", 0.5, lockins=())[0], 0.5, "no lock-in: Settle s alone")
 
     def test_the_wait_is_in_the_scan_time_estimate(self):
@@ -920,10 +925,10 @@ class StartSettleTests(NoWindows):
             obj.start_ppms_field_scan()
         self.error.assert_not_called()
         message = ask.call_args.args[1]
-        self.assertIn("Measurement points: 5\nWait before each reading: 70 s (7 x 10 s, the time constant of "
+        self.assertIn("Measurement points: 5\nWait before each reading: 10 s (1 x 10 s, the time constant of "
                       "SR830-1, the slowest lock-in measured; Settle s is 0.5 s)\n", message)
-        # 4 s of field ramp, 5 x (70 s + 1 s), and the 6 s and 12 s allowances.
-        self.assertIn("Estimated duration: about 6 min 41 s", message)
+        # 4 s of field ramp, 5 x (10 s + 1 s), and the 6 s and 12 s allowances.
+        self.assertIn("Estimated duration: about 1 min 41 s", message)
         self.assertNotIn("lags", message, "the old note is gone: the scan waits instead")
         self.assertTrue(message.endswith("\nContinue to choose the save folder and start the scan?"))
         self.assertEqual(ask.call_args.kwargs["icon"], "question")

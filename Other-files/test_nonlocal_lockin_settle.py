@@ -1,11 +1,16 @@
-"""Non-local page: every lock-in reading settles at least 7 x TC.
+"""Non-local page: every lock-in reading settles at least 1 x TC.
 
 User, 2026-10-14: "every lock-in reading waits at least 7 x TC (99 %
 settled at 12 dB/oct) after a change, on every page; Wait/pt or Settle s
-still apply when longer; ... the Start confirmation shows the wait".  On the
-Non-local page that is 6221-IV (after each current step) and Gate-VI (after
-the 6221 read current switches on after each pulse); 2400-IV and |R| vs time
-are DC and have no lock-in.  The rule uses the shared LOCKIN_SETTLE_TAUS.
+still apply when longer; ... the Start confirmation shows the wait".  Later
+that day the user chose 1 x TC instead: "change all to 1*TC please".  On
+the Non-local page that is 6221-IV (after each current step) and Gate-VI
+(after the 6221 read current switches on after each pulse); 2400-IV and |R|
+vs time are DC and have no lock-in.  The rule uses the shared
+LOCKIN_SETTLE_TAUS (1.0).  Where a test checks that the time constant sets
+the wait, 1 x TC is longer than Settle s / the 6221 pre-run.  The 10 x TC
+waits (first point, harmonic switch, Zurich range step) and RT-E's 5 x TC
+after an SR830 range step are unchanged.
 
 No Tk window and no instrument: the page stand-ins of test_nonlocal_6221_iv
 and test_nonlocal_gate_vi_harmonics, and waits that are recorded, not slept.
@@ -85,18 +90,21 @@ class HeldExecutor(Executor):
 class RuleTests(NoWindows):
     settle = staticmethod(app.CombinedControlApp._nonlocal_lockin_settle_s)
 
-    def test_the_shared_constant_is_7_and_settles_99_percent(self):
-        self.assertEqual(app.LOCKIN_SETTLE_TAUS, 7.0)
+    def test_the_shared_constant_is_1_tc_about_a_quarter_of_an_isolated_step(self):
+        """The user's 1 x TC (2026-10-14): an isolated step is about 26 %
+        settled at 12 dB/oct, but a sweep of small steps lags by only a
+        fraction of a step."""
+        self.assertEqual(app.LOCKIN_SETTLE_TAUS, 1.0)
         self.assertEqual(app.NONLOCAL_LOCKIN_FILTER_ORDER, 2)      # 12 dB/oct
         x = app.LOCKIN_SETTLE_TAUS
-        self.assertGreater(1.0 - math.exp(-x) * (1.0 + x), 0.99)
+        self.assertAlmostEqual(1.0 - math.exp(-x) * (1.0 + x), 1.0 - 2.0 / math.e, places=12)
 
     def test_the_slowest_time_constant_or_the_page_wait_if_longer(self):
-        self.assertEqual(self.settle(0.5, [1.0]), 7.0)
-        self.assertEqual(self.settle(0.5, [1.0, 3.0]), 21.0, "the slowest lock-in")
+        self.assertEqual(self.settle(0.5, [1.0]), 1.0)
+        self.assertEqual(self.settle(0.5, [1.0, 3.0]), 3.0, "the slowest lock-in")
         self.assertEqual(self.settle(30.0, [1.0]), 30.0, "Settle s when longer")
         self.assertEqual(self.settle(5.0, []), 5.0, "no lock-in: the page's wait")
-        self.assertEqual(self.settle(0.5, [math.nan, None, 0.0, "x", 3.0]), 21.0, "unknown ones skipped")
+        self.assertEqual(self.settle(0.5, [math.nan, None, 0.0, "x", 3.0]), 3.0, "unknown ones skipped")
 
     def test_it_reads_the_shared_constant_when_called(self):
         with mock.patch.object(app, "LOCKIN_SETTLE_TAUS", 9.0):
@@ -123,24 +131,24 @@ class IV6221TimingTests(NoWindows):
         settings.update(a._nonlocal_iv6221_timing(settings, sr830 or {}))
         return settings
 
-    def test_at_the_defaults_each_point_waits_7_s_and_the_first_10_s(self):
+    def test_at_the_defaults_each_point_waits_1_s_and_the_first_10_s(self):
         a = iv_page()
         settings = self.timing(a)
         self.assertEqual((settings["settle_s"], settings["acquire_s"]), (0.5, 1.0), "the boxes as before")
         self.assertEqual(settings["lockin_time_constant_s"], 1.0)
         self.assertEqual(settings["slowest_lockin"], "Zurich")
-        self.assertEqual(settings["point_settle_s"], 7.0)
-        self.assertEqual(settings["first_settle_s"], 10.0)
-        # 100 points: 99 x (7 + 1 + 0.3) + (10 + 1 + 0.3) + a second window
-        # of 1 s at the first point = 834 s (it counted 191 s).
-        self.assertAlmostEqual(a._nonlocal_iv6221_estimate_s(settings), 834.0)
-        self.assertEqual(a._format_scan_duration(834.0), "13 min 54 s")
+        self.assertEqual(settings["point_settle_s"], 1.0, "1 x the 1 s TC, longer than Settle s 0.5 s")
+        self.assertEqual(settings["first_settle_s"], 10.0, "the far point keeps its 10 x TC")
+        # 100 points: 99 x (1 + 1 + 0.3) + (10 + 1 + 0.3) + a second window
+        # of 1 s at the first point = 240 s (834 s at 7 x TC; 191 s before).
+        self.assertAlmostEqual(a._nonlocal_iv6221_estimate_s(settings), 240.0)
+        self.assertEqual(a._format_scan_duration(240.0), "4 min 00 s")
 
     def test_a_slower_sr830_front_panel_sets_the_wait(self):
         a = iv_page(FakeSource(keys=("8",), mfli=True), measure={"8": True, "mfli": True})
         settings = self.timing(a, {"8": 3.0})
         self.assertEqual((settings["slowest_lockin"], settings["lockin_time_constant_s"]), ("SR830 #8", 3.0))
-        self.assertEqual((settings["point_settle_s"], settings["first_settle_s"]), (21.0, 30.0))
+        self.assertEqual((settings["point_settle_s"], settings["first_settle_s"]), (3.0, 30.0))
         self.assertEqual(settings["sr830_time_constants_s"], {"8": 3.0})
 
     def test_a_longer_settle_s_still_applies(self):
@@ -153,10 +161,10 @@ class IV6221TimingTests(NoWindows):
         a = iv_page(start="0.1", end="0.3", step="0.1", loops="2", round_trip=True)
         round_trip = self.timing(a)
         # One way (0.1-0.3 twice, 6 points): 2 far points (10 s) and 4 at
-        # 7 s; round trip (0.1-0.3-0.1 twice, 10 points): 1 far point and 9.
+        # 1 s; round trip (0.1-0.3-0.1 twice, 10 points): 1 far point and 9.
         self.assertEqual((len(one_way["plan"]), len(round_trip["plan"])), (6, 10))
-        self.assertAlmostEqual(a._nonlocal_iv6221_estimate_s(one_way), 2 * 11.3 + 4 * 8.3 + 1.0)
-        self.assertAlmostEqual(a._nonlocal_iv6221_estimate_s(round_trip), 1 * 11.3 + 9 * 8.3 + 1.0)
+        self.assertAlmostEqual(a._nonlocal_iv6221_estimate_s(one_way), 2 * 11.3 + 4 * 2.3 + 1.0)
+        self.assertAlmostEqual(a._nonlocal_iv6221_estimate_s(round_trip), 1 * 11.3 + 9 * 2.3 + 1.0)
 
 
 class IV6221WorkerTests(NoWindows):
@@ -180,23 +188,23 @@ class IV6221WorkerTests(NoWindows):
         waits = [w for w in a.nonlocal_keithley_stop_event.waits if w and w >= 0.05]
         return waits, rows
 
-    def test_ordinary_points_wait_7_time_constants_read_back(self):
+    def test_ordinary_points_wait_1_time_constant_read_back(self):
         # SR830 #8's front-panel time constant, read back at the set-up: 2 s.
         waits, rows = self.run_scan(FakeSource(sr830_tau=2.0))
-        self.assertEqual(waits, [20.0, 14.0, 14.0], "first point 10 x 2 s, then 7 x 2 s (not 0.5 s)")
+        self.assertEqual(waits, [20.0, 2.0, 2.0], "first point 10 x 2 s, then 1 x 2 s (not 0.5 s)")
         self.assertEqual(rows[0][-1], "settle_waited_s", "appended at the end")
         self.assertEqual(rows[0][-2], "compliance_readings")
-        self.assertEqual([row[-1] for row in rows[1:]], ["20", "14", "14"])
+        self.assertEqual([row[-1] for row in rows[1:]], ["20", "2", "2"])
 
     def test_never_shorter_than_the_start_confirmation_showed(self):
         # Confirmed at 3 s on the front panel; read back 2 s at the set-up.
-        waits, rows = self.run_scan(FakeSource(sr830_tau=2.0), point_settle_s=21.0, first_settle_s=30.0)
-        self.assertEqual(waits, [30.0, 21.0, 21.0])
-        self.assertEqual([row[-1] for row in rows[1:]], ["30", "21", "21"])
+        waits, rows = self.run_scan(FakeSource(sr830_tau=2.0), point_settle_s=3.0, first_settle_s=30.0)
+        self.assertEqual(waits, [30.0, 3.0, 3.0])
+        self.assertEqual([row[-1] for row in rows[1:]], ["30", "3", "3"])
 
     def test_a_longer_settle_s_is_kept(self):
         waits, _rows = self.run_scan(FakeSource(sr830_tau=0.1), settle_s=2.5)
-        self.assertEqual(waits, [2.5, 2.5, 2.5], "Settle s above 7 x 0.1 s and 10 x 0.1 s")
+        self.assertEqual(waits, [2.5, 2.5, 2.5], "Settle s above 1 x 0.1 s and 10 x 0.1 s")
 
 
 class IV6221StartTests(NoWindows):
@@ -231,16 +239,16 @@ class IV6221StartTests(NoWindows):
             a.start_nonlocal_iv6221()
         return messagebox
 
-    def test_the_zurich_alone_shows_7_s_without_reading_anything(self):
+    def test_the_zurich_alone_shows_1_s_without_reading_anything(self):
         a = self.page(FakeSource(keys=(), mfli=True))
         messagebox = self.start(a)
         messagebox.showwarning.assert_not_called()
         text = messagebox.askyesno.call_args.args[1]
-        self.assertIn("Each point waits 7 s after its current step (7 × the slowest lock-in TC, "
+        self.assertIn("Each point waits 1 s after its current step (1 × the slowest lock-in TC, "
                       "Zurich TC 1 s, or Settle 0.5 s if longer), then averages Acquire 1 s", text)
         self.assertIn("The first point of each pass waits 10 s (10 × the slowest lock-in TC, "
                       "or Settle 0.5 s if longer)", text)
-        self.assertIn("Estimated time: about 13 min 54 s", text)
+        self.assertIn("Estimated time: about 4 min 00 s", text)
         self.assertNotIn("SR830 front panel", text, "no SR830 measured")
         self.assertEqual(a.nonlocal_vi_executor.jobs, [], "no SR830 to read")
         a._begin_nonlocal_keithley_task.assert_not_called()
@@ -253,11 +261,11 @@ class IV6221StartTests(NoWindows):
         source.read_sr830_time_constants.assert_called_once_with(("8",))
         self.assertFalse(a.nonlocal_iv6221_tc_reading)
         text = messagebox.askyesno.call_args.args[1]
-        self.assertIn("Each point waits 21 s after its current step (7 × the slowest lock-in TC, "
+        self.assertIn("Each point waits 3 s after its current step (1 × the slowest lock-in TC, "
                       "SR830 #8 front panel 3 s, or Settle 0.5 s if longer)", text)
         self.assertIn("The first point of each pass and each loop's jump back to Start waits 30 s", text)
         self.assertIn("SR830 front panel (read back): SR830 #8 TC 3 s, 12 dB/oct\n", text)
-        self.assertNotIn("Note:", text, "12 dB/oct: 99 % settled")
+        self.assertNotIn("Note:", text, "12 dB/oct, the slope the rule is worked out for")
         self.assertEqual(a.nonlocal_iv6221_status_var.get(), "SR830 front panel: SR830 #8 3 s, 12 dB/oct")
 
     def test_a_failed_read_starts_nothing(self):
@@ -301,9 +309,9 @@ class IV6221StartTests(NoWindows):
         self.start(a, accept=True, folder=str(folder))
         a._begin_nonlocal_keithley_task.assert_called_once()
         self.assertEqual((a.nonlocal_iv6221_settings["point_settle_s"],
-                          a.nonlocal_iv6221_settings["first_settle_s"]), (21.0, 30.0))
+                          a.nonlocal_iv6221_settings["first_settle_s"]), (3.0, 30.0))
         log = next(folder.glob("6221-IV_*/*_parameters.log")).read_text(encoding="utf-8")
-        for line in ("point_settle_s=21", "first_settle_s=30", "lockin_time_constant_s=3",
+        for line in ("point_settle_s=3", "first_settle_s=30", "lockin_time_constant_s=3",
                      "slowest_lockin=SR830 #8"):
             self.assertIn(line, log)
 
@@ -358,11 +366,11 @@ class GateVIParseTests(NoWindows):
     def test_the_sr830s_1_s_or_the_zurich_tc_whichever_is_slower(self):
         a = gate_page("1", "2")                     # SR830 #8 and the Zurich (TC 0.001 s)
         settings = a._parse_nonlocal_vi_settings()
-        self.assertEqual((settings["lockin_time_constant_s"], settings["lockin_settle_s"]), (1.0, 7.0))
-        self.assertEqual(a._nonlocal_vi_pre_run_s(settings, 17.3), 7.0, "6221 pre-run 0 s here")
+        self.assertEqual((settings["lockin_time_constant_s"], settings["lockin_settle_s"]), (1.0, 1.0))
+        self.assertEqual(a._nonlocal_vi_pre_run_s(settings, 17.3), 1.0, "6221 pre-run 0 s here")
         a.nonlocal_mfli_tc_var.set("3")
         settings = a._parse_nonlocal_vi_settings()
-        self.assertEqual((settings["lockin_time_constant_s"], settings["lockin_settle_s"]), (3.0, 21.0))
+        self.assertEqual((settings["lockin_time_constant_s"], settings["lockin_settle_s"]), (3.0, 3.0))
         a.nonlocal_vi_settle_var.set("30")
         self.assertEqual(a._nonlocal_vi_pre_run_s(a._parse_nonlocal_vi_settings(), 17.3), 30.0,
                          "a longer 6221 pre-run s still applies")
@@ -386,17 +394,19 @@ class GateVIParseTests(NoWindows):
         with mock.patch.object(app, "LOCKIN_SETTLE_TAUS", 0.0):
             without = a._parse_nonlocal_vi_settings()
         self.assertAlmostEqual(settings["estimated_s"] - without["estimated_s"],
-                               len(settings["voltage_scan"]) * 7.0)
+                               len(settings["voltage_scan"]) * 1.0)       # 1 x the SR830s' 1 s
 
     def test_a_frequency_scan_waits_the_longest_of_the_three(self):
-        settings = {"settle_s": 0.0, "lockin_settle_s": 0.7, "frequency_scan": True}
+        settings = {"settle_s": 0.0, "lockin_settle_s": 0.3, "frequency_scan": True}
         pre_run = app.CombinedControlApp._nonlocal_vi_pre_run_s
         self.assertAlmostEqual(pre_run(settings, 7.0), 5 / 7, msg="5 periods at 7 Hz")
-        self.assertAlmostEqual(pre_run(settings, 11.0), 0.7, msg="7 x 0.1 s")
+        self.assertAlmostEqual(pre_run(settings, 17.0), 0.3, msg="1 x 0.3 s")
 
     def test_the_confirmation_shows_the_wait(self):
+        # Zurich TC 3 s against a 2 s pre-run, so 1 x TC sets the wait.
         a = gate_page("1", "2")
-        a.nonlocal_vi_settle_var.set("5")
+        a.nonlocal_mfli_tc_var.set("3")
+        a.nonlocal_vi_settle_var.set("2")
         a.nonlocal_keithley_task = None
         a.nonlocal_vi_running = a.nonlocal_vi_busy = False
         a.root = None
@@ -409,11 +419,11 @@ class GateVIParseTests(NoWindows):
             messagebox.askyesno.return_value = False
             a.start_nonlocal_vi_scan()
         text = messagebox.askyesno.call_args.args[1]
-        # The 7 x TC counts from the reference lock (review, 2026-10-14).
-        self.assertIn("Each point: the 6221 runs at least 7 s before the reading (7 × the slowest lock-in "
-                      "TC 1 s = 7 s from the reference lock, or 6221 pre-run 5 s from the switch-on if "
+        # The 1 x TC counts from the reference lock (review, 2026-10-14).
+        self.assertIn("Each point: the 6221 runs at least 3 s before the reading (1 × the slowest lock-in "
+                      "TC 3 s = 3 s from the reference lock, or 6221 pre-run 2 s from the switch-on if "
                       "longer), then reads Measure 0.05 s\n", text)
-        self.assertLess(text.index("the 6221 runs at least 7 s"), text.index("Estimated total time"))
+        self.assertLess(text.index("the 6221 runs at least 3 s"), text.index("Estimated total time"))
 
 
 class GateVIWorkerTests(NoWindows):
@@ -451,41 +461,48 @@ class GateVIWorkerTests(NoWindows):
         log = (directory / "VI_parameters.log").read_text(encoding="utf-8")
         return a, settings, tables, log
 
-    def test_each_reading_waits_7_tc_after_the_6221_switches_on(self):
+    def test_each_reading_waits_1_tc_after_the_6221_switches_on(self):
         a, settings, tables, log = self.run_scan()
-        self.assertEqual(settings["lockin_settle_s"], 14.0, "7 x the Zurich's 2 s")
+        self.assertEqual(settings["lockin_settle_s"], 2.0, "1 x the Zurich's 2 s")
         waits = a.nonlocal_vi_stop_event.waits
         # Three points (0 -> 4 -> 0 V): the pre-run after each 6221 switch-on.
-        self.assertEqual(waits.count(14.0), 3)
-        self.assertIn("effective_settle_s=14", log)
-        self.assertIn("lockin_settle_s=14.0", log)
+        self.assertEqual(waits.count(2.0), 3)
+        self.assertIn("effective_settle_s=2", log)
+        self.assertIn("lockin_settle_s=2.0", log)
         raw = tables["VI_raw.csv"]
         self.assertEqual(list(raw[0])[-1], "settle_waited_s", "appended at the end")
-        # 1st pass (SR830 1ω, the Zurich): the pre-run; the SR830's 2ω pass:
-        # its own 10 τ settle (τ read back 0.001 s here).
-        first = {row["settle_waited_s"] for row in raw if row["meter_key"] == "mfli" or row["harmonic"] == "1"}
+        # 1st pass (SR830 1ω, the Zurich): the pre-run, counted from the
+        # switch-on, so it includes the real (ms) time of the lock check and
+        # is compared to 0.1 s; the SR830's 2ω pass: its own 10 τ settle (τ
+        # read back 0.001 s here).
+        first = {round(float(row["settle_waited_s"]), 1) for row in raw
+                 if row["meter_key"] == "mfli" or row["harmonic"] == "1"}
         second = {row["settle_waited_s"] for row in raw if row["meter_key"] == "8" and row["harmonic"] == "2"}
-        self.assertEqual((first, second), ({"14.0"}, {"0.01"}))
+        self.assertEqual((first, second), ({2.0}, {"0.01"}))
         summary = {(row["meter_key"], row["harmonic"]): row["settle_waited_s"] for row in tables["VI_summary.csv"]}
-        self.assertEqual(summary, {("8", "1"): "14.0", ("8", "2"): "0.01", ("mfli", "2"): "14.0"})
+        self.assertEqual(summary[("8", "2")], "0.01")
+        self.assertEqual({key: round(float(value), 1) for key, value in summary.items() if key != ("8", "2")},
+                         {("8", "1"): 2.0, ("mfli", "2"): 2.0})
 
     def test_a_longer_time_constant_read_back_waits_longer(self):
         a, settings, _tables, log = self.run_scan(SlowZurichAC(), tc="2")
-        self.assertEqual(settings["lockin_settle_s"], 14.0, "the confirmation's 7 x 2 s")
-        self.assertEqual(a.nonlocal_vi_stop_event.waits.count(21.0), 3, "7 x the 3 s read back")
-        self.assertIn("effective_settle_s=21", log)
+        self.assertEqual(settings["lockin_settle_s"], 2.0, "the confirmation's 1 x 2 s")
+        self.assertEqual(a.nonlocal_vi_stop_event.waits.count(3.0), 3, "1 x the 3 s read back")
+        self.assertIn("effective_settle_s=3", log)
 
 
 
 # ------------------------------------------- review fixes (2026-10-14)
 class RangeSettleTests(NoWindows):
-    """A range step is a change too: the reading after it waits at least
-    7 x TC (RT-E's 5 x TC on an SR830 raised; the Zurich's 10 x TC kept)."""
+    """A range step is a change too: the reading after it waits RT-E's
+    5 x TC on an SR830 and 10 x TC on the Zurich, or LOCKIN_SETTLE_TAUS x TC
+    if that is more.  Under the earlier 7 x TC rule an SR830 waited 7 x TC;
+    at the user's 1 x TC (2026-10-14) the 5 x TC is the longer again."""
     settle = staticmethod(app.CombinedControlApp._nonlocal_range_settle_s)
 
-    def test_7_tc_of_an_sr830_and_10_of_the_zurich(self):
-        self.assertEqual(self.settle("8", 1.0), 7.0)
-        self.assertEqual(self.settle("9", 2.0), 14.0)
+    def test_5_tc_of_an_sr830_and_10_of_the_zurich(self):
+        self.assertEqual(self.settle("8", 1.0), 5.0)
+        self.assertEqual(self.settle("9", 2.0), 10.0)
         self.assertEqual(self.settle("mfli", 1.0), 10.0)
         for unknown in (math.nan, None, 0.0, -1.0, "x"):
             self.assertEqual(self.settle("8", unknown), 0.0)
@@ -496,13 +513,14 @@ class RangeSettleTests(NoWindows):
         with mock.patch.object(app, "LOCKIN_SETTLE_TAUS", 0.0):
             self.assertEqual(self.settle("8", 1.0), 5.0, "RT-E's figure without the rule")
 
-    def test_a_6221_iv_sr830_range_step_waits_7_tc(self):
+    def test_a_6221_iv_sr830_range_step_waits_5_tc(self):
         source = FakeSource(sr830_tau=1.0, readings=[
             {"auto_range": "SENS 9->10 (overload/high)", "measurement_valid": False}])
         waits, rows = IV6221WorkerTests.run_scan(self, source)
-        # First point 10 x 1 s, its range step 7 x 1 s (it was 5 s), then 7 s a point.
-        self.assertEqual(waits, [10.0, 7.0, 7.0, 7.0])
-        self.assertEqual([row[-1] for row in rows[1:]], ["10", "7", "7"], "the current step's wait")
+        # First point 10 x 1 s, its range step 5 x 1 s (RT-E's 5 x TC; 7 s
+        # under the 7 x TC rule), then 1 x 1 s a point.
+        self.assertEqual(waits, [10.0, 5.0, 1.0, 1.0])
+        self.assertEqual([row[-1] for row in rows[1:]], ["10", "1", "1"], "the current step's wait")
 
 
 class ZurichRangingAC(FakeAC):
@@ -584,11 +602,11 @@ class GateVIReviewTests(NoWindows):
     def test_the_settle_counts_from_the_lock_not_the_switch_on(self):
         log = []
         _a, _settings, tables, _log = self.run_scan(SlowLockAC(log), tc="2", event=LoggingEvent(log))
-        # Each point: the 6221 on, the lock 0.1 s later, then 7 x 2 s.
-        steps = [entry for entry in log if entry in ("6221 on", "locked", ("wait", 14.0))]
-        self.assertEqual(steps, ["6221 on", "locked", ("wait", 14.0)] * 3)
+        # Each point: the 6221 on, the lock 0.1 s later, then 1 x 2 s.
+        steps = [entry for entry in log if entry in ("6221 on", "locked", ("wait", 2.0))]
+        self.assertEqual(steps, ["6221 on", "locked", ("wait", 2.0)] * 3)
         waited = {float(row["settle_waited_s"]) for row in tables["VI_raw.csv"] if row["meter_key"] == "mfli"}
-        self.assertTrue(all(14.09 <= value < 14.5 for value in waited), waited)
+        self.assertTrue(all(2.09 <= value < 2.5 for value in waited), waited)
 
     def test_a_longer_pre_run_still_counts_from_the_switch_on(self):
         log = []
@@ -678,15 +696,23 @@ class IV6221StartReviewTests(NoWindows):
             messagebox.askyesno.assert_called_once()
 
     def test_a_steeper_slope_is_shown_with_a_note(self):
+        """The note compares the slope with 12 dB/oct after the same wait:
+        at the user's 1 x TC 12 dB/oct itself shows about 26 % of an
+        isolated step, so a fixed 99 % mark (7 x TC's) would note every
+        scan (user, 2026-10-14)."""
         a = self.sr830_page(tau=3.0, slope=24.0)
         text = self.start(a).askyesno.call_args.args[1]
         self.assertIn("SR830 front panel (read back): SR830 #8 TC 3 s, 24 dB/oct\n", text)
-        self.assertIn("Note: at 24 dB/oct SR830 #8 shows only about 91 % of each step when the point is "
-                      "read (7 × TC gives 99 % at 12 dB/oct); set 12 dB/oct on its front panel, or raise "
-                      "Settle s\n", text)
+        self.assertIn("Note: at 24 dB/oct SR830 #8 shows only about 1 % of each step when the point is "
+                      "read, against about 26 % at 12 dB/oct (the wait is 1 × the slowest TC, or Settle s); "
+                      "set 12 dB/oct on its front panel, or raise Settle s\n", text)
         self.assertEqual(a.nonlocal_iv6221_status_var.get(), "SR830 front panel: SR830 #8 3 s, 24 dB/oct")
-        # A Settle s long enough (60 s = 20 x 3 s) needs no note; 6 dB/oct neither.
-        for page in (self.sr830_page(tau=3.0, slope=24.0, settle="60"), self.sr830_page(tau=3.0, slope=6.0)):
+        text = self.start(self.sr830_page(tau=3.0, slope=18.0)).askyesno.call_args.args[1]
+        self.assertIn("Note: at 18 dB/oct SR830 #8 shows only about 8 % of each step", text)
+        # A Settle s long enough (60 s = 20 x 3 s) needs no note; 6 and
+        # 12 dB/oct neither.
+        for page in (self.sr830_page(tau=3.0, slope=24.0, settle="60"), self.sr830_page(tau=3.0, slope=6.0),
+                     self.sr830_page(tau=3.0, slope=12.0)):
             self.assertNotIn("Note:", self.start(page).askyesno.call_args.args[1])
 
     def test_the_slope_is_in_the_parameter_log(self):
@@ -705,6 +731,11 @@ class IV6221StartReviewTests(NoWindows):
 
     def test_the_settled_fraction_by_slope(self):
         fraction = app.CombinedControlApp._lockin_step_settled_fraction
+        # After 1 time constant (the user's 1 x TC, 2026-10-14).
+        self.assertAlmostEqual(fraction(1.0, 6), 1 - math.exp(-1), places=12)
+        self.assertAlmostEqual(fraction(1.0, 12), 1 - 2 / math.e, places=12)
+        self.assertAlmostEqual(fraction(1.0, 18), 0.0803, places=4)
+        self.assertAlmostEqual(fraction(1.0, 24), 0.0190, places=4)
         self.assertAlmostEqual(fraction(7.0, 6), 1 - math.exp(-7), places=12)
         self.assertGreater(fraction(7.0, 12), 0.99)
         self.assertAlmostEqual(fraction(7.0, 18), 0.9704, places=4)

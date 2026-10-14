@@ -12,8 +12,12 @@ and so are "P start dBm", "P stop dBm" and "P step dB" (user, 2026-10-14; "P ste
 ## Acquisition and display
 
 - Settle s and Acquire s replace Wait/pt (2026-10-14). After each current step a point settles
-  max(Settle s, 7 × the TC of every lock-in read: the "SR830 TC" choice when the SR830 is read, "MFLI TC s" when
-  the MFLI is), 7 s at the defaults (Settle s 1, both TCs 1 s; 12 dB/oct, 99 % settled). Then the field is read once
+  max(Settle s, 1 × the TC of every lock-in read: the "SR830 TC" choice when the SR830 is read, "MFLI TC s" when
+  the MFLI is), 1 s at the defaults (Settle s 1, both TCs 1 s), so a default point takes 1 + 2 = 3 s. The user
+  chose 1 × TC on every page (2026-10-14: "change all to 1*TC please"; it was 7 × TC, 99 % settled at 12 dB/oct,
+  9 s a point): a sweep reading then lags by about 0.5 of a current step; see "Lock-in settle: at least 1 x TC on
+  every page" in `README.md`. An SR830 range change re-reads after the same effective settle (now 1 × TC); an MFLI
+  range change still waits at least 10 × MFLI TC. Then the field is read once
   and the MFLI and SR830 in turn every 0.1 s, at the same current, until Acquire s (default 2 s) has passed since the
   point's first lock-in reading started; each meter's row holds the mean X and Y of its readings over that same
   window, with R and θ from the mean X and Y, and `sample_count` readings (21 at the defaults).

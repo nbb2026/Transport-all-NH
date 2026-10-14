@@ -14,6 +14,10 @@ from unittest import mock
 from test_nonlocal_keithley import Canvas, Var, bare_app
 from test_ppms_motor_debug import app
 
+# The program's own settle factor, before setUp zeroes it: 1, the user's
+# 1 x TC (user, 2026-10-14).
+PROGRAM_SETTLE_TAUS = app.LOCKIN_SETTLE_TAUS
+
 
 class FakeSource:
     """The 6221 with SR830 #8/#9 and the Zurich.  Each SR830 reads X = the
@@ -183,8 +187,8 @@ class WorkerTests(unittest.TestCase):
 
     def setUp(self):
         self.folder = Path(tempfile.mkdtemp())
-        # No 10-time-constant wait at far jumps and no 7-time-constant wait
-        # at other points (user, 2026-10-14), except where tested.
+        # No 10-time-constant wait at far jumps and no LOCKIN_SETTLE_TAUS
+        # wait at other points (user, 2026-10-14), except where tested.
         for name, value in (("NONLOCAL_IV6221_FIRST_SETTLE_TAUS", 0.0),
                             ("LOCKIN_SETTLE_TAUS", 0.0),
                             ("NONLOCAL_IV6221_REFERENCE_WAIT_S", 0.0)):
@@ -345,7 +349,7 @@ class WorkerTests(unittest.TestCase):
         contexts = [call.args[0] for call in keithley.confirm_output_off.call_args_list]
         self.assertEqual(contexts[0], "before the 6221-IV scan")
 
-    def test_far_jumps_settle_ten_time_constants_and_other_points_seven(self):
+    def test_far_jumps_settle_ten_time_constants_and_other_points_one(self):
         # The SR830's front-panel time constant, read back: 3 s.
         self.make(FakeSource(sr830_tau=3.0), start="0.1", end="0.2", step="0.1", loops="2")
         waits = []
@@ -354,16 +358,19 @@ class WorkerTests(unittest.TestCase):
         stop.wait = lambda timeout=None: (waits.append(timeout), original(0))[1]
         # A zero acquire window takes one reading per point, so the only
         # other waits are the 0 s ones before each reading.
+        # The program's own LOCKIN_SETTLE_TAUS: 1, the user's 1 x TC
+        # (2026-10-14; this test used 7 before).
+        self.assertEqual(PROGRAM_SETTLE_TAUS, 1.0)
         with mock.patch.object(app, "NONLOCAL_IV6221_FIRST_SETTLE_TAUS", 10.0), \
-                mock.patch.object(app, "LOCKIN_SETTLE_TAUS", 7.0):
+                mock.patch.object(app, "LOCKIN_SETTLE_TAUS", PROGRAM_SETTLE_TAUS):
             path, _settings = self.run_scan(settle_s=0.5, acquire_s=0.0)
-        settles = [w for w in waits if w in (0.5, 21.0, 30.0)]
-        # Loop 1: 30, then 7 x 3 s = 21 (not Settle s 0.5, user, 2026-10-14);
-        # loop 2 starts again from Start after End: 30, 21.
-        self.assertEqual(settles, [30.0, 21.0, 30.0, 21.0])
+        settles = [w for w in waits if w in (0.5, 3.0, 30.0)]
+        # Loop 1: 30, then 1 x 3 s = 3 (not Settle s 0.5, user, 2026-10-14);
+        # loop 2 starts again from Start after End: 30, 3.
+        self.assertEqual(settles, [30.0, 3.0, 30.0, 3.0])
         rows = self.rows(path)
         self.assertEqual(rows[0][-2:], ["compliance_readings", "settle_waited_s"], "appended at the end")
-        self.assertEqual([row[-1] for row in rows[1:]], ["30", "21", "30", "21"])
+        self.assertEqual([row[-1] for row in rows[1:]], ["30", "3", "30", "3"])
 
 
 class ReadingTests(WorkerTests):

@@ -47,7 +47,8 @@ class RTECurrentScanStartsAtItsLargestCurrent(unittest.TestCase):
                 'OUTP?': state['OUTP'], 'HARM?': settings['harmonic_a'], 'FMOD?': 0,
                 'RSLP?': app.PPMS_SR830_REFERENCE_SLOPE, 'FREQ?': settings['frequency_hz'], 'LIAS?': 0,
                 # RT-E's scan start reads each SR830's time constant for
-                # the 7 x TC wait (user, 2026-10-14): 1 s, as Connect set.
+                # the LOCKIN_SETTLE_TAUS x TC wait (1 x TC, user,
+                # 2026-10-14): 1 s, as Connect set.
                 'OFLT?': 10}
             return (replies[command],)
 

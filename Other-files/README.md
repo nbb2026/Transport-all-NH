@@ -1,5 +1,93 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Lock-in settle: at least 1 x TC on every page (2026-10-14)
+
+- **The user's choice:** a default STFMR point (TC 1 s, Acquire s 2 s) took
+  9 s: 7 s of settle (7 x TC) and 2 s of averaging. The user asked "3-4s is
+  not okay?", was shown that at 3-4 s a point a sweep reading lags by only
+  about 0.2-0.5 of a field step, and answered "change all to 1*TC please".
+  The shared `LOCKIN_SETTLE_TAUS` is now 1.0 (it was 7.0): every lock-in
+  reading on STFMR, RT-E, PPMS and Non-local (6221-IV, Gate-VI) waits
+  max(Settle s, 1 x the slowest measured time constant) after each change.
+  Settle s (or Gate-VI's 6221 pre-run s) still applies when it is longer.
+- **Why 1 x TC is enough in a sweep:** an isolated step is only about 26 %
+  settled 1 TC after it at 12 dB/oct (1 - 2/e), but in a sweep of small
+  equal steps each reading lags by only a fraction of one step. At TC 1 s,
+  12 dB/oct and Acquire s 2 s (the reading is the mean over Acquire s):
+
+  | Settle | Time per point | Lag in a steady sweep | Isolated step reached |
+  |---|---|---|---|
+  | 7 s (7 x TC, before) | 9 s | 0.00 step | 99.7 % |
+  | 3 s | 5 s | 0.10 step | 89.9 % |
+  | 2 s | 4 s | 0.22 step | 78.4 % |
+  | 1 s (1 x TC, now) | 3 s | 0.48 step | 57.3 % |
+
+- **New times at the defaults:** STFMR 1 + 2 = 3 s a point (Settle s 1 s,
+  1 x TC 1 s, Acquire s 2 s; it was 9 s), so the page's default sweep
+  (601 currents) is estimated at 600 x 1 s + 599 x 2 s = 1798 s, about
+  30 min (it was 5398 s, about 1.5 h). RT-E, PPMS and 6221-IV wait 1 s
+  before each reading (Settle s 0.5 s, TC 1 s; it was 7 s). A 6221-IV
+  point at its defaults is 1 s + Acquire s 1 s, and its sweep lags by about
+  0.7 step (about 1.1 with Settle s alone, before the 7 x TC rule).
+  Gate-VI waits its 6221 pre-run s, 5 s, now longer than 1 x TC (it waited
+  7 s from the reference lock).
+- **Unchanged:** the 10 x TC waits after large jumps: the first point of
+  each 6221-IV pass and its jump back to Start
+  (`NONLOCAL_IV6221_FIRST_SETTLE_TAUS`), Gate-VI's next SR830 harmonic
+  (`NONLOCAL_VI_HARMONIC_SETTLE_TAUS`), the STFMR MFLI range re-read
+  max(effective settle, 10 x MFLI TC, 0.2 s), the Zurich range step on
+  6221-IV and Gate-VI (10 x TC), and the PPMS range-step 5 x TC waits.
+  STFMR still discards the first two readings of each loop, and the first
+  point of each PPMS / RT-E pass still takes agreeing windows.
+- **Range changes that now wait only 1 x TC** (kept at `LOCKIN_SETTLE_TAUS`,
+  as the user said "all"):
+  - STFMR with the SR830 alone: the re-read after an SR830 range change
+    waits the effective settle, max(Settle s, 1 x SR830 TC): 1 s at the
+    defaults (it was 7 s; 5 x TC before 2026-10-14).
+  - STFMR, MFLI + SR830: an SR830 range change re-reads after
+    max(0.1 s, effective settle, 10 x MFLI TC), usually 10 s from the MFLI
+    term, but only 1 x SR830 TC when that is longer (e.g. SR830 3 s with
+    MFLI 0.1 s: 3 s).
+  - Non-local SR830 range step (6221-IV, Gate-VI): max(1, 5) x TC, so
+    RT-E's 5 x TC applies again (it was 7 x TC).
+- **Gate-VI:** each point starts from zero (the 6221 switches on after each
+  pulse), a large jump rather than a small sweep step. At the defaults the
+  5 s pre-run (5 TC, about 96 % at 12 dB/oct) is the wait; with a TC above
+  about 5 s, 1 x TC from the lock is the wait, so raise "6221 pre-run s".
+- **6221-IV slope note:** the Start confirmation compares an SR830's
+  front-panel slope with 12 dB/oct after the same wait (at 1 x TC: 26 % of
+  an isolated step at 12 dB/oct, 8 % at 18, 2 % at 24) instead of a fixed
+  99 %, which every scan would now fall below: "Note: at 24 dB/oct SR830 #8
+  shows only about 1 % of each step when the point is read, against about
+  26 % at 12 dB/oct (the wait is 1 × the slowest TC, or Settle s); set
+  12 dB/oct on its front panel, or raise Settle s".
+- **Messages** follow the constant: STFMR "each point settles 1 s (1 × TC
+  1 s; Settle s 1 s) then averages 2 s"; PPMS / RT-E "Wait before each
+  reading: 1 s (1 x 1 s, the time constant of SR830-1, the slowest lock-in
+  measured; Settle s is 0.5 s)" and "RT-E Field: 199 points, settle 1 s;
+  at least 6 min 39 s"; 6221-IV "Each point waits 1 s after its current
+  step (1 × the slowest lock-in TC, Zurich TC 1 s, or Settle 0.5 s if
+  longer)"; Gate-VI "1 × the slowest lock-in TC 1 s = 1 s from the
+  reference lock, or 6221 pre-run 5 s from the switch-on if longer". The
+  program's comments and docstrings that gave 7 x TC or 99 % as the rule
+  now name `LOCKIN_SETTLE_TAUS` or 1 x TC.
+- **Superseded:** the 7 x TC rule in "STFMR: Settle s and Acquire s replace
+  Wait/pt; 7 x TC settle", "Non-local: lock-in readings settle at least
+  7 x TC" and "RT-E and PPMS: lock-in readings settle at least 7 x TC"
+  below. Those sections are kept as history; read their 7 x TC as 1 x TC.
+- **Tests:** every test that assumed 7 x TC now expects 1 x TC
+  (`test_stfmr_settle_acquire`, `test_stfmr_sr830_tc_fixed_current`,
+  `test_stfmr_power_sweep`, `test_stfmr_mod_prime_range`,
+  `test_lockin_settle_rte_ppms`, `test_nonlocal_lockin_settle`,
+  `test_nonlocal_6221_iv`, `test_lockin_time_constant_defaults`,
+  `test_ppms_sr830_tc`, `test_rte_angle_scan`, and the CI GUI test
+  `test_panel_defaults.RTEStatusRowTests`). Where a test checks that the TC
+  sets the wait it uses a TC longer than Settle s (e.g. TC 3 s against
+  Settle s 1 s). `test_lockin_time_constant_defaults.OneTimeConstantSettle`
+  checks `LOCKIN_SETTLE_TAUS == 1.0`, the unchanged 10 x TC and range-step
+  factors, the 3 s default STFMR point, and the user's reason in the
+  constant's comment.
+
 ## STFMR: power start / stop / step, RF stays on, default 12 dBm (2026-10-14)
 
 - **The user asked:** "also add power start, stop, step in ST-FMR module",
@@ -24,8 +112,9 @@
   ignored and it must be above 0. Every power must be finite and at most
   25 dBm (`STFMR_SMB100A_MAX_POWER_DBM`, the limit `configure()` already
   had). At most 1000 powers (`STFMR_LOCKIN_MAX_POWERS`): each power is a
-  whole f x A sweep at every modulation frequency, about 1.5 h at the
-  defaults, so 1000 powers is already about two months (1000 powers span
+  whole f x A sweep at every modulation frequency, about 30 min at the
+  defaults (about 1.5 h under the earlier 7 x TC settle), so 1000 powers is
+  already about three weeks (1000 powers span
   9.99 dB in the generator's finest 0.01 dB steps; 0 to 10 dBm would be
   1001); a longer list can only be a slipped digit in P step. A word, an empty box,
   nan/inf, a step of 0, a power above 25 dBm or too many powers is refused
@@ -151,9 +240,12 @@
   column 4, and column 6 loses "Power dBm:" (about 15 px).
 - **Timing at the page's defaults** (MFLI, 4 GHz, 12 dBm, 117.3 Hz, -3 to
   3 A in 0.01 A = 601 currents, Loop 1, Settle 1 s, Acquire 2 s, both TCs
-  1 s) is unchanged: 600 x 7 s + 599 x 2 s = 5398 s, about 1.5 h. Each
+  1 s) was unchanged by the powers: 600 x 7 s + 599 x 2 s = 5398 s, about
+  1.5 h, under the 7 x TC settle; at the user's 1 x TC (see the top
+  section) it is 600 x 1 s + 599 x 2 s = 1798 s, about 30 min. Each
   further power adds one such pass per carrier and modulation frequency,
-  e.g. 0 to 12 dBm in 3 dB steps (5 powers) is about 7.5 h.
+  e.g. 0 to 12 dBm in 3 dB steps (5 powers) is about 2.5 h (7.5 h at
+  7 x TC).
 - **Tests:** `test_stfmr_power_sweep.py` (new, 29 tests; 44 with the review
   fixes): the power list
   (one value, up, down, the step, the f rules value for value, the 25 dBm
@@ -198,6 +290,11 @@
   about 75 px a compact plot box is a sliver (nothing is cut).
 
 ## STFMR: Settle s and Acquire s replace Wait/pt; 7 x TC settle; table in order (2026-10-14)
+
+> **Superseded the same day:** the user chose 1 x TC on every page
+> (`LOCKIN_SETTLE_TAUS = 1.0`; see "Lock-in settle: at least 1 x TC on every
+> page (2026-10-14)" at the top). The 7 x TC waits, times and messages below
+> are the history of that day.
 
 - **The user asked:** "add a acquire time in the ST-FMR scan mode, default
   is 2s. also add a settle time and default 1s. delete the delay time." and
@@ -353,6 +450,11 @@
 
 ## Non-local: lock-in readings settle at least 7 x TC (2026-10-14)
 
+> **Superseded the same day:** the user chose 1 x TC on every page
+> (`LOCKIN_SETTLE_TAUS = 1.0`; see "Lock-in settle: at least 1 x TC on every
+> page (2026-10-14)" at the top). The 7 x TC waits, times and messages below
+> are the history of that day.
+
 - **The user's choice:** "every lock-in reading waits at least 7 x TC (99 %
   settled at 12 dB/oct) after a change, on every page; Wait/pt or Settle s
   still apply when longer; ... the Start confirmation shows the wait". This
@@ -477,6 +579,11 @@
   "5 x TC of that SR830" after a 6221-IV range step in older sections.
 
 ## RT-E and PPMS: lock-in readings settle at least 7 x TC (2026-10-14)
+
+> **Superseded the same day:** the user chose 1 x TC on every page
+> (`LOCKIN_SETTLE_TAUS = 1.0`; see "Lock-in settle: at least 1 x TC on every
+> page (2026-10-14)" at the top). The 7 x TC waits, times and messages below
+> are the history of that day.
 
 - **The user's choice:** "every lock-in reading waits at least 7 x TC (99 %
   settled at 12 dB/oct) after a change, on every page; Settle s still
@@ -683,12 +790,14 @@
     trip can show a hysteresis that is not in the sample. Raise Settle s
     to about 5 s for settled points (about 97 % of each step).
     (Superseded the same day: every point now waits at least 7 x TC; see
-    "Non-local: lock-in readings settle at least 7 x TC" above.)
+    "Non-local: lock-in readings settle at least 7 x TC" above; then 1 x TC,
+    see the top section.)
   - **Non-local Gate-VI:** the Zurich runs at 1 s (the log shows
     τ = 1 s). No Gate-VI wait comes from the Zurich TC. The 10 τ settle
     between SR830 orders uses the SR830s' 1 s, as before (10 s).
     (Superseded the same day: each reading now waits at least 7 x TC after
-    the 6221 switches on; see the section above.)
+    the 6221 switches on; see the section above; then 1 x TC, see the top
+    section.)
   - **PPMS and RT-E, Zurich:** after a range change the reading waits
     max(0.2 s, 10 x TC) = 10 s (it was 1 s), at most 4 times per point, so
     up to about 40 s before "Zurich autorange did not settle". With idle
@@ -706,7 +815,7 @@
     measures its three SR830s too; they are set to 1 s on connect, as
     before. (Superseded the same day for RT-E and PPMS: each reading now
     waits at least 7 TC, see "RT-E and PPMS: lock-in readings settle at
-    least 7 x TC" above.)
+    least 7 x TC" above; then 1 x TC, see the top section.)
 - **Tests:** `test_lockin_time_constant_defaults.py` (new) checks every
   changed default is 1 s: the constants, the method defaults, the STFMR and
   Non-local boxes in the source, the PPMS / RT-E box in the real panel

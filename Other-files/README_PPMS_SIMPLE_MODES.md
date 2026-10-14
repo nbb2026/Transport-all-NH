@@ -9,7 +9,7 @@ This page replaces the old nested angle/temperature/field scan entry; historical
 - Current: holds the angle, temperature and field set above; sweeps the AC RMS current range.
 
 After choosing a mode, enter start, end, a positive step and the settle time per point. Descending ranges are detected automatically.
-Since 2026-10-14 each reading waits max(Settle s, 7 x the slowest lock-in time constant measured), 7 s at the 1 s defaults; the confirmation shows the wait and the estimate counts it (see "RT-E and PPMS: lock-in readings settle at least 7 x TC" in `README.md`).
+Since 2026-10-14 each reading waits max(Settle s, 1 x the slowest lock-in time constant measured), 1 s at the 1 s defaults (the user chose 1 x TC on every page that day; it was 7 x TC, 7 s); the confirmation shows the wait and the estimate counts it (see "Lock-in settle: at least 1 x TC on every page" in `README.md`).
 Switching mode resets that mode's suggested range; check it before starting. Non-scanned quantities use the values in the direct-setting row above.
 Both SR830s and the 6221 must be connected; each SR830 can use harmonic 1/2/3; acquisition and CSV keep the raw X/Y channels.
 The plot shows both SR830s' X/Y against measured temperature, measured field, measured angle, or the configured and verified RMS current.

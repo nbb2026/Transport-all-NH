@@ -1732,11 +1732,15 @@ NONLOCAL_VI_FREQUENCY_HZ = NONLOCAL_FREQUENCY_HZ
 NONLOCAL_VI_SAMPLE_HZ = 1.0
 # "6221 pre-run s": how long the 6221 read current runs before each point's
 # reading.  The reading waits at least LOCKIN_SETTLE_TAUS x the slowest
-# lock-in time constant measured instead when that is longer (7 s at the
-# 1 s time constants), because the lock-ins start from zero when the 6221
-# switches on after the pulse (user, 2026-10-14).  That wait counts from
-# when the lock-ins are locked to the 6221 reference again (review,
-# 2026-10-14).
+# lock-in time constant measured instead when that is longer, because the
+# lock-ins start from zero when the 6221 switches on after the pulse (user,
+# 2026-10-14).  That wait counts from when the lock-ins are locked to the
+# 6221 reference again (review, 2026-10-14).  At the user's 1 x TC it is
+# 1 s at the 1 s time constants, so this 5 s (5 TC, about 96 % of the step
+# at 12 dB/oct) sets the wait at the defaults; it was 7 s under the earlier
+# 7 x TC rule.  Each Gate-VI point is such a jump from zero, not a small
+# sweep step, so with time constants above about 5 s raise the pre-run
+# (user, 2026-10-14).
 NONLOCAL_VI_6221_SETTLE_S = 5.0
 # Measure/pt s default (user's figure, 2026-10-11; was 50, before that 100).
 NONLOCAL_VI_MEASURE_S = 30.0
@@ -1845,10 +1849,11 @@ NONLOCAL_IV6221_COMPLIANCE_V = 50.0
 # Settle s is the shortest wait after each current step.  Every point waits
 # at least LOCKIN_SETTLE_TAUS x the slowest time constant measured instead
 # (the Zurich TC, each SR830's front-panel one), so at the 1 s defaults a
-# point waits 7 s, 99 % settled, and is then averaged over Acquire s.  With
-# Settle s alone a point was averaged 0.5-1.5 TC after its step and showed
-# only about a quarter of it, so the curve lagged by about a point (user,
-# 2026-10-14).
+# point waits 1 s and is then averaged over Acquire s (user, 2026-10-14:
+# 1 x TC on every page).  With Settle s alone a point was averaged 0.5-1.5
+# TC after its step and showed only about a quarter of it, so the curve
+# lagged by about a point; the 7 x TC rule of earlier that day (7 s, 99 %
+# settled) is superseded by the user's 1 x TC (user, 2026-10-14).
 NONLOCAL_IV6221_SETTLE_S = 0.5
 NONLOCAL_IV6221_ACQUIRE_S = 1.0
 NONLOCAL_IV6221_SAMPLE_INTERVAL_S = 0.2
@@ -1893,19 +1898,31 @@ NONLOCAL_IV6221_REFERENCE_WAIT_S = 20.0
 # After an autorange step the reading waits as RT-E does: 5 time constants
 # of that SR830, 10 of the Zurich; a point whose ranging takes longer than
 # this in all fails.  A range step is a change too, so 6221-IV and Gate-VI
-# wait at least LOCKIN_SETTLE_TAUS of them (7 for an SR830, the Zurich's 10
-# kept; CombinedControlApp._nonlocal_range_settle_s; user, 2026-10-14:
-# "every lock-in reading waits at least 7 x TC ... after a change").
+# wait at least LOCKIN_SETTLE_TAUS of them
+# (CombinedControlApp._nonlocal_range_settle_s).  While that was 7 an SR830
+# waited 7; at the user's 1 x TC (user, 2026-10-14) the 5 and 10 here are
+# the longer and set the wait again.
 NONLOCAL_IV6221_RANGE_SETTLE_TAUS = {"sr830": 5.0, "mfli": 10.0}
 NONLOCAL_IV6221_RANGE_LIMIT_S = 180.0
 # … or after this many range steps in a row (an SR830 spans 26 codes).
 NONLOCAL_IV6221_MAX_RANGE_STEPS = 30
 # Every lock-in reading of a scan waits at least this many time constants
-# after the swept quantity changes, or the page's Settle s / wait if that
-# is longer: at 12 dB/oct (filter order 2) a step has then settled to 99 %
-# (1 - 8 e^-7).  The pages read the time constant of every lock-in they
-# measure with (user, 2026-10-14: 1 s time constants by default).
-LOCKIN_SETTLE_TAUS = 7.0
+# of the slowest lock-in measured after the swept quantity changes, or the
+# page's Settle s / wait if that is longer, on every page (STFMR, RT-E,
+# PPMS, 6221-IV, Gate-VI).  The pages read the time constant of every
+# lock-in they measure with (1 s time constants by default).
+# The user chose 1 x TC on every page (user, 2026-10-14: "change all to
+# 1*TC please"; it was 7, 99 % of a step at 12 dB/oct, earlier that day,
+# which made a default STFMR point take 7 + 2 = 9 s).  An isolated step is
+# only about 26 % settled after 1 TC at 12 dB/oct (1 - 2/e), but in a sweep
+# of small steps the reading lags by only a fraction of a step: with TC 1 s,
+# Settle s 1 s and Acquire s 2 s, about 0.5 step.  The first readings after
+# each large jump are discarded (STFMR's first two of each loop) or wait
+# their own 10 x TC (NONLOCAL_IV6221_FIRST_SETTLE_TAUS,
+# NONLOCAL_VI_HARMONIC_SETTLE_TAUS), and the STFMR MFLI range re-read
+# (10 x MFLI TC) and the PPMS range steps (5 x TC) keep their own waits:
+# those handle jumps, not sweep steps, and are unchanged (user, 2026-10-14).
+LOCKIN_SETTLE_TAUS = 1.0
 # SR830 OFLT codes 0-19 in seconds, to read the front-panel time constant.
 SR830_TIME_CONSTANTS_S = (
     10e-6, 30e-6, 100e-6, 300e-6, 1e-3, 3e-3, 10e-3, 30e-3, 100e-3, 300e-3,
@@ -2101,9 +2118,10 @@ STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE = 10  # 1 s, the default choice below
 # with 100 ms as the default, and the user now wants every lock-in time
 # constant to start at 1 s, so the default is 1 s again (user, 2026-10-14).
 # The slope stays 12 dB/oct (OFSL 1).  Each point settles at least
-# LOCKIN_SETTLE_TAUS (7) time constants of every lock-in it reads, the MFLI's
-# too: the STFMR-only 5 x SR830 TC rule is gone, as the user chose one 7 x TC
-# rule for every page (user, 2026-10-14).
+# LOCKIN_SETTLE_TAUS time constants of every lock-in it reads, the MFLI's
+# too: the STFMR-only 5 x SR830 TC rule is gone, as the user chose one rule
+# for every page, now 1 x TC (user, 2026-10-14; it was 7 x TC earlier that
+# day).
 STFMR_LOCKIN_SR830_TIME_CONSTANTS = {
     "1 ms": 4, "3 ms": 5, "10 ms": 6, "30 ms": 7, "100 ms": 8,
     "300 ms": 9, "1 s": 10, "3 s": 11, "10 s": 12,
@@ -6294,16 +6312,16 @@ def build_ppms_field_scan_sequence(
 def ppms_lockin_settle_s(settle_s, time_constants_s) -> float:
     """The wait before a PPMS or RT-E scan point is read, after its field,
     temperature, angle, current or harmonic changed: the page's Settle s, or
-    LOCKIN_SETTLE_TAUS (7) time constants of the slowest lock-in the scan
-    measures if that is longer.  At 12 dB/oct a lock-in output has then
-    settled to 99 % of the step; with the 1 s time constants and the 0.5 s
-    Settle s every point was read while the outputs still moved toward the
-    new value (user, 2026-10-14).
+    LOCKIN_SETTLE_TAUS (1) time constants of the slowest lock-in the scan
+    measures if that is longer.  The user chose 1 x TC on every page (user,
+    2026-10-14; it was 7 x TC, 99 % of a step at 12 dB/oct, earlier that
+    day): in a scan of small steps the reading lags by only a fraction of a
+    step, and the first point of each pass still takes agreeing windows.
 
-    Rounded to 1e-12 s: 7 x 0.1 s is 0.7000000000000001 in binary, and the
-    CSV's effective_settle_s should read 0.7, as the Start confirmation does
-    (user, 2026-10-14).  The shortest SR830 wait, 7 x 10 us, keeps every
-    digit."""
+    Rounded to 1e-12 s, so a product such as 7 x 0.1 s (0.7000000000000001
+    in binary, under the earlier 7 x TC rule) reads 0.7 in the CSV's
+    effective_settle_s, as the Start confirmation does (user, 2026-10-14).
+    The shortest SR830 wait, 10 us, keeps every digit."""
     slowest = 0.0
     for value in time_constants_s:
         tau = float(value)
@@ -8969,9 +8987,10 @@ class NonLocalACController:
     def read_sr830_filter_slopes(self, keys) -> dict[str, float]:
         """Each SR830's output-filter slope in dB/oct, read with OFSL?
         (codes 0-3 = 6, 12, 18, 24 dB/oct; nothing is written).  6221-IV
-        keeps the front-panel slope too, and 7 x TC settles a step to 99 %
-        only at 12 dB/oct or less (about 92 % at 24), so its Start
-        confirmation shows the slope (review, 2026-10-14).  An SR830 that
+        keeps the front-panel slope too, and the settle rule (now 1 x TC,
+        user, 2026-10-14) is worked out for 12 dB/oct: after 1 TC a step
+        shows about 26 % at 12 dB/oct but 8 % at 18 and 2 % at 24, so its
+        Start confirmation shows the slope (review, 2026-10-14).  An SR830 that
         is not connected, or another code, raises."""
         values = {}
         with self.lock:
@@ -13762,9 +13781,9 @@ class STFMRScanRecorder:
         # last so every older column keeps its place (user, 2026-10-13).
         "sr830_time_constant_s",
         # Each point's timing (user, 2026-10-14): Settle s, the settle it
-        # waited after its current step (Settle s or 7 x the TC of every
-        # lock-in read), Acquire s, and how many readings of this row's
-        # lock-in its X and Y are the mean of.  Last, so every older column
+        # waited after its current step (Settle s or LOCKIN_SETTLE_TAUS x the
+        # TC of every lock-in read), Acquire s, and how many readings of this
+        # row's lock-in its X and Y are the mean of.  Last, so every older column
         # keeps its place; no Wait/pt column existed to remove.
         "settle_s", "effective_settle_s", "acquire_s", "sample_count",
     )
@@ -17110,8 +17129,9 @@ class CombinedControlApp:
             5, 0, "MFLI reference:", self.stfmr_lockin_reference_var,
             kind="combo", values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS), width=12,
         )
-        # Kept so the sweep can lock it: with the MFLI read, 7 x its TC is
-        # part of every point's settle (review, 2026-10-14).
+        # Kept so the sweep can lock it: with the MFLI read,
+        # LOCKIN_SETTLE_TAUS x its TC is part of every point's settle
+        # (review, 2026-10-14).
         self.stfmr_lockin_mfli_timeconstant_entry = parameter(
             5, 1, "MFLI TC s:", self.stfmr_lockin_mfli_timeconstant_var,
             width=7,
@@ -17409,8 +17429,9 @@ class CombinedControlApp:
             )
         # Settle s and Acquire s set every wait and window of the sweep, so
         # they are locked as the SR830 TC is (user, 2026-10-14).  So is
-        # "MFLI TC s": read at Start, 7 x it is the settle of every point
-        # that reads the MFLI, and a value typed mid-sweep would show a TC
+        # "MFLI TC s": read at Start, LOCKIN_SETTLE_TAUS x it is the settle
+        # of every point that reads the MFLI, and a value typed mid-sweep
+        # would show a TC
         # the sweep is not using (review, 2026-10-14).  So are P start, P
         # stop and P step: the power list is read at Start (user,
         # 2026-10-14).
@@ -17751,10 +17772,11 @@ class CombinedControlApp:
         mfli_timeconstant_s: float,
     ) -> list[tuple[str, float]]:
         """The waits a point's settle is the longest of: ("Settle s", Settle
-        s), then ("SR830", 7 x SR830 TC) when the SR830 is read and ("MFLI",
-        7 x MFLI TC) when the MFLI is (LOCKIN_SETTLE_TAUS; 99 % of a step at
-        12 dB/oct).  Each lock-in's TC counts only when it is read, as each
-        TC box is read at Start only then (user, 2026-10-14)."""
+        s), then ("SR830", LOCKIN_SETTLE_TAUS x SR830 TC) when the SR830 is
+        read and ("MFLI", LOCKIN_SETTLE_TAUS x MFLI TC) when the MFLI is
+        (1 x TC, the user's choice; user, 2026-10-14).  Each lock-in's TC
+        counts only when it is read, as each TC box is read at Start only
+        then (user, 2026-10-14)."""
         terms = [("Settle s", float(settle_s))]
         if meter in ("SR830", "MFLI + SR830"):
             terms.append(("SR830", LOCKIN_SETTLE_TAUS * SR830_TIME_CONSTANTS_S[
@@ -17782,8 +17804,8 @@ class CombinedControlApp:
         sr830_time_constant_code: int, mfli_timeconstant_s: float,
     ) -> str:
         """The Start confirmation's line on each point's timing, e.g. "each
-        point settles 7 s (7 × TC 1 s; Settle s 1 s) then averages 2 s"
-        (user, 2026-10-14)."""
+        point settles 3 s (1 × TC 3 s; Settle s 1 s) then averages 2 s"
+        (user, 2026-10-14).  The factor is LOCKIN_SETTLE_TAUS."""
         terms = cls._stfmr_lockin_settle_terms(
             meter, settle_s, sr830_time_constant_code, mfli_timeconstant_s
         )
@@ -18355,8 +18377,8 @@ class CombinedControlApp:
             sr830_time_constant_code = STFMR_LOCKIN_SR830_TIME_CONSTANTS[
                 sr830_time_constant
             ]
-            # Settle s, or 7 x the TC of every lock-in read when longer
-            # (user, 2026-10-14).
+            # Settle s, or LOCKIN_SETTLE_TAUS x the TC of every lock-in read
+            # when longer (user, 2026-10-14).
             effective_settle_s = self._stfmr_lockin_effective_settle_s(
                 meter, settle_s, sr830_time_constant_code, mfli_timeconstant_s
             )
@@ -18996,9 +19018,9 @@ class CombinedControlApp:
                         frequency_ghz=frequency_ghz, point_index=index + 1, dual=True, mfli_action=mfli_action):
                     return False
                 self.stfmr_lockin_status_var.set("SR830 autorange; re-reading both lock-ins after the wait, current dual-meter data not saved")
-                # The effective settle (at least 7 SR830 time constants) and
-                # 10 MFLI time constants after the SENS change
-                # (user, 2026-10-14).
+                # The effective settle (at least LOCKIN_SETTLE_TAUS SR830
+                # time constants, 1 since the user's 1 x TC) and 10 MFLI time
+                # constants after the SENS change (user, 2026-10-14).
                 self._restart_stfmr_lockin_point(max(
                     0.1, self.stfmr_lockin_effective_settle_s,
                     10 * self.stfmr_lockin_mfli_timeconstant_s,
@@ -19019,8 +19041,8 @@ class CombinedControlApp:
                 self.stfmr_lockin_mfli_range_attempts += 1
                 self.stfmr_lockin_mfli_range_actions.append(action)
                 # 10 MFLI time constants, or the effective settle (Settle s
-                # and 7 x the TC of every lock-in read) when longer
-                # (user, 2026-10-14).
+                # and LOCKIN_SETTLE_TAUS x the TC of every lock-in read) when
+                # longer (user, 2026-10-14).
                 settle_s = max(
                     self.stfmr_lockin_effective_settle_s,
                     10.0 * self.stfmr_lockin_mfli_timeconstant_s, 0.2,
@@ -19085,7 +19107,9 @@ class CombinedControlApp:
                     "old-range reading not saved, re-reading the current field point"
                 )
                 # The re-read after a SENS change waits the effective settle
-                # too, so at least 7 time constants (user, 2026-10-14).
+                # too, so at least LOCKIN_SETTLE_TAUS time constants: 1 since
+                # the user chose 1 x TC on every page (user, 2026-10-14; it
+                # was 7 earlier that day).
                 self._restart_stfmr_lockin_point(
                     max(self.stfmr_lockin_effective_settle_s, 0.1)
                 )
@@ -19566,8 +19590,9 @@ class CombinedControlApp:
             return
         # Keep the field-output panel on the current the sweep just sent.
         self._show_stfmr_lockin_kepco_state()
-        # The effective settle after the step: Settle s, or 7 x the TC of
-        # every lock-in read when longer (user, 2026-10-14).
+        # The effective settle after the step: Settle s, or
+        # LOCKIN_SETTLE_TAUS x the TC of every lock-in read when longer
+        # (user, 2026-10-14).
         self.stfmr_lockin_after_id = self.root.after(
             max(1, int(math.ceil(self.stfmr_lockin_effective_settle_s * 1000.0 - 1e-6))),
             self._read_next_stfmr_lockin_point,
@@ -33119,8 +33144,9 @@ class CombinedControlApp:
         """The wait before a Non-local lock-in reading after the swept
         quantity changes: LOCKIN_SETTLE_TAUS x the slowest of the time
         constants given (the lock-ins the scan measures), or ``wait_s`` (the
-        page's Settle s or 6221 pre-run s) if that is longer.  At 12 dB/oct
-        a step has then settled to 99 % (user, 2026-10-14).  Time constants
+        page's Settle s or 6221 pre-run s) if that is longer: 1 x TC, the
+        user's choice for every page (user, 2026-10-14; it was 7 x TC, 99 %
+        of a step at 12 dB/oct, earlier that day).  Time constants
         that are unknown (NaN, None) or not above 0 are skipped, so with no
         lock-in it is ``wait_s``."""
         taus = []
@@ -33139,9 +33165,10 @@ class CombinedControlApp:
         readings count again: RT-E's NONLOCAL_IV6221_RANGE_SETTLE_TAUS time
         constants of that lock-in (5 for an SR830, 10 for the Zurich), but
         at least LOCKIN_SETTLE_TAUS.  A range step changes the gain in front
-        of the filter, so it is a change like a current step (user,
-        2026-10-14: "every lock-in reading waits at least 7 x TC ... after a
-        change"; it was 5 x TC on an SR830).  0 when the time constant is
+        of the filter, so it is a change like a current step.  Under the
+        earlier 7 x TC rule an SR830 waited 7 x TC here; at the user's
+        1 x TC (user, 2026-10-14) the 5 x TC of an SR830 and 10 x TC of the
+        Zurich are the longer and set the wait.  0 when the time constant is
         unknown (NaN, None) or not above 0."""
         try:
             tau = float(time_constant_s)
@@ -33174,9 +33201,9 @@ class CombinedControlApp:
             else f"{shortest:g}–{longest:g} s"
         )
         tau_s = float(settings.get("lockin_time_constant_s", 0.0))
-        # The 7 x TC counts from the reference lock, the pre-run from the
-        # switch-on, so a slow lock makes the wait longer (review,
-        # 2026-10-14): "at least".
+        # The LOCKIN_SETTLE_TAUS x TC counts from the reference lock, the
+        # pre-run from the switch-on, so a slow lock makes the wait longer
+        # (review, 2026-10-14): "at least".
         rule = (
             f"{LOCKIN_SETTLE_TAUS:g} × the slowest lock-in TC {tau_s:g} s = "
             f"{float(settings['lockin_settle_s']):g} s from the reference lock, or 6221 pre-run "
@@ -33583,8 +33610,9 @@ class CombinedControlApp:
 
             def range_settle_for(key):
                 """The wait after an autorange step of this lock-in, from
-                the time constant read back at this frequency: 7 τ of an
-                SR830, 10 τ of the Zurich, as 6221-IV (user, 2026-10-14)."""
+                the time constant read back at this frequency: 5 τ of an
+                SR830, 10 τ of the Zurich, or LOCKIN_SETTLE_TAUS τ if more,
+                as 6221-IV (user, 2026-10-14)."""
                 if key == "mfli":
                     tau = lockin_readbacks.get("mfli", {}).get(
                         "timeconstant_s", (settings["mfli_config"] or {}).get("timeconstant_s")
@@ -33800,10 +33828,10 @@ class CombinedControlApp:
                         # again (the Zurich's ExtRef can take seconds at a low
                         # frequency).  The reading then starts once the 6221
                         # has run pre_run_s since it switched on and the
-                        # lock-ins have had lockin_settle_s (7 x TC) since the
-                        # lock was confirmed.  It used to wait the pre-run,
-                        # check the lock and read at once, so a slow lock left
-                        # less than 7 x TC (review, 2026-10-14).
+                        # lock-ins have had lockin_settle_s (LOCKIN_SETTLE_TAUS
+                        # x TC) since the lock was confirmed.  It used to wait
+                        # the pre-run, check the lock and read at once, so a
+                        # slow lock left less than that (review, 2026-10-14).
                         sync = self.nonlocal_vi_ac_controller.wait_references(
                             frequency, self.nonlocal_vi_stop_event,
                             tuple(settings["lockin_configs"]),
@@ -33953,13 +33981,13 @@ class CombinedControlApp:
                                 # An autorange step is a change too: the
                                 # pass's readings so far are dropped from the
                                 # means (the raw CSV keeps them, auto_range
-                                # filled in), the reading waits 7 τ of that
-                                # SR830 or 10 τ of the Zurich, and Measure s
-                                # starts again, as on 6221-IV.  It averaged
-                                # straight on, only the reading that ranged
-                                # left out (user, 2026-10-14: "every lock-in
-                                # reading waits at least 7 x TC ... after a
-                                # change").  Past NONLOCAL_IV6221_MAX_RANGE_STEPS
+                                # filled in), the reading waits 5 τ of that
+                                # SR830 or 10 τ of the Zurich (at least
+                                # LOCKIN_SETTLE_TAUS τ; 7 τ of an SR830 while
+                                # that was 7), and Measure s starts again, as
+                                # on 6221-IV.  It averaged straight on, only
+                                # the reading that ranged left out (user,
+                                # 2026-10-14).  Past NONLOCAL_IV6221_MAX_RANGE_STEPS
                                 # restarts in a pass (a meter that ranges on
                                 # every reading) the pass reads on as before,
                                 # so a long run is not stopped for it.
@@ -36256,9 +36284,9 @@ class CombinedControlApp:
         # and an SR830 keeps its front-panel one, so it is read (OFLT?, a
         # query only) before the confirmation shows the wait.  Off the Tk
         # thread, as the rack's Zurich poll reads (user, 2026-10-14).  Its
-        # slope (OFSL?) too: 7 x TC is 99 % settled only at 12 dB/oct or
-        # less, and the confirmation says when it is not (review,
-        # 2026-10-14).
+        # slope (OFSL?) too: the settle rule is worked out for 12 dB/oct, and
+        # the confirmation says when a steeper slope shows less of each step
+        # (review, 2026-10-14).
         self.nonlocal_iv6221_tc_reading = True
         # The page is busy until the read has ended, as during a connection:
         # Start, Set 6221, Gate-VI, the rack and the 6221-IV choices are
@@ -36341,8 +36369,9 @@ class CombinedControlApp:
     def _lockin_step_settled_fraction(waited_taus: float, slope_db_per_oct: float) -> float:
         """The part of a step a lock-in output filter shows ``waited_taus``
         time constants after it: slope / 6 dB/oct equal RC stages, so
-        1 - e^-x (1 + x + ... + x^(n-1) / (n-1)!).  After 7 time constants:
-        99.9 % at 6 dB/oct, 99.3 % at 12, 97.0 % at 18, 91.8 % at 24."""
+        1 - e^-x (1 + x + ... + x^(n-1) / (n-1)!).  After 1 time constant:
+        63.2 % at 6 dB/oct, 26.4 % at 12, 8.0 % at 18, 1.9 % at 24; after 7:
+        99.9 %, 99.3 %, 97.0 %, 91.8 %."""
         x = max(0.0, float(waited_taus))
         stages = max(1, int(round(float(slope_db_per_oct) / 6.0)))
         term = total = 1.0
@@ -36393,9 +36422,13 @@ class CombinedControlApp:
             + (f", at least {NONLOCAL_FSCAN_SETTLE_PERIODS:g} periods of each frequency" if settings["frequency_scan"] else "")
             + ")\n"
         )
-        # The SR830 front-panel filters read at Start, and a note when the
-        # slope leaves a point less than 99 % settled (7 x TC is 99 % only
-        # at 12 dB/oct or less; review, 2026-10-14).
+        # The SR830 front-panel filters read at Start, and a note when a
+        # slope steeper than 12 dB/oct leaves a point less settled than
+        # 12 dB/oct would after the same wait (review, 2026-10-14).  The
+        # note fired below 99 %, which 7 x TC gave at 12 dB/oct; at the
+        # user's 1 x TC 12 dB/oct itself shows about 26 % of an isolated
+        # step, so a fixed 99 % would put the note on every scan (user,
+        # 2026-10-14).  Above 99 % at 12 dB/oct, 99 % stays the mark.
         slopes = settings.get("sr830_filter_slopes_db_per_oct") or {}
         filter_text = ""
         if sr830_time_constants:
@@ -36407,14 +36440,15 @@ class CombinedControlApp:
             for key, value in sr830_time_constants.items():
                 if key not in slopes or not float(value) > 0:
                     continue
-                settled = self._lockin_step_settled_fraction(
-                    float(settings["point_settle_s"]) / float(value), slopes[key]
-                )
-                if settled < 0.99:
+                waited_taus = float(settings["point_settle_s"]) / float(value)
+                settled = self._lockin_step_settled_fraction(waited_taus, slopes[key])
+                at_12 = self._lockin_step_settled_fraction(waited_taus, 12.0)
+                if settled < min(at_12, 0.99) - 1e-9:
                     filter_text += (
                         f"Note: at {slopes[key]:g} dB/oct {NONLOCAL_METER_NAMES[key]} shows only about "
-                        f"{math.floor(100 * settled):.0f} % of each step when the point is read "
-                        f"({LOCKIN_SETTLE_TAUS:g} × TC gives 99 % at 12 dB/oct); set 12 dB/oct "
+                        f"{math.floor(100 * settled):.0f} % of each step when the point is read, "
+                        f"against about {math.floor(100 * at_12):.0f} % at 12 dB/oct (the wait is "
+                        f"{LOCKIN_SETTLE_TAUS:g} × the slowest TC, or Settle s); set 12 dB/oct "
                         "on its front panel, or raise Settle s\n"
                     )
         if not messagebox.askyesno(
@@ -36542,9 +36576,10 @@ class CombinedControlApp:
 
         Readings flagged unlocked, overloaded or in compliance are left out.
         An autorange step starts the window again (that reading was on the
-        old range) after the meter settles: 7 time constants of that SR830
-        (LOCKIN_SETTLE_TAUS; RT-E waits 5), 10 of the Zurich, as RT-E
-        (``settings["range_settle_s"]``, user, 2026-10-14).
+        old range) after the meter settles: 5 time constants of that SR830
+        and 10 of the Zurich, as RT-E, or LOCKIN_SETTLE_TAUS if more (7 for
+        an SR830 under the earlier 7 x TC rule; ``settings["range_settle_s"]``,
+        user, 2026-10-14).
         For the Zurich, every reading also carries X and Y of each of its
         orders, from the demodulators.  The point fails if a meter has no
         valid reading within Acquire s plus NONLOCAL_IV6221_MAX_EXTRA_S (from
@@ -36747,9 +36782,10 @@ class CombinedControlApp:
                     # And at least 5 periods of the new frequency, as the
                     # microwave test program waits.
                     long_settle = max(long_settle, NONLOCAL_FSCAN_SETTLE_PERIODS / float(frequency))
-                # After an autorange step: 7 τ of that SR830 (RT-E's 5 τ
-                # raised to LOCKIN_SETTLE_TAUS, a range step being a change
-                # too; user, 2026-10-14), 10 τ of the Zurich.
+                # After an autorange step: 5 τ of that SR830 and 10 τ of the
+                # Zurich, as RT-E, or LOCKIN_SETTLE_TAUS τ if more, a range
+                # step being a change too (user, 2026-10-14; at the user's
+                # 1 x TC the 5 τ and 10 τ are the longer).
                 range_settle_s = {
                     key: self._nonlocal_range_settle_s(
                         key, readbacks.get(key, {}).get("time_constant_s", math.nan)
@@ -38966,13 +39002,14 @@ class CombinedControlApp:
 
     def _ppms_lockin_settle(self, stable_s: float, active_lockins, zurich: bool):
         """(wait s, slowest TC s, its meter) before a PPMS or RT-E scan point
-        is read: Settle s, or 7 time constants of the slowest lock-in the
-        scan measures if longer (ppms_lockin_settle_s).
+        is read: Settle s, or LOCKIN_SETTLE_TAUS (1) time constants of the
+        slowest lock-in the scan measures if longer (ppms_lockin_settle_s).
 
         It replaces the note the Start confirmation gave when Settle s was
         shorter than 5 time constants of a 3 s or 10 s 'SR830 TC': the user
-        wants every reading settled to 99 % instead (12 dB/oct, 7 time
-        constants), whatever the boxes say (user, 2026-10-14).
+        wanted every reading to wait for the time constant whatever the
+        boxes say, first 7 time constants (99 % at 12 dB/oct), then 1 x TC
+        on every page (user, 2026-10-14).
 
         An SR830's time constant is the one it last read back with OFLT?:
         at Connect, at an 'SR830 TC' change, and at each scan start on both
@@ -39013,8 +39050,9 @@ class CombinedControlApp:
         The status line says so too, for the length of that wait: the Start
         confirmation and estimate use the time constants read before the
         scan, so an SR830 set to 10 s on its front panel since Connect made
-        the scan wait 70 s a point after it announced 7 s, with only a log
-        line to show it (user, 2026-10-14).  After the wait the first
+        the scan wait 10 s a point after it announced 1 s (70 s after 7 s
+        under the earlier 7 x TC rule), with only a log line to show it
+        (user, 2026-10-14).  After the wait the first
         point's window line and then each saved point's line replace it,
         and the remaining time they show counts the longer wait."""
         zurich = bool(self.__dict__.get("zurich_scan_enabled", False))
@@ -39159,11 +39197,12 @@ class CombinedControlApp:
         order is unchanged (user, 2026-10-14).
 
         RT-E reads it too.  It has no 'SR830 TC' choice and no per-SR830
-        column, but each reading waits 7 of these time constants and the
-        row's slowest_lockin_tc_s records it: with the 1 s Connect set, an
-        SR830 changed to 10 s on its front panel or by another program got
-        7 s instead of 70 s, unsettled and recorded as if it were 1 s
-        (user, 2026-10-14).  Still a query only, with nothing written.
+        column, but each reading waits LOCKIN_SETTLE_TAUS of these time
+        constants and the row's slowest_lockin_tc_s records it: with the 1 s
+        Connect set, an SR830 changed to 10 s on its front panel or by
+        another program got 1 s instead of 10 s (7 s instead of 70 s under
+        the earlier 7 x TC rule), and was recorded as if it were 1 s (user,
+        2026-10-14).  Still a query only, with nothing written.
         """
         verified = self.__dict__.setdefault("ppms_sr830_time_constant_codes", {})
         previous = verified.pop(key, None)  # Unknown until it reads back.
@@ -39743,8 +39782,9 @@ class CombinedControlApp:
         for _loop, _point, _count, target in sequence:
             estimated_distance += abs(target - previous)
             previous = target
-        # Each point waits Settle s, or 7 time constants of the slowest
-        # lock-in its pass measures if longer, before it is read; the
+        # Each point waits Settle s, or LOCKIN_SETTLE_TAUS (1) time
+        # constants of the slowest lock-in its pass measures if longer,
+        # before it is read; the
         # estimate counts that wait for every point of every harmonic pass
         # (user, 2026-10-14).
         pass_settles = self._ppms_settle_per_pass(stable_s, harmonic_passes, use_zurich)
@@ -40330,13 +40370,13 @@ class CombinedControlApp:
                     )
                 if self.ppms_field_scan_stop_event.is_set():
                     break
-                # The lock-in settle before the reading: Settle s, or 7 time
-                # constants of the slowest lock-in measured if longer (99 %
-                # settled at 12 dB/oct), at every point, the first of each
-                # harmonic pass included.  Only this wait grows: the
-                # temperature and field stability waits and the magnet's
-                # own settling keep their criteria, and the first point's
-                # agreeing windows still follow it (user, 2026-10-14).
+                # The lock-in settle before the reading: Settle s, or
+                # LOCKIN_SETTLE_TAUS (1, the user's 1 x TC) time constants of
+                # the slowest lock-in measured if longer, at every point, the
+                # first of each harmonic pass included.  Only this wait
+                # changes: the temperature and field stability waits and the
+                # magnet's own settling keep their criteria, and the first
+                # point's agreeing windows still follow it (user, 2026-10-14).
                 settle_s, slowest_tc_s = self._ppms_point_settle(
                     stable_s, tuple(transport_settings["active_lockins"]))
                 if settle_s > 0 and self.ppms_field_scan_stop_event.wait(settle_s):
@@ -45087,11 +45127,12 @@ class RTEPanel(PPMSPanel):
         except Exception as error:
             messagebox.showerror('RT-E scan parameters', str(error), parent=self.root)
             return
-        # Every point waits Settle s, or 7 time constants of the slowest
-        # lock-in its pass measures if longer, before it is read (user,
-        # 2026-10-14).  RT-E had no duration estimate; the shortest the scan
-        # can take now counts that wait, Acquire s, and the second window
-        # the first point of each pass needs.  The LS475 settling, the stage
+        # Every point waits Settle s, or LOCKIN_SETTLE_TAUS (1) time
+        # constants of the slowest lock-in its pass measures if longer,
+        # before it is read (user, 2026-10-14).  RT-E had no duration
+        # estimate; the shortest the scan can take now counts that wait,
+        # Acquire s, and the second window the first point of each pass
+        # needs.  The LS475 settling, the stage
         # moves and the instrument reads come on top ("at least").
         pass_settles = self._ppms_settle_per_pass(stable, passes, bool(self.__dict__.get('zurich_scan_enabled', False)))
         settle_s, slowest_tc_s, slowest_meter = max(pass_settles, key=lambda item: item[0])
@@ -45161,9 +45202,10 @@ class RTEPanel(PPMSPanel):
         # and Acquire s 86400 s the longest lines are "settle 86400 s" (493 px
         # in Arial, 590 px in Linux CI's DejaVu Sans) and "settle 0.0864 s"
         # (497 px, 595 px), both under that 505 px (598 px) line.  Only a
-        # wait of 100000 s or more (7 x a 30 ks SR830 time constant), or one
-        # under 10 ms with Acquire s of 10 h or more, could be wider; the
-        # log has the line in full (user, 2026-10-14).
+        # wait under 10 ms with Acquire s of 10 h or more could be wider (a
+        # wait of 100000 s or more, once 7 x a 30 ks SR830 time constant,
+        # cannot occur at the user's 1 x TC: Settle s is at most 86400 s);
+        # the log has the line in full (user, 2026-10-14).
         self.ppms_field_scan_status_var.set(
             f'RT-E {mode}: {self.ppms_field_scan_total} points, settle {ppms_settle_status_text(settle_s)} s; '
             f'at least {least_text}')
@@ -45312,12 +45354,13 @@ class RTEPanel(PPMSPanel):
                     except Exception:
                         stage_failure = True
                         raise
-                # The lock-in settle before the reading: Settle s, or 7 time
-                # constants of the slowest lock-in measured if longer (99 %
-                # settled at 12 dB/oct), at every point, the first of each
-                # harmonic pass included.  The LS475 field settling and the
-                # stage move before it are unchanged, and the first point's
-                # agreeing windows still follow it (user, 2026-10-14).
+                # The lock-in settle before the reading: Settle s, or
+                # LOCKIN_SETTLE_TAUS (1, the user's 1 x TC) time constants of
+                # the slowest lock-in measured if longer, at every point, the
+                # first of each harmonic pass included.  The LS475 field
+                # settling and the stage move before it are unchanged, and the
+                # first point's agreeing windows still follow it (user,
+                # 2026-10-14).
                 settle_s, slowest_tc_s = self._ppms_point_settle(stable, settings['active_lockins'])
                 self._rte_wait(settle_s)
                 try:

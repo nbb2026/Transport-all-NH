@@ -765,7 +765,7 @@ class AngleScanWorkerTests(StageBase):
         seen, shown = [], []
 
         def wait(seconds):
-            # Settle s, right after the move: 8 s, longer than the 7 x 1 s
+            # Settle s, right after the move: 8 s, longer than the 1 x 1 s
             # lock-in settle, so it is the wait (user, 2026-10-14).
             if seconds == 8.:
                 while h.ui:                 # what the Tk thread shows by then
@@ -1280,9 +1280,10 @@ class AngleStartTests(unittest.TestCase):
                      "set once to +1.5 A (voltage limit 5 V)", "held for the whole scan",
                      "SAMPLE HOLDER with its wires attached", "within ±360°",
                      # The wait before each reading, and the shortest the
-                     # scan can take: 5 x (7 s + 1 s) + 1 s (user, 2026-10-14).
-                     "Each angle waits 7 s (7 x 1 s, the time constant of SR830-1, the slowest lock-in "
-                     "measured; Settle s is 0 s) before it is read; the scan takes at least 41 s."):
+                     # scan can take: 5 x (1 s + 1 s) + 1 s (user, 2026-10-14:
+                     # 1 x TC; 7 x TC and 41 s before).
+                     "Each angle waits 1 s (1 x 1 s, the time constant of SR830-1, the slowest lock-in "
+                     "measured; Settle s is 0 s) before it is read; the scan takes at least 11 s."):
             self.assertIn(text, question)
         run.askdirectory.assert_not_called()
         run.panel.ppms_executor.submit.assert_not_called()
@@ -1305,10 +1306,11 @@ class AngleStartTests(unittest.TestCase):
                 run.showerror.assert_not_called()
                 run.askyesno.assert_not_called()
                 self.assertEqual(len(run.panel.ppms_executor.submit.call_args.args), 7)
-                # The wait before each reading (7 x 1 s) and the shortest
-                # duration, 5 x (7 s + 1 s) + 1 s (user, 2026-10-14).
+                # The wait before each reading (1 x 1 s) and the shortest
+                # duration, 5 x (1 s + 1 s) + 1 s (user, 2026-10-14: 1 x TC;
+                # 7 x TC and 41 s before).
                 self.assertEqual(run.panel.ppms_field_scan_status_var.get(),
-                                 f"RT-E {mode}: 5 points, settle 7 s; at least 41 s")
+                                 f"RT-E {mode}: 5 points, settle 1 s; at least 11 s")
 
     def test_no_scan_starts_while_the_stage_may_still_be_turning(self):
         # An unconfirmed stop: no scan watches the stage, and Stop stage queues
