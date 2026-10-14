@@ -131,15 +131,50 @@
     again retries), and its time constant is recorded as unknown. The
     dropdown is locked during a scan, any other PPMS command or an SR830
     Connect. A change refused at such a time puts the dropdown back to the
-    value the SR830s were last sent.
+    value the SR830s were last sent. An idle poll can run beside the change
+    on another PPMS worker. It now checks the ready time, ranges and sets
+    the new ready time while it holds that SR830's lock, and it never moves
+    a ready time earlier. Before this, a poll that had waited for the lock
+    could cut the 5-time-constant wait short.
+  - **Only a pick applies:** Tk's combobox steps to the next value when the
+    mouse wheel turns over it and reports that as a selection. One notch
+    would have rewritten OFLT on every connected SR830. The dropdown ignores
+    the wheel (`<MouseWheel>`, and `<Button-4>`/`<Button-5>` on Linux).
+  - **Autorange limit in a scan point:** each range step waits 5 time
+    constants (read with OFLT?), and a point used to allow 180 s of ranging.
+    That limit was set for 1 s, which is 5 s per step and room for 36
+    steps. At 10 s it held only three 50 s steps, so the first point after
+    Connect (SENS 9, 2 uV) stopped the scan for any signal above about
+    20 uV. At 3 s, anything needing a range above about 10 mV failed. The
+    limit is now 180 s or 36 step waits, whichever is longer
+    (`PPMS_SR830_RANGE_LIMIT_S`, `PPMS_SR830_RANGE_LIMIT_STEPS`): 540 s at
+    3 s and 1800 s at 10 s. At 1 s and below it is exactly 180 s, as
+    before. The error names the limit used.
+  - **Long time constants need a longer Settle s:** a point is read Settle s
+    after its field, temperature or angle is reached, and the scan does not
+    wait for the time constant. An SR830 output needs about 5 time
+    constants to settle. With 3 s or 10 s and the default 0.5 s, X and Y
+    lag the scan by several points, and the first point's two agreeing
+    windows can still be settling. For settled readings, set Settle s to at
+    least 15 s (3 s) or 50 s (10 s). The scan-start confirmation (the scan
+    time estimate) says so when the choice is longer than 1 s, Settle s is
+    shorter than 5 of its time constants and an SR830 is measured. It is a
+    note in that box, not a new dialog, so a Macro SCAN line shows no extra
+    box. There is no note at 1 s, which is how the page always ran with its
+    0.5 s settle.
   - **CSV:** each scan row gets one new column per SR830, added last:
-    `sr830_<address>_time_constant_s`. It holds the time constant that SR830
-    last read back with OFLT? (at Connect or after an SR830 TC change). It is
-    left empty if that read-back failed. All earlier columns keep their
-    places. The program does not see a time constant changed on the SR830's
-    front panel.
+    `sr830_<address>_time_constant_s`. Every scan start (and Set I) reads
+    each measured SR830's OFLT? beside its HARM?/FMOD?/RSLP? reads, so the
+    column holds the time constant in use, also after a change on the
+    front panel or a power cycle. That read writes nothing, so the command
+    order is unchanged. If it differs from the value last set, the log says
+    so. A failed or invalid reply stops the scan start before the 6221
+    turns on, as a HARM? mismatch does. All earlier columns keep their
+    places.
   - **RT-E** shares the SR830 set-up code but builds its own rack. It has no
-    such control and still sends OFLT 10 at Connect.
+    such control and still sends OFLT 10 at Connect. It has no time-constant
+    column and skips the scan-start OFLT? read. The longer autorange limit
+    does not change it, because at 1 s the limit is still 180 s.
 - **Tests:** `test_ppms_sr830_tc.py` builds the real PPMS and RT-E pages on
   stand-in widgets, with fake SR830s, and checks:
   - the "TC (s)" label on both pages;
@@ -154,13 +189,33 @@
   - the refusal and the lock while busy, and a failed read-back on one
     SR830;
   - that RT-E has no control and sends OFLT 10;
-  - the new last CSV columns, through the real scan worker.
+  - the new last CSV columns, through the real scan worker;
+  - the autorange limit, on a clock that moves only when the scan waits:
+    still 180 s at 1 s and 100 ms, 540 s at 3 s and 1800 s at 10 s; and the
+    review's case through the real reading chain, where a fake SR830 at
+    OFLT 12 overloads from SENS 9 up to SENS 17 and the point completes
+    after eight 50 s steps;
+  - an idle poll that waited for the SR830 lock while a change held it: it
+    does not range and keeps the 50 s wait; a ready time is never moved
+    earlier; and without a change the poll still counts low readings;
+  - the scan-start OFLT? read: one query, no new write, before the 6221
+    starts; a front-panel value is recorded and logged; an invalid reply
+    stops the start; RT-E does not read it;
+  - the note in the scan time estimate, and no note at 1 s, with Settle s
+    long enough, with only the Zurich, or on RT-E;
+  - that the wheel bindings return "break".
 
   `test_sr830_filters.py` now expects `("OFLT", time_constant_code)` with a
-  default of 10. A new CI GUI test, `test_panel_defaults.PPMSRackTests`,
+  default of 10. A new CI GUI test, `test_panel_defaults.TCRackTests`,
   checks the label, and checks the dropdown beside Macro, left of SR830-3
-  and no wider than the Keithley row, in both windows. It was not run here
-  because it needs a display.
+  and no wider than the Keithley row, in both windows. It also checks that
+  the dropdown's own wheel bindings run before the combobox class's. It
+  generates no wheel event, because Tk may route one through the focus
+  window. Its name sorts last in the module, because unittest runs a module's
+  classes in name order. This class maps and then destroys a whole program
+  copy. Before `PanelDefaultTests`' message boxes, that order crashed Tk's
+  focus_force on the Linux CI. It was not run here because it needs a
+  display.
 
 ## STFMR: default modulation frequency 117.3 Hz (2026-10-14)
 

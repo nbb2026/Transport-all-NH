@@ -295,7 +295,8 @@ class CurrentCallbacks(unittest.TestCase):
     def test_idle_poll_ranges_up_on_overload_without_set_current(self):
         obj = app.CombinedControlApp.__new__(app.CombinedControlApp)
         obj.ppms_environment_controller = types.SimpleNamespace(backend="fake", read_environment=lambda: {})
-        obj.ppms_instrument_controllers = {'830_a': types.SimpleNamespace(connected=True)}
+        # Idle ranging runs under the SR830's lock (user, 2026-10-14).
+        obj.ppms_instrument_controllers = {'830_a': types.SimpleNamespace(connected=True, lock=threading.RLock())}
         obj._read_ppms_current_display = lambda: "OFF / 0 mA"
         obj._read_ppms_cryogen_display = lambda: {}
         obj._ppms_query_numbers = lambda k, c, n: (317.3 if c == 'FREQ?' else 1,)

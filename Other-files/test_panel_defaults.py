@@ -589,75 +589,6 @@ class NotebookTabTests(unittest.TestCase):
             root.destroy()
 
 
-class PPMSRackTests(unittest.TestCase):
-    """The PPMS rack (user, 2026-10-14): the Zurich row says "TC (s)", as on
-    RT-E, and one 'SR830 TC' dropdown for the three SR830s sits beside Macro,
-    under the Keithley 2400 and left of SR830-3, in the window the program
-    opens with and in the 2000 px one, without widening the rack."""
-
-    @classmethod
-    def setUpClass(cls):
-        try:
-            cls.root = tk.Tk()
-        except tk.TclError as error:  # headless build server
-            raise unittest.SkipTest(f"no display: {error}")
-        cls.app = build_lab_app(app, cls.root)  # as the lab PC shows it
-        notebook = next(w for w in cls.app.__dict__.values()
-                        if isinstance(w, tk.ttk.Notebook))
-        for index in range(notebook.index("end")):
-            if notebook.tab(index, "text") == "PPMS":
-                notebook.select(index)
-        cls.root.update()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.app.closing = True
-        cls.app.safe_close_hardware()
-        cls.root.destroy()
-
-    def show(self, width):
-        self.root.geometry(f"{width}x{lab_window(self.app)[1]}+0+0")
-        self.root.update()
-
-    def test_the_zurich_row_says_tc_s(self):
-        texts = []
-        pending = [self.app.ppms_panel.ppms_tab]
-        while pending:
-            widget = pending.pop()
-            pending.extend(widget.winfo_children())
-            try:
-                texts.append(str(widget.cget("text")))
-            except Exception:
-                pass
-        self.assertIn("TC (s)", texts)
-        self.assertNotIn("Time constant s", texts)
-        self.assertEqual(texts.count("SR830 TC"), 1)
-
-    def test_the_sr830_tc_dropdown_sits_beside_macro_in_both_windows(self):
-        panel = self.app.ppms_panel
-        combo = panel.ppms_sr830_time_constant_combo
-        row = combo.master
-        macro = next(w for w in row.winfo_children() if isinstance(w, tk.ttk.Button))
-        label = next(w for w in row.winfo_children() if isinstance(w, tk.ttk.Label))
-        self.assertEqual((str(macro.cget("text")), str(label.cget("text"))), ("Macro", "SR830 TC"))
-        self.assertEqual(panel.ppms_sr830_time_constant_var.get(), "1 s")
-        self.assertEqual(tuple(str(v) for v in combo.cget("values")),
-                         tuple(app.STFMR_LOCKIN_SR830_TIME_CONSTANTS))
-        self.assertEqual(str(combo.cget("state")), "readonly")
-        keithley = panel.ppms_device_resource_widgets["2400"].master
-        sr830_3 = panel.ppms_device_resource_widgets["830_c"].master
-        # Narrower than the Keithley row above it, so the column keeps its width.
-        self.assertLess(row.winfo_reqwidth(), keithley.winfo_reqwidth())
-        for width in (lab_window(self.app)[0], LAB_WIDE):
-            with self.subTest(width=width):
-                self.show(width)
-                self.assertTrue(combo.winfo_ismapped())
-                self.assertLess(macro.winfo_rootx() + macro.winfo_width(), label.winfo_rootx())
-                self.assertLessEqual(combo.winfo_rootx() + combo.winfo_width(), sr830_3.winfo_rootx())
-                self.assertGreater(combo.winfo_rooty(), keithley.winfo_rooty(), "under the 2400")
-                self.assertLess(abs(combo.winfo_rooty() - sr830_3.winfo_rooty()), 10, "SR830-3's row")
-
-
 class RTEStatusRowTests(unittest.TestCase):
     """The RT-E scan status stays on one line in the widened lab window.
 
@@ -751,6 +682,92 @@ class RTEStatusRowTests(unittest.TestCase):
         progress = self.app.rte_panel.ppms_field_scan_progress
         self.assertEqual(progress.master, self.status_label().master)
         self.assertLess(abs(progress.winfo_rooty() - self.status_label().winfo_rooty()), 6)
+
+
+# Named to sort last: unittest runs a module's classes in name order, and this
+# one maps and destroys a whole program copy.  Before PanelDefaultTests'
+# message boxes that is the order that crashed Tk's focus_force on the Linux
+# CI (2026-10-14), so nothing in this module runs after it (user, 2026-10-14).
+class TCRackTests(unittest.TestCase):
+    """The PPMS rack (user, 2026-10-14): the Zurich row says "TC (s)", as on
+    RT-E, and one 'SR830 TC' dropdown for the three SR830s sits beside Macro,
+    under the Keithley 2400 and left of SR830-3, in the window the program
+    opens with and in the 2000 px one, without widening the rack."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.root = tk.Tk()
+        except tk.TclError as error:  # headless build server
+            raise unittest.SkipTest(f"no display: {error}")
+        cls.app = build_lab_app(app, cls.root)  # as the lab PC shows it
+        notebook = next(w for w in cls.app.__dict__.values()
+                        if isinstance(w, tk.ttk.Notebook))
+        for index in range(notebook.index("end")):
+            if notebook.tab(index, "text") == "PPMS":
+                notebook.select(index)
+        cls.root.update()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app.closing = True
+        cls.app.safe_close_hardware()
+        cls.root.destroy()
+
+    def show(self, width):
+        self.root.geometry(f"{width}x{lab_window(self.app)[1]}+0+0")
+        self.root.update()
+
+    def test_the_zurich_row_says_tc_s(self):
+        texts = []
+        pending = [self.app.ppms_panel.ppms_tab]
+        while pending:
+            widget = pending.pop()
+            pending.extend(widget.winfo_children())
+            try:
+                texts.append(str(widget.cget("text")))
+            except Exception:
+                pass
+        self.assertIn("TC (s)", texts)
+        self.assertNotIn("Time constant s", texts)
+        self.assertEqual(texts.count("SR830 TC"), 1)
+
+    def test_the_sr830_tc_dropdown_sits_beside_macro_in_both_windows(self):
+        panel = self.app.ppms_panel
+        combo = panel.ppms_sr830_time_constant_combo
+        row = combo.master
+        macro = next(w for w in row.winfo_children() if isinstance(w, tk.ttk.Button))
+        label = next(w for w in row.winfo_children() if isinstance(w, tk.ttk.Label))
+        self.assertEqual((str(macro.cget("text")), str(label.cget("text"))), ("Macro", "SR830 TC"))
+        self.assertEqual(panel.ppms_sr830_time_constant_var.get(), "1 s")
+        self.assertEqual(tuple(str(v) for v in combo.cget("values")),
+                         tuple(app.STFMR_LOCKIN_SR830_TIME_CONSTANTS))
+        self.assertEqual(str(combo.cget("state")), "readonly")
+        keithley = panel.ppms_device_resource_widgets["2400"].master
+        sr830_3 = panel.ppms_device_resource_widgets["830_c"].master
+        # Narrower than the Keithley row above it, so the column keeps its width.
+        self.assertLess(row.winfo_reqwidth(), keithley.winfo_reqwidth())
+        for width in (lab_window(self.app)[0], LAB_WIDE):
+            with self.subTest(width=width):
+                self.show(width)
+                self.assertTrue(combo.winfo_ismapped())
+                self.assertLess(macro.winfo_rootx() + macro.winfo_width(), label.winfo_rootx())
+                self.assertLessEqual(combo.winfo_rootx() + combo.winfo_width(), sr830_3.winfo_rootx())
+                self.assertGreater(combo.winfo_rooty(), keithley.winfo_rooty(), "under the 2400")
+                self.assertLess(abs(combo.winfo_rooty() - sr830_3.winfo_rooty()), 10, "SR830-3's row")
+
+    def test_the_sr830_tc_box_stops_the_mouse_wheel_before_its_class(self):
+        """Tk's combobox class steps on a wheel turn and reports a selection,
+        which would rewrite OFLT on every connected SR830.  The box's own
+        wheel bindings (they return "break", test_ppms_sr830_tc) run before
+        the class's.  No wheel event is generated here: Tk may route one
+        through the focus window, and focus handling after a destroyed
+        program copy is what crashed the Linux CI (user, 2026-10-14)."""
+        combo = self.app.ppms_panel.ppms_sr830_time_constant_combo
+        tags = combo.bindtags()
+        self.assertLess(tags.index(str(combo)), tags.index("TCombobox"))
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.assertIn('== "break"} break', combo.bind(sequence), sequence)
 
 
 if __name__ == "__main__":

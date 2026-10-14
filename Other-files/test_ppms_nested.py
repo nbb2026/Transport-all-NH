@@ -150,7 +150,9 @@ class NestedTests(unittest.TestCase):
     def test_idle_autorange_requires_successful_current_setting(self):
         obj = app.CombinedControlApp.__new__(app.CombinedControlApp)
         obj.ppms_environment_controller = types.SimpleNamespace(backend="fake", read_environment=lambda: {})
-        obj.ppms_instrument_controllers = {k: types.SimpleNamespace(connected=True) for k in ("830_a", "830_b")}
+        # Idle ranging runs under the SR830's lock (user, 2026-10-14).
+        obj.ppms_instrument_controllers = {k: types.SimpleNamespace(connected=True, lock=threading.RLock())
+                                           for k in ("830_a", "830_b")}
         obj._read_ppms_current_display = lambda: "ON / 1 mA"
         obj._read_ppms_cryogen_display = lambda: {}
         calls = []

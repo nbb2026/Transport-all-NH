@@ -1618,6 +1618,15 @@ PPMS_HELIUM_HISTORY_FILENAME = "PPMS_He_history.csv"
 PPMS_SR830_DOWNRANGE_FRACTION = 0.10
 PPMS_SR830_DOWNRANGE_READINGS = 3
 PPMS_SR830_RANGE_COOLDOWN_READINGS = 3
+# A PPMS scan point gives SR830 autoranging 180 s.  That limit dates from the
+# fixed 1 s time constant: 5 s per range step, room for 36 steps.  Each step
+# waits 5 time constants of the 'SR830 TC' choice, so at 10 s 180 s held only
+# three steps and the first point after Connect (SENS 9, 2 uV) failed for any
+# signal above about 20 uV.  The limit is now at least 36 of the step waits
+# met in the point: 3 s and 10 s get as many steps as 1 s had, and 1 s and
+# shorter keep 180 s exactly (user, 2026-10-14).
+PPMS_SR830_RANGE_LIMIT_S = 180.0
+PPMS_SR830_RANGE_LIMIT_STEPS = 36
 PPMS_FIRST_POINT_MAX_WINDOWS = 10
 PPMS_FIRST_POINT_TOLERANCE_FRACTION = 0.02
 PPMS_FIRST_POINT_FLOOR_FRACTION = 0.002
@@ -36774,12 +36783,20 @@ class CombinedControlApp:
                             and not getattr(self, 'closing', False)):
                         if not hasattr(self, 'ppms_idle_range_ready_at'):
                             self.ppms_idle_range_ready_at = {}
-                        if time.monotonic() >= self.ppms_idle_range_ready_at.get(key, 0.):
-                            magnitude = 0. if status & 7 else self._ppms_query_numbers(key, 'OUTP? 3', 1)[0]
-                            settling = self._ppms_autorange_sr830(key, magnitude, status)
-                            self.ppms_idle_range_ready_at[key] = time.monotonic() + settling
-                            if settling:
-                                data['lockin_reference'][key] += '; autorange, waiting to settle'
+                        # Checked, ranged and set under the SR830's lock: an
+                        # 'SR830 TC' change on another worker sets a later
+                        # ready time (5 new time constants) under this lock,
+                        # and a poll that checked before it and waited for
+                        # the lock wrote "now" over it.  A ready time is also
+                        # never moved earlier (user, 2026-10-14).
+                        with self.ppms_instrument_controllers[key].lock:
+                            if time.monotonic() >= self.ppms_idle_range_ready_at.get(key, 0.):
+                                magnitude = 0. if status & 7 else self._ppms_query_numbers(key, 'OUTP? 3', 1)[0]
+                                settling = self._ppms_autorange_sr830(key, magnitude, status)
+                                self.ppms_idle_range_ready_at[key] = max(
+                                    self.ppms_idle_range_ready_at.get(key, 0.), time.monotonic() + settling)
+                                if settling:
+                                    data['lockin_reference'][key] += '; autorange, waiting to settle'
                 else:
                     data["lockin_reference"][key] = "Not connected"
             except Exception as error:
@@ -37364,6 +37381,12 @@ class CombinedControlApp:
         )
         combo.grid(row=0, column=2)
         combo.bind("<<ComboboxSelected>>", lambda _event: self._ppms_apply_sr830_time_constant())
+        # Tk's combobox steps to the next value on a mouse-wheel turn and
+        # reports it as a selection, so one notch with the pointer over the
+        # box would rewrite OFLT on every connected SR830.  Only a value
+        # picked from the list applies (user, 2026-10-14).
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            combo.bind(sequence, lambda _event: "break")
         self.ppms_sr830_time_constant_combo = combo
 
     def _ppms_sr830_time_constant_code(self) -> int:
@@ -37378,6 +37401,35 @@ class CombinedControlApp:
             choices = ", ".join(STFMR_LOCKIN_SR830_TIME_CONSTANTS)
             raise ValueError(f"SR830 TC must be one of: {choices}")
         return STFMR_LOCKIN_SR830_TIME_CONSTANTS[label]
+
+    def _ppms_sr830_tc_lag_note(self, stable_s: float, active_lockins) -> str:
+        """A note for the scan-start confirmation, or "".
+
+        A point is read Settle s after its field, temperature or angle is
+        reached, and an SR830 output needs about 5 time constants to settle
+        (12 dB/oct).  With a 3 s or 10 s 'SR830 TC' and the default 0.5 s,
+        X/Y lag the scan by several points, and the first point's two
+        agreeing windows can still be settling.  The scan itself is not
+        changed; the note says so before it starts.  It is only for the
+        choices longer than the 1 s default: the page always ran at 1 s with
+        its 0.5 s settle, and a note on every such scan would be noise
+        (user, 2026-10-14).
+        """
+        variable = self.__dict__.get("ppms_sr830_time_constant_var")
+        if variable is None or not active_lockins:
+            return ""  # RT-E, or only the Zurich measures.
+        label = str(variable.get()).strip()
+        code = STFMR_LOCKIN_SR830_TIME_CONSTANTS.get(label)
+        default_code = STFMR_LOCKIN_SR830_TIME_CONSTANTS[PPMS_SR830_DEFAULT_TIME_CONSTANT]
+        if code is None or code <= default_code:
+            return ""
+        settle_s = STFMR_LOCKIN_SR830_SETTLE_TAUS * SR830_TIME_CONSTANTS_S[code]
+        if stable_s >= settle_s:
+            return ""
+        return (f"\n\nSR830 TC is {label}: an SR830 output takes about {settle_s:g} s "
+                f"(5 time constants) to settle, but Settle s is {stable_s:g} s, so each "
+                "reading lags the scan. Set Settle s to at least "
+                f"{settle_s:g} s for settled readings.")
 
     def _ppms_sr830_time_constant_idle(self) -> bool:
         """Whether the 'SR830 TC' choice may change now: not during a scan,
@@ -37490,6 +37542,31 @@ class CombinedControlApp:
                 self.ppms_idle_range_ready_at = {}
             self.ppms_idle_range_ready_at[key] = (
                 time.monotonic() + max(.1, 5.0 * SR830_TIME_CONSTANTS_S[actual]))
+
+    def _ppms_read_sr830_time_constant_for_scan(self, key: str, address: int) -> None:
+        """Read one SR830's time constant at scan start, for the CSV (worker).
+
+        The CSV column took the value read back at Connect or at the last
+        'SR830 TC' change, so a front-panel change or a power cycle since
+        then was recorded wrongly, while the range waits used the real
+        OFLT?.  This is one OFLT? query and no write, so the SR830 command
+        order is unchanged.  RT-E has no such choice and no such column and
+        skips it (user, 2026-10-14).
+        """
+        if "ppms_sr830_time_constant_var" not in self.__dict__:
+            return
+        verified = self.__dict__.setdefault("ppms_sr830_time_constant_codes", {})
+        previous = verified.pop(key, None)  # Unknown until it reads back.
+        code = int(round(self._ppms_query_numbers(key, "OFLT?", 1)[0]))
+        if not 0 <= code < len(SR830_TIME_CONSTANTS_S):
+            raise RuntimeError(f"SR830 #{address} time-constant readback invalid: OFLT={code}")
+        verified[key] = code
+        if previous is not None and code != previous:
+            self.thread_log(
+                f"PPMS {self.ppms_instrument_controllers[key].label}: the time constant reads "
+                f"{SR830_TIME_CONSTANTS_S[code]:g} s (OFLT {code}), not the "
+                f"{SR830_TIME_CONSTANTS_S[previous]:g} s last set (changed on the front panel?); "
+                "the scan records the value read")
 
     def _ppms_write_sr830_checked(self, key: str, command: str) -> None:
         controller = self.ppms_instrument_controllers[key]
@@ -37651,6 +37728,7 @@ class CombinedControlApp:
                     f"SR830 #{address} configuration readback mismatch: HARM={actual_harmonic}, "
                     f"FMOD={reference_mode}, RSLP={reference_slope}"
                 )
+            self._ppms_read_sr830_time_constant_for_scan(key, address)
 
         for command in (
             "SOUR:WAVE:ABOR",
@@ -38081,13 +38159,17 @@ class CombinedControlApp:
                 )
         except (KeyError, TypeError, ValueError):
             pass
+        # In the same confirmation, not a dialog of its own (user,
+        # 2026-10-14).
+        lag_note = self._ppms_sr830_tc_lag_note(stable_s, active_lockins)
         if not messagebox.askyesno(
             "PPMS scan time estimate",
             f"Scan mode: {mode}\nMeasurement points: {total}\nEstimated duration: about {estimate_text}\n\n"
             "This is an estimate; the actual duration may grow with instrument settling and rotation waits."
             + rotation_note
+            + lag_note
             + "\nContinue to choose the save folder and start the scan?",
-            icon="warning" if rotation_note else "question",
+            icon="warning" if rotation_note or lag_note else "question",
             parent=self.root,
         ):
             return
@@ -38442,8 +38524,8 @@ class CombinedControlApp:
         In-flight queries may finish after the requested window. Cancelled
         partial points are discarded; invalid references are never averaged.
         """
-        start = time.monotonic()
-        range_deadline = start + 180.0
+        start = call_start = time.monotonic()
+        range_limit_s = PPMS_SR830_RANGE_LIMIT_S
         count, sums, last = 0, {}, None
         overloaded_samples = 0
         while True:
@@ -38454,8 +38536,15 @@ class CombinedControlApp:
                 raise PPMSScanCancelled("Acquisition aborted; the unfinished point is not saved")
             settling = float(sample.get("range_settle_s", 0.))
             if settling:
-                if time.monotonic() + settling > range_deadline:
-                    raise PPMSLockinRangeError("SR830 autorange did not settle within 180 s; current point not saved; 6221 output kept")
+                # The limit grows with the longest step wait met so far (5
+                # time constants, read with OFLT?), so a long 'SR830 TC'
+                # choice keeps as many range steps as 1 s had; at 1 s and
+                # shorter it stays 180 s (user, 2026-10-14).
+                range_limit_s = max(range_limit_s, PPMS_SR830_RANGE_LIMIT_STEPS * settling)
+                if time.monotonic() + settling > call_start + range_limit_s:
+                    raise PPMSLockinRangeError(
+                        f"SR830 autorange did not settle within {range_limit_s:.0f} s; "
+                        "current point not saved; 6221 output kept")
                 if self.ppms_field_scan_stop_event.wait(settling):
                     raise PPMSScanCancelled("Autorange wait stopped; current point not saved")
                 start = time.monotonic()
@@ -38705,9 +38794,10 @@ class CombinedControlApp:
                     result["lockin_reference"][key] = (f"{transport_sample[f'sr830_{address}_frequency_hz']:.5g} Hz / "
                         + ("LOCK reference locked" if transport_sample[f"sr830_{address}_reference_valid"] else "WARNING reference unlocked or frequency mismatch"))
                 # Each SR830's time constant in s, as it last read back with
-                # OFLT? (at Connect or an 'SR830 TC' change; empty if that
-                # failed).  New columns go last, so the columns older files
-                # have keep their places (user, 2026-10-14).
+                # OFLT?: at this scan's start, which also sees a front-panel
+                # change (empty if unknown).  New columns go last, so the
+                # columns older files have keep their places (user,
+                # 2026-10-14).
                 verified_codes = getattr(self, "ppms_sr830_time_constant_codes", {})
                 for key in tuple(transport_settings["active_lockins"]):
                     address = self._ppms_sr830_address(
