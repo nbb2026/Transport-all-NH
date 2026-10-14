@@ -46,7 +46,7 @@ acquisition, averaging the region of interest over the post-pulse interval.
 **Non-local** has one connection box in two columns (Keithley 2410 or 2400,
 6221 and 2182A; two SR830s and the MFLI). As on RT-E, the Zurich row also
 holds its reference input (**Ref.**) and time constant (**TC (s)**, default
-0.1 s), used by 6221-IV and Gate-VI. The Ref. follows the chosen Zurich:
+1 s since 2026-10-14), used by 6221-IV and Gate-VI. The Ref. follows the chosen Zurich:
 DEV4414 on Trigger In 1 (the default, as RT-E), DEV4435 on Aux Input 1. Once
 connected, the row shows "Locked" or "Warning", read once a second. Four sub-tabs use the rack. Each scan
 has a settings box and a scan box, side by side when they fit, as on RT-E,
