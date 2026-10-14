@@ -279,6 +279,103 @@
   Gate-VI wait comes from the Zurich TC" notes in the next section, and
   "5 x TC of that SR830" after a 6221-IV range step in older sections.
 
+## RT-E and PPMS: lock-in readings settle at least 7 x TC (2026-10-14)
+
+- **The user's choice:** "every lock-in reading waits at least 7 x TC (99 %
+  settled at 12 dB/oct) after a change, on every page; Settle s still
+  applies when longer; the Start confirmation shows the wait". This section
+  covers RT-E and PPMS. STFMR and Non-local are changed separately.
+- **The rule:** after every change of the swept quantity (each new field,
+  temperature, angle or current setpoint, the first point included, and the
+  first point of every harmonic pass), the wait before the reading is
+  max(Settle s, 7 x the slowest time constant among the lock-ins that scan
+  measures) (`ppms_lockin_settle_s`, with the shared `LOCKIN_SETTLE_TAUS =
+  7.0`). At 12 dB/oct a step has then settled to 99 % (1 - 8 e^-7).
+- **Which time constants:**
+  - **PPMS SR830s:** the value each one last read back with OFLT?: at
+    Connect, at an 'SR830 TC' change and at every scan start. The scan
+    start read also sees a change made on the front panel. An SR830 that
+    has not read back yet counts with the 'SR830 TC' choice.
+  - **RT-E SR830s:** OFLT 10 = 1 s, as Connect sets and reads back. RT-E
+    still reads no OFLT? at the scan start, so a time constant changed on
+    an RT-E SR830's front panel after Connect is not seen.
+  - **The Zurich (both pages):** its TC box (`zurich_scan_tau`), when the
+    Zurich is measured.
+  - A harmonic pass counts only the lock-ins it measures. A later pass
+    whose slower SR830 has finished its orders waits less.
+- **Where it applies:** RT-E: the wait before each point's reading, which
+  was Settle s. It comes after the KEPCO step and the LS475 field settling
+  (Field), the 6221 amplitude step (Current) or the stage move (Angle).
+  PPMS: the wait after the field, temperature, angle or current is reached
+  and before the reading, in every mode (Temperature, Field, Angle,
+  Current, the combined scans and Macro SCAN lines, which run the same
+  Start).
+- **Unchanged:** the PPMS temperature and field stability criteria (stable
+  for max(1 s, Settle s)), the magnet's own settling, the LS475 field
+  settling, the stage moves and the autorange waits. The first point's
+  agreeing windows still follow the wait, so no existing wait is shortened.
+  No instrument command is added, removed or reordered; outputs are as
+  before on every path. A Stop during the wait ends the scan as before.
+- **Start:**
+  - **PPMS:** the confirmation has a new line, e.g. "Wait before each
+    reading: 7 s (7 x 1 s, the time constant of SR830-1, the slowest
+    lock-in measured; Settle s is 0.5 s)", or "(Settle s; 7 x the slowest
+    lock-in time constant, … is 7 s)" when Settle s is longer. Passes with
+    fewer lock-ins are named when they wait less. The duration estimate
+    counts the wait at every point of every pass. The status line reads
+    e.g. "Field scan: 41 points, settle 7 s; estimated about 22 min 16 s".
+    The confirmation's old note on a Settle s shorter than 5 time constants
+    of a 3 s or 10 s choice is gone: the scan now waits instead.
+  - **RT-E Field and Current** still have no Yes/No. The status line shows
+    the wait and the shortest the scan can take, e.g. "RT-E Current: 100
+    points, settle 7 s; at least 13 min 21 s". "At least" counts every
+    point's wait and Acquire s, and the second window the first point of
+    each pass needs; the LS475 settling, the stage moves and the instrument
+    reads come on top. The harmonic-pass count moved from this line to the
+    log: the longest line, "RT-E Current: 100000 points, settle 86400 s; at
+    least 4800024 h 00 min 00 s", measures about 493 px in Arial 15 px,
+    under the 505 px of the longest status line already in the label (the
+    CI GUI test `test_panel_defaults.RTEStatusRowTests` checks it on
+    Windows; not run here).
+  - **RT-E Angle:** the Yes/No gains "Each angle waits … before it is read;
+    the scan takes at least …". Its status line is unchanged, because the
+    wait would not fit.
+  - **Log:** the Start line gives the wait and how it was chosen. The scan
+    logs a different wait only when one occurs: a front-panel time constant
+    read at a PPMS scan start, or a pass with fewer lock-ins.
+- **CSV:** two new last columns on both pages, after every older column:
+  `effective_settle_s` (the wait that point had) and `slowest_lockin_tc_s`
+  (the time constant it came from). `stable_s` still records Settle s.
+- **Timing at the defaults** (Settle s 0.5 s, Acquire s 1 s, every time
+  constant 1 s): each point waits 7 s instead of 0.5 s, 6.5 s more per
+  point.
+  - **RT-E** (the Zurich alone measures by default): Current 0.01 to 1 mA
+    in 0.01 mA steps, 100 points: at least 13 min 21 s (was 2 min 31 s).
+    Field -3 to 3 A in 0.05 A steps with the round trip, 241 points: at
+    least 32 min 09 s (was 6 min 03 s), plus the field settling. Angle 0 to
+    360° in 5° steps with the round trip, 145 points: at least 19 min 21 s
+    (was 3 min 39 s), plus about 144 s of moves at 5°/s.
+  - **PPMS** Field -15000 to 15000 Oe in 1500 Oe steps, 41 points from
+    0 Oe at 100 Oe/s: about 22 min 16 s (was 17 min 50 s).
+  - With a 3 s or 10 s 'SR830 TC' each point waits 21 s or 70 s.
+- **Tests (Tk-free):** `test_lockin_settle_rte_ppms.py` (new): the rule
+  (SR830 only, Zurich only, both, Settle s longer, an SR830 not read back
+  yet, the words); each RT-E mode (Field, Current, Angle) through the real
+  scan worker, the Zurich alone and with an SR830, each harmonic pass
+  settling again with its own lock-ins, and the RT-E columns; each PPMS
+  mode (Temperature, Field, Angle, Current, Field+Temperature) through the
+  real nested and point workers on a clock that moves only when the scan
+  waits, with the temperature and field stability waits unchanged, a
+  longer Settle s, the Zurich, harmonic passes and a front-panel time
+  constant read at the scan start; the PPMS confirmation, estimate, status
+  line and log, and a Macro SCAN line; the RT-E status lines and the Angle
+  Yes/No. `test_ppms_sr830_tc.py`: the CSV columns (the point worker no
+  longer waits in real time there) and the confirmation's wait instead of
+  the old note. `test_rte_angle_scan.py`: the new Field/Current status line
+  and the Angle Yes/No; its stage-line test uses an 8 s Settle s, longer
+  than 7 x 1 s. `test_panel_defaults.RTEStatusRowTests` (CI only) checks
+  the new longest line.
+
 ## Lock-in time constants: every default is 1 s (2026-10-14)
 
 - **The user's choice:** "all default lock-in time constant change to 1s".
@@ -365,7 +462,9 @@
     (15 TC with the old 0.1 s). On RT-E the Zurich is the only meter
     measured by default, so a default RT-E scan reads this way. PPMS
     measures its three SR830s too; they are set to 1 s on connect, as
-    before.
+    before. (Superseded the same day for RT-E and PPMS: each reading now
+    waits at least 7 TC, see "RT-E and PPMS: lock-in readings settle at
+    least 7 x TC" above.)
 - **Tests:** `test_lockin_time_constant_defaults.py` (new) checks every
   changed default is 1 s: the constants, the method defaults, the STFMR and
   Non-local boxes in the source, the PPMS / RT-E box in the real panel
@@ -433,7 +532,9 @@
     (`PPMS_SR830_RANGE_LIMIT_S`, `PPMS_SR830_RANGE_LIMIT_STEPS`): 540 s at
     3 s and 1800 s at 10 s. At 1 s and below it is exactly 180 s, as
     before. The error names the limit used.
-  - **Long time constants need a longer Settle s:** a point is read Settle s
+  - **Long time constants need a longer Settle s** (superseded the same day:
+    every reading now waits at least 7 time constants and the note is gone;
+    see "RT-E and PPMS: lock-in readings settle at least 7 x TC" above): a point is read Settle s
     after its field, temperature or angle is reached, and the scan does not
     wait for the time constant. An SR830 output needs about 5 time
     constants to settle. With 3 s or 10 s and the default 0.5 s, X and Y
@@ -485,7 +586,8 @@
     starts; a front-panel value is recorded and logged; an invalid reply
     stops the start; RT-E does not read it;
   - the note in the scan time estimate, and no note at 1 s, with Settle s
-    long enough, with only the Zurich, or on RT-E;
+    long enough, with only the Zurich, or on RT-E (replaced the same day by
+    `StartSettleTests`: the confirmation shows the wait);
   - that the wheel bindings return "break".
 
   `test_sr830_filters.py` now expects `("OFLT", time_constant_code)` with a

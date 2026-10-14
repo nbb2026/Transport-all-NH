@@ -6063,6 +6063,35 @@ def build_ppms_field_scan_sequence(
     ]
 
 
+def ppms_lockin_settle_s(settle_s, time_constants_s) -> float:
+    """The wait before a PPMS or RT-E scan point is read, after its field,
+    temperature, angle, current or harmonic changed: the page's Settle s, or
+    LOCKIN_SETTLE_TAUS (7) time constants of the slowest lock-in the scan
+    measures if that is longer.  At 12 dB/oct a lock-in output has then
+    settled to 99 % of the step; with the 1 s time constants and the 0.5 s
+    Settle s every point was read while the outputs still moved toward the
+    new value (user, 2026-10-14)."""
+    slowest = 0.0
+    for value in time_constants_s:
+        tau = float(value)
+        if math.isfinite(tau) and tau > slowest:
+            slowest = tau
+    return max(float(settle_s), LOCKIN_SETTLE_TAUS * slowest)
+
+
+def ppms_lockin_settle_text(settle_s, effective_s, slowest_tc_s, meter) -> str:
+    """How the PPMS / RT-E wait before each reading was chosen, in words for
+    the Start confirmation and the log (user, 2026-10-14)."""
+    if not slowest_tc_s:
+        return f"{effective_s:g} s (Settle s)"
+    rule_s = LOCKIN_SETTLE_TAUS * slowest_tc_s
+    if effective_s > settle_s:
+        return (f"{effective_s:g} s ({LOCKIN_SETTLE_TAUS:g} x {slowest_tc_s:g} s, the time constant of "
+                f"{meter}, the slowest lock-in measured; Settle s is {settle_s:g} s)")
+    return (f"{effective_s:g} s (Settle s; {LOCKIN_SETTLE_TAUS:g} x the slowest lock-in time constant, "
+            f"{slowest_tc_s:g} s on {meter}, is {rule_s:g} s)")
+
+
 def validate_ppms_transport_scan_settings(
     current_rms_ma: float,
     frequency_hz: float,
@@ -38392,34 +38421,63 @@ class CombinedControlApp:
             raise ValueError(f"SR830 TC must be one of: {choices}")
         return STFMR_LOCKIN_SR830_TIME_CONSTANTS[label]
 
-    def _ppms_sr830_tc_lag_note(self, stable_s: float, active_lockins) -> str:
-        """A note for the scan-start confirmation, or "".
+    def _ppms_lockin_settle(self, stable_s: float, active_lockins, zurich: bool):
+        """(wait s, slowest TC s, its meter) before a PPMS or RT-E scan point
+        is read: Settle s, or 7 time constants of the slowest lock-in the
+        scan measures if longer (ppms_lockin_settle_s).
 
-        A point is read Settle s after its field, temperature or angle is
-        reached, and an SR830 output needs about 5 time constants to settle
-        (12 dB/oct).  With a 3 s or 10 s 'SR830 TC' and the default 0.5 s,
-        X/Y lag the scan by several points, and the first point's two
-        agreeing windows can still be settling.  The scan itself is not
-        changed; the note says so before it starts.  It is only for the
-        choices longer than the 1 s default: the page always ran at 1 s with
-        its 0.5 s settle, and a note on every such scan would be noise
-        (user, 2026-10-14).
+        It replaces the note the Start confirmation gave when Settle s was
+        shorter than 5 time constants of a 3 s or 10 s 'SR830 TC': the user
+        wants every reading settled to 99 % instead (12 dB/oct, 7 time
+        constants), whatever the boxes say (user, 2026-10-14).
+
+        An SR830's time constant is the one it last read back with OFLT?:
+        at Connect, at an 'SR830 TC' change, and on PPMS at each scan start
+        (which also sees a front-panel change).  An SR830 not read back yet
+        counts with the value Connect sets: the 'SR830 TC' choice, or OFLT
+        10 (1 s) on RT-E.  The Zurich counts with the TC the scan configures
+        (zurich_scan_tau), or its 1 s default if that is missing.
         """
-        variable = self.__dict__.get("ppms_sr830_time_constant_var")
-        if variable is None or not active_lockins:
-            return ""  # RT-E, or only the Zurich measures.
-        label = str(variable.get()).strip()
-        code = STFMR_LOCKIN_SR830_TIME_CONSTANTS.get(label)
-        default_code = STFMR_LOCKIN_SR830_TIME_CONSTANTS[PPMS_SR830_DEFAULT_TIME_CONSTANT]
-        if code is None or code <= default_code:
-            return ""
-        settle_s = LOCKIN_SETTLE_TAUS * SR830_TIME_CONSTANTS_S[code]
-        if stable_s >= settle_s:
-            return ""
-        return (f"\n\nSR830 TC is {label}: an SR830 output takes about {settle_s:g} s "
-                f"({LOCKIN_SETTLE_TAUS:g} time constants) to settle, but Settle s is {stable_s:g} s, so each "
-                "reading lags the scan. Set Settle s to at least "
-                f"{settle_s:g} s for settled readings.")
+        codes = self.__dict__.get("ppms_sr830_time_constant_codes") or {}
+        meters = []
+        for key in active_lockins:
+            code = codes.get(key)
+            if code is None:
+                try:
+                    code = self._ppms_sr830_time_constant_code()
+                except ValueError:
+                    code = 10
+            meters.append((SR830_TIME_CONSTANTS_S[int(code)], PPMS_SR830_LABELS.get(key, key)))
+        if zurich:
+            try:
+                tau = float(self.__dict__.get("zurich_scan_tau", PPMS_ZURICH_TIME_CONSTANT_S))
+            except (TypeError, ValueError):
+                tau = PPMS_ZURICH_TIME_CONSTANT_S
+            if not math.isfinite(tau) or tau <= 0:
+                tau = PPMS_ZURICH_TIME_CONSTANT_S
+            meters.append((tau, "the Zurich"))
+        slowest, meter = max(meters, key=lambda item: item[0], default=(0.0, ""))
+        return ppms_lockin_settle_s(stable_s, [tau for tau, _name in meters]), slowest, meter
+
+    def _ppms_point_settle(self, stable_s: float, active_lockins):
+        """The wait before this scan point's reading, on the scan worker:
+        (wait s, slowest TC s).  The log gets a line when it differs from
+        the last one this scan logged or announced at Start, e.g. after a
+        front-panel time constant read at the scan start, or in a harmonic
+        pass that measures fewer lock-ins (user, 2026-10-14)."""
+        zurich = bool(self.__dict__.get("zurich_scan_enabled", False))
+        settle, slowest, meter = self._ppms_lockin_settle(stable_s, active_lockins, zurich)
+        if self.__dict__.get("ppms_scan_settle_logged") != settle:
+            self.ppms_scan_settle_logged = settle
+            self.thread_log(f"{getattr(type(self), 'ppms_page_name', 'PPMS')} scan: each reading now waits "
+                            + ppms_lockin_settle_text(stable_s, settle, slowest, meter))
+        return settle, slowest
+
+    def _ppms_settle_per_pass(self, stable_s: float, passes, zurich: bool):
+        """[(wait s, slowest TC s, meter)] for each harmonic pass, for the
+        Start confirmation and the duration estimate (user, 2026-10-14)."""
+        return [self._ppms_lockin_settle(stable_s, settings["active_lockins"], zurich)
+                for settings in passes]
 
     def _ppms_sr830_time_constant_idle(self) -> bool:
         """Whether the 'SR830 TC' choice may change now: not during a scan,
@@ -39089,7 +39147,8 @@ class CombinedControlApp:
                 ppms_scan_temperature_segments(float((self.ppms_last_readback or {}).get("temperature_k", 300)), t, temp_rate)
             total = len(sequence) * len(nested["angle"]) * len(nested["temperature"]) * len(currents)
             # A 1+2 or 1+2+3 selection repeats the whole scan per order.
-            total *= len(self._ppms_harmonic_passes(transport_settings))
+            harmonic_passes = self._ppms_harmonic_passes(transport_settings)
+            total *= len(harmonic_passes)
             if total > 100000:
                 raise ValueError("Nested scans are limited to 100000 measurement points")
             if any(transport_settings[k] not in (1, 2, 3) for k in ("harmonic_a", "harmonic_b")):
@@ -39120,11 +39179,17 @@ class CombinedControlApp:
         for _loop, _point, _count, target in sequence:
             estimated_distance += abs(target - previous)
             previous = target
+        # Each point waits Settle s, or 7 time constants of the slowest
+        # lock-in its pass measures if longer, before it is read; the
+        # estimate counts that wait for every point of every harmonic pass
+        # (user, 2026-10-14).
+        pass_settles = self._ppms_settle_per_pass(stable_s, harmonic_passes, use_zurich)
+        points_per_pass = total // max(1, len(harmonic_passes))
         estimated_seconds = (
             estimated_distance / rate_oe_s
             + (len(nested["angle"]) * len(nested["temperature"]) * len(currents) - 1)
             * sum(abs(sequence[i][3] - sequence[i-1][3]) for i in range(1, len(sequence))) / rate_oe_s
-            + (stable_s + acquisition_s) * total
+            + sum((settle + acquisition_s) * points_per_pass for settle, _tc, _meter in pass_settles)
         )
         # Planning allowance only: actual GPIB/reference settling is measured
         # during acquisition and replaces this estimate after completed points.
@@ -39149,17 +39214,24 @@ class CombinedControlApp:
                 )
         except (KeyError, TypeError, ValueError):
             pass
-        # In the same confirmation, not a dialog of its own (user,
-        # 2026-10-14).
-        lag_note = self._ppms_sr830_tc_lag_note(stable_s, active_lockins)
+        # The confirmation shows the wait before each reading and how it was
+        # chosen (user, 2026-10-14).  It replaces the note on a Settle s
+        # shorter than 5 long time constants: the scan now waits instead.
+        settle_s, slowest_tc_s, slowest_meter = max(pass_settles, key=lambda item: item[0])
+        settle_text = ppms_lockin_settle_text(stable_s, settle_s, slowest_tc_s, slowest_meter)
+        settle_line = f"Wait before each reading: {settle_text}"
+        later = sorted({settle for settle, _tc, _meter in pass_settles} - {settle_s})
+        if later:
+            settle_line += ("; harmonic passes with fewer lock-ins wait "
+                            + ", ".join(f"{settle:g}" for settle in later) + " s")
         if not messagebox.askyesno(
             "PPMS scan time estimate",
-            f"Scan mode: {mode}\nMeasurement points: {total}\nEstimated duration: about {estimate_text}\n\n"
+            f"Scan mode: {mode}\nMeasurement points: {total}\n{settle_line}\n"
+            f"Estimated duration: about {estimate_text}\n\n"
             "This is an estimate; the actual duration may grow with instrument settling and rotation waits."
             + rotation_note
-            + lag_note
             + "\nContinue to choose the save folder and start the scan?",
-            icon="warning" if rotation_note or lag_note else "question",
+            icon="warning" if rotation_note else "question",
             parent=self.root,
         ):
             return
@@ -39205,6 +39277,10 @@ class CombinedControlApp:
             messagebox.showerror("Failed to create the live CSV", str(error), parent=self.root)
             return
         self.thread_log(f"PPMS live save: {self.ppms_live_csv_path}")
+        # The wait announced here; the worker logs only a different one, e.g.
+        # after a front-panel time constant read at the scan start.
+        self.thread_log(f"PPMS {mode} scan: each reading waits {settle_text}")
+        self.ppms_scan_settle_logged = settle_s
         self.ppms_field_scan_stop_event.clear()
         self.ppms_field_scan_running = True
         self.ppms_scan_preserve_on_stop = False
@@ -39220,7 +39296,7 @@ class CombinedControlApp:
             f"Remaining: about {estimate_text}"
         )
         self.ppms_field_scan_status_var.set(
-            f"{mode} scan: {total} points; estimated about {estimate_text}"
+            f"{mode} scan: {total} points, settle {settle_s:g} s; estimated about {estimate_text}"
         )
         self.ppms_transport_status_var.set(
             "Transport acquisition: configuring the 6221 and the connected SR830…"
@@ -39687,7 +39763,16 @@ class CombinedControlApp:
                     )
                 if self.ppms_field_scan_stop_event.is_set():
                     break
-                if stable_s > 0 and self.ppms_field_scan_stop_event.wait(stable_s):
+                # The lock-in settle before the reading: Settle s, or 7 time
+                # constants of the slowest lock-in measured if longer (99 %
+                # settled at 12 dB/oct), at every point, the first of each
+                # harmonic pass included.  Only this wait grows: the
+                # temperature and field stability waits and the magnet's
+                # own settling keep their criteria, and the first point's
+                # agreeing windows still follow it (user, 2026-10-14).
+                settle_s, slowest_tc_s = self._ppms_point_settle(
+                    stable_s, tuple(transport_settings["active_lockins"]))
+                if settle_s > 0 and self.ppms_field_scan_stop_event.wait(settle_s):
                     break
                 result = self._read_ppms_live()
                 if check_field and not self._ppms_field_is_ready(result, target, driven=True):
@@ -39796,6 +39881,11 @@ class CombinedControlApp:
                     code = verified_codes.get(key)
                     row[f"sr830_{address}_time_constant_s"] = (
                         SR830_TIME_CONSTANTS_S[code] if code is not None else "")
+                # The wait this point had before its reading and the slowest
+                # lock-in time constant it came from, after every older
+                # column (user, 2026-10-14).
+                row["effective_settle_s"] = settle_s
+                row["slowest_lockin_tc_s"] = slowest_tc_s
                 # A later pass may drop a meter whose orders are done; keep the
                 # first row's columns so the live CSV stays aligned.
                 if self.ppms_field_scan_rows:
@@ -42027,6 +42117,9 @@ class PPMSPanel(CombinedControlApp):
     never its acquisition state (see ``__getattr__``).
     """
 
+    # The page's name in the scan's log lines (user, 2026-10-14).
+    ppms_page_name = "PPMS"
+
     def __init__(self, parent, tab):
         self.parent_app = parent
         self.root = parent.root
@@ -43531,6 +43624,9 @@ class RTEPanel(PPMSPanel):
     KEPCO setpoints are A; independently measured LS475 fields are signed G.
     """
 
+    # The page's name in the scan's log lines (user, 2026-10-14).
+    ppms_page_name = 'RT-E'
+
     def _rte_harmonic_orders(self, key):
         """RT-E name for the shared harmonic-mode parser."""
         return self._ppms_harmonic_orders(key)
@@ -44424,6 +44520,17 @@ class RTEPanel(PPMSPanel):
         except Exception as error:
             messagebox.showerror('RT-E scan parameters', str(error), parent=self.root)
             return
+        # Every point waits Settle s, or 7 time constants of the slowest
+        # lock-in its pass measures if longer, before it is read (user,
+        # 2026-10-14).  RT-E had no duration estimate; the shortest the scan
+        # can take now counts that wait, Acquire s, and the second window
+        # the first point of each pass needs.  The LS475 settling, the stage
+        # moves and the instrument reads come on top ("at least").
+        pass_settles = self._ppms_settle_per_pass(stable, passes, bool(self.__dict__.get('zurich_scan_enabled', False)))
+        settle_s, slowest_tc_s, slowest_meter = max(pass_settles, key=lambda item: item[0])
+        settle_text = ppms_lockin_settle_text(stable, settle_s, slowest_tc_s, slowest_meter)
+        least_text = self._format_scan_duration(
+            sum((settle + duration) * len(plan) + duration for settle, _tc, _meter in pass_settles))
         if mode == 'Angle':
             first, last = plan[0][2], max((p[2] for p in plan), key=lambda value: abs(value - plan[0][2]))
             trip = ', round trip' if self.rte_round_trip.get() else ''
@@ -44432,6 +44539,7 @@ class RTEPanel(PPMSPanel):
                     f'Angle scan from {first:g}° to {last:g}° (step {abs(float(self.ppms_simple_range[2].get())):g}°'
                     f'{trip}): {len(plan)} angles x {len(passes)} harmonic pass(es) = {len(plan) * len(passes)} '
                     'points.\n\n'
+                    f'Each angle waits {settle_text} before it is read; the scan takes at least {least_text}.\n\n'
                     f'The field is fixed: the KEPCO is set once to {field_current:+g} A (voltage limit {limit:g} V), '
                     'settled on the LS475 and held for the whole scan.\n\n'
                     'The Newmark stage turns the SAMPLE HOLDER with its wires attached, at '
@@ -44474,20 +44582,34 @@ class RTEPanel(PPMSPanel):
         self.ppms_field_scan_total = len(plan) * len(passes)
         self.ppms_field_scan_started_at = time.monotonic()
         self.ppms_field_scan_progress.configure(maximum=self.ppms_field_scan_total, value=0)
-        self.ppms_field_scan_status_var.set(f'RT-E {mode}: {len(passes)} harmonic pass(es), {self.ppms_field_scan_total} points')
+        # Field and Current have no Yes/No, so the status line shows the
+        # wait before each reading and the shortest duration (user,
+        # 2026-10-14).  The harmonic passes are counted in the points and
+        # named in the log: with them the longest line measures about 532 px
+        # in Arial 15 px, more than the 505 px of the longest status line
+        # already shown in the label, which CI's RTEStatusRowTests checks.
+        self.ppms_field_scan_status_var.set(
+            f'RT-E {mode}: {self.ppms_field_scan_total} points, settle {settle_s:g} s; at least {least_text}')
         if mode == 'Angle':
             self.rte_stage_stop_event.clear()
             self.rte_stage_where = 'stage not moved'
             # Short enough for the status label at its narrowest (Windows CI, about
             # 593 px): the Yes/No before the scan already said the stage turns
-            # the sample and its wires (user, 2026-10-13).
+            # the sample and its wires (user, 2026-10-13).  The wait before each
+            # reading and the shortest duration are in that Yes/No and the log,
+            # not here: "; settle 86400 s" made the longest line about 586 px in
+            # Arial 15 px (user, 2026-10-14).
             self.ppms_field_scan_status_var.set(
                 f'RT-E Angle {first:g}° to {last:g}°, KEPCO {field_current:+g} A held; '
                 f'{self.ppms_field_scan_total} points')
         self._update_ppms_control_ui()
         self._redraw_ppms_transport_plot()
-        self.thread_log(f'RT-E {mode} scan; CSV: {path}; {len(plan)} points'
-                        + (f'; stage {first:g}° to {last:g}°, KEPCO {field_current:+g} A held' if mode == 'Angle' else ''))
+        self.thread_log(f'RT-E {mode} scan; CSV: {path}; {len(plan)} points x {len(passes)} harmonic pass(es)'
+                        + (f'; stage {first:g}° to {last:g}°, KEPCO {field_current:+g} A held' if mode == 'Angle' else '')
+                        + f'; each reading waits {settle_text}; at least {least_text}')
+        # The wait announced here; the worker logs only a different one (a
+        # harmonic pass with fewer lock-ins).
+        self.ppms_scan_settle_logged = settle_s
         def finished(future):
             try:
                 future.result()
@@ -44613,7 +44735,14 @@ class RTEPanel(PPMSPanel):
                     except Exception:
                         stage_failure = True
                         raise
-                self._rte_wait(stable)
+                # The lock-in settle before the reading: Settle s, or 7 time
+                # constants of the slowest lock-in measured if longer (99 %
+                # settled at 12 dB/oct), at every point, the first of each
+                # harmonic pass included.  The LS475 field settling and the
+                # stage move before it are unchanged, and the first point's
+                # agreeing windows still follow it (user, 2026-10-14).
+                settle_s, slowest_tc_s = self._ppms_point_settle(stable, settings['active_lockins'])
+                self._rte_wait(settle_s)
                 try:
                     before = self._rte_read_field()
                 except Exception:
@@ -44654,6 +44783,11 @@ class RTEPanel(PPMSPanel):
                 for key in settings['active_lockins']:
                     address = self._ppms_sr830_address(self.ppms_instrument_controllers[key].resource_name)
                     row[f'sr830_{address}_harmonic'] = settings[PPMS_SR830_HARMONIC_SETTING_KEYS[key]]
+                # The wait this point had before its reading and the slowest
+                # lock-in time constant it came from, after every older
+                # column (user, 2026-10-14).
+                row['effective_settle_s'] = settle_s
+                row['slowest_lockin_tc_s'] = slowest_tc_s
                 # Later passes may omit SR830s whose selected orders are done.
                 # Preserve the first pass CSV schema with empty cells.
                 if self.ppms_field_scan_rows:

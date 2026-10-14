@@ -765,14 +765,16 @@ class AngleScanWorkerTests(StageBase):
         seen, shown = [], []
 
         def wait(seconds):
-            if seconds == 2.:               # Settle s, right after the move
+            # Settle s, right after the move: 8 s, longer than the 7 x 1 s
+            # lock-in settle, so it is the wait (user, 2026-10-14).
+            if seconds == 8.:
                 while h.ui:                 # what the Tk thread shows by then
                     h.ui.pop(0)()
                     shown.append(panel.rte_stage_live.get())
                 seen.append(panel.rte_stage_live.get())
         panel._rte_wait = wait
         panel._rte_harmonic_scan_worker("Angle", app.rte_scan_plan("Angle", 0, 10, 5, 1, False), [self.settings()],
-                                        5., 2., .001, 1.5)
+                                        5., 8., .001, 1.5)
         self.assertEqual(seen, ["Stage: +0.000° (10000 steps/°)", "Stage: +5.000° (10000 steps/°)",
                                 "Stage: +10.000° (10000 steps/°)"])
         self.assertTrue([text for text in shown if text.endswith(", moving")], "the moves' progress came first")
@@ -1273,7 +1275,11 @@ class AngleStartTests(unittest.TestCase):
         question = run.askyesno.call_args.args[1]
         for text in ("from 0° to 10° (step 5°, round trip)", "5 angles x 1 harmonic pass(es) = 5 points",
                      "set once to +1.5 A (voltage limit 5 V)", "held for the whole scan",
-                     "SAMPLE HOLDER with its wires attached", "within ±360°"):
+                     "SAMPLE HOLDER with its wires attached", "within ±360°",
+                     # The wait before each reading, and the shortest the
+                     # scan can take: 5 x (7 s + 1 s) + 1 s (user, 2026-10-14).
+                     "Each angle waits 7 s (7 x 1 s, the time constant of SR830-1, the slowest lock-in "
+                     "measured; Settle s is 0 s) before it is read; the scan takes at least 41 s."):
             self.assertIn(text, question)
         run.askdirectory.assert_not_called()
         run.panel.ppms_executor.submit.assert_not_called()
@@ -1296,8 +1302,10 @@ class AngleStartTests(unittest.TestCase):
                 run.showerror.assert_not_called()
                 run.askyesno.assert_not_called()
                 self.assertEqual(len(run.panel.ppms_executor.submit.call_args.args), 7)
+                # The wait before each reading (7 x 1 s) and the shortest
+                # duration, 5 x (7 s + 1 s) + 1 s (user, 2026-10-14).
                 self.assertEqual(run.panel.ppms_field_scan_status_var.get(),
-                                 f"RT-E {mode}: 1 harmonic pass(es), 5 points")
+                                 f"RT-E {mode}: 5 points, settle 7 s; at least 41 s")
 
     def test_no_scan_starts_while_the_stage_may_still_be_turning(self):
         # An unconfirmed stop: no scan watches the stage, and Stop stage queues

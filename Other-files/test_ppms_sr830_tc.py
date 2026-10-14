@@ -12,6 +12,8 @@ autorange limit grows with the time constant; an idle poll never cuts short
 the 5-time-constant wait a change sets; each scan reads OFLT? for its CSV
 column; the scan-start confirmation notes a Settle s shorter than 5 long
 time constants; and a mouse-wheel turn over the dropdown does nothing.
+That note is superseded by the user's rule of the same day: every reading
+waits at least 7 time constants, and the confirmation shows the wait.
 
 No Tk window and no instrument: the real pages are built on stand-in
 widgets, and the SR830s are fakes that answer from the commands they were
@@ -516,10 +518,12 @@ class ChangeTests(NoWindows):
 
 class CsvTests(NoWindows):
     def run_point(self, codes):
-        """One point of the real PPMS scan worker, with SR830-1 and SR830-3."""
+        """One point of the real PPMS scan worker, with SR830-1 and SR830-3.
+        The stop event moves a clock instead of waiting: the point waits
+        7 time constants of the slower SR830 first (user, 2026-10-14)."""
         obj = app.CombinedControlApp.__new__(app.CombinedControlApp)
         obj.closing = False
-        obj.ppms_field_scan_stop_event = threading.Event()
+        obj.ppms_field_scan_stop_event = self.event = ClockEvent(Clock())
         obj.ppms_scan_context = {}
         obj.ppms_last_readback = None
         obj.ppms_field_scan_rows = []
@@ -553,15 +557,22 @@ class CsvTests(NoWindows):
                 return next(reader), next(reader)
 
     def test_each_sr830s_time_constant_is_a_new_last_column(self):
+        """Then the point's wait and the slowest time constant, the newest
+        columns, last (user, 2026-10-14)."""
         header, values = self.run_point({"830_a": 8, "830_c": 10})
-        self.assertEqual(header[-4:], ["sr830_8_harmonic", "sr830_10_harmonic",
-                                       "sr830_8_time_constant_s", "sr830_10_time_constant_s"])
-        self.assertEqual(values[-2:], ["0.1", "1.0"])
+        self.assertEqual(header[-6:], ["sr830_8_harmonic", "sr830_10_harmonic",
+                                       "sr830_8_time_constant_s", "sr830_10_time_constant_s",
+                                       "effective_settle_s", "slowest_lockin_tc_s"])
+        self.assertEqual(values[-4:], ["0.1", "1.0", "7.0", "1.0"])
+        self.assertEqual(self.event.waits, [7.0], "7 x 1 s (SR830-3), not Settle s 0")
 
     def test_a_time_constant_that_did_not_read_back_is_left_empty(self):
         header, values = self.run_point({"830_a": 12})
-        self.assertEqual(header[-2:], ["sr830_8_time_constant_s", "sr830_10_time_constant_s"])
-        self.assertEqual(values[-2:], ["10.0", ""])
+        self.assertEqual(header[-4:-2], ["sr830_8_time_constant_s", "sr830_10_time_constant_s"])
+        # SR830-3's time constant is unknown: the wait counts it with the
+        # value Connect sets (1 s), and SR830-1's 10 s is the longer one.
+        self.assertEqual(values[-4:], ["10.0", "", "70.0", "10.0"])
+        self.assertEqual(self.event.waits, [70.0])
 
 
 
@@ -841,33 +852,32 @@ class ScanStartTimeConstantTests(NoWindows):
         self.assertNotIn("OFLT?", sr830.queries)
 
 
-class LagNoteTests(NoWindows):
-    """A Settle s shorter than 7 time constants (LOCKIN_SETTLE_TAUS) of a choice longer than 1 s
-    is noted in the scan-start confirmation; the scan itself is unchanged."""
+class StartSettleTests(NoWindows):
+    """The scan-start confirmation used to note a Settle s shorter than 5
+    time constants of a 3 s or 10 s choice, and the scan itself was not
+    changed.  Since the user's rule of 2026-10-14 every reading waits at
+    least 7 time constants of the slowest lock-in instead, and the
+    confirmation shows that wait (more in test_lockin_settle_rte_ppms.py)."""
 
-    def note(self, label, settle_s, lockins=("830_a",), build=build_ppms_panel):
+    def settle(self, label, settle_s, lockins=("830_a",), build=build_ppms_panel):
         panel, _ttk = build()
         if label is not None:
             panel.ppms_sr830_time_constant_var.set(label)
-        return panel._ppms_sr830_tc_lag_note(settle_s, lockins)
+        return panel._ppms_lockin_settle(settle_s, lockins, False)
 
-    def test_long_choices_with_a_short_settle_get_a_note(self):
-        for label, settle in (("3 s", "21"), ("10 s", "70")):
+    def test_every_choice_waits_7_time_constants_or_settle_s(self):
+        for label, code in app.STFMR_LOCKIN_SR830_TIME_CONSTANTS.items():
             with self.subTest(label=label):
-                text = self.note(label, 0.5)
-                self.assertIn(f"SR830 TC is {label}", text)
-                self.assertIn(f"about {settle} s (7 time constants)", text)
-                self.assertIn(f"Settle s to at least {settle} s", text)
+                tau = app.SR830_TIME_CONSTANTS_S[code]
+                settle, slowest, meter = self.settle(label, 0.5)
+                self.assertEqual((slowest, meter), (tau, "SR830-1"))
+                self.assertAlmostEqual(settle, max(0.5, 7.0 * tau))
+        self.assertEqual(self.settle(None, 0.5)[0], 7.0, "the 1 s default: 7 s, not 0.5 s")
+        self.assertEqual(self.settle("10 s", 100.0)[0], 100.0, "a longer Settle s is kept")
+        self.assertEqual(self.settle(None, 0.5, build=build_rte_panel)[0], 7.0, "RT-E: OFLT 10 = 1 s")
+        self.assertEqual(self.settle("10 s", 0.5, lockins=())[0], 0.5, "no lock-in: Settle s alone")
 
-    def test_no_note_otherwise(self):
-        self.assertEqual(self.note(None, 0.5), "", "the 1 s default, as scans always ran")
-        self.assertEqual(self.note("100 ms", 0.0), "")
-        self.assertEqual(self.note("10 s", 70.0), "", "Settle s covers 7 time constants")
-        self.assertIn("70 s", self.note("10 s", 50.0), "5 time constants are not enough now")
-        self.assertEqual(self.note("10 s", 0.5, lockins=()), "", "only the Zurich measures")
-        self.assertEqual(self.note(None, 0.5, build=build_rte_panel), "", "RT-E has no such choice")
-
-    def test_the_note_is_in_the_scan_time_estimate(self):
+    def test_the_wait_is_in_the_scan_time_estimate(self):
         obj = app.CombinedControlApp.__new__(app.CombinedControlApp)
         obj.ppms_field_scan_running = obj.ppms_environment_busy = False
         obj._require_ppms_control_ready = mock.Mock()
@@ -893,9 +903,13 @@ class LagNoteTests(NoWindows):
             obj.start_ppms_field_scan()
         self.error.assert_not_called()
         message = ask.call_args.args[1]
-        self.assertIn("SR830 TC is 10 s", message)
+        self.assertIn("Measurement points: 5\nWait before each reading: 70 s (7 x 10 s, the time constant of "
+                      "SR830-1, the slowest lock-in measured; Settle s is 0.5 s)\n", message)
+        # 4 s of field ramp, 5 x (70 s + 1 s), and the 6 s and 12 s allowances.
+        self.assertIn("Estimated duration: about 6 min 41 s", message)
+        self.assertNotIn("lags", message, "the old note is gone: the scan waits instead")
         self.assertTrue(message.endswith("\nContinue to choose the save folder and start the scan?"))
-        self.assertEqual(ask.call_args.kwargs["icon"], "warning")
+        self.assertEqual(ask.call_args.kwargs["icon"], "question")
         self.assertFalse(obj.ppms_field_scan_running, "No: nothing starts")
 
 

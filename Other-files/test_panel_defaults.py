@@ -603,7 +603,12 @@ class RTEStatusRowTests(unittest.TestCase):
             RuntimeError("6221 hit compliance; scan stopped and output turned off"), 100),
         "Failed: " + app.short_status_error(
             RuntimeError("LS475 field drifted during acquisition; point discarded"), 100),
-        "RT-E Current: 3 harmonic pass(es), 300 points",
+        # The Field and Current Start line with the wait before each reading
+        # and the shortest duration (2026-10-14), at its longest: 100000
+        # points, Settle s 86400 s and Acquire s 86400 s (about 493 px in
+        # Arial 15 px, under the 505 px of the Stopped line below).
+        "RT-E Current: 100000 points, settle 86400 s; at least 4800024 h 00 min 00 s",
+        "RT-E Field: 199 points, settle 7 s; at least 26 min 33 s",
         "Stopping; completed CSV points and outputs kept",
         "Completed; 6221 current set to 0 (output OFF, read back)",
         # The Angle scan's (2026-10-13), at their longest: six significant

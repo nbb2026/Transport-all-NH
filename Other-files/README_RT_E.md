@@ -30,6 +30,12 @@ Entry point: `../Transport_all_NH_dev.py`, tab **RT-E**, class `RTEPanel`.
 - Supports forward/reverse ranges, an optional round trip, loop count, settle
   time and acquisition duration. Field scans use the existing STFMR field
   stability tolerance, consecutive-read count and timeout.
+- Each point's reading waits max(Settle s, 7 x the slowest lock-in time
+  constant measured) after its field, current, angle or harmonic change
+  (2026-10-14): 7 s at the 1 s defaults. The Field/Current status line and
+  the Angle Yes/No show the wait and the shortest duration; CSV rows end
+  with `effective_settle_s` and `slowest_lockin_tc_s`. See "RT-E and PPMS:
+  lock-in readings settle at least 7 x TC" in `README.md`.
 
 ## Saving and lifecycle
 
