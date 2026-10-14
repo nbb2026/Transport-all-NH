@@ -45,7 +45,10 @@ class RTECurrentScanStartsAtItsLargestCurrent(unittest.TestCase):
                 'SOUR:CURR:RANG?': state.get('SOUR:CURR:RANG'), 'CURR:COMP?': settings['compliance_v'],
                 'SOUR:WAVE:FREQ?': settings['frequency_hz'], 'SOUR:WAVE:AMPL?': state.get('SOUR:WAVE:AMPL'),
                 'OUTP?': state['OUTP'], 'HARM?': settings['harmonic_a'], 'FMOD?': 0,
-                'RSLP?': app.PPMS_SR830_REFERENCE_SLOPE, 'FREQ?': settings['frequency_hz'], 'LIAS?': 0}
+                'RSLP?': app.PPMS_SR830_REFERENCE_SLOPE, 'FREQ?': settings['frequency_hz'], 'LIAS?': 0,
+                # RT-E's scan start reads each SR830's time constant for
+                # the 7 x TC wait (user, 2026-10-14): 1 s, as Connect set.
+                'OFLT?': 10}
             return (replies[command],)
 
         panel._ppms_write_6221_checked = write

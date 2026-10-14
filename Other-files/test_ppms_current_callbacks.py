@@ -43,9 +43,13 @@ class CurrentCallbacks(unittest.TestCase):
                 def query(key, command, count):
                     if command == 'HARM?':
                         return (harmonics[key],)
+                    # OFLT?: every scan start reads each SR830's time
+                    # constant for the 7 x TC wait (user, 2026-10-14); this
+                    # stand-in, without an 'SR830 TC' box, used to skip it.
                     return ({'SOUR:WAVE:AMPL?': settings['peak_a'], 'CURR:COMP?': 50.,
                              'SOUR:WAVE:FREQ?': 317.3, 'FMOD?': 0, 'RSLP?': 1,
-                             'OUTP?': 1, 'FREQ?': 317.3, 'LIAS?': 0, 'OUTP:LTE?': 0}[command],)
+                             'OUTP?': 1, 'FREQ?': 317.3, 'LIAS?': 0, 'OUTP:LTE?': 0,
+                             'OFLT?': 10}[command],)
                 obj._ppms_query_numbers = query
                 obj._configure_ppms_transport_scan(settings)
                 self.assertEqual(harmonics, {'830_a': ha, '830_b': hb})
@@ -75,7 +79,8 @@ class CurrentCallbacks(unittest.TestCase):
                 return (float(next(c.split()[-1] for c in reversed(writes) if c.startswith('SOUR:WAVE:AMPL '))),)
             return ({'CURR:COMP?': 50., 'SOUR:WAVE:FREQ?': 317.3,
                      'HARM?': 1, 'FMOD?': 0, 'RSLP?': 1, 'OUTP?': 1,
-                     'FREQ?': 317.3, 'LIAS?': 0, '*ESR?': 0, 'OUTP:LTE?': 0}[command],)
+                     'FREQ?': 317.3, 'LIAS?': 0, '*ESR?': 0, 'OUTP:LTE?': 0,
+                     'OFLT?': 10}[command],)   # OFLT?: read at every scan start (user, 2026-10-14)
         obj._ppms_query_numbers = query
         for current in (1., 2., 5.):
             # Deliberately retain the old 1 mA peak in the input dictionary.

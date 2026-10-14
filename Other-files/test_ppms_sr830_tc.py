@@ -13,7 +13,8 @@ the 5-time-constant wait a change sets; each scan reads OFLT? for its CSV
 column; the scan-start confirmation notes a Settle s shorter than 5 long
 time constants; and a mouse-wheel turn over the dropdown does nothing.
 That note is superseded by the user's rule of the same day: every reading
-waits at least 7 time constants, and the confirmation shows the wait.
+waits at least 7 time constants, and the confirmation shows the wait.  For
+that wait RT-E's scan start reads OFLT? too (a query, no write).
 
 No Tk window and no instrument: the real pages are built on stand-in
 widgets, and the SR830s are fakes that answer from the commands they were
@@ -845,11 +846,27 @@ class ScanStartTimeConstantTests(NoWindows):
             self.configure(panel)
         self.assertNotIn("830_a", panel.ppms_sr830_time_constant_codes)
 
-    def test_rte_does_not_read_it(self):
-        """RT-E has no such choice and no such column."""
+    def test_rte_reads_it_too(self):
+        """RT-E has no such choice and no per-SR830 column, but each reading
+        waits 7 of these time constants (user, 2026-10-14), so it reads
+        OFLT? at the scan start too: one query, the same writes."""
         panel = self.connected(build_rte_panel)
         sr830 = self.configure(panel)
-        self.assertNotIn("OFLT?", sr830.queries)
+        self.assertEqual(sr830.writes, ["ILIN 0", "SYNC 0"], "the scan start's writes, unchanged")
+        self.assertEqual(sr830.queries.count("OFLT?"), 1)
+        self.assertLess(sr830.queries.index("RSLP?"), sr830.queries.index("OFLT?"))
+        self.assertLess(sr830.queries.index("OFLT?"), sr830.queries.index("FREQ?"), "before the 6221 starts")
+        self.assertEqual(panel.ppms_sr830_time_constant_codes["830_a"], 10, "what Connect set")
+        panel.thread_log.assert_not_called()
+
+    def test_an_rte_front_panel_change_is_seen_logged_and_waited_for(self):
+        panel = self.connected(build_rte_panel)
+        self.configure(panel, front_panel_code=12)
+        self.assertEqual(panel.ppms_sr830_time_constant_codes["830_a"], 12, "10 s, as the SR830 reads")
+        message = panel.thread_log.call_args.args[0]
+        self.assertTrue(message.startswith("RT-E SR830-1: the time constant reads 10 s (OFLT 12), "
+                                           "not the 1 s last set"), message)
+        self.assertEqual(panel._ppms_lockin_settle(0.5, ("830_a",), False), (70.0, 10.0, "SR830-1"))
 
 
 class StartSettleTests(NoWindows):

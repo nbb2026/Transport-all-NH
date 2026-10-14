@@ -773,6 +773,9 @@ class AngleScanWorkerTests(StageBase):
                     shown.append(panel.rte_stage_live.get())
                 seen.append(panel.rte_stage_live.get())
         panel._rte_wait = wait
+        # Start announced this wait, so the worker posts no "Each reading
+        # now waits" status of its own, as in the program (user, 2026-10-14).
+        panel.ppms_scan_settle_logged = 8.
         panel._rte_harmonic_scan_worker("Angle", app.rte_scan_plan("Angle", 0, 10, 5, 1, False), [self.settings()],
                                         5., 8., .001, 1.5)
         self.assertEqual(seen, ["Stage: +0.000° (10000 steps/°)", "Stage: +5.000° (10000 steps/°)",

@@ -606,9 +606,20 @@ class RTEStatusRowTests(unittest.TestCase):
         # The Field and Current Start line with the wait before each reading
         # and the shortest duration (2026-10-14), at its longest: 100000
         # points, Settle s 86400 s and Acquire s 86400 s (about 493 px in
-        # Arial 15 px, under the 505 px of the Stopped line below).
+        # Arial 15 px and 590 px in DejaVu Sans, under the 505 px / 598 px
+        # of the Stopped line below).  The wait shows at most five digits
+        # (ppms_settle_status_text): whole seconds from 100 s, 3 significant
+        # digits below, so a sub-second wait is at most "0.0864" (497 px /
+        # 595 px).  Only a wait of 100000 s or more (7 x a 30 ks SR830 time
+        # constant), or one under 10 ms with Acquire s of 10 h or more, could
+        # be wider (user, 2026-10-14).
         "RT-E Current: 100000 points, settle 86400 s; at least 4800024 h 00 min 00 s",
+        "RT-E Current: 100000 points, settle 0.0864 s; at least 2400026 h 24 min 02 s",
         "RT-E Field: 199 points, settle 7 s; at least 26 min 33 s",
+        # A wait that differs from the one announced at Start, while it runs
+        # (a time constant changed since Connect), at its widest: about 412
+        # px in Arial, 485 px in DejaVu Sans.
+        "Each reading now waits 0.0864 s: 7 x 0.0123 s TC of the Zurich",
         "Stopping; completed CSV points and outputs kept",
         "Completed; 6221 current set to 0 (output OFF, read back)",
         # The Angle scan's (2026-10-13), at their longest: six significant

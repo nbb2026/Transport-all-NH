@@ -6070,13 +6070,29 @@ def ppms_lockin_settle_s(settle_s, time_constants_s) -> float:
     measures if that is longer.  At 12 dB/oct a lock-in output has then
     settled to 99 % of the step; with the 1 s time constants and the 0.5 s
     Settle s every point was read while the outputs still moved toward the
-    new value (user, 2026-10-14)."""
+    new value (user, 2026-10-14).
+
+    Rounded to 1e-12 s: 7 x 0.1 s is 0.7000000000000001 in binary, and the
+    CSV's effective_settle_s should read 0.7, as the Start confirmation does
+    (user, 2026-10-14).  The shortest SR830 wait, 7 x 10 us, keeps every
+    digit."""
     slowest = 0.0
     for value in time_constants_s:
         tau = float(value)
         if math.isfinite(tau) and tau > slowest:
             slowest = tau
-    return max(float(settle_s), LOCKIN_SETTLE_TAUS * slowest)
+    return round(max(float(settle_s), LOCKIN_SETTLE_TAUS * slowest), 12)
+
+
+def ppms_settle_status_text(seconds) -> str:
+    """The wait before each reading, as a status line shows it: whole
+    seconds from 100 s, 3 significant digits below (12345.7 -> "12346",
+    0.0864199 -> "0.0864").  With {:g} a typed Settle s such as 12345.7 or
+    a small Zurich TC gave six digits and widened the RT-E status line past
+    the label, which then cut its end with an ellipsis.  The CSV and the log
+    keep the exact value (user, 2026-10-14)."""
+    seconds = float(seconds)
+    return f"{seconds:.0f}" if seconds >= 100 else f"{seconds:.3g}"
 
 
 def ppms_lockin_settle_text(settle_s, effective_s, slowest_tc_s, meter) -> str:
@@ -38432,10 +38448,11 @@ class CombinedControlApp:
         constants), whatever the boxes say (user, 2026-10-14).
 
         An SR830's time constant is the one it last read back with OFLT?:
-        at Connect, at an 'SR830 TC' change, and on PPMS at each scan start
-        (which also sees a front-panel change).  An SR830 not read back yet
-        counts with the value Connect sets: the 'SR830 TC' choice, or OFLT
-        10 (1 s) on RT-E.  The Zurich counts with the TC the scan configures
+        at Connect, at an 'SR830 TC' change, and at each scan start on both
+        pages, which also sees a front-panel change (RT-E too since user,
+        2026-10-14).  An SR830 not read back yet counts with the value
+        Connect sets: the 'SR830 TC' choice, or OFLT 10 (1 s) on RT-E.  The
+        Zurich counts with the TC the scan configures
         (zurich_scan_tau), or its 1 s default if that is missing.
         """
         codes = self.__dict__.get("ppms_sr830_time_constant_codes") or {}
@@ -38464,13 +38481,26 @@ class CombinedControlApp:
         (wait s, slowest TC s).  The log gets a line when it differs from
         the last one this scan logged or announced at Start, e.g. after a
         front-panel time constant read at the scan start, or in a harmonic
-        pass that measures fewer lock-ins (user, 2026-10-14)."""
+        pass that measures fewer lock-ins (user, 2026-10-14).
+
+        The status line says so too, for the length of that wait: the Start
+        confirmation and estimate use the time constants read before the
+        scan, so an SR830 set to 10 s on its front panel since Connect made
+        the scan wait 70 s a point after it announced 7 s, with only a log
+        line to show it (user, 2026-10-14).  After the wait the first
+        point's window line and then each saved point's line replace it,
+        and the remaining time they show counts the longer wait."""
         zurich = bool(self.__dict__.get("zurich_scan_enabled", False))
         settle, slowest, meter = self._ppms_lockin_settle(stable_s, active_lockins, zurich)
         if self.__dict__.get("ppms_scan_settle_logged") != settle:
             self.ppms_scan_settle_logged = settle
             self.thread_log(f"{getattr(type(self), 'ppms_page_name', 'PPMS')} scan: each reading now waits "
                             + ppms_lockin_settle_text(stable_s, settle, slowest, meter))
+            status = f"Each reading now waits {ppms_settle_status_text(settle)} s" + (
+                f": {LOCKIN_SETTLE_TAUS:g} x {ppms_settle_status_text(slowest)} s TC of {meter}"
+                if slowest and settle > stable_s else " (Settle s)")
+            self.post_ui(lambda: None if self.closing or self.__dict__.get("rte_closed", False)
+                         else self.ppms_field_scan_status_var.set(status))
         return settle, slowest
 
     def _ppms_settle_per_pass(self, stable_s: float, passes, zurich: bool):
@@ -38592,17 +38622,22 @@ class CombinedControlApp:
                 time.monotonic() + max(.1, 5.0 * SR830_TIME_CONSTANTS_S[actual]))
 
     def _ppms_read_sr830_time_constant_for_scan(self, key: str, address: int) -> None:
-        """Read one SR830's time constant at scan start, for the CSV (worker).
+        """Read one SR830's time constant at scan start, for the CSV and the
+        wait before each reading (worker).
 
         The CSV column took the value read back at Connect or at the last
         'SR830 TC' change, so a front-panel change or a power cycle since
         then was recorded wrongly, while the range waits used the real
         OFLT?.  This is one OFLT? query and no write, so the SR830 command
-        order is unchanged.  RT-E has no such choice and no such column and
-        skips it (user, 2026-10-14).
+        order is unchanged (user, 2026-10-14).
+
+        RT-E reads it too.  It has no 'SR830 TC' choice and no per-SR830
+        column, but each reading waits 7 of these time constants and the
+        row's slowest_lockin_tc_s records it: with the 1 s Connect set, an
+        SR830 changed to 10 s on its front panel or by another program got
+        7 s instead of 70 s, unsettled and recorded as if it were 1 s
+        (user, 2026-10-14).  Still a query only, with nothing written.
         """
-        if "ppms_sr830_time_constant_var" not in self.__dict__:
-            return
         verified = self.__dict__.setdefault("ppms_sr830_time_constant_codes", {})
         previous = verified.pop(key, None)  # Unknown until it reads back.
         code = int(round(self._ppms_query_numbers(key, "OFLT?", 1)[0]))
@@ -38610,11 +38645,13 @@ class CombinedControlApp:
             raise RuntimeError(f"SR830 #{address} time-constant readback invalid: OFLT={code}")
         verified[key] = code
         if previous is not None and code != previous:
+            # The page's own name: RT-E reads it too (user, 2026-10-14).
             self.thread_log(
-                f"PPMS {self.ppms_instrument_controllers[key].label}: the time constant reads "
+                f"{getattr(type(self), 'ppms_page_name', 'PPMS')} "
+                f"{self.ppms_instrument_controllers[key].label}: the time constant reads "
                 f"{SR830_TIME_CONSTANTS_S[code]:g} s (OFLT {code}), not the "
                 f"{SR830_TIME_CONSTANTS_S[previous]:g} s last set (changed on the front panel?); "
-                "the scan records the value read")
+                "the scan records the value read and counts it in the wait before each reading")
 
     def _ppms_write_sr830_checked(self, key: str, command: str) -> None:
         controller = self.ppms_instrument_controllers[key]
@@ -39295,8 +39332,11 @@ class CombinedControlApp:
         self.ppms_field_scan_eta_var.set(
             f"Remaining: about {estimate_text}"
         )
+        # The wait rounded as on RT-E's status line (ppms_settle_status_text);
+        # the confirmation and the log give it exactly (user, 2026-10-14).
         self.ppms_field_scan_status_var.set(
-            f"{mode} scan: {total} points, settle {settle_s:g} s; estimated about {estimate_text}"
+            f"{mode} scan: {total} points, settle {ppms_settle_status_text(settle_s)} s; "
+            f"estimated about {estimate_text}"
         )
         self.ppms_transport_status_var.set(
             "Transport acquisition: configuring the 6221 and the connected SR830…"
@@ -44588,8 +44628,18 @@ class RTEPanel(PPMSPanel):
         # named in the log: with them the longest line measures about 532 px
         # in Arial 15 px, more than the 505 px of the longest status line
         # already shown in the label, which CI's RTEStatusRowTests checks.
+        # The wait shows at most five digits (ppms_settle_status_text): with
+        # {:g} a Settle s of 12345.7 or a 0.0864199 s wait made the line 505
+        # or 521 px wide and it was cut with an ellipsis.  At 100000 points
+        # and Acquire s 86400 s the longest lines are "settle 86400 s" (493 px
+        # in Arial, 590 px in Linux CI's DejaVu Sans) and "settle 0.0864 s"
+        # (497 px, 595 px), both under that 505 px (598 px) line.  Only a
+        # wait of 100000 s or more (7 x a 30 ks SR830 time constant), or one
+        # under 10 ms with Acquire s of 10 h or more, could be wider; the
+        # log has the line in full (user, 2026-10-14).
         self.ppms_field_scan_status_var.set(
-            f'RT-E {mode}: {self.ppms_field_scan_total} points, settle {settle_s:g} s; at least {least_text}')
+            f'RT-E {mode}: {self.ppms_field_scan_total} points, settle {ppms_settle_status_text(settle_s)} s; '
+            f'at least {least_text}')
         if mode == 'Angle':
             self.rte_stage_stop_event.clear()
             self.rte_stage_where = 'stage not moved'

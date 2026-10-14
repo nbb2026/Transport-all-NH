@@ -14,6 +14,14 @@ first point of each harmonic pass included, while the PPMS temperature and
 field stability waits keep their criteria; the Start confirmations, status
 lines and duration estimates; the CSV columns, appended last.
 
+The review of 2026-10-14 adds: RT-E reads each SR830's time constant at
+the scan start, as PPMS does, and a time constant changed since Connect is
+waited for; the status line shows a wait that differs from the announced
+one while it runs; the wait is rounded to 1e-12 s (0.7 s, not
+0.7000000000000001 s, in the CSV); status lines show at most five digits;
+the Angle+Temperature and Current+Temperature modes, PPMS Angle harmonic
+passes, and the Zurich TC box read at Start on both pages.
+
 No Tk window and no instrument: the scan workers run on stand-ins with a
 clock that moves only when the scan waits.  Every message box is mocked,
 and creating a Tk root fails the test.
@@ -73,6 +81,21 @@ class ClockEvent:
         return False
 
 
+class LogVar:
+    """A status Var whose every set goes into the scan's event log, so a
+    test sees when, relative to the waits, the status changed."""
+
+    def __init__(self, log, value=""):
+        self.log, self.value = log, value
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
+        self.log.append(("status", value))
+
+
 def settles_before_reads(log):
     """The wait just before each reading."""
     waits = []
@@ -97,6 +120,28 @@ class RuleTests(NoWindows):
         self.assertEqual(rule(30.0, [1.0, 3.0]), 30.0, "a longer Settle s is kept")
         self.assertEqual(rule(0.5, []), 0.5, "no lock-in: Settle s")
         self.assertAlmostEqual(rule(0.0, [float("nan"), 1e-3]), 7e-3, msg="a non-finite TC is ignored")
+
+    def test_the_wait_has_no_float_noise(self):
+        """7 x 0.1 s is 0.7000000000000001 in binary; the CSV writes str()
+        of the wait, so it is rounded to 1e-12 s (user, 2026-10-14)."""
+        rule = app.ppms_lockin_settle_s
+        for taus, settle, expected in (([0.1], 0.5, "0.7"), ([0.3], 0.5, "2.1"), ([1e-5], 0., "7e-05"),
+                                       ([0.03], 0.1, "0.21"), ([3e-5], 0., "0.00021"), ([30e3], 0.5, "210000.0")):
+            with self.subTest(taus=taus):
+                self.assertEqual(str(rule(settle, taus)), expected)
+        self.assertEqual(str(rule(0.5, [app.SR830_TIME_CONSTANTS_S[8]])), "0.7", "the 100 ms 'SR830 TC'")
+
+    def test_the_status_lines_show_at_most_five_digits(self):
+        """Whole seconds from 100 s, 3 significant digits below; with {:g}
+        a Settle s of 12345.7 or a 0.0864199 s wait widened the RT-E status
+        line past its label (user, 2026-10-14)."""
+        text = app.ppms_settle_status_text
+        for seconds, expected in ((7.0, "7"), (0.7, "0.7"), (2.1, "2.1"), (21.0, "21"), (70.0, "70"),
+                                  (12.0, "12"), (12.34, "12.3"), (99.94, "99.9"), (123.4, "123"),
+                                  (12345.7, "12346"), (86400.0, "86400"), (0.0864199, "0.0864"),
+                                  (7e-05, "7e-05"), (0.0, "0")):
+            with self.subTest(seconds=seconds):
+                self.assertEqual(text(seconds), expected)
 
     def panel(self, codes=None, zurich_tau=None):
         panel = rte_tests.RTE.make_worker(self)
@@ -232,6 +277,27 @@ class RTEWorkerTests(NoWindows):
         self.assertEqual(len(logged), 2)
         self.assertTrue(logged[-1].startswith("RT-E scan: each reading now waits 7 s"), logged)
 
+    def test_a_front_panel_time_constant_read_at_the_scan_start_is_waited_for_and_shown(self):
+        """RT-E's scan start reads OFLT? (user, 2026-10-14): an SR830 set to
+        10 s since Connect makes every reading wait 70 s, not the 7 s Start
+        announced, and the status line says so during that first wait."""
+        panel = self.worker()
+        panel.ppms_scan_settle_logged = 7.0          # announced at Start with 1 s
+        panel._configure_ppms_transport_scan = mock.Mock(
+            side_effect=lambda config: panel.ppms_sr830_time_constant_codes.update({"830_a": 12}))
+        panel.post_ui = lambda callback: callback()
+        panel._rte_show_point = mock.Mock()
+        panel.ppms_field_scan_status_var = LogVar(self.log)
+        rows = self.run_mode(panel, "Current", ((1, 1, .1), (1, 2, .2)))
+        self.assertEqual(settles_before_reads(self.log), [70.0, 70.0])
+        self.assertEqual([(r["effective_settle_s"], r["slowest_lockin_tc_s"]) for r in rows], [(70.0, 10.0)] * 2)
+        statuses = [i for i, e in enumerate(self.log) if e[0] == "status"]
+        self.assertEqual([self.log[i][1] for i in statuses], ["Each reading now waits 70 s: 7 x 10 s TC of SR830-1"])
+        self.assertEqual(self.log[statuses[0] + 1], ("wait", 70.0), "shown while it waits")
+        logged = [c.args[0] for c in panel.thread_log.call_args_list if "each reading now waits" in c.args[0]]
+        self.assertEqual(logged, ["RT-E scan: each reading now waits 70 s (7 x 10 s, the time constant of "
+                                  "SR830-1, the slowest lock-in measured; Settle s is 0.5 s)"])
+
     def test_rte_rows_end_with_the_new_columns(self):
         panel = self.worker(zurich_tau=2.0)
         rows = self.run_mode(panel, "Field", ((1, 1, -1.),))
@@ -244,12 +310,19 @@ class RTEWorkerTests(NoWindows):
 
 # ---- RT-E Start: the status line, the Angle Yes/No and the estimate -----------------
 class RTEStartTests(NoWindows):
-    def start(self, mode, stable="0.5", acquire="1", zurich_tau=None, codes=None, yes=True):
+    def start(self, mode, stable="0.5", acquire="1", zurich_tau=None, codes=None, yes=True, zurich_box=None):
         panel = rte_tests.RTE.make_worker(self)
         panel._require_ppms_control_ready = mock.Mock()
-        panel._rte_capture_zurich = mock.Mock()
         panel.zurich_scan_enabled = zurich_tau is not None
         panel.zurich_scan_tau = zurich_tau or 1.0
+        if zurich_box is None:
+            panel._rte_capture_zurich = mock.Mock()
+        else:
+            # The real capture reads the Zurich row's boxes at Start.
+            panel.zurich_busy = False
+            panel.ppms_lockin_selection = {"zurich": Var(True)}
+            panel.zurich_harmonic, panel.zurich_reference = Var("1"), Var("External")
+            panel.zurich_timeconstant = Var(zurich_box)
         panel.ppms_sr830_time_constant_codes = dict(codes or {"830_a": 10})
         panel.ppms_simple_mode = Var(mode)
         span = ("0", "10", "5") if mode == "Angle" else ("0.01", "0.03", "0.01")
@@ -302,6 +375,25 @@ class RTEStartTests(NoWindows):
                     self.assertIn("each reading waits ", message)
                     self.assertEqual(panel.ppms_scan_settle_logged, float(expected.split("settle ")[1].split(" s")[0]))
                     panel.ppms_executor.submit.assert_called_once()
+
+    def test_the_zurich_tc_box_read_at_start_sets_the_wait(self):
+        """_rte_capture_zurich copies the "TC (s)" box into zurich_scan_tau
+        before the wait and the estimate are worked out (a stale 1 s here)."""
+        for codes, expected in (({}, "RT-E Field: 5 points, settle 14 s; at least 1 min 16 s"),
+                                (None, "RT-E Field: 5 points, settle 14 s; at least 1 min 16 s")):
+            with self.subTest(sr830=codes is None):
+                panel, _ask = self.start("Field", codes=codes, zurich_box="2")
+                self.assertEqual(panel.zurich_scan_tau, 2.0)
+                self.assertEqual(panel.ppms_field_scan_status_var.get(), expected)
+                self.assertIn("each reading waits 14 s (7 x 2 s, the time constant of the Zurich",
+                              panel.thread_log.call_args_list[0].args[0])
+
+    def test_the_status_line_rounds_the_wait(self):
+        panel, _ask = self.start("Current", stable="12345.7")
+        status = panel.ppms_field_scan_status_var.get()
+        self.assertTrue(status.startswith("RT-E Current: 5 points, settle 12346 s; at least "), status)
+        self.assertIn("each reading waits 12345.7 s (Settle s;", panel.thread_log.call_args_list[0].args[0],
+                      "the log keeps the exact value")
 
     def test_the_angle_yes_no_shows_the_wait(self):
         panel, ask = self.start("Angle", zurich_tau=3.0, yes=False)
@@ -391,12 +483,14 @@ class PPMSWorkerTests(NoWindows):
                   "Field": dict(angle=(26.,), temperature=(300.,)),
                   "Angle": dict(angle=(26., 27.), temperature=(300.,)),
                   "Current": dict(angle=(26.,), temperature=(300.,)),
-                  "Field+Temperature": dict(angle=(26.,), temperature=(300., 301.))}[mode]
+                  "Field+Temperature": dict(angle=(26.,), temperature=(300., 301.)),
+                  "Angle+Temperature": dict(angle=(26., 27.), temperature=(300., 301.)),
+                  "Current+Temperature": dict(angle=(26.,), temperature=(300., 301.))}[mode]
         active = tuple(harmonics or ("830_a",))
         settings = app.validate_ppms_transport_scan_settings(1., 317.3, 50., 1, 2, active)
         settings.update(scan_mode=mode, nested=values, slowdown=14, temperature_rate=1.,
                         temperature_approach=1, acquisition_s=1.,
-                        currents=(1., 2., 3.) if mode == "Current" else (1.,))
+                        currents=(1., 2., 3.) if mode.startswith("Current") else (1.,))
         sequence = ([(1, 1, 3, 100.), (1, 2, 3, 200.), (1, 3, 3, 100.)] if "Field" in mode
                     else [(1, 1, 1, 0.)])
         self.stable = stable
@@ -409,7 +503,8 @@ class PPMSWorkerTests(NoWindows):
 
     def test_every_mode_waits_7_time_constants_before_every_reading(self):
         for mode, points in (("Temperature", 2), ("Field", 3), ("Angle", 2), ("Current", 3),
-                             ("Field+Temperature", 6)):
+                             ("Field+Temperature", 6), ("Angle+Temperature", 4),
+                             ("Current+Temperature", 6)):
             with self.subTest(mode=mode):
                 obj, sequence, settings = self.harness(mode)
                 self.run_scan(obj, sequence, settings)
@@ -457,6 +552,24 @@ class PPMSWorkerTests(NoWindows):
         self.assertEqual([text.split(" (")[0] for text in logged],
                          ["PPMS scan: each reading now waits 21 s", "PPMS scan: each reading now waits 7 s"])
 
+    def test_angle_harmonic_passes_settle_again(self):
+        obj, sequence, settings = self.harness(
+            "Angle", codes={"830_a": 10, "830_c": 11}, harmonics={"830_a": "1+2", "830_c": "1"})
+        self.run_scan(obj, sequence, settings)
+        # Pass 1 measures SR830-3 (3 s) too; pass 2 SR830-1 (1 s) alone.
+        self.assertEqual(settles_before_reads(self.log), [21.0] * 2 + [7.0] * 2)
+        self.assertEqual([r["harmonic_pass"] for r in obj.ppms_field_scan_rows], [1] * 2 + [2] * 2)
+        moves = [i for i, e in enumerate(self.log) if e[0] == "move"]
+        reads = [i for i, e in enumerate(self.log) if e[0] == "read"]
+        self.assertLess(moves[-1], reads[-1], "the last reading follows the last move")
+
+    def test_a_100_ms_time_constant_is_written_without_float_noise(self):
+        obj, sequence, settings = self.harness("Current", codes={"830_a": 8})
+        self.run_scan(obj, sequence, settings)
+        rows = obj.ppms_field_scan_rows
+        self.assertEqual([str(r["effective_settle_s"]) for r in rows], ["0.7"] * 3)
+        self.assertEqual({r["slowest_lockin_tc_s"] for r in rows}, {0.1})
+
     def test_a_front_panel_time_constant_read_at_the_scan_start_is_used(self):
         """The scan start's OFLT? read (here 3 s instead of the 1 s set) is
         what the wait counts with, and it is logged."""
@@ -472,6 +585,31 @@ class PPMSWorkerTests(NoWindows):
         logged = [c.args[0] for c in obj.thread_log.call_args_list if "each reading now waits" in c.args[0]]
         self.assertEqual(len(logged), 1)
         self.assertIn("21 s (7 x 3 s, the time constant of SR830-1", logged[0])
+
+    def test_a_different_wait_is_shown_on_the_status_line_once(self):
+        """The Start confirmation said 7 s; the scan start reads 10 s on the
+        front panel.  The status line shows the 70 s for as long as the
+        wait lasts (user, 2026-10-14), and only when the wait changes."""
+        obj = app.CombinedControlApp.__new__(app.CombinedControlApp)
+        obj.closing = False
+        obj.ppms_sr830_time_constant_codes = {"830_a": 12}
+        obj.ppms_scan_settle_logged = 7.0
+        obj.thread_log = mock.Mock()
+        obj.post_ui = lambda callback: callback()
+        obj.ppms_field_scan_status_var = Var("")
+        self.assertEqual(obj._ppms_point_settle(0.5, ("830_a",)), (70.0, 10.0))
+        self.assertEqual(obj.ppms_field_scan_status_var.get(), "Each reading now waits 70 s: 7 x 10 s TC of SR830-1")
+        obj.ppms_field_scan_status_var.set("CSV saved 1/5; remaining 4 min 44 s")
+        obj._ppms_point_settle(0.5, ("830_a",))
+        self.assertEqual(obj.ppms_field_scan_status_var.get(), "CSV saved 1/5; remaining 4 min 44 s",
+                         "the same wait again: nothing new")
+        self.assertEqual(obj.thread_log.call_count, 1)
+        obj._ppms_point_settle(100.0, ("830_a",))
+        self.assertEqual(obj.ppms_field_scan_status_var.get(), "Each reading now waits 100 s (Settle s)")
+        obj.closing = True
+        obj._ppms_point_settle(0.5, ("830_a",))
+        self.assertEqual(obj.ppms_field_scan_status_var.get(), "Each reading now waits 100 s (Settle s)",
+                         "not after the window closed")
 
 
 # ---- PPMS Start: the confirmation, the estimate, the status line, macro SCAN ---------
@@ -573,6 +711,43 @@ class PPMSStartTests(NoWindows):
         self.assertEqual(obj.ppms_scan_settle_logged, 7.0)
         obj.ppms_executor.submit.assert_called_once()
         self.assertEqual(obj.ppms_executor.submit.call_args.args[3], 0.5, "the worker gets Settle s itself")
+
+    def test_the_status_line_rounds_the_wait(self):
+        obj = self.scan_object(stable=12345.7)
+        self.start(obj, yes=True)
+        self.assertTrue(obj.ppms_field_scan_status_var.get().startswith("Field scan: 5 points, settle 12346 s; "))
+
+    def test_the_ppms_page_reads_its_zurich_tc_box_at_start(self):
+        """PPMSPanel.start_ppms_field_scan copies the Zurich row's "TC (s)"
+        box into zurich_scan_tau before the shared Start works out the
+        wait: 7 x 2 s = 14 s, slower than SR830-1 at 1 s."""
+        import test_ppms_sr830_tc as tc_tests
+        panel, _ttk = tc_tests.build_ppms_panel()
+        panel._require_ppms_control_ready = mock.Mock()
+        panel.root = None
+        panel.ppms_simple_mode.set("Field")
+        for var, value in zip(panel.ppms_simple_range, ("100", "300", "100")):
+            var.set(value)
+        panel.ppms_field_scan_stable_var.set("0.5")
+        panel.ppms_acquisition_time_var.set("1")
+        panel.ppms_last_readback = dict(temperature_k=300, field_oe=100)
+        panel.ppms_environment_controller = types.SimpleNamespace(backend=app.PPMS_QDINSTRUMENT_BACKEND)
+        panel.ppms_motor_confirm_var.set(True)     # every scan holds an angle
+        panel.ppms_instrument_controllers["6221"] = types.SimpleNamespace(
+            connected=True, resource_name="GPIB0::12::INSTR")
+        panel.ppms_instrument_controllers["830_a"].connect("GPIB0::8::INSTR")
+        for key in ("830_b", "830_c"):
+            panel.ppms_lockin_selection[key].set(False)
+        panel.ppms_lockin_selection["zurich"].set(True)
+        panel.zurich_busy = False
+        panel.zurich_controller.mfli_connected = True
+        panel.zurich_harmonic.set("1")
+        panel.zurich_timeconstant.set("2")
+        panel.zurich_scan_tau = 1.0                  # stale until Start reads the box
+        ask = self.start(panel, yes=False)
+        self.assertEqual(panel.zurich_scan_tau, 2.0)
+        self.assertIn("Wait before each reading: 14 s (7 x 2 s, the time constant of the Zurich, the slowest "
+                      "lock-in measured; Settle s is 0.5 s)\n", ask.call_args.args[1])
 
     def test_a_macro_scan_line_goes_through_the_same_start(self):
         obj = self.scan_object(label="3 s")

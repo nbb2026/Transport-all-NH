@@ -296,9 +296,15 @@
     Connect, at an 'SR830 TC' change and at every scan start. The scan
     start read also sees a change made on the front panel. An SR830 that
     has not read back yet counts with the 'SR830 TC' choice.
-  - **RT-E SR830s:** OFLT 10 = 1 s, as Connect sets and reads back. RT-E
-    still reads no OFLT? at the scan start, so a time constant changed on
-    an RT-E SR830's front panel after Connect is not seen.
+  - **RT-E SR830s:** the same: Connect sets OFLT 10 = 1 s and reads it
+    back, and every scan start (and Set I) reads OFLT? again, one query and
+    no write, as PPMS does. Before the review of this change RT-E read no
+    OFLT? at the scan start, so an SR830 changed to 10 s on its front panel
+    or by another program after Connect still got 7 s instead of 70 s, and
+    its rows recorded `slowest_lockin_tc_s` = 1 as if read back. A changed
+    value is logged ("RT-E SR830-1: the time constant reads 10 s (OFLT
+    12), not the 1 s last set ..."); an invalid reply stops the scan start
+    before the 6221 turns on, as on PPMS.
   - **The Zurich (both pages):** its TC box (`zurich_scan_tau`), when the
     Zurich is measured.
   - A harmonic pass counts only the lock-ins it measures. A later pass
@@ -314,8 +320,10 @@
   for max(1 s, Settle s)), the magnet's own settling, the LS475 field
   settling, the stage moves and the autorange waits. The first point's
   agreeing windows still follow the wait, so no existing wait is shortened.
-  No instrument command is added, removed or reordered; outputs are as
-  before on every path. A Stop during the wait ends the scan as before.
+  No instrument write is added, removed or reordered; the only new command
+  is RT-E's OFLT? read at the scan start (a query beside HARM?/FMOD?/
+  RSLP?). Outputs are as before on every path. A Stop during the wait ends
+  the scan as before.
 - **Start:**
   - **PPMS:** the confirmation has a new line, e.g. "Wait before each
     reading: 7 s (7 x 1 s, the time constant of SR830-1, the slowest
@@ -325,27 +333,50 @@
     counts the wait at every point of every pass. The status line reads
     e.g. "Field scan: 41 points, settle 7 s; estimated about 22 min 16 s".
     The confirmation's old note on a Settle s shorter than 5 time constants
-    of a 3 s or 10 s choice is gone: the scan now waits instead.
+    of a 3 s or 10 s choice is gone: the scan now waits instead. The
+    confirmation and estimate use the time constants known before the scan;
+    the scan start reads them again (see below).
   - **RT-E Field and Current** still have no Yes/No. The status line shows
     the wait and the shortest the scan can take, e.g. "RT-E Current: 100
     points, settle 7 s; at least 13 min 21 s". "At least" counts every
     point's wait and Acquire s, and the second window the first point of
     each pass needs; the LS475 settling, the stage moves and the instrument
     reads come on top. The harmonic-pass count moved from this line to the
-    log: the longest line, "RT-E Current: 100000 points, settle 86400 s; at
-    least 4800024 h 00 min 00 s", measures about 493 px in Arial 15 px,
-    under the 505 px of the longest status line already in the label (the
-    CI GUI test `test_panel_defaults.RTEStatusRowTests` checks it on
-    Windows; not run here).
+    log.
+  - **Status lines round the wait** (`ppms_settle_status_text`, both
+    pages): whole seconds from 100 s, 3 significant digits below (12345.7
+    s shows as 12346, 0.0864199 s as 0.0864). With `{:g}` such values gave
+    six digits, and the RT-E line became 505 to 521 px wide in Arial 15 px
+    and was cut with an ellipsis. The confirmation, the log and the CSV
+    keep the exact value. At 100000 points and Acquire s 86400 s the
+    longest lines are "settle 86400 s; at least 4800024 h 00 min 00 s"
+    (493 px in Arial, 590 px in DejaVu Sans) and "settle 0.0864 s; at
+    least 2400026 h 24 min 02 s" (497 px, 595 px), under the 505 px /
+    598 px of the longest status line already in the label. Only a wait of
+    100000 s or more (7 x a 30 ks SR830 time constant), or one under 10 ms
+    with Acquire s of 10 h or more, could be wider. The CI GUI test
+    `test_panel_defaults.RTEStatusRowTests` checks these lines on the Linux
+    (xvfb, DejaVu Sans) and Windows CI runs; it is not run here.
   - **RT-E Angle:** the Yes/No gains "Each angle waits … before it is read;
     the scan takes at least …". Its status line is unchanged, because the
     wait would not fit.
   - **Log:** the Start line gives the wait and how it was chosen. The scan
     logs a different wait only when one occurs: a front-panel time constant
-    read at a PPMS scan start, or a pass with fewer lock-ins.
+    read at the scan start (either page), or a pass with fewer lock-ins.
+  - **A different wait on the status line:** the same change also sets the
+    status line for as long as that wait lasts, e.g. "Each reading now
+    waits 70 s: 7 x 10 s TC of SR830-1" (or "... (Settle s)"). Before, an
+    SR830 set to 10 s on its front panel since Connect left the
+    confirmation's "7 s" and its estimate standing while each point waited
+    70 s, with only a log line to show it. After the wait the first
+    point's window line and then each saved point's line replace it, and
+    their remaining time counts the longer wait.
 - **CSV:** two new last columns on both pages, after every older column:
   `effective_settle_s` (the wait that point had) and `slowest_lockin_tc_s`
-  (the time constant it came from). `stable_s` still records Settle s.
+  (the time constant it came from, read back at the scan start on both
+  pages). `stable_s` still records Settle s. The wait is rounded to
+  1e-12 s, so a 100 ms time constant writes 0.7, not 0.7000000000000001,
+  as the confirmation shows it.
 - **Timing at the defaults** (Settle s 0.5 s, Acquire s 1 s, every time
   constant 1 s): each point waits 7 s instead of 0.5 s, 6.5 s more per
   point.
@@ -369,12 +400,26 @@
   longer Settle s, the Zurich, harmonic passes and a front-panel time
   constant read at the scan start; the PPMS confirmation, estimate, status
   line and log, and a Macro SCAN line; the RT-E status lines and the Angle
-  Yes/No. `test_ppms_sr830_tc.py`: the CSV columns (the point worker no
+  Yes/No. The review round adds: the rounding to 1e-12 s (also through the
+  PPMS worker at 100 ms) and the five-digit status format; RT-E waiting
+  for a front-panel time constant read at the scan start, with the status
+  line shown during the first wait; the status line set once per changed
+  wait, and not after the window closed; the Angle+Temperature and
+  Current+Temperature modes and PPMS Angle harmonic passes through the real
+  workers; the Zurich "TC (s)" box read at Start into the wait, through
+  RT-E's real `_rte_capture_zurich` and through `PPMSPanel`'s Start on the
+  real page built on stand-ins; the rounded wait on both Start status
+  lines. `test_ppms_sr830_tc.py`: the CSV columns (the point worker no
   longer waits in real time there) and the confirmation's wait instead of
-  the old note. `test_rte_angle_scan.py`: the new Field/Current status line
-  and the Angle Yes/No; its stage-line test uses an 8 s Settle s, longer
-  than 7 x 1 s. `test_panel_defaults.RTEStatusRowTests` (CI only) checks
-  the new longest line.
+  the old note; RT-E's scan start now reads OFLT? once with the same
+  writes, and a front-panel change there is logged and waited for.
+  `test_ppms_current_callbacks.py` and `test_ppms_rte_review.py`: their
+  fake SR830s answer that OFLT? (1 s).
+  `test_rte_angle_scan.py`: the new Field/Current status line and the
+  Angle Yes/No; its stage-line test uses an 8 s Settle s, longer than
+  7 x 1 s, announced as at Start. `test_panel_defaults.RTEStatusRowTests` (Linux and
+  Windows CI only) checks the new longest lines, the sub-second one and
+  the "Each reading now waits" line.
 
 ## Lock-in time constants: every default is 1 s (2026-10-14)
 
@@ -557,8 +602,10 @@
     places.
   - **RT-E** shares the SR830 set-up code but builds its own rack. It has no
     such control and still sends OFLT 10 at Connect. It has no time-constant
-    column and skips the scan-start OFLT? read. The longer autorange limit
-    does not change it, because at 1 s the limit is still 180 s.
+    column and skips the scan-start OFLT? read (superseded the same day: it
+    reads it too, for the 7 x TC wait; see "RT-E and PPMS: lock-in readings
+    settle at least 7 x TC" above). The longer autorange limit does not
+    change it, because at 1 s the limit is still 180 s.
 - **Tests:** `test_ppms_sr830_tc.py` builds the real PPMS and RT-E pages on
   stand-in widgets, with fake SR830s, and checks:
   - the "TC (s)" label on both pages;
@@ -584,7 +631,8 @@
     earlier; and without a change the poll still counts low readings;
   - the scan-start OFLT? read: one query, no new write, before the 6221
     starts; a front-panel value is recorded and logged; an invalid reply
-    stops the start; RT-E does not read it;
+    stops the start; RT-E does not read it (since the 7 x TC rule it does:
+    `test_rte_reads_it_too`);
   - the note in the scan time estimate, and no note at 1 s, with Settle s
     long enough, with only the Zurich, or on RT-E (replaced the same day by
     `StartSettleTests`: the confirmation shows the wait);
