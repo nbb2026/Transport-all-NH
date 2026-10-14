@@ -162,75 +162,122 @@
   section covers the Non-local page: 6221-IV and Gate-VI. 2400-IV and
   |R| vs time read the Keithley (DC, no lock-in) and are unchanged. The
   factor is the shared `LOCKIN_SETTLE_TAUS = 7.0`; the wait is
-  `CombinedControlApp._nonlocal_lockin_settle_s`.
+  `CombinedControlApp._nonlocal_lockin_settle_s`. A change is a step of the
+  swept quantity, the 6221 switching on, or a lock-in range step.
 - **Which time constant:** the slowest among the lock-ins the scan
   measures. The Zurich: the rack's "TC (s)" box. A Gate-VI SR830: the 1 s
   Gate-VI writes (OFLT 10, now `NONLOCAL_VI_SR830_TIME_CONSTANT_CODE`). A
   6221-IV SR830: its front-panel value, read with OFLT?
   (`NonLocalACController.read_sr830_time_constants`, a query only). The
   2182A is not a lock-in.
+- **Range steps (both scans):** the reading after an autorange step waits
+  `_nonlocal_range_settle_s`: 7 x TC of that SR830 (RT-E's 5 x TC, still
+  `NONLOCAL_IV6221_RANGE_SETTLE_TAUS["sr830"]`, raised to
+  `LOCKIN_SETTLE_TAUS`) or 10 x TC of the Zurich (kept). On 6221-IV that
+  was 5 x TC for an SR830. On Gate-VI there was no wait at all: only the
+  reading that ranged was left out and the average went straight on. Now
+  a range step during Measure s drops the pass's readings so far from the
+  means (the raw CSV keeps every reading, with `auto_range_action`), waits,
+  and starts Measure s again, as 6221-IV restarts its window. After 30
+  restarts in one pass (`NONLOCAL_IV6221_MAX_RANGE_STEPS`; a meter that
+  ranges on every reading) the pass reads on as before, so a long Gate-VI
+  run does not stop for it.
 - **6221-IV:**
   - **Every point** now waits max(Settle s, 7 x TC) after its current step,
     then averages Acquire s. At the defaults (the Zurich alone, TC 1 s,
-    Settle 0.5 s, Acquire 1 s) that is 7 s; it was 0.5 s. The first reading
-    then shows 99 % of the step (it was about 26 % on average).
+    Settle 0.5 s, Acquire 1 s) that is 7 s; it was 0.5 s. At 12 dB/oct the
+    first reading then shows 99 % of the step (it was about 26 % on
+    average). The Zurich runs at 12 dB/oct (filter order 2). An SR830 keeps
+    its front-panel slope: 7 x TC is 99.9 % settled at 6 dB/oct but only
+    about 97 % at 18 and 92 % at 24, so Start reads the slope too (below).
   - **Far points:** the first point of each pass and each loop's jump back
     to Start still wait max(Settle s, 10 x TC) = 10 s
     (`NONLOCAL_IV6221_FIRST_SETTLE_TAUS`), and in a frequency scan at least
     5 periods.
   - **Start:** with an SR830 ticked Measure, Start first reads its
-    front-panel TC on the page's worker thread (as the rack's Zurich poll
-    reads), then shows the confirmation. A failed read shows a warning and
-    starts nothing; a second click meanwhile is ignored. The scan reads the
-    TC again at its set-up and waits the longer of the two, so it never
-    waits less than the confirmation said.
+    front-panel time constant and slope (OFLT?, OFSL?; queries only:
+    `read_sr830_time_constants`, `read_sr830_filter_slopes`) on the page's
+    worker thread, as the rack's Zurich poll reads. Meanwhile the page is
+    busy, as during a connection: both Starts, Set 6221, the rack's
+    Connect/Disconnect, the 6221-IV Measure ticks and harmonics and the
+    Zurich Ref./TC are held, and a Gate-VI Start that gets through is
+    refused ("The page is busy"). Stop or OFF during the read switches the
+    outputs off and cancels this Start ("6221-IV not started: the outputs
+    are being switched off"). A failed read shows a warning and starts
+    nothing. The confirmation and the folder dialog then open from the Tk
+    event loop (`root.after`), not inside `drain_ui_queue`, so live status,
+    plots and logs on every page keep updating while they are open. The
+    scan reads the TC again at its set-up and waits the longer of the two,
+    so it never waits less than the confirmation said.
   - **Confirmation:** "Each point waits 7 s after its current step (7 × the
     slowest lock-in TC, Zurich TC 1 s, or Settle 0.5 s if longer), then
     averages Acquire 1 s" and "The first point of each pass waits 10 s
-    (10 × TC)" (with "and each loop's jump back to Start" for one-way
-    loops). The estimate counts each point's wait, the far points and the
-    first point's second window. The default 100-point scan is about
-    13 min 54 s (99 x 8.3 s + 11.3 s + 1 s); it showed 3 min 11 s. With an
-    SR830 front panel at 3 s each point waits 21 s and the far points 30 s.
+    (10 × the slowest lock-in TC, or Settle 0.5 s if longer)" (with "and
+    each loop's jump back to Start" for one-way loops; it said "(10 × TC)"
+    even when Settle s set the wait). With an SR830 measured, a line such
+    as "SR830 front panel (read back): SR830 #8 TC 3 s, 12 dB/oct", and
+    when its slope leaves a point under 99 % settled, a note such as "Note:
+    at 24 dB/oct SR830 #8 shows only about 91 % of each step when the point
+    is read (7 × TC gives 99 % at 12 dB/oct); set 12 dB/oct on its front
+    panel, or raise Settle s". The estimate counts each point's wait, the
+    far points and the first point's second window. The default 100-point
+    scan is about 13 min 54 s (99 x 8.3 s + 11.3 s + 1 s); it showed
+    3 min 11 s. With an SR830 front panel at 3 s each point waits 21 s and
+    the far points 30 s.
   - **Records:** the CSV has a new last column, `settle_waited_s` (the wait
-    before each point was read). The parameter log adds `point_settle_s`,
-    `first_settle_s`, `lockin_time_constant_s`, `slowest_lockin` and
-    `sr830_time_constants_s`.
-  - **Unchanged:** the Settle s and Acquire s defaults, and the autorange
-    re-settle (5 x TC of that SR830, 10 x TC of the Zurich), which follows
-    a range step, not a current step.
+    after each point's current step). The parameter log adds
+    `point_settle_s`, `first_settle_s`, `lockin_time_constant_s`,
+    `slowest_lockin`, `sr830_time_constants_s` and
+    `sr830_filter_slopes_db_per_oct`.
+  - **Unchanged:** the Settle s and Acquire s defaults.
 - **Gate-VI:**
   - **Each point:** the lock-ins start from zero when the 6221 read current
-    switches on after the pulse. The reading now starts max(6221 pre-run s,
-    7 x TC) after that, and in a frequency scan at least 5 periods. At the
-    defaults (pre-run 5 s, SR830 1 s, Zurich TC 1 s) that is 7 s; it was
+    switches on after the pulse (its output_off before the pulse also
+    stopped the Trigger Link reference). The lock check now comes right
+    after the switch-on, and the reading starts once the 6221 has run the
+    6221 pre-run s since the switch-on and the lock-ins have had 7 x TC
+    since the lock was confirmed (in a frequency scan, also at least
+    5 periods). It used to wait the pre-run, check the lock and read at
+    once, so a Zurich that took 3 s to lock had about 4 TC of valid
+    reference. At the defaults (pre-run 5 s, SR830 1 s, Zurich TC 1 s) that
+    is 7 s plus the lock check (an SR830 locks within a few cycles); it was
     5 s. The scan uses the time constants read back after its set-up when
     they are longer.
   - **Later SR830 orders** still wait max(pre-run, 10 x TC) = 10 s
     (`NONLOCAL_VI_HARMONIC_SETTLE_TAUS`), already more than 7 x TC.
-  - **Confirmation:** a new line, "Each point: the 6221 runs 7 s before the
-    reading (7 × the slowest lock-in TC 1 s = 7 s, or 6221 pre-run 5 s if
-    longer), then reads Measure 30 s". The estimate counts it. The default
-    scan (±100 V in 10 V steps, 41 points x 2 loops) takes 54.4 s per point,
-    about 1 h 14 min 37 s in all; it was 1 h 11 min 53 s.
+  - **Confirmation:** a new line, "Each point: the 6221 runs at least 7 s
+    before the reading (7 × the slowest lock-in TC 1 s = 7 s from the
+    reference lock, or 6221 pre-run 5 s from the switch-on if longer), then
+    reads Measure 30 s". The estimate counts it (not the lock check). The
+    default scan (±100 V in 10 V steps, 41 points x 2 loops) takes 54.4 s
+    per point, about 1 h 14 min 37 s in all; it was 1 h 11 min 53 s.
   - **Records:** `VI_raw.csv` and `VI_summary.csv` have a new last column,
-    `settle_waited_s`: the pre-run, or the order's settle for an SR830's
-    later orders. `VI_parameters.log` adds `lockin_time_constant_s`,
-    `lockin_settle_s` and `effective_settle_s`.
+    `settle_waited_s`: the time from the 6221 switch-on to the reading (the
+    lock check and the wait after it, to 1 ms), or the order's settle for
+    an SR830's later orders. `VI_parameters.log` adds
+    `lockin_time_constant_s`, `lockin_settle_s` and `effective_settle_s`.
   - **The 2182A alone** (a DC run) keeps the 6221 pre-run.
 - **Tests:** `test_nonlocal_lockin_settle.py` (new, Tk-free) checks the
-  rule, the 6221-IV waits, estimate, confirmation, SR830 read and records,
-  and the Gate-VI pre-run, estimate, confirmation, worker waits and CSV
-  columns. Tests of other timing turn the 7 x TC wait off
+  rule, the 6221-IV waits, estimate, confirmation (the far-point line with
+  a longer Settle s, the SR830 slope line and note), SR830 OFLT?/OFSL?
+  reads and records, the page held busy during Start's read (Gate-VI Start
+  and Set 6221 refused, an OFF cancelling the Start, a failed read freeing
+  the page), the dialogs opened from the event loop, the range-step waits
+  of both scans (a Gate-VI range step dropping the pass, a meter ranging
+  on every reading not stopping the run), the Gate-VI lock check before
+  the settle, and the Gate-VI pre-run, estimate, confirmation, worker
+  waits and CSV columns. Tests of other timing turn the 7 x TC wait off
   (`LOCKIN_SETTLE_TAUS` patched to 0): `test_nonlocal_6221_iv`,
   `test_nonlocal_frequency_scan`, `test_nonlocal_gate_vi_harmonics`,
   `test_nonlocal_pulse_gate_6221` and `test_nonlocal_minor_review`. The
   6221-IV far-jump test now expects 21 s ordinary points at a 3 s TC,
-  `test_nonlocal_gate_vi_loops` expects the new last column, and
-  `test_lockin_time_constant_defaults` checks the 7 s default wait. No CI
-  GUI expectation names these texts.
+  `test_nonlocal_frequency_scan` counts the Gate-VI 5-period wait less the
+  lock check, `test_nonlocal_gate_vi_loops` expects the new last column,
+  and `test_lockin_time_constant_defaults` checks the 7 s default wait. No
+  CI GUI expectation names these texts.
 - **Supersedes:** the 6221-IV "Other points wait Settle s" and Gate-VI "No
-  Gate-VI wait comes from the Zurich TC" notes in the next section.
+  Gate-VI wait comes from the Zurich TC" notes in the next section, and
+  "5 x TC of that SR830" after a 6221-IV range step in older sections.
 
 ## Lock-in time constants: every default is 1 s (2026-10-14)
 

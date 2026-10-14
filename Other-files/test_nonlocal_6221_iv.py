@@ -21,7 +21,7 @@ class FakeSource:
     current × 1e-7 × their order."""
 
     def __init__(self, fail_read=False, readings=None, locked=True, keys=("8",),
-                 mfli=False, sr830_tau=0.1):
+                 mfli=False, sr830_tau=0.1, sr830_slope=12.0):
         self.calls = []
         # Optional list of per-read overrides for each SR830 (consumed in turn).
         self.readings = list(readings or [])
@@ -34,6 +34,7 @@ class FakeSource:
         self.current = 0.0
         self.fail_read = fail_read
         self.sr830_tau = sr830_tau
+        self.sr830_slope = sr830_slope
         self.harmonics = {}
         self.zurich_orders = (1,)
 
@@ -52,6 +53,11 @@ class FakeSource:
             self.zurich_orders = (options["mfli_config"]["harmonic"],)
             readbacks["mfli"] = {"meter_type": "MFLI", "sample_rate_hz": 25.0}
         return frequency_hz, readbacks
+
+    def read_sr830_filter_slopes(self, keys):
+        # The front-panel slope 6221-IV's Start reads with OFSL? (review,
+        # 2026-10-14): 12 dB/oct unless told otherwise.
+        return {key: self.sr830_slope for key in keys}
 
     def configure_second_harmonic(self, tau, rate=1.0):
         self.calls.append(("configure_second_harmonic", tau, rate))

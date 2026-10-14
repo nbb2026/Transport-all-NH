@@ -295,6 +295,7 @@ class StartConfirmationTests(unittest.TestCase):
     def test_the_zurich_filter_order_reads_correctly(self):
         a = gate_vi_page("17.3")
         a.nonlocal_keithley_task = None
+        a.nonlocal_vi_running = a.nonlocal_vi_busy = False
         a.root = None
         a.nonlocal_vi_safety_var = Var(True)
         a.nonlocal_vi_output_directory = Path(tempfile.mkdtemp())

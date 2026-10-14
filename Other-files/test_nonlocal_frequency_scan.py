@@ -363,9 +363,12 @@ class GateVITests(unittest.TestCase):
              (0.0, "post_point", 13.0), (4.0, "post_point", 13.0), (0.0, "post_point", 13.0)])
         self.assertEqual({row["set_frequency_hz"] for row in a.nonlocal_vi_summary_rows}, {11.0, 13.0})
         # The 6221 pre-run: at least 5 periods (the page's pre-run is 0 s).
+        # It counts from the switch-on and the lock check comes first, so
+        # the wait after it is 5 periods less that (here instant) check
+        # (review, 2026-10-14).
         waits = a.nonlocal_vi_stop_event.waits
-        self.assertEqual(waits.count(5 / 11), 3)
-        self.assertEqual(waits.count(5 / 13), 3)
+        for period_s in (5 / 11, 5 / 13):
+            self.assertEqual(sum(1 for w in waits if w and abs(w - period_s) < 0.01), 3)
         a.nonlocal_vi_progress.configure.assert_called_with(value=6)
 
     def test_without_the_tick_the_scan_is_as_before(self):
