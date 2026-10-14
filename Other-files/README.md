@@ -1,5 +1,126 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## STFMR: Settle s and Acquire s replace Wait/pt; 7 x TC settle; table in order (2026-10-14)
+
+- **The user asked:** "add a acquire time in the ST-FMR scan mode, default
+  is 2s. also add a settle time and default 1s. delete the delay time." and
+  "also re-arrange the GUI buttons and windows in the ST-FMR sweep param
+  module and make them in order." With the 1 s lock-in time constants of
+  the same day the user chose one rule for every page: every lock-in
+  reading waits at least 7 x TC (`LOCKIN_SETTLE_TAUS`; 99 % settled at
+  12 dB/oct) after a change, or Settle s when that is longer. This section
+  replaces the STFMR timing given in the 1 s section below (Wait/pt, 5 x TC,
+  the MFLI alone at half a TC).
+- **"Wait/pt s" is gone** (`stfmr_lockin_delay_var`,
+  `STFMR_LOCKIN_DEFAULT_DELAY_S`). New boxes: **"Settle s"** (default 1,
+  0 to 3600 s) and **"Acquire s"** (default 2, above 0 and up to 3600 s;
+  the 6221-IV page's bounds). Both are read at Start and are locked while a
+  sweep runs, as the SR830 TC is. A word, an empty box, nan/inf or a value
+  out of range is refused before any file or output.
+- **Each point:** after its current step it waits the effective settle =
+  max(Settle s, 7 x the TC of every lock-in it reads: the SR830 TC when the
+  SR830 is read, "MFLI TC s" when the MFLI is). The STFMR-only
+  `STFMR_LOCKIN_SR830_SETTLE_TAUS` (5) is gone; the MFLI now follows the
+  same rule (it waited Wait/pt alone). Then it reads the field once and the
+  lock-in(s) every 0.1 s (`STFMR_LOCKIN_SAMPLE_INTERVAL_S`; a reading that
+  takes longer is followed at once) until Acquire s has passed since its
+  first lock-in reading started, and saves the mean X and Y of each meter;
+  R and theta come from the mean X and Y (as RT-E's
+  `_average_ppms_transport_sample`). In MFLI + SR830 mode each reading is
+  the MFLI then the SR830, so both are averaged over the same window. The
+  waits are `root.after` calls as before; the window never blocks.
+- **Every reading of the window passes the old checks.** SR830 or MFLI +
+  SR830: an unlocked, overloaded or invalid reading ends the sweep through
+  the usual output-off sequence, as a failed read did, and the point is not
+  saved. MFLI alone, as before: no stop; the row's `reference_valid` is
+  True only if every reading was locked, `mfli_input_overload` is True if
+  any reading was overloaded (None if any was unknown), and
+  `mfli_input_utilization` is the highest. A range change in the window
+  drops the point's readings and starts the point again, field included,
+  after the range re-read wait: max(effective settle, 10 x MFLI TC, 0.2 s)
+  after an MFLI change, max(effective settle, 0.1 s) (so at least 7 x TC)
+  after an SR830 change, and max(0.1 s, effective settle, 10 x MFLI TC)
+  after an SR830 change in MFLI + SR830 mode.
+- **Ranging pace:** only a point's first reading may step a range down;
+  the later readings of its window step a range only up (overload or near
+  full scale), still at most three MFLI range changes per point. Counted on
+  every reading, a weak MFLI signal (always under 15 % of the lowest range)
+  would run the firmware autorange, which counts as a change even when it
+  keeps the range, after every three readings and restart each point up to
+  three times, 10 s each. `STFMRSR830Controller.read_sample` takes
+  `allow_down=False` for these readings; the MFLI's are handled in
+  `_stfmr_lockin_read_mfli` (the shared `read_stfmr_mfli` is unchanged).
+- **Discarded readings** (the start pre-read and the first two readings of
+  each loop, carrier and modulation frequency) stay one reading each: no
+  window, as their value is never used. The first reading of each pass
+  still follows the pre-read at once; every later one follows a step and
+  its settle, as with Wait/pt.
+- **The MFLI's demodulator rate:** `configure_mfli` sets it to 5 x the read
+  rate (at least 10 Hz). The read rate was 1 / Wait/pt (2 Hz at 0.5 s, so
+  10 Hz); it is now 1 / 0.1 s, so 50 Hz, recorded as `mfli_sample_rate_hz`
+  = 10 in the run log.
+- **Start confirmation:** a line such as "MFLI TC: 1 s; each point settles
+  7 s (7 × TC 1 s; Settle s 1 s) then averages 2 s" for every meter (in
+  dual mode both TCs are named), and an estimate that counts a settle per
+  step and Acquire s per saved point, e.g. "Estimated at least 5398.0 s
+  (600 settles of 7 s + 599 averages of 2 s; about 1.5 h)."
+- **Timing at the page's defaults** (MFLI, 4 GHz, -3 to 3 A in 0.01 A =
+  601 currents, Loop 1, Settle 1 s, Acquire 2 s, both TCs 1 s): each point
+  settles 7 s and averages 2 s (21 readings), about 9 s plus the reads,
+  so the Start estimate is 600 x 7 s + 599 x 2 s = 5398 s, about 1.5 h per
+  frequency and modulation frequency (it was 600 x 0.5 s = 5 min for the
+  MFLI alone, 50 min with the SR830). The MFLI's first-point range check at
+  each pass start re-reads after 10 s. SR830 and MFLI + SR830 settle the
+  same 7 s at 1 s TCs.
+- **Records:** the live CSV gains four columns at the end, after
+  `sr830_time_constant_s`: `settle_s`, `effective_settle_s`, `acquire_s` and
+  `sample_count` (readings in that row's mean, per meter); every older
+  column keeps its place (there was no Wait/pt column). `timestamp_iso` is
+  the time of that meter's last reading of the window. The run log's
+  settings drop `point_delay_s` and `effective_point_wait_s` and gain
+  `settle_s`, `acquire_s`, `settle_time_constants` (7), `effective_settle_s`
+  and `acquisition_sample_interval_s` (0.1).
+- **The parameter table, in measurement order** (at most five pairs a row;
+  a sixth made the table too wide for the 1101 px window):
+  1. Microwave: f start GHz, f stop GHz, f step GHz, Power dBm.
+  2. Magnet sweep: Start A, Stop A, Step A, Loop, Comp. V.
+  3. Modulation and timing: Mod. start Hz, Mod. end Hz, Settle s,
+     Acquire s.
+  4. SR830: Meter, SR830 REF IN, SR830 TC, SR830 autorange (Meter leads
+     this row; it says which of rows 4 and 5 are used).
+  5. MFLI: MFLI reference, MFLI TC s, MFLI autorange.
+
+  Then the actions in order: Start STFMR multi-frequency sweep, Stop / zero,
+  Save CSV; Read LS475 with Continuous field read; the readouts and lamps.
+  They sit below the table in the 1101 px window and to its right when the
+  window is wide enough (2000 px), as before. The `parameter()` helper and
+  the column minimums are kept: the SR830 TC dropdown's minimum moved with
+  it to column 5, and column 7 keeps the Loop spinbox whole (the dropdown,
+  as wide, guarded it there before). The table is about 40 px narrower
+  (Comp. V ends the widest row instead of Mod. start Hz) and one row
+  (about 38 px) taller, which the plots give up: in the last Windows CI
+  shot (1101 x 1300 px window) each plot canvas was 143 px tall, so about
+  124 px now, and about 164 px in the lab's 1380 px tall window.
+- **Tests:** `test_stfmr_settle_acquire.py` (new): the settle rule for
+  SR830, MFLI and both, through the shared constant; the confirmation line
+  and estimate (the page's default sweep included); the default sweep
+  (7 s settle, 21 readings 0.1 s apart); means of X and Y with R and theta
+  from the mean, for each meter's spelling and both together; a range change
+  in the window restarting the point (SR830 and MFLI); the ranging pace; a
+  failed or unlocked reading stopping with the outputs off; stop between
+  readings; the bounds of both boxes; the averaging helper; the SR830
+  controller's `allow_down`. Updated: `test_stfmr_sr830_tc_fixed_current`,
+  `test_stfmr_mod_prime_range` (the table rows, the CSV header, the
+  estimate), `test_lockin_time_constant_defaults`, `test_fmr_stfmr_minors`,
+  `test/test_instrument_safety_logic` and the shared STFMR harness in
+  `test/test_stfmr_realtime_recording` (its Root now keeps time, so the
+  window runs on the test's clock; Settle 0 and Acquire 0.2 s there). The
+  CI GUI test `test_stfmr_field_output` checks the drawn table rows, the
+  SR830 TC beside its REF IN, the actions below the table at 1101 px and
+  plots of at least 55 px (not run here: it needs a display).
+- **Not yet verified:** on the lab PC with the instruments (the read pace a
+  real GPIB bus allows, the MFLI at 50 Hz), and the CI screenshots.
+
 ## Lock-in time constants: every default is 1 s (2026-10-14)
 
 - **The user's choice:** "all default lock-in time constant change to 1s".

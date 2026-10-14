@@ -662,7 +662,9 @@ class InstrumentSafetyTests(unittest.TestCase):
         harness.stfmr_lockin_power_var = FakeVariable("10")
         harness.stfmr_lockin_mod_start_var = FakeVariable("317.3")
         harness.stfmr_lockin_mod_end_var = FakeVariable("317.3")
-        harness.stfmr_lockin_delay_var = FakeVariable("0.5")
+        # Settle s and Acquire s replace Wait/pt (user, 2026-10-14).
+        harness.stfmr_lockin_settle_var = FakeVariable("1")
+        harness.stfmr_lockin_acquire_var = FakeVariable("2")
         harness.stfmr_lockin_limit_var = FakeVariable("10")
         harness.stfmr_lockin_loop_var = FakeVariable(2)
         harness.stfmr_lockin_start_var = FakeVariable("-1")

@@ -2022,7 +2022,27 @@ STFMR_LOCKIN_MAX_PRIME_MODULATION_HZ = float(2 ** 53)
 STFMR_LOCKIN_DEFAULT_START_A = -3.0
 STFMR_LOCKIN_DEFAULT_STOP_A = 3.0
 STFMR_LOCKIN_DEFAULT_STEP_A = 0.01
-STFMR_LOCKIN_DEFAULT_DELAY_S = 0.5
+# "Settle s" and "Acquire s" replace the "Wait/pt s" box (user, 2026-10-14:
+# "add a acquire time in the ST-FMR scan mode, default is 2s. also add a
+# settle time and default 1s. delete the delay time.").  After each current
+# step a point waits the longer of Settle s and LOCKIN_SETTLE_TAUS x the time
+# constant of every lock-in it reads (the effective settle), then reads them
+# for Acquire s and saves the mean X and Y.  The bounds are the 6221-IV
+# page's: an hour per point is beyond any STFMR sweep, so a slipped digit is
+# refused rather than started.
+STFMR_LOCKIN_DEFAULT_SETTLE_S = 1.0
+STFMR_LOCKIN_DEFAULT_ACQUIRE_S = 2.0
+STFMR_LOCKIN_MAX_SETTLE_S = 3600.0
+STFMR_LOCKIN_MAX_ACQUIRE_S = 3600.0
+# Within Acquire s a new reading starts every 0.1 s, or at once when the last
+# one took longer (an SR830 reading is about three GPIB queries).  A fixed
+# pace, not back-to-back reads: the count of readings does not depend on the
+# bus speed, the GPIB bus and the window stay free between readings, and the
+# MFLI's demodulator rate has a defined value: configure_mfli sets it to
+# 5 x the read rate (at least 10 Hz), and the read rate was 1 / Wait/pt
+# (2 Hz, so 10 Hz) before; it is now 1 / 0.1 s, so 50 Hz, and a reading
+# never gets the previous one's demodulator sample again (user, 2026-10-14).
+STFMR_LOCKIN_SAMPLE_INTERVAL_S = 0.1
 # The "MFLI TC s" box starts at 1 s, as every lock-in time constant the
 # program starts with (user, 2026-10-14; was 0.1 s).  An MFLI range change
 # then waits at least 10 x TC = 10 s before the re-read.
@@ -2032,10 +2052,12 @@ STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE = 10  # 1 s, the default choice below
 # The 'SR830 TC' choices and their OFLT codes (SR830 manual: OFLT 0 = 10 us,
 # stepping 1-3-10 up to 19 = 30 ks, so 10 = 1 s; see SR830_TIME_CONSTANTS_S).
 # Sweeps first used a fixed 1 s.  On 2026-10-13 the user made it a choice
-# with 100 ms as the default, which with the 5 x TC wait below kept the
-# default 0.5 s Wait/pt pace.  The user now wants every lock-in time constant
-# to start at 1 s, so the default is 1 s again and a default SR830 point waits
-# 5 s (user, 2026-10-14).  The slope stays 12 dB/oct (OFSL 1).
+# with 100 ms as the default, and the user now wants every lock-in time
+# constant to start at 1 s, so the default is 1 s again (user, 2026-10-14).
+# The slope stays 12 dB/oct (OFSL 1).  Each point settles at least
+# LOCKIN_SETTLE_TAUS (7) time constants of every lock-in it reads, the MFLI's
+# too: the STFMR-only 5 x SR830 TC rule is gone, as the user chose one 7 x TC
+# rule for every page (user, 2026-10-14).
 STFMR_LOCKIN_SR830_TIME_CONSTANTS = {
     "1 ms": 4, "3 ms": 5, "10 ms": 6, "30 ms": 7, "100 ms": 8,
     "300 ms": 9, "1 s": 10, "3 s": 11, "10 s": 12,
@@ -2046,12 +2068,6 @@ STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT = "1 s"
 # Connect always set before there was a choice; the user wants 1 s defaults.
 # RT-E has no such choice and keeps OFLT 10 at Connect (user, 2026-10-14).
 PPMS_SR830_DEFAULT_TIME_CONSTANT = "1 s"
-# At 12 dB/oct an SR830 output settles in about 5 time constants, so every
-# SR830 reading of a sweep but the discarded first of each frequency waits at
-# least this many, whatever Wait/pt says:
-# with the 1 s time constant the default 0.5 s wait read a lagged value
-# (user, 2026-10-13).
-STFMR_LOCKIN_SR830_SETTLE_TAUS = 5.0
 STFMR_LOCKIN_SR830_REFERENCE_INPUTS = {
     "Sine": 0,
     "TTL Rising": 1,
@@ -3175,7 +3191,9 @@ class STFMRSR830Controller(SafeVisaIdentityController):
             "and select the Sine/TTL edge matching the waveform"
         )
 
-    def _auto_range_locked(self, r_value: float, status: int) -> str:
+    def _auto_range_locked(
+        self, r_value: float, status: int, allow_down: bool = True
+    ) -> str:
         if not self.auto_range_enabled:
             return ""
         old = int(self.sensitivity_index)
@@ -3188,6 +3206,13 @@ class STFMRSR830Controller(SafeVisaIdentityController):
             requested = min(old + 1, len(NONLOCAL_SR830_FULL_SCALE_V) - 1)
             reason = "overload/high"
             self.low_range_count = 0
+        elif not allow_down:
+            # A later reading of an STFMR point's Acquire s window: only an
+            # overload or a near-full-scale reading changes the range.  The
+            # cool-down and the count of low readings move on the point's
+            # first reading alone, so the range steps down no faster than
+            # when a point was one reading (user, 2026-10-14).
+            pass
         elif self.range_cooldown > 0:
             self.range_cooldown -= 1
             self.low_range_count = 0
@@ -3223,12 +3248,16 @@ class STFMRSR830Controller(SafeVisaIdentityController):
             return float(self.instrument.query("PHAS?").strip())
 
     def read_sample(
-        self, expected_frequency_hz: float, auto_range: bool = True
+        self, expected_frequency_hz: float, auto_range: bool = True,
+        allow_down: bool = True,
     ) -> dict[str, object]:
         # auto_range=False reads only: the idle live display must not change
         # the SR830 range.  It assumed SENS 13 and ignored the 'SR830
         # autorange' tick until the first Start, so pressing Connect stepped
         # the user's front-panel range (review, 2026-10-13).
+        # allow_down=False: a later reading of an STFMR point's Acquire s
+        # window, which may only step the range up (see _auto_range_locked;
+        # user, 2026-10-14).
         with self.lock:
             if self.instrument is None:
                 raise RuntimeError("SR830 is not connected")
@@ -3244,7 +3273,8 @@ class STFMRSR830Controller(SafeVisaIdentityController):
             lias = int(round(float(self.instrument.query("LIAS?").strip())))
             sensitivity_used = int(self.sensitivity_index)
             auto_range_action = (
-                self._auto_range_locked(r_value, lias) if auto_range else ""
+                self._auto_range_locked(r_value, lias, allow_down)
+                if auto_range else ""
             )
         reference_valid = not (lias & 8) and math.isclose(
             frequency,
@@ -13404,6 +13434,12 @@ class STFMRScanRecorder:
         # The 'SR830 TC' choice, beside mfli_timeconstant_s in meaning; it is
         # last so every older column keeps its place (user, 2026-10-13).
         "sr830_time_constant_s",
+        # Each point's timing (user, 2026-10-14): Settle s, the settle it
+        # waited after its current step (Settle s or 7 x the TC of every
+        # lock-in read), Acquire s, and how many readings of this row's
+        # lock-in its X and Y are the mean of.  Last, so every older column
+        # keeps its place; no Wait/pt column existed to remove.
+        "settle_s", "effective_settle_s", "acquire_s", "sample_count",
     )
 
     def __init__(self, parent: Path, settings: dict[str, object]) -> None:
@@ -14378,8 +14414,12 @@ class CombinedControlApp:
             value=f"{STFMR_LOCKIN_DEFAULT_STEP_A:g}"
         )
         self.stfmr_lockin_limit_var = tk.StringVar(value="10")
-        self.stfmr_lockin_delay_var = tk.StringVar(
-            value=f"{STFMR_LOCKIN_DEFAULT_DELAY_S:g}"
+        # Settle s and Acquire s replace Wait/pt s (user, 2026-10-14).
+        self.stfmr_lockin_settle_var = tk.StringVar(
+            value=f"{STFMR_LOCKIN_DEFAULT_SETTLE_S:g}"
+        )
+        self.stfmr_lockin_acquire_var = tk.StringVar(
+            value=f"{STFMR_LOCKIN_DEFAULT_ACQUIRE_S:g}"
         )
         # Text, parsed at Start like the other fields (audit, 2026-10-13).
         self.stfmr_lockin_loop_var = tk.StringVar(value="1")
@@ -14408,7 +14448,11 @@ class CombinedControlApp:
         self.stfmr_lockin_index = 0
         self.stfmr_lockin_running = False
         self.stfmr_lockin_started = 0.0
-        self.stfmr_lockin_delay_s = STFMR_LOCKIN_DEFAULT_DELAY_S
+        self.stfmr_lockin_settle_s = STFMR_LOCKIN_DEFAULT_SETTLE_S
+        self.stfmr_lockin_acquire_s = STFMR_LOCKIN_DEFAULT_ACQUIRE_S
+        # The running point's Acquire s window: its field, its readings so
+        # far and when its first lock-in reading started (user, 2026-10-14).
+        self.stfmr_lockin_acquisition = None
         self.stfmr_lockin_expected_hz = STFMR_LOCKIN_DEFAULT_LFO_HZ
         # The running sweep's modulation frequencies, the outermost loop, and
         # the one in use (user, 2026-10-13).
@@ -14418,9 +14462,13 @@ class CombinedControlApp:
         self.stfmr_lockin_limit_v = 10.0
         self.stfmr_lockin_mfli_timeconstant_s = STFMR_LOCKIN_MFLI_TIME_CONSTANT_S
         self.stfmr_lockin_sr830_time_constant_code = STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE
-        # Wait before each reading of the running sweep: Wait/pt, or 5 SR830
-        # time constants when longer and the SR830 is read (user, 2026-10-13).
-        self.stfmr_lockin_point_wait_s = STFMR_LOCKIN_DEFAULT_DELAY_S
+        # The wait after each current step of the running sweep: Settle s, or
+        # LOCKIN_SETTLE_TAUS x the time constant of every lock-in read when
+        # longer (user, 2026-10-14); the default meter is the MFLI.
+        self.stfmr_lockin_effective_settle_s = max(
+            STFMR_LOCKIN_DEFAULT_SETTLE_S,
+            LOCKIN_SETTLE_TAUS * STFMR_LOCKIN_MFLI_TIME_CONSTANT_S,
+        )
         self.stfmr_lockin_sr830_reference_input = (
             STFMR_LOCKIN_SR830_DEFAULT_REFERENCE_INPUT
         )
@@ -16620,34 +16668,56 @@ class CombinedControlApp:
                      padx=(12, 0), pady=1)
             return box
 
-        # Row 0: microwave carrier and the first modulation frequency.  The
-        # single Mod. Hz box became Mod. start (here) and Mod. end (below it,
-        # where Wait/pt was), with no step box (user, 2026-10-13): a sixth
-        # pair on these rows made the table too wide for the 1101 px window
-        # (see Loop below), so Wait/pt moves to the free cell after Loop.
+        # The table in measurement order, one row per stage (user,
+        # 2026-10-14: "re-arrange the GUI buttons and windows in the ST-FMR
+        # sweep param module and make them in order"): the microwave, the
+        # magnet sweep, the modulation and the timing of each point, then
+        # each lock-in.  At most five label/field pairs per row: a sixth made
+        # the table too wide for the 1101 px window the program opens with,
+        # which pushed the last box off the page on Windows.  Dropdowns are
+        # sized to their longest choice ("MFLI + SR830", "TTL Falling",
+        # "Trigger In 1").
+        # Row 0, microwave: the carrier sweep and its power.
         for pair, (label, variable) in enumerate((
             ("f start GHz:", self.stfmr_lockin_frequency_start_var),
             ("f stop GHz:", self.stfmr_lockin_frequency_stop_var),
             ("f step GHz:", self.stfmr_lockin_frequency_step_var),
             ("Power dBm:", self.stfmr_lockin_power_var),
-            ("Mod. start Hz:", self.stfmr_lockin_mod_start_var),
         )):
             parameter(0, pair, label, variable)
-        # Row 1: the magnet current sweep, and the last modulation frequency.
+        # Row 1, magnet sweep: the 4886 currents, the loops over them and the
+        # 4886's voltage compliance.
+        for pair, (label, variable, kind) in enumerate((
+            ("Start A:", self.stfmr_lockin_start_var, "entry"),
+            ("Stop A:", self.stfmr_lockin_stop_var, "entry"),
+            ("Step A:", self.stfmr_lockin_step_var, "entry"),
+            ("Loop:", self.stfmr_lockin_loop_var, "spinbox"),
+            ("Comp. V:", self.stfmr_lockin_limit_var, "entry"),
+        )):
+            widget = parameter(1, pair, label, variable, kind=kind)
+            if kind == "spinbox":
+                loop_spinbox = widget
+        # Row 2, modulation and timing: the modulation frequencies (Mod.
+        # start = Mod. end gives one; user, 2026-10-13), then what each
+        # point does after its current step: settle, then average (Settle s
+        # and Acquire s replace Wait/pt s; user, 2026-10-14).  Both are read
+        # at Start and set every wait of the sweep, so they are locked while
+        # it runs, as the SR830 TC is (_update_stfmr_lockin_ui).
         for pair, (label, variable) in enumerate((
-            ("Start A:", self.stfmr_lockin_start_var),
-            ("Stop A:", self.stfmr_lockin_stop_var),
-            ("Step A:", self.stfmr_lockin_step_var),
-            ("Comp. V:", self.stfmr_lockin_limit_var),
+            ("Mod. start Hz:", self.stfmr_lockin_mod_start_var),
             ("Mod. end Hz:", self.stfmr_lockin_mod_end_var),
         )):
-            parameter(1, pair, label, variable)
-        # Rows 2 and 3: SR830, then MFLI.  Two rows keep the table narrow
-        # enough for the sweep buttons to sit on its right.  Dropdowns are
-        # sized to their longest choice ("MFLI + SR830", "TTL Falling",
-        # "Trigger In 1").
+            parameter(2, pair, label, variable)
+        self.stfmr_lockin_settle_entry = parameter(
+            2, 2, "Settle s:", self.stfmr_lockin_settle_var
+        )
+        self.stfmr_lockin_acquire_entry = parameter(
+            2, 3, "Acquire s:", self.stfmr_lockin_acquire_var
+        )
+        # Row 3, SR830, led by the Meter choice, which says whether this row,
+        # the MFLI row below or both are used.
         meter_combo = parameter(
-            2, 0, "Meter:", self.stfmr_lockin_meter_var,
+            3, 0, "Meter:", self.stfmr_lockin_meter_var,
             kind="combo", values=("SR830", "MFLI", "MFLI + SR830"), width=12,
         )
         meter_combo.bind(
@@ -16655,45 +16725,49 @@ class CombinedControlApp:
         )
         self.stfmr_lockin_meter_combo = meter_combo
         parameter(
-            2, 1, "SR830 REF IN:", self.stfmr_lockin_sr830_reference_var,
+            3, 1, "SR830 REF IN:", self.stfmr_lockin_sr830_reference_var,
             kind="combo", values=tuple(STFMR_LOCKIN_SR830_REFERENCE_INPUTS), width=12,
         )
-        option(2, 2, "SR830 autorange", self.stfmr_lockin_sr830_auto_range_var)
-        # Loop fills the free cell at the end of this row.  As a sixth pair on
-        # row 1 it made the table too wide for the 1101 px window the program
-        # opens with, which pushed the spinbox off the page on Windows.
-        parameter(2, 3, "Loop:", self.stfmr_lockin_loop_var, kind="spinbox")
-        # Wait/pt beside Loop, in this row's last free cell, as its old cell
-        # under Mod. start now holds Mod. end (user, 2026-10-13).
-        parameter(2, 4, "Wait/pt s:", self.stfmr_lockin_delay_var)
-        parameter(
-            3, 0, "MFLI reference:", self.stfmr_lockin_reference_var,
-            kind="combo", values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS), width=12,
-        )
-        parameter(
-            3, 1, "MFLI TC s:", self.stfmr_lockin_mfli_timeconstant_var,
-            width=7,
-        )
-        self.stfmr_lockin_mfli_auto_range_check = option(
-            3, 2, "MFLI autorange", self.stfmr_lockin_mfli_auto_range_var
-        )
-        # The SR830 time constant sits in the row's free cell, under Loop, so
-        # the table keeps its width in the 1101 px window: it is as wide as
-        # the Loop spinbox (six characters, which "300 ms" fits) and its label
-        # is shorter than "Power dBm:" above.  Its column still gives way in
-        # a too-narrow window, but only down to this dropdown's width, so,
-        # like the others, it is never cut (user, 2026-10-13).
+        # The SR830 time constant, beside its REF IN, as "MFLI TC s" is beside
+        # the MFLI reference below.  Its label is no wider than "f step GHz:"
+        # above, so the table keeps its width; the dropdown is six characters
+        # wide ("300 ms" fits) and fills its column's width.  The column still
+        # gives way in a too-narrow window, but only down to this dropdown's
+        # width, so, like the others, it is never cut (user, 2026-10-13).
         sr830_tc_combo = parameter(
-            3, 3, "SR830 TC:", self.stfmr_lockin_sr830_time_constant_var,
+            3, 2, "SR830 TC:", self.stfmr_lockin_sr830_time_constant_var,
             kind="combo", values=tuple(STFMR_LOCKIN_SR830_TIME_CONSTANTS), width=6,
         )
         params.columnconfigure(
-            7, minsize=max(field_floor, sr830_tc_combo.winfo_reqwidth())
+            5, minsize=max(field_floor, sr830_tc_combo.winfo_reqwidth())
         )
         self.stfmr_lockin_sr830_time_constant_combo = sr830_tc_combo
+        option(3, 3, "SR830 autorange", self.stfmr_lockin_sr830_auto_range_var)
+        # Row 4, MFLI, in the same order as the SR830 row: reference, time
+        # constant, autorange.
+        parameter(
+            4, 0, "MFLI reference:", self.stfmr_lockin_reference_var,
+            kind="combo", values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS), width=12,
+        )
+        parameter(
+            4, 1, "MFLI TC s:", self.stfmr_lockin_mfli_timeconstant_var,
+            width=7,
+        )
+        self.stfmr_lockin_mfli_auto_range_check = option(
+            4, 2, "MFLI autorange", self.stfmr_lockin_mfli_auto_range_var
+        )
+        # The Loop spinbox now has the narrowest field of its column, which
+        # the SR830 TC dropdown, as wide, held before; the column gives way
+        # only down to the spinbox's width, so its arrows are never cut.
+        params.columnconfigure(
+            7, minsize=max(field_floor, loop_spinbox.winfo_reqwidth())
+        )
 
-        # Right-hand column: sweep buttons, then the LS475 read controls, the
-        # live values and the MFLI overload lamp.
+        # The actions, in the order they are used: the sweep buttons (Start,
+        # Stop / zero, Save CSV), then the LS475 read controls, then the live
+        # values and the two lamps.  Below the table in the 1101 px window
+        # the program opens with, right of it when the window is wide enough
+        # (_arrange_pair_by_width below; user, 2026-10-14).
         button_row = ttk.Frame(sweep_actions)
         button_row.grid(row=0, column=0, sticky="w")
         self.stfmr_lockin_start_button = ttk.Button(
@@ -16951,6 +17025,13 @@ class CombinedControlApp:
             self.stfmr_lockin_sr830_time_constant_combo.configure(
                 state="disabled" if self.stfmr_lockin_running else "readonly"
             )
+        # Settle s and Acquire s set every wait and window of the sweep, so
+        # they are locked as the SR830 TC is (user, 2026-10-14).
+        for name in ("stfmr_lockin_settle_entry", "stfmr_lockin_acquire_entry"):
+            if hasattr(self, name):
+                getattr(self, name).configure(
+                    state="disabled" if self.stfmr_lockin_running else "normal"
+                )
         # The device rows follow the sweep too.  Only Connect / Disconnect
         # re-checked them, so during a sweep the unused lock-in's Connect (and
         # every Disconnect) stayed enabled (audit, 2026-10-13).  A row still
@@ -17268,14 +17349,145 @@ class CombinedControlApp:
         return loops * (points_per_loop - 2)
 
     @staticmethod
-    def _stfmr_sr830_point_wait_s(meter: str, delay_s: float, time_constant_code: int) -> float:
-        """Wait before each reading: Wait/pt, but at least 5 SR830 time
-        constants (12 dB/oct settling) when the SR830 is read, so its point is
-        no longer a lagged reading (user, 2026-10-13)."""
+    def _stfmr_lockin_settle_terms(
+        meter: str, settle_s: float, sr830_time_constant_code: int,
+        mfli_timeconstant_s: float,
+    ) -> list[tuple[str, float]]:
+        """The waits a point's settle is the longest of: ("Settle s", Settle
+        s), then ("SR830", 7 x SR830 TC) when the SR830 is read and ("MFLI",
+        7 x MFLI TC) when the MFLI is (LOCKIN_SETTLE_TAUS; 99 % of a step at
+        12 dB/oct).  Each lock-in's TC counts only when it is read, as each
+        TC box is read at Start only then (user, 2026-10-14)."""
+        terms = [("Settle s", float(settle_s))]
         if meter in ("SR830", "MFLI + SR830"):
-            settle_s = STFMR_LOCKIN_SR830_SETTLE_TAUS * SR830_TIME_CONSTANTS_S[int(time_constant_code)]
-            return max(float(delay_s), settle_s)
-        return float(delay_s)
+            terms.append(("SR830", LOCKIN_SETTLE_TAUS * SR830_TIME_CONSTANTS_S[
+                int(sr830_time_constant_code)
+            ]))
+        if meter in ("MFLI", "MFLI + SR830"):
+            terms.append(("MFLI", LOCKIN_SETTLE_TAUS * float(mfli_timeconstant_s)))
+        return terms
+
+    @classmethod
+    def _stfmr_lockin_effective_settle_s(
+        cls, meter: str, settle_s: float, sr830_time_constant_code: int,
+        mfli_timeconstant_s: float,
+    ) -> float:
+        """The wait after each current step: the longer of Settle s and
+        LOCKIN_SETTLE_TAUS x the time constant of every lock-in read
+        (user, 2026-10-14; it was Wait/pt or 5 x the SR830 TC)."""
+        return max(value for _name, value in cls._stfmr_lockin_settle_terms(
+            meter, settle_s, sr830_time_constant_code, mfli_timeconstant_s
+        ))
+
+    @classmethod
+    def _stfmr_lockin_timing_text(
+        cls, meter: str, settle_s: float, acquire_s: float,
+        sr830_time_constant_code: int, mfli_timeconstant_s: float,
+    ) -> str:
+        """The Start confirmation's line on each point's timing, e.g. "each
+        point settles 7 s (7 × TC 1 s; Settle s 1 s) then averages 2 s"
+        (user, 2026-10-14)."""
+        terms = cls._stfmr_lockin_settle_terms(
+            meter, settle_s, sr830_time_constant_code, mfli_timeconstant_s
+        )
+        effective_s = max(value for _name, value in terms)
+        # The SR830 TC as its dropdown names it ("100 ms"), the MFLI's in s.
+        code = int(sr830_time_constant_code)
+        sr830_tc = next(
+            (label for label, value in STFMR_LOCKIN_SR830_TIME_CONSTANTS.items()
+             if value == code),
+            f"{SR830_TIME_CONSTANTS_S[code]:g} s",
+        )
+        tcs = {"SR830": sr830_tc, "MFLI": f"{float(mfli_timeconstant_s):g} s"}
+        lockins = [name for name, _value in terms[1:]]
+        if len(lockins) == 1:
+            reasons = [f"{LOCKIN_SETTLE_TAUS:g} × TC {tcs[lockins[0]]}"]
+        else:
+            reasons = [f"{LOCKIN_SETTLE_TAUS:g} × {name} TC {tcs[name]}"
+                       for name in lockins]
+        heads = []
+        if "SR830" in lockins:
+            heads.append(f"SR830 TC: {sr830_tc} (12 dB/oct)")
+        if "MFLI" in lockins:
+            heads.append(f"MFLI TC: {tcs['MFLI']}")
+        return (
+            ", ".join(heads)
+            + f"; each point settles {effective_s:g} s ("
+            + ", ".join(reasons)
+            + f"; Settle s {float(settle_s):g} s) then averages {float(acquire_s):g} s"
+        )
+
+    def _stfmr_lockin_clock(self) -> float:
+        """The clock of a point's Acquire s window (time.monotonic).  The
+        Tk-free tests give it the time of their stand-in event loop."""
+        return time.monotonic()
+
+    @classmethod
+    def _stfmr_lockin_average_samples(
+        cls, samples: list[dict[str, object]]
+    ) -> dict[str, object]:
+        """One lock-in's readings over a point's Acquire s, as one reading
+        (user, 2026-10-14).  X and Y are averaged and R and theta come from
+        the mean X and Y, as RT-E's _average_ppms_transport_sample does (a
+        mean of R or theta would not be the mean signal's).  The reference
+        frequency is averaged; the reference counts as valid only if it was
+        for every reading, an overload is kept if any reading had one, the
+        input utilization is the highest and the device flags are those of
+        any reading.  The rest is the last reading's (the range cannot have
+        changed in the window: a change restarts it).  Keys keep the
+        lock-in's own spelling (SR830 x_v / y_v / r_v, MFLI X / Y / R /
+        voltage); sample_count is the number of readings."""
+        if not samples:
+            raise RuntimeError("No lock-in reading in the acquisition window")
+        count = len(samples)
+        mean = dict(samples[-1])
+        mean.pop("_sr830", None)
+        x = sum(cls._stfmr_lockin_sample_component(s, "X") for s in samples) / count
+        y = sum(cls._stfmr_lockin_sample_component(s, "Y") for s in samples) / count
+        r = math.hypot(x, y)
+        for keys, value in ((("x_v", "X"), x), (("y_v", "Y"), y), (("r_v", "R"), r)):
+            for key in keys:
+                if key in mean:
+                    mean[key] = value
+        if "voltage" in mean:
+            # The STFMR sweep sets the MFLI's read channel to R.
+            mean["voltage"] = r
+        mean["phase_deg"] = math.degrees(math.atan2(y, x))
+        mean["reference_frequency_hz"] = sum(
+            float(s.get("reference_frequency_hz", math.nan)) for s in samples
+        ) / count
+        mean["reference_valid"] = all(bool(s.get("reference_valid", False)) for s in samples)
+        if any("measurement_valid" in s for s in samples):
+            mean["measurement_valid"] = all(
+                bool(s.get("measurement_valid", s.get("reference_valid", False)))
+                for s in samples
+            )
+        overloads = [s.get("input_overload") for s in samples if "input_overload" in s]
+        if overloads:
+            mean["input_overload"] = (
+                True if any(value is True for value in overloads)
+                else False if all(value is False for value in overloads)
+                else None
+            )
+        utilizations = []
+        for s in samples:
+            try:
+                value = float(s.get("input_utilization", math.nan))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                utilizations.append(value)
+        if utilizations:
+            mean["input_utilization"] = max(utilizations)
+        if "device_status_flags" in mean:
+            flags = [int(s["device_status_flags"]) for s in samples
+                     if s.get("device_status_flags") is not None]
+            combined = 0
+            for value in flags:
+                combined |= value
+            mean["device_status_flags"] = combined if flags else None
+        mean["sample_count"] = count
+        return mean
 
     def _append_stfmr_lockin_live_sample(
         self,
@@ -17542,7 +17754,9 @@ class CombinedControlApp:
 
     def _stfmr_lockin_inputs(
         self,
-    ) -> tuple[list[float], list[float], float, list[float], float, str]:
+    ) -> tuple[list[float], list[float], float, list[float], float, float, str]:
+        """(points, frequencies GHz, power dBm, modulation frequencies Hz,
+        Settle s, Acquire s, meter) from the page, or an error."""
         meter = self.stfmr_lockin_meter_var.get().strip()
         meter_keys = self._stfmr_lockin_meter_keys(meter)
         missing = [
@@ -17573,7 +17787,17 @@ class CombinedControlApp:
             self.stfmr_lockin_mod_start_var.get(),
             self.stfmr_lockin_mod_end_var.get(),
         ))
-        delay_s = float(self.stfmr_lockin_delay_var.get())
+        # Settle s and Acquire s replace Wait/pt s, with the 6221-IV page's
+        # bounds (user, 2026-10-14).  Parsed as text, so a cleared box or a
+        # word gets the same message as a value out of range.
+        def seconds(variable) -> float:
+            try:
+                return float(str(variable.get()).strip())
+            except (TypeError, ValueError):
+                return math.nan
+
+        settle_s = seconds(self.stfmr_lockin_settle_var)
+        acquire_s = seconds(self.stfmr_lockin_acquire_var)
         limit_v = float(self.stfmr_lockin_limit_var.get())
         # Parsed as text like the other fields.  As an IntVar a cleared box
         # raised Tcl's 'expected floating-point number but got ""' and 2.5
@@ -17591,8 +17815,14 @@ class CombinedControlApp:
         loops = int(loops_value)
         if not math.isfinite(power_dbm) or power_dbm > 25:
             raise ValueError("SMB100A power must not exceed 25 dBm")
-        if delay_s < 0 or not math.isfinite(delay_s):
-            raise ValueError("Wait per point must not be negative")
+        if not (math.isfinite(settle_s) and 0.0 <= settle_s <= STFMR_LOCKIN_MAX_SETTLE_S):
+            raise ValueError(
+                f"Settle s must be a number from 0 to {STFMR_LOCKIN_MAX_SETTLE_S:g} s"
+            )
+        if not (math.isfinite(acquire_s) and 0.0 < acquire_s <= STFMR_LOCKIN_MAX_ACQUIRE_S):
+            raise ValueError(
+                f"Acquire s must be a number above 0 and at most {STFMR_LOCKIN_MAX_ACQUIRE_S:g} s"
+            )
         if not 0 < limit_v <= STFMR_KEPCO_MAX_VOLTAGE_V:
             raise ValueError("4886 voltage limit must be within 0–20 V")
         forward = self._build_stfmr_one_way_points(
@@ -17620,7 +17850,10 @@ class CombinedControlApp:
             )
         self.stfmr_lockin_points_per_loop = len(forward)
         points = forward * loops
-        return points, frequencies_ghz, power_dbm, modulation_frequencies_hz, delay_s, meter
+        return (
+            points, frequencies_ghz, power_dbm, modulation_frequencies_hz,
+            settle_s, acquire_s, meter,
+        )
 
     def start_stfmr_lockin_scan(self) -> None:
         if (self.closing or self.stfmr_lockin_closed
@@ -17644,9 +17877,8 @@ class CombinedControlApp:
 
     def _start_stfmr_lockin_scan(self) -> None:
         try:
-            points, frequencies_ghz, power_dbm, modulation_frequencies_hz, delay_s, meter = (
-                self._stfmr_lockin_inputs()
-            )
+            (points, frequencies_ghz, power_dbm, modulation_frequencies_hz,
+             settle_s, acquire_s, meter) = self._stfmr_lockin_inputs()
             # Read once, as the list was: the confirmation and the run log
             # name the range the sweep uses (user, 2026-10-13).
             modulation_start_hz = float(self.stfmr_lockin_mod_start_var.get())
@@ -17692,8 +17924,14 @@ class CombinedControlApp:
             sr830_time_constant_code = STFMR_LOCKIN_SR830_TIME_CONSTANTS[
                 sr830_time_constant
             ]
-            point_wait_s = self._stfmr_sr830_point_wait_s(
-                meter, delay_s, sr830_time_constant_code
+            # Settle s, or 7 x the TC of every lock-in read when longer
+            # (user, 2026-10-14).
+            effective_settle_s = self._stfmr_lockin_effective_settle_s(
+                meter, settle_s, sr830_time_constant_code, mfli_timeconstant_s
+            )
+            timing_text = self._stfmr_lockin_timing_text(
+                meter, settle_s, acquire_s, sr830_time_constant_code,
+                mfli_timeconstant_s,
             )
         except BaseException as error:
             messagebox.showerror("STFMR scan", str(error), parent=self.root)
@@ -17715,15 +17953,22 @@ class CombinedControlApp:
         retained_per_frequency = self._stfmr_saved_points_per_frequency(
             self.stfmr_lockin_points_per_loop, loops_count
         )
-        estimated_saved = passes * retained_per_frequency
+        saved_field_points = passes * retained_per_frequency
+        estimated_saved = saved_field_points
         if meter == "MFLI + SR830":
             estimated_saved *= 2
-        # Every reading after the first of each frequency waits the effective
-        # wait, 5 SR830 time constants when that is longer than Wait/pt
-        # (user, 2026-10-13).
-        estimate = max(total_points - passes, 0) * max(
-            point_wait_s, 0.05
-        )
+        # Every reading after the first of each pass follows a current step
+        # and waits the effective settle; every saved point then averages
+        # Acquire s, while a discarded reading is one reading
+        # (user, 2026-10-14).  The reads themselves come on top.
+        settles = max(total_points - passes, 0)
+        estimate = settles * effective_settle_s + saved_field_points * acquire_s
+        if estimate >= 3600.0:
+            estimate_scale = f"; about {estimate / 3600.0:.1f} h"
+        elif estimate >= 120.0:
+            estimate_scale = f"; about {estimate / 60.0:.0f} min"
+        else:
+            estimate_scale = ""
         fixed_current = self.stfmr_lockin_points_per_loop == 1
         if not messagebox.askyesno(
             "STFMR scan",
@@ -17744,13 +17989,10 @@ class CombinedControlApp:
                 if meter == "SR830"
                 else f"MFLI autorange: {'on' if mfli_auto_range else 'off'}\n"
             )
-            + (
-                f"SR830 TC: {sr830_time_constant} (12 dB/oct); each point waits "
-                f"{point_wait_s:g} s (Wait/pt {delay_s:g} s, at least 5 × TC)\n"
-                if meter in ("SR830", "MFLI + SR830")
-                else ""
-            )
-            + f"Estimated at least {estimate:.1f} s.\n"
+            + f"{timing_text}\n"
+            + f"Estimated at least {estimate:.1f} s ({settles} settles of "
+            f"{effective_settle_s:g} s + {saved_field_points} averages of "
+            f"{acquire_s:g} s{estimate_scale}).\n"
             + f"Live CSV / log saved to: {folder}\n"
             + "Start now and enable the 4886 and SMB100A outputs?",
             parent=self.root,
@@ -17781,7 +18023,14 @@ class CombinedControlApp:
             "current_step_a": abs(float(self.stfmr_lockin_step_var.get())),
             "loops": len(points) // self.stfmr_lockin_points_per_loop,
             "points_per_loop": self.stfmr_lockin_points_per_loop,
-            "voltage_limit_v": limit_v, "point_delay_s": delay_s,
+            "voltage_limit_v": limit_v,
+            # Settle s and Acquire s replace Wait/pt s, whose point_delay_s
+            # and effective_point_wait_s are gone (user, 2026-10-14).
+            "settle_s": settle_s,
+            "acquire_s": acquire_s,
+            "settle_time_constants": LOCKIN_SETTLE_TAUS,
+            "effective_settle_s": effective_settle_s,
+            "acquisition_sample_interval_s": STFMR_LOCKIN_SAMPLE_INTERVAL_S,
             "discard_first_points_per_frequency": 2,
             "expected_saved_points": estimated_saved,
             "sr830_ref_in": sr830_reference_input,
@@ -17789,13 +18038,10 @@ class CombinedControlApp:
             "sr830_initial_sensitivity_index": STFMR_LOCKIN_SR830_SENSITIVITY_CODE,
             "sr830_time_constant_index": sr830_time_constant_code,
             "sr830_time_constant_s": SR830_TIME_CONSTANTS_S[sr830_time_constant_code],
-            # Wait/pt, or 5 SR830 time constants if longer when the SR830 is
-            # read (user, 2026-10-13).
-            "effective_point_wait_s": point_wait_s,
             "mfli_timeconstant_s": mfli_timeconstant_s,
             "mfli_auto_range": mfli_auto_range,
             "mfli_reference_source": reference_source,
-            "mfli_sample_rate_hz": max(1.0, 1.0 / max(delay_s, 0.05)),
+            "mfli_sample_rate_hz": 1.0 / STFMR_LOCKIN_SAMPLE_INTERVAL_S,
             "safety_confirmed": bool(self.stfmr_lockin_manual_safety_var.get()),
         }
         try:
@@ -17819,7 +18065,9 @@ class CombinedControlApp:
         self.stfmr_lockin_index = 0
         self.stfmr_lockin_started = time.monotonic()
         self.stfmr_lockin_live_started = self.stfmr_lockin_started
-        self.stfmr_lockin_delay_s = delay_s
+        self.stfmr_lockin_settle_s = settle_s
+        self.stfmr_lockin_acquire_s = acquire_s
+        self.stfmr_lockin_acquisition = None
         self.stfmr_lockin_modulation_frequencies_hz = modulation_frequencies_hz
         self.stfmr_lockin_modulation_index = 0
         self.stfmr_lockin_expected_hz = modulation_frequencies_hz[0]
@@ -17827,7 +18075,7 @@ class CombinedControlApp:
         self.stfmr_lockin_limit_v = limit_v
         self.stfmr_lockin_mfli_timeconstant_s = mfli_timeconstant_s
         self.stfmr_lockin_sr830_time_constant_code = sr830_time_constant_code
-        self.stfmr_lockin_point_wait_s = point_wait_s
+        self.stfmr_lockin_effective_settle_s = effective_settle_s
         self.stfmr_lockin_sr830_reference_input = sr830_reference_input
         self.stfmr_lockin_sr830_auto_range = sr830_auto_range
         self.stfmr_lockin_mfli_auto_range = mfli_auto_range
@@ -17897,9 +18145,9 @@ class CombinedControlApp:
         first_current = self.stfmr_lockin_points[0]
         meter = self.stfmr_lockin_selected_meter
         reference_source = self.stfmr_lockin_reference_source
-        sample_rate_hz = max(
-            1.0, 1.0 / max(self.stfmr_lockin_delay_s, 0.05)
-        )
+        # The read rate within Acquire s; configure_mfli sets the
+        # demodulator rate to 5 x this (user, 2026-10-14).
+        sample_rate_hz = 1.0 / STFMR_LOCKIN_SAMPLE_INTERVAL_S
         expected_hz = self.stfmr_lockin_expected_hz
         # The modulation frequency just left, which the SR830 must be seen to
         # have left (see wait_for_reference; user, 2026-10-13).
@@ -18114,8 +18362,235 @@ class CombinedControlApp:
 
         future.add_done_callback(lambda _future: self.post_ui(primed))
 
+    def _stfmr_lockin_read_mfli(self, *, first: bool) -> dict[str, object]:
+        """One MFLI reading of the sweep, on the worker thread.
+
+        first: the point's first reading, with read_stfmr_mfli's whole range
+        rule.  A later reading of the point's Acquire s window keeps only
+        its overload and near-full-scale steps (and its limit of three range
+        changes per point): a step down there would restart the point, and
+        the MFLI's firmware autorange counts as a change even when it keeps
+        the range, so a weak signal, always under 15 % of the lowest range,
+        would restart every point three times, 10 x TC each
+        (user, 2026-10-14)."""
+        controller = self.stfmr_lockin_mfli_controller
+        expected_hz = self.stfmr_lockin_expected_hz
+        auto_range = self.stfmr_lockin_mfli_auto_range
+        initial = self.stfmr_lockin_mfli_initial_range_pending
+        attempts = self.stfmr_lockin_mfli_range_attempts
+        if first or not auto_range or initial:
+            return controller.read_stfmr_mfli(
+                expected_hz, auto_range=auto_range, initial=initial,
+                attempts=attempts,
+            )
+        sample = controller.read_stfmr_mfli(expected_hz, auto_range=False)
+        overloaded = sample.get("input_overload") is True
+        try:
+            utilization = float(sample.get("input_utilization", math.nan))
+        except (TypeError, ValueError):
+            utilization = math.nan
+        high = (
+            bool(sample.get("input_extrema_valid", False))
+            and math.isfinite(utilization)
+            and utilization >= 0.85
+            and bool(getattr(controller, "mfli_auto_range_enabled", True))
+        )
+        if not overloaded and not high:
+            return sample
+        if attempts >= 3:
+            raise RuntimeError(
+                "MFLI auto-range still overloaded or near full scale after 3 retries; the current point was not saved; "
+                "please check the input signal and wiring"
+            )
+        sample["auto_range"] = controller._run_mfli_autorange(
+            "STFMR input overload" if overloaded else "overload/high"
+        )
+        sample["input_range_after_v"] = controller.mfli_config["input_range_v"]
+        return sample
+
+    def _stfmr_lockin_read_meters(self, meter: str, *, first: bool) -> dict[str, object]:
+        """One reading of the selected lock-in(s), on the worker thread.  In
+        MFLI + SR830 mode the MFLI is read, then the SR830 at the same
+        current; its reading is under "_sr830" and each carries its
+        read-completion time.
+
+        first: the point's first reading, which may step a range down as
+        well as up, as every reading did when a point was one reading; the
+        later readings of its Acquire s window step a range only up, on an
+        overload or a near-full-scale input (see _stfmr_lockin_read_mfli and
+        STFMRSR830Controller._auto_range_locked; user, 2026-10-14)."""
+        expected_hz = self.stfmr_lockin_expected_hz
+        sr830 = self.stfmr_lockin_controllers["830"]
+
+        def read_sr830():
+            if first:
+                return self._stfmr_retry_read(
+                    "SR830", lambda: sr830.read_sample(expected_hz)
+                )
+            return self._stfmr_retry_read(
+                "SR830", lambda: sr830.read_sample(expected_hz, allow_down=False)
+            )
+
+        if meter == "SR830":
+            return read_sr830()
+        sample = self._stfmr_lockin_read_mfli(first=first)
+        if meter == "MFLI + SR830":
+            sample = dict(sample)
+            sample["_timestamp_iso"] = datetime_module.datetime.now().astimezone().isoformat(timespec="milliseconds")
+            sample["_sr830"] = read_sr830()
+            sample["_sr830"]["_timestamp_iso"] = datetime_module.datetime.now().astimezone().isoformat(timespec="milliseconds")
+        return sample
+
+    def _restart_stfmr_lockin_point(self, wait_s: float) -> None:
+        """After a range change: drop the point's readings and read it again,
+        field and all, after wait_s (the range re-read rule)."""
+        self.stfmr_lockin_acquisition = None
+        self.stfmr_lockin_after_id = self.root.after(
+            max(1, int(math.ceil(float(wait_s) * 1000.0 - 1e-6))),
+            self._read_next_stfmr_lockin_point,
+        )
+
+    def _accept_stfmr_lockin_sample(
+        self, sample: dict[str, object], *, index: int, current: float,
+        frequency_ghz: float, field_g: float,
+    ) -> bool:
+        """Check one reading of a point, on the Tk thread, as a point's one
+        reading was checked before Acquire s (user, 2026-10-14): every
+        reading of the window passes the same checks.
+
+        True: the reading is kept.  False: a range changed (logged; the
+        point starts again after the range re-read wait, which includes the
+        effective settle) or the reading failed (the sweep ended through the
+        output-off sequence, as a failed read always did)."""
+        meter = self.stfmr_lockin_selected_meter
+        # Preserve the existing MFLI range/row path as the primary channel.
+        dual = meter == "MFLI + SR830"
+        active_meter = "MFLI" if dual else meter
+        try:
+            voltage = self._stfmr_lockin_sample_voltage(sample)
+        except BaseException as error:
+            self._set_stfmr_lockin_overload_state(None)
+            self._finish_stfmr_lockin_scan(error=error)
+            return False
+        secondary = sample.get("_sr830") if dual else None
+        if dual:
+            if secondary is None:
+                self._finish_stfmr_lockin_scan(error=RuntimeError("Dual-meter acquisition is missing SR830 data"))
+                return False
+            action = str(secondary.get("auto_range", ""))
+            if action:
+                # MFLI may also have changed range during this attempt.
+                mfli_action = str(sample.get("auto_range", ""))
+                if mfli_action:
+                    self.stfmr_lockin_mfli_initial_range_pending = False
+                    self.stfmr_lockin_mfli_range_attempts += 1
+                    self.stfmr_lockin_mfli_range_actions.append(mfli_action)
+                if not self._stfmr_lockin_log_event("sr830_autorange_retry", action=action,
+                        frequency_ghz=frequency_ghz, point_index=index + 1, dual=True, mfli_action=mfli_action):
+                    return False
+                self.stfmr_lockin_status_var.set("SR830 autorange; re-reading both lock-ins after the wait, current dual-meter data not saved")
+                # The effective settle (at least 7 SR830 time constants) and
+                # 10 MFLI time constants after the SENS change
+                # (user, 2026-10-14).
+                self._restart_stfmr_lockin_point(max(
+                    0.1, self.stfmr_lockin_effective_settle_s,
+                    10 * self.stfmr_lockin_mfli_timeconstant_s,
+                ))
+                return False
+            if not secondary.get("measurement_valid", secondary.get("reference_valid", False)):
+                self._finish_stfmr_lockin_scan(error=RuntimeError("SR830 reference unlocked or overloaded; current dual-meter point not saved"))
+                return False
+        self._set_stfmr_lockin_overload_state(
+            sample.get("input_overload") if active_meter == "MFLI" else None
+        )
+        valid = bool(sample.get("reference_valid", False))
+        self._set_stfmr_lockin_reference_state(valid)
+        if active_meter == "MFLI":
+            action = str(sample.get("auto_range", ""))
+            if action:
+                self.stfmr_lockin_mfli_initial_range_pending = False
+                self.stfmr_lockin_mfli_range_attempts += 1
+                self.stfmr_lockin_mfli_range_actions.append(action)
+                # 10 MFLI time constants, or the effective settle (Settle s
+                # and 7 x the TC of every lock-in read) when longer
+                # (user, 2026-10-14).
+                settle_s = max(
+                    self.stfmr_lockin_effective_settle_s,
+                    10.0 * self.stfmr_lockin_mfli_timeconstant_s, 0.2,
+                )
+                if not self._stfmr_lockin_log_event(
+                    "mfli_autorange_retry", action=action,
+                    frequency_ghz=frequency_ghz, point_index=index + 1,
+                    current_a=current, field_g=field_g,
+                    input_overload=sample.get("input_overload"),
+                    input_range_before_v=sample.get("input_range_v"),
+                    input_range_after_v=sample.get("input_range_after_v"),
+                    settle_s=settle_s,
+                ):
+                    return False
+                self.stfmr_lockin_status_var.set(
+                    f"MFLI autorange: {action}; re-reading the current point after {settle_s:g} s"
+                )
+                self._restart_stfmr_lockin_point(settle_s)
+                return False
+        if dual and (not valid or sample.get("input_overload") is True):
+            self._finish_stfmr_lockin_scan(error=RuntimeError("MFLI reference unlocked or overloaded; current dual-meter point not saved"))
+            return False
+        if dual and not all(math.isfinite(value) for data in (sample, secondary)
+                for value in (self._stfmr_lockin_sample_component(data, "X"),
+                              self._stfmr_lockin_sample_component(data, "Y"),
+                              float(data.get("phase_deg", math.nan)))):
+            self._finish_stfmr_lockin_scan(error=RuntimeError("Dual-meter reading contains invalid X/Y/Theta; current point not saved"))
+            return False
+        if meter == "SR830":
+            auto_range_action = str(sample.get("auto_range", ""))
+            if auto_range_action:
+                if not self._stfmr_lockin_log_event(
+                    "sr830_autorange_retry", action=auto_range_action,
+                    frequency_ghz=frequency_ghz, point_index=index + 1,
+                ):
+                    return False
+                self.stfmr_lockin_field_var.set(f"B: {field_g:+.7g} G")
+                self.stfmr_lockin_voltage_var.set(
+                    f"V: {voltage:+.7g} V"
+                )
+                self.stfmr_lockin_reference_status_var.set(
+                    f"Ref: {float(sample.get('reference_frequency_hz', math.nan)):.5g} "
+                    f"Hz; autorange {auto_range_action}"
+                )
+                self.stfmr_lockin_status_var.set(
+                    f"SR830 autorange: {auto_range_action}; "
+                    "old-range reading not saved, re-reading the current field point"
+                )
+                # The re-read after a SENS change waits the effective settle
+                # too, so at least 7 time constants (user, 2026-10-14).
+                self._restart_stfmr_lockin_point(
+                    max(self.stfmr_lockin_effective_settle_s, 0.1)
+                )
+                return False
+            if not bool(sample.get("measurement_valid", valid)):
+                status = int(sample.get("status", 0))
+                self._finish_stfmr_lockin_scan(
+                    error=RuntimeError(
+                        "SR830 reference unlocked or input overload; current point not saved: "
+                        f"REF={float(sample.get('reference_frequency_hz', math.nan)):.6g} "
+                        f"Hz, LIAS={status}"
+                    )
+                )
+                return False
+        return True
+
     def _read_next_stfmr_lockin_point(self) -> None:
+        """Start the current point: the LS475 field, then the point's first
+        lock-in reading.  A discarded reading (the first two of each loop,
+        carrier and modulation frequency) is this one reading; a saved point
+        goes on reading every STFMR_LOCKIN_SAMPLE_INTERVAL_S until Acquire s
+        has passed since its first lock-in reading started, and saves the
+        mean (user, 2026-10-14).  A range change starts the point here
+        again after its wait.  Every wait is a root.after, so the window
+        never blocks."""
         self.stfmr_lockin_after_id = None
+        self.stfmr_lockin_acquisition = None
         if not self.stfmr_lockin_running:
             return
         if self.stfmr_lockin_stop_event.is_set():
@@ -18132,32 +18607,8 @@ class CombinedControlApp:
                 "Lake Shore 475",
                 lambda: self.stfmr_lockin_controllers["gauss"].read_field(),
             )
-            sample = (
-                self._stfmr_retry_read(
-                    "SR830",
-                    lambda: self.stfmr_lockin_controllers["830"].read_sample(
-                        self.stfmr_lockin_expected_hz
-                    ),
-                )
-                if meter == "SR830"
-                else self.stfmr_lockin_mfli_controller.read_stfmr_mfli(
-                    self.stfmr_lockin_expected_hz,
-                    auto_range=self.stfmr_lockin_mfli_auto_range,
-                    initial=self.stfmr_lockin_mfli_initial_range_pending,
-                    attempts=self.stfmr_lockin_mfli_range_attempts,
-                )
-            )
-            if meter == "MFLI + SR830":
-                sample = dict(sample)
-                sample["_timestamp_iso"] = datetime_module.datetime.now().astimezone().isoformat(timespec="milliseconds")
-                sample["_sr830"] = self._stfmr_retry_read(
-                    "SR830",
-                    lambda: self.stfmr_lockin_controllers["830"].read_sample(
-                        self.stfmr_lockin_expected_hz
-                    ),
-                )
-                sample["_sr830"]["_timestamp_iso"] = datetime_module.datetime.now().astimezone().isoformat(timespec="milliseconds")
-            return field, sample
+            started = self._stfmr_lockin_clock()
+            return field, started, self._stfmr_lockin_read_meters(meter, first=True)
 
         try:
             future = self.stfmr_lockin_executor.submit(read_point)
@@ -18167,9 +18618,6 @@ class CombinedControlApp:
         self.stfmr_lockin_future = future
 
         def measured() -> None:
-            # Preserve the existing MFLI range/row path as the primary channel.
-            dual = meter == "MFLI + SR830"
-            active_meter = "MFLI" if dual else meter
             # A callback submitted before stop/close must not append a late row
             # or restart the next current after the recorder is closed.
             if not self.stfmr_lockin_running:
@@ -18178,360 +18626,367 @@ class CombinedControlApp:
                 self._finish_stfmr_lockin_scan(stopped=True)
                 return
             try:
-                field, sample = future.result()
+                field, started, sample = future.result()
                 field_g = STFMRGauss475Controller.value_in_gauss(field)
-                voltage = self._stfmr_lockin_sample_voltage(sample)
             except BaseException as error:
                 self._set_stfmr_lockin_overload_state(None)
                 self._finish_stfmr_lockin_scan(error=error)
                 return
-            elapsed = time.monotonic() - self.stfmr_lockin_started
-            secondary = sample.get("_sr830") if dual else None
-            if dual:
-                if secondary is None:
-                    self._finish_stfmr_lockin_scan(error=RuntimeError("Dual-meter acquisition is missing SR830 data"))
-                    return
-                action = str(secondary.get("auto_range", ""))
-                if action:
-                    # MFLI may also have changed range during this attempt.
-                    mfli_action = str(sample.get("auto_range", ""))
-                    if mfli_action:
-                        self.stfmr_lockin_mfli_initial_range_pending = False
-                        self.stfmr_lockin_mfli_range_attempts += 1
-                        self.stfmr_lockin_mfli_range_actions.append(mfli_action)
-                    if not self._stfmr_lockin_log_event("sr830_autorange_retry", action=action,
-                            frequency_ghz=frequency_ghz, point_index=index + 1, dual=True, mfli_action=mfli_action):
-                        return
-                    self.stfmr_lockin_status_var.set("SR830 autorange; re-reading both lock-ins after the wait, current dual-meter data not saved")
-                    # At least 5 SR830 time constants after the SENS change,
-                    # in the effective wait (user, 2026-10-13).
-                    self.stfmr_lockin_after_id = self.root.after(
-                        int(max(0.1, self.stfmr_lockin_point_wait_s, 10*self.stfmr_lockin_mfli_timeconstant_s) * 1000),
-                        self._read_next_stfmr_lockin_point)
-                    return
-                if not secondary.get("measurement_valid", secondary.get("reference_valid", False)):
-                    self._finish_stfmr_lockin_scan(error=RuntimeError("SR830 reference unlocked or overloaded; current dual-meter point not saved"))
-                    return
-            self._set_stfmr_lockin_overload_state(
-                sample.get("input_overload") if active_meter == "MFLI" else None
-            )
-            valid = bool(sample.get("reference_valid", False))
-            self._set_stfmr_lockin_reference_state(valid)
-            if active_meter == "MFLI":
-                action = str(sample.get("auto_range", ""))
-                if action:
-                    self.stfmr_lockin_mfli_initial_range_pending = False
-                    self.stfmr_lockin_mfli_range_attempts += 1
-                    self.stfmr_lockin_mfli_range_actions.append(action)
-                    # In dual mode the re-read reads the SR830 too, so it
-                    # waits the effective wait; alone the MFLI waits Wait/pt
-                    # as before (user, 2026-10-13).
-                    settle_s = max(
-                        self.stfmr_lockin_point_wait_s,
-                        10.0 * self.stfmr_lockin_mfli_timeconstant_s, 0.2,
-                    )
-                    if not self._stfmr_lockin_log_event(
-                        "mfli_autorange_retry", action=action,
-                        frequency_ghz=frequency_ghz, point_index=index + 1,
-                        current_a=current, field_g=field_g,
-                        input_overload=sample.get("input_overload"),
-                        input_range_before_v=sample.get("input_range_v"),
-                        input_range_after_v=sample.get("input_range_after_v"),
-                        settle_s=settle_s,
-                    ):
-                        return
-                    self.stfmr_lockin_status_var.set(
-                        f"MFLI autorange: {action}; re-reading the current point after {settle_s:g} s"
-                    )
-                    self.stfmr_lockin_after_id = self.root.after(
-                        int(math.ceil(settle_s * 1000)),
-                        self._read_next_stfmr_lockin_point,
-                    )
-                    return
-            if dual and (not valid or sample.get("input_overload") is True):
-                self._finish_stfmr_lockin_scan(error=RuntimeError("MFLI reference unlocked or overloaded; current dual-meter point not saved"))
-                return
-            if dual and not all(math.isfinite(value) for data in (sample, secondary)
-                    for value in (self._stfmr_lockin_sample_component(data, "X"),
-                                  self._stfmr_lockin_sample_component(data, "Y"),
-                                  float(data.get("phase_deg", math.nan)))):
-                self._finish_stfmr_lockin_scan(error=RuntimeError("Dual-meter reading contains invalid X/Y/Theta; current point not saved"))
-                return
-            if meter == "SR830":
-                auto_range_action = str(sample.get("auto_range", ""))
-                if auto_range_action:
-                    if not self._stfmr_lockin_log_event(
-                        "sr830_autorange_retry", action=auto_range_action,
-                        frequency_ghz=frequency_ghz, point_index=index + 1,
-                    ):
-                        return
-                    self.stfmr_lockin_field_var.set(f"B: {field_g:+.7g} G")
-                    self.stfmr_lockin_voltage_var.set(
-                        f"V: {voltage:+.7g} V"
-                    )
-                    self.stfmr_lockin_reference_status_var.set(
-                        f"Ref: {float(sample.get('reference_frequency_hz', math.nan)):.5g} "
-                        f"Hz; autorange {auto_range_action}"
-                    )
-                    self.stfmr_lockin_status_var.set(
-                        f"SR830 autorange: {auto_range_action}; "
-                        "old-range reading not saved, re-reading the current field point"
-                    )
-                    # The re-read after a SENS change waits 5 time constants
-                    # too, in the effective wait (user, 2026-10-13).
-                    self.stfmr_lockin_after_id = self.root.after(
-                        max(
-                            100,
-                            int(round(max(self.stfmr_lockin_point_wait_s, 0.1) * 1000)),
-                        ),
-                        self._read_next_stfmr_lockin_point,
-                    )
-                    return
-                if not bool(sample.get("measurement_valid", valid)):
-                    status = int(sample.get("status", 0))
-                    self._finish_stfmr_lockin_scan(
-                        error=RuntimeError(
-                            "SR830 reference unlocked or input overload; current point not saved: "
-                            f"REF={float(sample.get('reference_frequency_hz', math.nan)):.6g} "
-                            f"Hz, LIAS={status}"
-                        )
-                    )
-                    return
-            # Passes before this one: whole modulation frequencies, each with
-            # every carrier, then this modulation's carriers (user, 2026-10-13).
-            completed_before_frequency = (
-                self.stfmr_lockin_modulation_index * len(self.stfmr_lockin_frequencies_ghz)
-                + frequency_index
-            ) * len(self.stfmr_lockin_points)
-            row = {
-                "index": completed_before_frequency + index + 1,
-                "frequency_index": frequency_index + 1,
-                "loop": index // max(self.stfmr_lockin_points_per_loop, 1) + 1,
-                "point_in_loop": index % max(self.stfmr_lockin_points_per_loop, 1) + 1,
-                "elapsed_s": elapsed,
-                "meter": active_meter,
-                "current_a": current,
-                "field_g": field_g,
-                "x_v": self._stfmr_lockin_sample_component(sample, "X"),
-                "y_v": self._stfmr_lockin_sample_component(sample, "Y"),
-                "voltage_v": voltage,
-                "phase_deg": float(sample.get("phase_deg", math.nan)),
-                "reference_frequency_hz": float(
-                    sample.get("reference_frequency_hz", math.nan)
-                ),
-                "reference_valid": valid,
-                "microwave_frequency_ghz": frequency_ghz,
-                "microwave_power_dbm": self.stfmr_lockin_power_dbm,
-                "modulation_frequency_hz": self.stfmr_lockin_expected_hz,
-                "mfli_timeconstant_s": (
-                    self.stfmr_lockin_mfli_timeconstant_s
-                    if active_meter == "MFLI"
-                    else math.nan
-                ),
-                "sr830_ref_in": (
-                    self.stfmr_lockin_sr830_reference_input
-                    if meter == "SR830"
-                    else ""
-                ),
-                "sr830_sensitivity_index": (
-                    int(sample.get("sensitivity_index", -1))
-                    if meter == "SR830"
-                    else ""
-                ),
-                "sr830_sensitivity_full_scale_v": (
-                    float(sample.get("sensitivity_full_scale_v", math.nan))
-                    if meter == "SR830"
-                    else math.nan
-                ),
-                "sr830_auto_range_action": (
-                    str(sample.get("auto_range", ""))
-                    if meter == "SR830"
-                    else ""
-                ),
-                "timestamp_iso": sample.get("_timestamp_iso") or datetime_module.datetime.now().astimezone().isoformat(timespec="milliseconds"),
-                "mfli_input_overload": sample.get("input_overload") if active_meter == "MFLI" else None,
-                "mfli_device_status_flags": sample.get("device_status_flags") if active_meter == "MFLI" else None,
-                "mfli_auto_range_enabled": self.stfmr_lockin_mfli_auto_range if active_meter == "MFLI" else None,
-                "mfli_input_range_v": sample.get("input_range_v") if active_meter == "MFLI" else None,
-                "mfli_input_utilization": sample.get("input_utilization") if active_meter == "MFLI" else None,
-                "mfli_auto_range_action": " | ".join(self.stfmr_lockin_mfli_range_actions) if active_meter == "MFLI" else "",
-                # Recorded as mfli_timeconstant_s is (user, 2026-10-13).
-                "sr830_time_constant_s": (
-                    SR830_TIME_CONSTANTS_S[self.stfmr_lockin_sr830_time_constant_code]
-                    if meter == "SR830"
-                    else math.nan
-                ),
-            }
-            pair = [row]
-            if dual:
-                sr_row = dict(row)
-                sr_row.update(meter="SR830",
-                    timestamp_iso=secondary.get("_timestamp_iso", row["timestamp_iso"]),
-                    x_v=self._stfmr_lockin_sample_component(secondary, "X"),
-                    y_v=self._stfmr_lockin_sample_component(secondary, "Y"),
-                    voltage_v=self._stfmr_lockin_sample_voltage(secondary),
-                    phase_deg=float(secondary.get("phase_deg", math.nan)),
-                    reference_frequency_hz=float(secondary.get("reference_frequency_hz", math.nan)),
-                    reference_valid=bool(secondary.get("reference_valid", False)),
-                    sr830_ref_in=self.stfmr_lockin_sr830_reference_input,
-                    sr830_sensitivity_index=int(secondary.get("sensitivity_index", -1)),
-                    sr830_sensitivity_full_scale_v=float(secondary.get("sensitivity_full_scale_v", math.nan)),
-                    sr830_auto_range_action=str(secondary.get("auto_range", "")),
-                    sr830_time_constant_s=SR830_TIME_CONSTANTS_S[self.stfmr_lockin_sr830_time_constant_code])
-                for column in sr_row:
-                    if column.startswith("mfli_"):
-                        sr_row[column] = None
-                pair.append(sr_row)
-            discard_startup_point = self._stfmr_should_discard_startup_point(
-                index, self.stfmr_lockin_points_per_loop
-            )
-            if not discard_startup_point:
-                try:
-                    if self.stfmr_lockin_recorder is None:
-                        raise RuntimeError("STFMR live CSV is not open")
-                    for recorded_row in pair:
-                        self.stfmr_lockin_recorder.append_point(recorded_row)
-                except BaseException as error:
-                    self._finish_stfmr_lockin_scan(error=error)
-                    return
-                self.stfmr_lockin_rows.extend(pair)
-                self._append_stfmr_lockin_live_sample(
-                    active_meter,
-                    sample,
-                    field_g=field_g,
-                    loop=int(row["loop"]),
-                    frequency_ghz=frequency_ghz,
-                    modulation_frequency_hz=self.stfmr_lockin_expected_hz,
-                )
-                if dual:
-                    self._append_stfmr_lockin_live_sample("SR830", secondary,
-                        field_g=field_g, loop=int(row["loop"]), frequency_ghz=frequency_ghz,
-                        modulation_frequency_hz=self.stfmr_lockin_expected_hz)
-            elif not self._stfmr_lockin_log_event(
-                "startup_point_discarded", frequency_ghz=frequency_ghz,
-                point_index=index + 1, current_a=current, field_g=field_g,
-                modulation_frequency_hz=self.stfmr_lockin_expected_hz,
+            if not self._accept_stfmr_lockin_sample(
+                sample, index=index, current=current,
+                frequency_ghz=frequency_ghz, field_g=field_g,
             ):
                 return
-            self.stfmr_lockin_field_var.set(f"B: {field_g:+.7g} G")
-            self.stfmr_lockin_voltage_var.set(f"V: {voltage:+.7g} V")
-            self.stfmr_lockin_reference_status_var.set(
-                f"Ref: {row['reference_frequency_hz']:.5g} Hz "
-                + ("LOCK" if valid else "WARNING")
-            )
-            if dual:
-                self._display_stfmr_dual_sample(sample, secondary)
-            self.stfmr_lockin_index += 1
-            self.stfmr_lockin_mfli_range_attempts = 0
-            self.stfmr_lockin_mfli_range_actions = []
-            done_in_frequency = self.stfmr_lockin_index
-            completed = completed_before_frequency + done_in_frequency
-            total = len(self.stfmr_lockin_modulation_frequencies_hz) * len(
-                self.stfmr_lockin_frequencies_ghz
-            ) * len(self.stfmr_lockin_points)
-            self._set_stfmr_progress(
-                self.stfmr_lockin_progress, completed, total
-            )
-            if not discard_startup_point:
-                self._redraw_stfmr_lockin_plot()
-            remaining = elapsed / max(completed, 1) * max(
-                total - completed, 0
-            )
-            if discard_startup_point:
-                # A fixed current's next read is at the same current, so its
-                # wording speaks of readings; a sweep's status is unchanged
-                # (user, 2026-10-13).
-                fixed_current = self.stfmr_lockin_points_per_loop <= 1
-                self.stfmr_lockin_status_var.set(
-                    f"{self._stfmr_lockin_pass_label(frequency_ghz)} discarded start-transition point "
-                    f"{index + 1}/2: "
-                    f"I={current:+.5g} A, B={field_g:+.6g} G; "
-                    + (
-                        ("taking the second reading" if fixed_current
-                         else "moving to the second current point")
-                        if index == 0
-                        else ("saving from the third reading" if fixed_current
-                              else "saving from the third current point")
-                    )
-                )
-            else:
-                # "~120 s left" with several modulation frequencies, whose
-                # longer label pushed "remaining about 120.0 s" off the
-                # 52-character status label (user, 2026-10-13).
-                self.stfmr_lockin_status_var.set(
-                    f"{self._stfmr_lockin_pass_label(frequency_ghz)}; scanning {completed}/{total}; "
-                    f"I={current:+.5g} A; "
-                    + (f"~{remaining:.0f} s left" if self._stfmr_lockin_several_modulations()
-                       else f"remaining about {remaining:.1f} s")
-                )
-            if done_in_frequency >= len(self.stfmr_lockin_points):
-                if not self._stfmr_lockin_log_event(
-                    "frequency_complete", frequency_ghz=frequency_ghz,
-                    saved_points=sum(
-                        not self._stfmr_should_discard_startup_point(
-                            point, self.stfmr_lockin_points_per_loop
-                        )
-                        for point in range(done_in_frequency)
-                    ) * (2 if dual else 1),
-                    modulation_frequency_hz=self.stfmr_lockin_expected_hz,
-                ):
-                    return
-                if frequency_index + 1 >= len(
-                    self.stfmr_lockin_frequencies_ghz
-                ):
-                    modulations = self.stfmr_lockin_modulation_frequencies_hz
-                    if self.stfmr_lockin_modulation_index + 1 >= len(modulations):
-                        self._finish_stfmr_lockin_scan()
-                        return
-                    # The next modulation frequency: the whole f x A sweep
-                    # again from the first carrier.  Its first two readings
-                    # are discarded as after a carrier change, since the
-                    # frequency index starts again (user, 2026-10-13).
-                    finished_hz = self.stfmr_lockin_expected_hz
-                    self.stfmr_lockin_modulation_index += 1
-                    self.stfmr_lockin_frequency_index = 0
-                    self.stfmr_lockin_index = 0
-                    self.stfmr_lockin_expected_hz = modulations[
-                        self.stfmr_lockin_modulation_index
-                    ]
-                    # Short enough for the 52-character status label, which
-                    # shows it through the lock wait (user, 2026-10-13).
-                    self.stfmr_lockin_status_var.set(
-                        f"Mod. {finished_hz:g} Hz done; zeroing; LFO to "
-                        f"{self.stfmr_lockin_expected_hz:g} Hz at "
-                        f"{self.stfmr_lockin_frequencies_ghz[0]:g} GHz"
-                    )
-                    self._configure_stfmr_lockin_frequency(
-                        initial=False, modulation_change=True
-                    )
-                    return
-                self.stfmr_lockin_frequency_index += 1
-                self.stfmr_lockin_index = 0
-                next_frequency = self.stfmr_lockin_frequencies_ghz[
-                    self.stfmr_lockin_frequency_index
-                ]
-                self.stfmr_lockin_status_var.set(
-                    f"{self._stfmr_lockin_pass_label(frequency_ghz)} done; zeroing and switching to "
-                    f"{next_frequency:g} GHz"
-                )
-                self._configure_stfmr_lockin_frequency(initial=False)
+            self.stfmr_lockin_acquisition = {
+                "index": index, "current": current,
+                "frequency_index": frequency_index, "frequency_ghz": frequency_ghz,
+                "field_g": field_g, "started": started, "last_started": started,
+                "samples": [sample],
+                "discard": self._stfmr_should_discard_startup_point(
+                    index, self.stfmr_lockin_points_per_loop
+                ),
+            }
+            self._continue_stfmr_lockin_acquisition()
+
+        future.add_done_callback(lambda _future: self.post_ui(measured))
+
+    def _continue_stfmr_lockin_acquisition(self) -> None:
+        """After each kept reading of a point: done if the point is a
+        discarded reading (one reading, no Acquire s window) or Acquire s has
+        passed since its first lock-in reading started; else the next reading
+        starts STFMR_LOCKIN_SAMPLE_INTERVAL_S after the last one started, or
+        at once when that has passed (user, 2026-10-14)."""
+        acquisition = self.stfmr_lockin_acquisition
+        now = self._stfmr_lockin_clock()
+        if acquisition["discard"] or (
+            now - acquisition["started"] >= self.stfmr_lockin_acquire_s - 1e-9
+        ):
+            self._complete_stfmr_lockin_point()
+            return
+        wait_s = acquisition["last_started"] + STFMR_LOCKIN_SAMPLE_INTERVAL_S - now
+        self.stfmr_lockin_after_id = self.root.after(
+            max(1, int(math.ceil(wait_s * 1000.0 - 1e-6))),
+            self._read_stfmr_lockin_acquisition_sample,
+        )
+
+    def _read_stfmr_lockin_acquisition_sample(self) -> None:
+        """A later reading of the running point's Acquire s window."""
+        self.stfmr_lockin_after_id = None
+        if not self.stfmr_lockin_running:
+            return
+        if self.stfmr_lockin_stop_event.is_set():
+            self._finish_stfmr_lockin_scan(stopped=True)
+            return
+        acquisition = self.stfmr_lockin_acquisition
+        if acquisition is None:
+            return
+        meter = self.stfmr_lockin_selected_meter
+
+        def read_sample():
+            started = self._stfmr_lockin_clock()
+            return started, self._stfmr_lockin_read_meters(meter, first=False)
+
+        try:
+            future = self.stfmr_lockin_executor.submit(read_sample)
+        except BaseException as error:
+            self._finish_stfmr_lockin_scan(error=error)
+            return
+        self.stfmr_lockin_future = future
+
+        def sampled() -> None:
+            if not self.stfmr_lockin_running:
+                return
+            if self.stfmr_lockin_stop_event.is_set():
+                self._finish_stfmr_lockin_scan(stopped=True)
+                return
+            if self.stfmr_lockin_acquisition is not acquisition:
                 return
             try:
-                next_current = self.stfmr_lockin_points[done_in_frequency]
-                self.stfmr_lockin_controllers["kepco"].set_scan_current(next_current)
+                started, sample = future.result()
+            except BaseException as error:
+                self._set_stfmr_lockin_overload_state(None)
+                self._finish_stfmr_lockin_scan(error=error)
+                return
+            if not self._accept_stfmr_lockin_sample(
+                sample, index=acquisition["index"], current=acquisition["current"],
+                frequency_ghz=acquisition["frequency_ghz"],
+                field_g=acquisition["field_g"],
+            ):
+                return
+            acquisition["samples"].append(sample)
+            acquisition["last_started"] = started
+            self._continue_stfmr_lockin_acquisition()
+
+        future.add_done_callback(lambda _future: self.post_ui(sampled))
+
+    def _complete_stfmr_lockin_point(self) -> None:
+        """Save the point (unless it is a discarded reading), show it and step
+        to the next current, carrier or modulation frequency.  The row holds
+        the mean of the point's readings (_stfmr_lockin_average_samples; in
+        MFLI + SR830 mode each meter's over the same window) and, in its last
+        columns, Settle s, the effective settle, Acquire s and the number of
+        readings (user, 2026-10-14)."""
+        acquisition = self.stfmr_lockin_acquisition
+        self.stfmr_lockin_acquisition = None
+        meter = self.stfmr_lockin_selected_meter
+        dual = meter == "MFLI + SR830"
+        active_meter = "MFLI" if dual else meter
+        index = acquisition["index"]
+        current = acquisition["current"]
+        frequency_index = acquisition["frequency_index"]
+        frequency_ghz = acquisition["frequency_ghz"]
+        field_g = acquisition["field_g"]
+        samples = acquisition["samples"]
+        try:
+            sample = self._stfmr_lockin_average_samples(samples)
+            secondary = (
+                self._stfmr_lockin_average_samples([s["_sr830"] for s in samples])
+                if dual else None
+            )
+            voltage = self._stfmr_lockin_sample_voltage(sample)
+        except BaseException as error:
+            self._finish_stfmr_lockin_scan(error=error)
+            return
+        elapsed = time.monotonic() - self.stfmr_lockin_started
+        valid = bool(sample.get("reference_valid", False))
+        self._set_stfmr_lockin_reference_state(valid)
+        # Passes before this one: whole modulation frequencies, each with
+        # every carrier, then this modulation's carriers (user, 2026-10-13).
+        completed_before_frequency = (
+            self.stfmr_lockin_modulation_index * len(self.stfmr_lockin_frequencies_ghz)
+            + frequency_index
+        ) * len(self.stfmr_lockin_points)
+        row = {
+            "index": completed_before_frequency + index + 1,
+            "frequency_index": frequency_index + 1,
+            "loop": index // max(self.stfmr_lockin_points_per_loop, 1) + 1,
+            "point_in_loop": index % max(self.stfmr_lockin_points_per_loop, 1) + 1,
+            "elapsed_s": elapsed,
+            "meter": active_meter,
+            "current_a": current,
+            "field_g": field_g,
+            "x_v": self._stfmr_lockin_sample_component(sample, "X"),
+            "y_v": self._stfmr_lockin_sample_component(sample, "Y"),
+            "voltage_v": voltage,
+            "phase_deg": float(sample.get("phase_deg", math.nan)),
+            "reference_frequency_hz": float(
+                sample.get("reference_frequency_hz", math.nan)
+            ),
+            "reference_valid": valid,
+            "microwave_frequency_ghz": frequency_ghz,
+            "microwave_power_dbm": self.stfmr_lockin_power_dbm,
+            "modulation_frequency_hz": self.stfmr_lockin_expected_hz,
+            "mfli_timeconstant_s": (
+                self.stfmr_lockin_mfli_timeconstant_s
+                if active_meter == "MFLI"
+                else math.nan
+            ),
+            "sr830_ref_in": (
+                self.stfmr_lockin_sr830_reference_input
+                if meter == "SR830"
+                else ""
+            ),
+            "sr830_sensitivity_index": (
+                int(sample.get("sensitivity_index", -1))
+                if meter == "SR830"
+                else ""
+            ),
+            "sr830_sensitivity_full_scale_v": (
+                float(sample.get("sensitivity_full_scale_v", math.nan))
+                if meter == "SR830"
+                else math.nan
+            ),
+            "sr830_auto_range_action": (
+                str(sample.get("auto_range", ""))
+                if meter == "SR830"
+                else ""
+            ),
+            "timestamp_iso": sample.get("_timestamp_iso") or datetime_module.datetime.now().astimezone().isoformat(timespec="milliseconds"),
+            "mfli_input_overload": sample.get("input_overload") if active_meter == "MFLI" else None,
+            "mfli_device_status_flags": sample.get("device_status_flags") if active_meter == "MFLI" else None,
+            "mfli_auto_range_enabled": self.stfmr_lockin_mfli_auto_range if active_meter == "MFLI" else None,
+            "mfli_input_range_v": sample.get("input_range_v") if active_meter == "MFLI" else None,
+            "mfli_input_utilization": sample.get("input_utilization") if active_meter == "MFLI" else None,
+            "mfli_auto_range_action": " | ".join(self.stfmr_lockin_mfli_range_actions) if active_meter == "MFLI" else "",
+            # Recorded as mfli_timeconstant_s is (user, 2026-10-13).
+            "sr830_time_constant_s": (
+                SR830_TIME_CONSTANTS_S[self.stfmr_lockin_sr830_time_constant_code]
+                if meter == "SR830"
+                else math.nan
+            ),
+            # Last, so every older column keeps its place (user, 2026-10-14).
+            "settle_s": self.stfmr_lockin_settle_s,
+            "effective_settle_s": self.stfmr_lockin_effective_settle_s,
+            "acquire_s": self.stfmr_lockin_acquire_s,
+            "sample_count": int(sample.get("sample_count", len(samples))),
+        }
+        pair = [row]
+        if dual:
+            sr_row = dict(row)
+            sr_row.update(meter="SR830",
+                timestamp_iso=secondary.get("_timestamp_iso", row["timestamp_iso"]),
+                x_v=self._stfmr_lockin_sample_component(secondary, "X"),
+                y_v=self._stfmr_lockin_sample_component(secondary, "Y"),
+                voltage_v=self._stfmr_lockin_sample_voltage(secondary),
+                phase_deg=float(secondary.get("phase_deg", math.nan)),
+                reference_frequency_hz=float(secondary.get("reference_frequency_hz", math.nan)),
+                reference_valid=bool(secondary.get("reference_valid", False)),
+                sr830_ref_in=self.stfmr_lockin_sr830_reference_input,
+                sr830_sensitivity_index=int(secondary.get("sensitivity_index", -1)),
+                sr830_sensitivity_full_scale_v=float(secondary.get("sensitivity_full_scale_v", math.nan)),
+                sr830_auto_range_action=str(secondary.get("auto_range", "")),
+                sr830_time_constant_s=SR830_TIME_CONSTANTS_S[self.stfmr_lockin_sr830_time_constant_code],
+                sample_count=int(secondary.get("sample_count", len(samples))))
+            for column in sr_row:
+                if column.startswith("mfli_"):
+                    sr_row[column] = None
+            pair.append(sr_row)
+        discard_startup_point = acquisition["discard"]
+        if not discard_startup_point:
+            try:
+                if self.stfmr_lockin_recorder is None:
+                    raise RuntimeError("STFMR live CSV is not open")
+                for recorded_row in pair:
+                    self.stfmr_lockin_recorder.append_point(recorded_row)
             except BaseException as error:
                 self._finish_stfmr_lockin_scan(error=error)
                 return
-            # Keep the field-output panel on the current the sweep just sent.
-            self._show_stfmr_lockin_kepco_state()
-            # Wait/pt, or 5 SR830 time constants when the SR830 is read and
-            # that is longer (user, 2026-10-13).
-            self.stfmr_lockin_after_id = self.root.after(
-                max(1, int(self.stfmr_lockin_point_wait_s * 1000)),
-                self._read_next_stfmr_lockin_point,
+            self.stfmr_lockin_rows.extend(pair)
+            self._append_stfmr_lockin_live_sample(
+                active_meter,
+                sample,
+                field_g=field_g,
+                loop=int(row["loop"]),
+                frequency_ghz=frequency_ghz,
+                modulation_frequency_hz=self.stfmr_lockin_expected_hz,
             )
-
-        future.add_done_callback(lambda _future: self.post_ui(measured))
+            if dual:
+                self._append_stfmr_lockin_live_sample("SR830", secondary,
+                    field_g=field_g, loop=int(row["loop"]), frequency_ghz=frequency_ghz,
+                    modulation_frequency_hz=self.stfmr_lockin_expected_hz)
+        elif not self._stfmr_lockin_log_event(
+            "startup_point_discarded", frequency_ghz=frequency_ghz,
+            point_index=index + 1, current_a=current, field_g=field_g,
+            modulation_frequency_hz=self.stfmr_lockin_expected_hz,
+        ):
+            return
+        self.stfmr_lockin_field_var.set(f"B: {field_g:+.7g} G")
+        self.stfmr_lockin_voltage_var.set(f"V: {voltage:+.7g} V")
+        self.stfmr_lockin_reference_status_var.set(
+            f"Ref: {row['reference_frequency_hz']:.5g} Hz "
+            + ("LOCK" if valid else "WARNING")
+        )
+        if dual:
+            self._display_stfmr_dual_sample(sample, secondary)
+        self.stfmr_lockin_index += 1
+        self.stfmr_lockin_mfli_range_attempts = 0
+        self.stfmr_lockin_mfli_range_actions = []
+        done_in_frequency = self.stfmr_lockin_index
+        completed = completed_before_frequency + done_in_frequency
+        total = len(self.stfmr_lockin_modulation_frequencies_hz) * len(
+            self.stfmr_lockin_frequencies_ghz
+        ) * len(self.stfmr_lockin_points)
+        self._set_stfmr_progress(
+            self.stfmr_lockin_progress, completed, total
+        )
+        if not discard_startup_point:
+            self._redraw_stfmr_lockin_plot()
+        remaining = elapsed / max(completed, 1) * max(
+            total - completed, 0
+        )
+        if discard_startup_point:
+            # A fixed current's next read is at the same current, so its
+            # wording speaks of readings; a sweep's status is unchanged
+            # (user, 2026-10-13).
+            fixed_current = self.stfmr_lockin_points_per_loop <= 1
+            self.stfmr_lockin_status_var.set(
+                f"{self._stfmr_lockin_pass_label(frequency_ghz)} discarded start-transition point "
+                f"{index + 1}/2: "
+                f"I={current:+.5g} A, B={field_g:+.6g} G; "
+                + (
+                    ("taking the second reading" if fixed_current
+                     else "moving to the second current point")
+                    if index == 0
+                    else ("saving from the third reading" if fixed_current
+                          else "saving from the third current point")
+                )
+            )
+        else:
+            # "~120 s left" with several modulation frequencies, whose
+            # longer label pushed "remaining about 120.0 s" off the
+            # 52-character status label (user, 2026-10-13).
+            self.stfmr_lockin_status_var.set(
+                f"{self._stfmr_lockin_pass_label(frequency_ghz)}; scanning {completed}/{total}; "
+                f"I={current:+.5g} A; "
+                + (f"~{remaining:.0f} s left" if self._stfmr_lockin_several_modulations()
+                   else f"remaining about {remaining:.1f} s")
+            )
+        if done_in_frequency >= len(self.stfmr_lockin_points):
+            if not self._stfmr_lockin_log_event(
+                "frequency_complete", frequency_ghz=frequency_ghz,
+                saved_points=sum(
+                    not self._stfmr_should_discard_startup_point(
+                        point, self.stfmr_lockin_points_per_loop
+                    )
+                    for point in range(done_in_frequency)
+                ) * (2 if dual else 1),
+                modulation_frequency_hz=self.stfmr_lockin_expected_hz,
+            ):
+                return
+            if frequency_index + 1 >= len(
+                self.stfmr_lockin_frequencies_ghz
+            ):
+                modulations = self.stfmr_lockin_modulation_frequencies_hz
+                if self.stfmr_lockin_modulation_index + 1 >= len(modulations):
+                    self._finish_stfmr_lockin_scan()
+                    return
+                # The next modulation frequency: the whole f x A sweep
+                # again from the first carrier.  Its first two readings
+                # are discarded as after a carrier change, since the
+                # frequency index starts again (user, 2026-10-13).
+                finished_hz = self.stfmr_lockin_expected_hz
+                self.stfmr_lockin_modulation_index += 1
+                self.stfmr_lockin_frequency_index = 0
+                self.stfmr_lockin_index = 0
+                self.stfmr_lockin_expected_hz = modulations[
+                    self.stfmr_lockin_modulation_index
+                ]
+                # Short enough for the 52-character status label, which
+                # shows it through the lock wait (user, 2026-10-13).
+                self.stfmr_lockin_status_var.set(
+                    f"Mod. {finished_hz:g} Hz done; zeroing; LFO to "
+                    f"{self.stfmr_lockin_expected_hz:g} Hz at "
+                    f"{self.stfmr_lockin_frequencies_ghz[0]:g} GHz"
+                )
+                self._configure_stfmr_lockin_frequency(
+                    initial=False, modulation_change=True
+                )
+                return
+            self.stfmr_lockin_frequency_index += 1
+            self.stfmr_lockin_index = 0
+            next_frequency = self.stfmr_lockin_frequencies_ghz[
+                self.stfmr_lockin_frequency_index
+            ]
+            self.stfmr_lockin_status_var.set(
+                f"{self._stfmr_lockin_pass_label(frequency_ghz)} done; zeroing and switching to "
+                f"{next_frequency:g} GHz"
+            )
+            self._configure_stfmr_lockin_frequency(initial=False)
+            return
+        try:
+            next_current = self.stfmr_lockin_points[done_in_frequency]
+            self.stfmr_lockin_controllers["kepco"].set_scan_current(next_current)
+        except BaseException as error:
+            self._finish_stfmr_lockin_scan(error=error)
+            return
+        # Keep the field-output panel on the current the sweep just sent.
+        self._show_stfmr_lockin_kepco_state()
+        # The effective settle after the step: Settle s, or 7 x the TC of
+        # every lock-in read when longer (user, 2026-10-14).
+        self.stfmr_lockin_after_id = self.root.after(
+            max(1, int(math.ceil(self.stfmr_lockin_effective_settle_s * 1000.0 - 1e-6))),
+            self._read_next_stfmr_lockin_point,
+        )
 
     def stop_stfmr_lockin_scan(self) -> None:
         self.stfmr_lockin_stop_event.set()
@@ -18550,6 +19005,7 @@ class CombinedControlApp:
         if not self.stfmr_lockin_running:
             return
         self.stfmr_lockin_running = False
+        self.stfmr_lockin_acquisition = None
         shutdown_errors = []
         try:
             self.stfmr_lockin_controllers["kepco"].zero_output()

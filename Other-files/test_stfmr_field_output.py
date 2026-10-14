@@ -202,7 +202,9 @@ class FieldOutputTests(unittest.TestCase):
                                  [(w.winfo_class(), w.winfo_x(), w.winfo_width()) for w in fields])
         # One table, so fields share columns down the rows; separate
         # per-field groups (the old layout) would leave nothing to compare.
-        self.assertGreaterEqual(compared, 5, "fields are not in one shared table")
+        # Four columns hold two or more fields since the table is in
+        # measurement order (2026-10-14): Comp. V alone ends row 1.
+        self.assertGreaterEqual(compared, 4, "fields are not in one shared table")
         for column in range(0, 12, 2):
             for label in table.grid_slaves(column=column):
                 if label.winfo_class() == "TLabel":
@@ -408,22 +410,27 @@ class FieldOutputTests(unittest.TestCase):
         finally:
             self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
 
-    def test_sr830_time_constant_sits_under_loop_and_shows_every_choice(self):
-        """User, 2026-10-13: the 'SR830 TC' dropdown fills the free cell under
-        Loop, as wide as the Loop spinbox, so the table keeps its width in the
-        1101 px window, and "300 ms" is not cut."""
+    def test_sr830_time_constant_sits_beside_its_ref_in_and_shows_every_choice(self):
+        """User, 2026-10-14: the SR830 row reads Meter, SR830 REF IN, SR830
+        TC, SR830 autorange (since 2026-10-13 the TC sat under Loop).  The
+        dropdown fills its column, as wide as f step, Step A and Settle s
+        above it, and "300 ms" is not cut."""
         font = tkinter.font.nametofont("TkTextFont")
         choice = self.a.stfmr_lockin_sr830_time_constant_combo
         table = self.a.stfmr_lockin_meter_combo.master
-        (loop,) = table.grid_slaves(row=2, column=7)
+        above = [table.grid_slaves(row=row, column=5)[0] for row in (0, 1, 2)]
         try:
             for width in (self.LAB_DEFAULT, LAB_WIDE):
                 with self.subTest(width=width):
                     self.arranged(width, "STFMR", self.a.stfmr_lockin_resource_widgets)
                     self.assertTrue(choice.winfo_ismapped())
-                    self.assertEqual((int(choice.grid_info()["row"]), int(choice.grid_info()["column"])), (3, 7))
-                    self.assertEqual(loop.winfo_class(), "TSpinbox")
-                    self.assertEqual((choice.winfo_x(), choice.winfo_width()), (loop.winfo_x(), loop.winfo_width()))
+                    self.assertEqual((int(choice.grid_info()["row"]), int(choice.grid_info()["column"])), (3, 5))
+                    (label,) = table.grid_slaves(row=3, column=4)
+                    self.assertEqual(str(label.cget("text")), "SR830 TC:")
+                    self.assertIs(above[2], self.a.stfmr_lockin_settle_entry)
+                    for field in above:
+                        self.assertEqual((choice.winfo_x(), choice.winfo_width()),
+                                         (field.winfo_x(), field.winfo_width()))
                     # The text area: ttk sizes it as width x the width of "0";
                     # the rest of the requested width is arrow, border, padding.
                     room = choice.winfo_width() - (
@@ -433,49 +440,108 @@ class FieldOutputTests(unittest.TestCase):
         finally:
             self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
 
-    def test_mod_start_and_end_take_the_last_column_and_fit(self):
-        """User, 2026-10-13: "Mod. Hz" became "Mod. start Hz" (row 0) and
-        "Mod. end Hz" under it (row 1), with no step box, and Wait/pt moved
-        to the free cell right of Loop (row 2).  No sixth pair, and every box
-        and label whole in the 1101 px window the program opens with."""
+    def test_the_table_is_in_measurement_order_and_fits(self):
+        """User, 2026-10-14: "re-arrange the GUI buttons and windows in the
+        ST-FMR sweep param module and make them in order".  One row per
+        stage, at most five pairs (a sixth made the table too wide for the
+        1101 px window the program opens with), every box and label whole in
+        that window and in the 2000 px one.  Settle s (1) and Acquire s (2)
+        replace Wait/pt."""
         field_font = tkinter.font.nametofont("TkTextFont")
         label_font = tkinter.font.nametofont("TkDefaultFont")
         table = self.a.stfmr_lockin_meter_combo.master
-        cells = {0: ("Mod. start Hz:", self.a.stfmr_lockin_mod_start_var),
-                 1: ("Mod. end Hz:", self.a.stfmr_lockin_mod_end_var),
-                 2: ("Wait/pt s:", self.a.stfmr_lockin_delay_var)}
+        rows = {
+            0: ("f start GHz:", "f stop GHz:", "f step GHz:", "Power dBm:"),
+            1: ("Start A:", "Stop A:", "Step A:", "Loop:", "Comp. V:"),
+            2: ("Mod. start Hz:", "Mod. end Hz:", "Settle s:", "Acquire s:"),
+            3: ("Meter:", "SR830 REF IN:", "SR830 TC:"),
+            4: ("MFLI reference:", "MFLI TC s:"),
+        }
+        ticks = {3: (6, "SR830 autorange"), 4: (4, "MFLI autorange")}
+        self.assertEqual((self.a.stfmr_lockin_settle_var.get(), self.a.stfmr_lockin_acquire_var.get()),
+                         ("1", "2"))
         self.assertEqual((self.a.stfmr_lockin_mod_start_var.get(), self.a.stfmr_lockin_mod_end_var.get()),
                          ("117.3", "117.3"))   # user, 2026-10-14
+        self.assertIs(table.grid_slaves(row=2, column=5)[0], self.a.stfmr_lockin_settle_entry)
+        self.assertIs(table.grid_slaves(row=2, column=7)[0], self.a.stfmr_lockin_acquire_entry)
+        self.assertEqual(table.grid_slaves(row=5), [], "five rows")
         try:
             for width in (self.LAB_DEFAULT, LAB_WIDE):
                 self.arranged(width, "STFMR", self.a.stfmr_lockin_resource_widgets)
                 tab = self.a.stfmr_lockin_tab
                 right = tab.winfo_rootx() + tab.winfo_width()
-                for row, (text, variable) in cells.items():
+                for row, labels in rows.items():
                     with self.subTest(width=width, row=row):
-                        (label,) = table.grid_slaves(row=row, column=8)
-                        (entry,) = table.grid_slaves(row=row, column=9)
-                        self.assertEqual(str(label.cget("text")), text)
-                        self.assertEqual(entry.winfo_class(), "TEntry")
-                        self.assertEqual(str(entry.cget("textvariable")), str(variable))
-                        for widget in (label, entry):
+                        cells = []
+                        for pair, text in enumerate(labels):
+                            (label,) = table.grid_slaves(row=row, column=2 * pair)
+                            (field,) = table.grid_slaves(row=row, column=2 * pair + 1)
+                            self.assertEqual(str(label.cget("text")), text)
+                            self.assertGreaterEqual(label.winfo_width(), label_font.measure(text), f"{text} is cut")
+                            if field.winfo_class() in ("TEntry", "TSpinbox"):
+                                self.assertGreaterEqual(field.winfo_width(), field_font.measure("0" * 6))
+                            cells += [label, field]
+                        if row in ticks:
+                            column, text = ticks[row]
+                            (tick,) = table.grid_slaves(row=row, column=column)
+                            self.assertEqual(str(tick.cget("text")), text)
+                            cells.append(tick)
+                        for widget in cells:
                             self.assertTrue(widget.winfo_ismapped())
                             self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), right + 1,
-                                                 f"{text} is past the right edge")
+                                                 "past the right edge")
                             # The table frame hides whatever runs past its
-                            # own edge, which is 17 px inside the tab's
-                            # (padding and border), so a box cut by up to
-                            # 17 px passed the check above (review,
+                            # own edge, 17 px inside the tab's (review,
                             # 2026-10-13).
-                            self.assertLessEqual(
-                                widget.winfo_rootx() + widget.winfo_width(),
-                                table.winfo_rootx() + table.winfo_width() + 1,
-                                f"{text} is cut by the parameter table's edge")
-                        self.assertGreaterEqual(label.winfo_width(), label_font.measure(text), f"{text} is cut")
-                        self.assertGreaterEqual(entry.winfo_width(), field_font.measure("0" * 6))
+                            self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(),
+                                                 table.winfo_rootx() + table.winfo_width() + 1,
+                                                 "cut by the parameter table's edge")
                         self.assertEqual(table.grid_slaves(row=row, column=10), [], "no sixth pair")
-                self.assertEqual(table.grid_slaves(row=3, column=8) + table.grid_slaves(row=3, column=9), [],
-                                 "the MFLI row's last cell stays free")
+                        # Left to right in the order listed.
+                        xs = [w.winfo_rootx() for w in cells]
+                        self.assertEqual(xs, sorted(xs))
+        finally:
+            self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
+
+    def test_the_actions_follow_the_table_in_order_in_the_default_window(self):
+        """In the 1101 px window: the table, then Start, Stop / zero and Save
+        CSV in one row, then Read LS475 with Continuous field read, then the
+        readouts (user, 2026-10-14)."""
+        table = self.a.stfmr_lockin_meter_combo.master
+        column = self.a.stfmr_lockin_start_button.master.master
+        try:
+            self.arranged(self.LAB_DEFAULT, "STFMR", self.a.stfmr_lockin_resource_widgets)
+            self.assertFalse(getattr(table.master, "_pair_side_by_side", True), "stacked at 1101 px")
+            self.assertGreaterEqual(column.winfo_rooty(), table.winfo_rooty() + table.winfo_height())
+            start, stop, save = (self.a.stfmr_lockin_start_button, self.a.stfmr_lockin_stop_button,
+                                 self.a.stfmr_lockin_save_button)
+            self.assertEqual(len({b.winfo_rooty() for b in (start, stop, save)}), 1, "one row")
+            self.assertLess(start.winfo_rootx(), stop.winfo_rootx())
+            self.assertLess(stop.winfo_rootx(), save.winfo_rootx())
+            read = self.a.stfmr_lockin_read_gauss_button
+            continuous = next(w for w in read.master.winfo_children() if w.winfo_class() == "TCheckbutton")
+            self.assertIn("Continuous field read", str(continuous.cget("text")))
+            # One row: the tick's middle is level with the button.
+            middle = continuous.winfo_rooty() + continuous.winfo_height() / 2
+            self.assertTrue(read.winfo_rooty() <= middle <= read.winfo_rooty() + read.winfo_height())
+            self.assertLess(read.winfo_rootx(), continuous.winfo_rootx())
+            self.assertGreaterEqual(read.winfo_rooty(), start.winfo_rooty() + start.winfo_height())
+            field = self.label_showing(self.a.stfmr_lockin_field_var)
+            self.assertGreaterEqual(field.winfo_rooty(), read.winfo_rooty() + read.winfo_height())
+        finally:
+            self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
+
+    def test_the_plots_stay_drawable_in_the_default_window(self):
+        """The fifth table row (2026-10-14) takes about 40 px from the
+        plots; in the window the program opens with (1101 px wide, the lab
+        screen's full height) each plot keeps at least 55 px of canvas."""
+        canvases = (self.a.stfmr_lockin_x_canvas, self.a.stfmr_lockin_y_canvas,
+                    self.a.stfmr_lockin_theta_canvas, self.a.stfmr_lockin_canvas)
+        try:
+            self.arranged(self.LAB_DEFAULT, "STFMR", self.a.stfmr_lockin_resource_widgets)
+            for canvas in canvases:
+                self.assertTrue(canvas.winfo_ismapped())
+                self.assertGreaterEqual(canvas.winfo_height(), 55)
         finally:
             self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
 

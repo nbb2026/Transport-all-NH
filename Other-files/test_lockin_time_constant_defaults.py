@@ -97,13 +97,16 @@ class WaitsAtTheNewDefaults(NoWindows):
     """The rules are unchanged; these are their values at the 1 s defaults."""
 
     def test_stfmr_points(self):
-        wait = app.CombinedControlApp._stfmr_sr830_point_wait_s
-        delay, code = app.STFMR_LOCKIN_DEFAULT_DELAY_S, app.STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE
-        self.assertEqual(wait("SR830", delay, code), 5.0)          # max(0.5 s, 5 x 1 s); 0.5 s with 100 ms
-        self.assertEqual(wait("MFLI + SR830", delay, code), 5.0)
-        self.assertEqual(wait("MFLI", delay, code), 0.5)           # the MFLI alone waits Wait/pt
-        # An MFLI range change: max(Wait/pt, 10 x MFLI TC, 0.2 s) = 10 s (was 1 s).
-        self.assertEqual(max(delay, 10.0 * app.STFMR_LOCKIN_MFLI_TIME_CONSTANT_S, 0.2), 10.0)
+        """Since 2026-10-14 a point settles max(Settle s, 7 x the TC of every
+        lock-in read); Wait/pt (0.5 s) and the SR830's 5 x TC are gone."""
+        settle = app.CombinedControlApp._stfmr_lockin_effective_settle_s
+        settle_s, code = app.STFMR_LOCKIN_DEFAULT_SETTLE_S, app.STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE
+        mfli_tc = app.STFMR_LOCKIN_MFLI_TIME_CONSTANT_S
+        self.assertEqual(settle("SR830", settle_s, code, mfli_tc), 7.0)        # max(1 s, 7 x 1 s); 5 s before
+        self.assertEqual(settle("MFLI + SR830", settle_s, code, mfli_tc), 7.0)
+        self.assertEqual(settle("MFLI", settle_s, code, mfli_tc), 7.0)         # Wait/pt (0.5 s) before
+        # An MFLI range change: max(the settle, 10 x MFLI TC, 0.2 s) = 10 s.
+        self.assertEqual(max(7.0, 10.0 * mfli_tc, 0.2), 10.0)
 
     def test_non_local_6221_iv(self):
         tc = app.NONLOCAL_MFLI_TIME_CONSTANT_S
@@ -155,7 +158,8 @@ class DefaultSetupsAtTheNewTc(NoWindows):
     def test_default_meters_are_the_ones_that_read_at_the_new_tc(self):
         with open(app.__file__, encoding="utf-8") as source:
             text = source.read()
-        # STFMR: "Meter" starts at MFLI, which waits Wait/pt alone.
+        # STFMR: "Meter" starts at MFLI, which waited Wait/pt alone; since
+        # 2026-10-14 it settles 7 x TC (test_stfmr_mfli_alone_...).
         self.assertIn('self.stfmr_lockin_meter_var = tk.StringVar(value="MFLI")', text)
         # 6221-IV: the Zurich alone measures.
         self.assertEqual(app.NONLOCAL_IV6221_DEFAULT_MEASURE, {"8": False, "9": False, "mfli": True})
@@ -193,10 +197,15 @@ class DefaultSetupsAtTheNewTc(NoWindows):
         self.assertGreater(lag, 1.0)
         self.assertLess(lag, 1.3)
 
-    def test_stfmr_mfli_alone_reads_half_a_tc_after_the_step(self):
-        seen = _step_seen(app.STFMR_LOCKIN_DEFAULT_DELAY_S, app.STFMR_LOCKIN_MFLI_TIME_CONSTANT_S)
-        self.assertAlmostEqual(seen, 0.09, delta=0.005)              # the README's 9 %
-        self.assertAlmostEqual(_step_seen(app.STFMR_LOCKIN_DEFAULT_DELAY_S, 0.1), 0.96, delta=0.005)
+    def test_stfmr_mfli_alone_reads_after_seven_time_constants(self):
+        """With Wait/pt (0.5 s) a default MFLI point saw 9 % of its step; it
+        now settles 7 x TC, then averages Acquire s (user, 2026-10-14)."""
+        self.assertAlmostEqual(_step_seen(0.5, app.STFMR_LOCKIN_MFLI_TIME_CONSTANT_S), 0.09, delta=0.005)
+        settle = app.CombinedControlApp._stfmr_lockin_effective_settle_s(
+            "MFLI", app.STFMR_LOCKIN_DEFAULT_SETTLE_S, app.STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE,
+            app.STFMR_LOCKIN_MFLI_TIME_CONSTANT_S)
+        self.assertEqual(settle, 7.0)
+        self.assertGreater(_step_seen(settle, app.STFMR_LOCKIN_MFLI_TIME_CONSTANT_S), 0.99)
 
     def test_a_ranging_idle_ppms_read_holds_the_zurich_10_s_per_step(self):
         """The idle readout (after Set 6221 with a current) ranges under the

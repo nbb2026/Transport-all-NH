@@ -74,9 +74,9 @@ class Recording(Device):
         super().rf_off()
         self.record("rf_off")
 
-    def read_sample(self, expected):
+    def read_sample(self, expected, **options):
         self.expected.append(expected)
-        sample = super().read_sample(expected)
+        sample = super().read_sample(expected, **options)
         sample["reference_frequency_hz"] = expected
         return sample
 
@@ -87,7 +87,9 @@ class SweepTests(NoWindows):
         h = harness(self.tmp.name, meter=meter, stop=stop, end_current=end_current)
         h.root = TimedRoot()
         h.stfmr_lockin_status_var = History()
-        h.stfmr_lockin_delay_var.set("0.5")
+        # Settle s 0.5 and the harness's Acquire s 0.2 (three readings a
+        # point); Settle s and Acquire s replace Wait/pt (user, 2026-10-14).
+        h.stfmr_lockin_settle_var.set("0.5")
         h.stfmr_lockin_sr830_time_constant_var = Variable(tc)
         h.stfmr_lockin_mod_start_var.set(start)
         h.stfmr_lockin_mod_end_var.set(end)
@@ -255,10 +257,11 @@ class ModulationSweepTests(SweepTests):
             self.assertEqual(h.log[at + 1:at + 4], [
                 ("smb", "frequency", 5.0), ("830", "wait_for_reference", hz),
                 ("kepco", "output", "CURR", -1.0, 10.0)])
-        # Every read expects the modulation of its pass: a pre-read and four
-        # points at each of the two carriers.
+        # Every read expects the modulation of its pass: at each of the two
+        # carriers a pre-read, two discarded readings and two saved points of
+        # three readings each (Acquire s 0.2; 2026-10-14).
         self.assertEqual(h.stfmr_lockin_controllers["830"].expected,
-                         [307.0] * 10 + [311.0] * 10 + [313.0] * 10)
+                         [307.0] * 18 + [311.0] * 18 + [313.0] * 18)
 
     def test_settling_readings_after_each_change_are_discarded_and_rows_are_tagged(self):
         h, recorder = self.sweep()
@@ -305,14 +308,16 @@ class ModulationSweepTests(SweepTests):
 
     def test_the_csv_keeps_its_columns(self):
         """The rows already had a modulation_frequency_hz column, so no
-        column is added and every old column keeps its place."""
+        column is added for it and every old column keeps its place.  The
+        four timing columns of 2026-10-14 come after all of them."""
         h, recorder = self.sweep()
         with recorder.csv_path.open(encoding="utf-8-sig") as handle:
             header = handle.readline().strip().split(",")
         self.assertEqual(header, list(app.STFMRScanRecorder.FIELDNAMES))
-        self.assertEqual(len(header), 30)
+        self.assertEqual(len(header), 34)
         self.assertEqual(header.index("modulation_frequency_hz"), 16)
-        self.assertEqual(header[-1], "sr830_time_constant_s")
+        self.assertEqual(header.index("sr830_time_constant_s"), 29)
+        self.assertEqual(header[-4:], ["settle_s", "effective_settle_s", "acquire_s", "sample_count"])
 
     def test_the_confirmation_lists_them_and_the_estimate_counts_them(self):
         h, recorder = self.sweep()
@@ -321,9 +326,11 @@ class ModulationSweepTests(SweepTests):
                       "Mod. Hz: 307, 311, 313 (3 primes from 307 to 313); "
                       "the whole f × A sweep runs at each, in this order\n", text)
         self.assertIn("about 12 points saved", text)
-        # 3 x 2 passes of 4 readings; all but each pass's first wait 0.5 s.
-        self.assertIn("Estimated at least 9.0 s.", text)
-        self.assertEqual(h.root.reads, [1, 500, 500, 500] * 6)
+        # 3 x 2 passes of 4 readings; all but each pass's first settle
+        # max(Settle s 0.5, 7 x the 100 ms TC) = 0.7 s, and each of the 12
+        # saved points averages 0.2 s (2026-10-14; 0.5 s Wait/pt before).
+        self.assertIn("Estimated at least 15.0 s (18 settles of 0.7 s + 12 averages of 0.2 s).", text)
+        self.assertEqual(h.root.reads, [1, 700, 700, 700] * 6)
         settings = events(recorder)[0]["settings"]
         self.assertEqual((settings["modulation_frequencies_hz"], settings["modulation_start_hz"],
                           settings["modulation_end_hz"], settings["modulation_frequency_hz"],
@@ -499,37 +506,50 @@ class TableTests(NoWindows):
     """The real page build, on stand-in widgets (the CI GUI test checks the
     drawn page in the 1101 px and 2000 px windows)."""
 
-    def test_mod_start_and_end_take_the_mod_cell_and_the_one_below_it(self):
+    def test_mod_start_and_end_lead_the_modulation_and_timing_row(self):
+        """User, 2026-10-14: the table is in measurement order, one row per
+        stage: microwave, magnet sweep, modulation and timing (Mod. start,
+        Mod. end, Settle s, Acquire s), SR830, MFLI; at most five pairs a
+        row.  (2026-10-13: Mod. start ended row 0, Mod. end row 1.)"""
         page = build_stfmr_page()
         a = page.app
         table = a.stfmr_lockin_meter_combo.master
-        expected = {
-            0: ("Mod. start Hz:", a.stfmr_lockin_mod_start_var),
-            1: ("Mod. end Hz:", a.stfmr_lockin_mod_end_var),
-            2: ("Wait/pt s:", a.stfmr_lockin_delay_var),   # moved beside Loop
+        rows = {
+            0: ["f start GHz:", "f stop GHz:", "f step GHz:", "Power dBm:"],
+            1: ["Start A:", "Stop A:", "Step A:", "Loop:", "Comp. V:"],
+            2: ["Mod. start Hz:", "Mod. end Hz:", "Settle s:", "Acquire s:"],
         }
-        for row, (text, variable) in expected.items():
+        for row, labels in rows.items():
             with self.subTest(row=row):
-                label, field = page.cell(table, row, 8), page.cell(table, row, 9)
-                self.assertEqual((label.kind, label.options["text"]), ("Label", text))
-                self.assertEqual(label.grid_options["sticky"], "e")
-                self.assertEqual((field.kind, field.options["width"], field.grid_options["sticky"]),
-                                 ("Entry", 8, "ew"))
-                self.assertIs(field.options["textvariable"], variable)
-                self.assertEqual(max(w.grid_options["column"] for w in page.in_row(table, row)), 9,
-                                 "no sixth pair")
-        self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 3)], [0, 1, 2, 3, 4, 6, 7])
-        self.assertEqual(page.cell(table, 2, 6).options["text"], "Loop:")
-        # Like the f and A rows: start in the top row, end under it.
-        for row, labels in ((0, ["f start GHz:", "f stop GHz:", "f step GHz:", "Power dBm:", "Mod. start Hz:"]),
-                            (1, ["Start A:", "Stop A:", "Step A:", "Comp. V:", "Mod. end Hz:"])):
-            texts = [w.options.get("text", "") for w in page.in_row(table, row)]
-            self.assertEqual(texts[0::2], labels)
-            self.assertEqual(texts[1::2], [""] * 5, "an entry right of each label")
-        everything = [str(w.options.get("text", "")) for row in range(5) for w in page.in_row(table, row)]
+                widgets = page.in_row(table, row)
+                self.assertEqual([w.grid_options["column"] for w in widgets], list(range(2 * len(labels))))
+                self.assertEqual([w.options.get("text", "") for w in widgets[0::2]], labels)
+                for label in widgets[0::2]:
+                    self.assertEqual((label.kind, label.grid_options["sticky"]), ("Label", "e"))
+                for field in widgets[1::2]:
+                    self.assertIn(field.kind, ("Entry", "Spinbox"))
+                    self.assertEqual(field.grid_options["sticky"], "ew")
+        variables = {
+            (2, 1): a.stfmr_lockin_mod_start_var, (2, 3): a.stfmr_lockin_mod_end_var,
+            (2, 5): a.stfmr_lockin_settle_var, (2, 7): a.stfmr_lockin_acquire_var,
+        }
+        for (row, column), variable in variables.items():
+            field = page.cell(table, row, column)
+            self.assertEqual((field.kind, field.options["width"]), ("Entry", 8))
+            self.assertIs(field.options["textvariable"], variable)
+        self.assertIs(page.cell(table, 2, 5), a.stfmr_lockin_settle_entry)
+        self.assertIs(page.cell(table, 2, 7), a.stfmr_lockin_acquire_entry)
+        self.assertEqual(page.cell(table, 1, 7).kind, "Spinbox", "Loop")
+        self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 3)], [0, 1, 2, 3, 4, 5, 6])
+        self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 4)], [0, 1, 2, 3, 4])
+        everything = [str(w.options.get("text", "")) for row in range(6) for w in page.in_row(table, row)]
+        self.assertEqual(page.in_row(table, 5), [], "five rows")
         self.assertNotIn("Mod. Hz:", everything)
+        self.assertNotIn("Wait/pt s:", everything, "Wait/pt is gone (user, 2026-10-14)")
         self.assertFalse([t for t in everything if "step" in t.lower() and "Mod" in t], "no Mod. step box")
-        self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 1)], list(range(10)))
+        for row in range(5):
+            self.assertLessEqual(max(w.grid_options["column"] for w in page.in_row(table, row)), 9,
+                                 "no sixth pair")
 
     def test_both_boxes_default_to_117_3(self):
         with open(app.__file__, encoding="utf-8") as source:

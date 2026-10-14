@@ -25,18 +25,24 @@ class Variable:
 
 
 class Root:
+    """Runs scheduled callbacks in order, at once, but keeps the time: each
+    callback moves ``now`` (seconds) to when it was due, so the STFMR
+    sweep's Acquire s window runs on this clock (_stfmr_lockin_clock), not
+    on the test's real time (user, 2026-10-14)."""
+
     def __init__(self):
         self.pending = {}
         self.counter = 0
         self.idle_updates = 0
+        self.now = 0.0
 
     def update_idletasks(self):
         # Save CSV redraws its status line before drawing the PNGs.
         self.idle_updates += 1
 
-    def after(self, _ms, callback):
+    def after(self, ms, callback):
         self.counter += 1
-        self.pending[self.counter] = callback
+        self.pending[self.counter] = (self.now + float(ms) / 1000.0, callback)
         return self.counter
 
     def after_cancel(self, token):
@@ -44,10 +50,14 @@ class Root:
 
     def step(self):
         token = next(iter(self.pending))
-        self.pending.pop(token)()
+        due, callback = self.pending.pop(token)
+        self.now = max(self.now, due)
+        callback()
 
     def drain(self):
-        for _ in range(500):
+        # Each saved point now takes several readings (Acquire s), so a
+        # sweep takes more steps than the 500 it was allowed.
+        for _ in range(5000):
             if not self.pending:
                 return
             self.step()
@@ -118,7 +128,8 @@ class Device:
     def read_field(self):
         return {'field': 123.4, 'unit': 'G', 'unit_code': 1}
 
-    def read_sample(self, _expected):
+    def read_sample(self, _expected, **_options):
+        # allow_down=False: a later reading of a point's Acquire s window.
         self.sample_count += 1
         result = {
             'x_v': 3e-6, 'y_v': 4e-6, 'r_v': 5e-6, 'phase_deg': 53.13,
@@ -165,7 +176,11 @@ def harness(folder, meter='MFLI', stop='6', end_current='1'):
         'manual_safety': True, 'meter': meter, 'frequency_start': '5',
         'frequency_stop': stop, 'frequency_step': '1', 'power': '10',
         # Mod. start = Mod. end: one modulation frequency (2026-10-13).
-        'mod_start': '317.3', 'mod_end': '317.3', 'delay': '0', 'limit': '10', 'loop': 1,
+        'mod_start': '317.3', 'mod_end': '317.3', 'limit': '10', 'loop': 1,
+        # Settle s and Acquire s replace Wait/pt (user, 2026-10-14).  Settle
+        # 0 leaves the 7 x TC rule (7 s at the 1 s TCs below) as the settle;
+        # Acquire 0.2 s is three readings a point (0, 0.1 and 0.2 s).
+        'settle': '0', 'acquire': '0.2',
         'start': '-1', 'stop': end_current, 'step': '0.5',
         'sr830_reference': 'Sine', 'sr830_auto_range': True,
         # The page's 'SR830 TC' and 'MFLI TC s' defaults: every lock-in time
@@ -196,6 +211,9 @@ def harness(folder, meter='MFLI', stop='6', end_current='1'):
     h._set_stfmr_lockin_reference_state = lambda *_args: None
     h._append_stfmr_lockin_live_sample = lambda *_args, **_kwargs: None
     h.post_ui = lambda callback: h.root.after(0, callback)
+    # The Acquire s window runs on the stand-in Tk loop's clock, whichever
+    # Root the test gives the harness.
+    h._stfmr_lockin_clock = lambda: h.root.now
     h.append_log = lambda _text: None
     h._export_stfmr_lockin_data_pngs = Mock(return_value=())
     return h

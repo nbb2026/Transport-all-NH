@@ -2,7 +2,9 @@
 
 - an 'SR830 TC' choice (default 100 ms then; the old fixed value was 1 s, and since
   2026-10-14 the default is 1 s again, as every lock-in time constant), with every SR830
-  reading of a sweep waiting at least 5 time constants (12 dB/oct settling);
+  reading of a sweep waiting at least 5 time constants (12 dB/oct settling) then; since
+  2026-10-14 each point settles max(Settle s, 7 x the TC of every lock-in read)
+  (LOCKIN_SETTLE_TAUS) and averages Acquire s (test_stfmr_settle_acquire);
 - fixed-current runs (Start A = Stop A): only the first two readings of each
   frequency are discarded, so such a run saves data.
 
@@ -35,15 +37,21 @@ App = app.CombinedControlApp
 
 
 class TimedRoot(Root):
-    """The harness's Root, also keeping the delay before each point read."""
+    """The harness's Root, also keeping the delay before each point read
+    (the settle after a current step, or a range re-read wait) and before
+    each later reading of a point's Acquire s window (2026-10-14)."""
 
     def __init__(self):
         super().__init__()
         self.reads = []
+        self.samples = []
 
     def after(self, ms, callback):
-        if getattr(callback, "__name__", "") == "_read_next_stfmr_lockin_point":
+        name = getattr(callback, "__name__", "")
+        if name == "_read_next_stfmr_lockin_point":
             self.reads.append(ms)
+        elif name == "_read_stfmr_lockin_acquisition_sample":
+            self.samples.append(ms)
         return super().after(ms, callback)
 
 
@@ -209,12 +217,15 @@ class NoWindows(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def run_sweep(self, meter="SR830", delay="0.5", tc="1 s", start=None, loop=None,
+    def run_sweep(self, meter="SR830", settle="1", acquire="2", tc="1 s", start=None, loop=None,
                   start_only=False, **kwargs):
+        """Settle s 1 and Acquire s 2, the page's defaults, unless given
+        (Settle s and Acquire s replace Wait/pt; user, 2026-10-14)."""
         h = harness(self.tmp.name, meter=meter, **kwargs)
         h.root = TimedRoot()
         h.stfmr_lockin_status_var = History()
-        h.stfmr_lockin_delay_var.set(delay)
+        h.stfmr_lockin_settle_var.set(settle)
+        h.stfmr_lockin_acquire_var.set(acquire)
         h.stfmr_lockin_sr830_time_constant_var = Variable(tc)
         if start is not None:
             h.stfmr_lockin_start_var.set(start)
@@ -233,7 +244,9 @@ class NoWindows(unittest.TestCase):
 
 class Sr830TimeConstantTests(NoWindows):
     """STFMR set the SR830 to a fixed 1 s (OFLT 10, 12 dB/oct) while the
-    default Wait/pt is 0.5 s, so each SR830 point was a lagged reading."""
+    default Wait/pt was 0.5 s, so each SR830 point was a lagged reading.
+    Since 2026-10-14 each point settles max(Settle s, 7 x TC) after its
+    current step, then averages Acquire s (2 s, 21 readings 0.1 s apart)."""
 
     def test_the_choices_are_the_sr830_oflt_codes_and_1_s_is_the_default(self):
         choices = app.STFMR_LOCKIN_SR830_TIME_CONSTANTS
@@ -248,7 +261,10 @@ class Sr830TimeConstantTests(NoWindows):
         self.assertEqual(app.STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT, "1 s")
         self.assertEqual(choices["1 s"], 10)
         self.assertEqual(app.STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE, 10)
-        self.assertEqual(app.STFMR_LOCKIN_SR830_SETTLE_TAUS, 5.0)
+        # The STFMR-only 5 x TC rule became the program's 7 x TC rule, which
+        # the MFLI follows too (user, 2026-10-14).
+        self.assertFalse(hasattr(app, "STFMR_LOCKIN_SR830_SETTLE_TAUS"))
+        self.assertEqual(app.LOCKIN_SETTLE_TAUS, 7.0)
 
     def test_configure_sends_the_chosen_code_in_the_same_place_and_reads_it_back(self):
         for code in (8, 4, 10, 12):
@@ -278,44 +294,45 @@ class Sr830TimeConstantTests(NoWindows):
                     controller.configure("Sine", True, bad)
                 self.assertEqual(fake.writes, [], "nothing sent")
 
-    def test_an_sr830_sweep_waits_five_time_constants_at_each_point(self):
+    def test_an_sr830_sweep_settles_seven_time_constants_at_each_point(self):
         h, recorder = self.run_sweep(stop="5")           # 1 frequency, 5 currents
         text = self.message()
-        self.assertIn("SR830 TC: 1 s (12 dB/oct); each point waits 5 s (Wait/pt 0.5 s, at least 5 × TC)", text)
-        self.assertIn("Estimated at least 20.0 s.", text)  # 4 waits of 5 s
+        self.assertIn("SR830 TC: 1 s (12 dB/oct); each point settles 7 s (7 × TC 1 s; Settle s 1 s) "
+                      "then averages 2 s\n", text)
+        # 4 settles of 7 s, and 3 saved points of 2 s each.
+        self.assertIn("Estimated at least 34.0 s (4 settles of 7 s + 3 averages of 2 s).", text)
         # The first read follows the start pre-read at once, as before; it is
-        # discarded.  Every later point waits 5 s, not the 0.5 s Wait/pt.
-        self.assertEqual(h.root.reads, [1, 5000, 5000, 5000, 5000])
+        # discarded.  Every later point settles 7 s (it was 5 x TC = 5 s).
+        self.assertEqual(h.root.reads, [1, 7000, 7000, 7000, 7000])
+        # Each of the 3 saved points: 20 readings 0.1 s apart after its first.
+        self.assertEqual(h.root.samples, [100] * 60)
         self.assertIn(("configure", ("Sine", True, 10)), h.stfmr_lockin_controllers["830"].calls)
         rows = read_csv(recorder.csv_path)
         self.assertEqual(len(rows), 3)
         self.assertEqual({row["sr830_time_constant_s"] for row in rows}, {"1.0"})
+        self.assertEqual({(row["settle_s"], row["effective_settle_s"], row["acquire_s"], row["sample_count"])
+                          for row in rows}, {("1.0", "7.0", "2.0", "21")})
         settings = events(recorder)[0]["settings"]
         self.assertEqual((settings["sr830_time_constant_index"], settings["sr830_time_constant_s"],
-                          settings["effective_point_wait_s"], settings["point_delay_s"]), (10, 1.0, 5.0, 0.5))
+                          settings["settle_s"], settings["effective_settle_s"], settings["acquire_s"]),
+                         (10, 1.0, 1.0, 7.0, 2.0))
+        self.assertNotIn("point_delay_s", settings)
+        self.assertNotIn("effective_point_wait_s", settings)
         self.assertEqual(events(recorder)[-1]["outcome"], "completed")
         self.error.assert_not_called()
 
-    def test_the_default_1_s_waits_5_s_per_point(self):
-        """User, 2026-10-14: the default SR830 TC is 1 s (it was 100 ms), so
-        a default sweep (Wait/pt 0.5 s) sends OFLT 10 and waits 5 x TC = 5 s
-        per point, not the 0.5 s it waited with 100 ms."""
-        h, recorder = self.run_sweep(stop="5", tc=app.STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT)
-        self.assertIn("SR830 TC: 1 s (12 dB/oct); each point waits 5 s", self.message())
-        self.assertEqual(h.root.reads, [1, 5000, 5000, 5000, 5000])
-        self.assertIn(("configure", ("Sine", True, 10)), h.stfmr_lockin_controllers["830"].calls)
-        self.assertEqual(events(recorder)[0]["settings"]["effective_point_wait_s"], 5.0)
-
-    def test_the_wait_is_the_longer_of_wait_per_point_and_five_time_constants(self):
-        for tc, delay, code, wait_ms in (("100 ms", "0.5", 8, 500), ("300 ms", "0.5", 9, 1500),
-                                         ("10 ms", "0", 6, 50), ("3 s", "20", 11, 20000)):
-            with self.subTest(tc=tc, delay=delay):
+    def test_the_settle_is_the_longer_of_settle_s_and_seven_time_constants(self):
+        for tc, settle, code, wait_ms in (("100 ms", "1", 8, 1000), ("300 ms", "1", 9, 2100),
+                                          ("10 ms", "0", 6, 70), ("3 s", "30", 11, 30000),
+                                          ("3 s", "1", 11, 21000)):
+            with self.subTest(tc=tc, settle=settle):
                 self.confirm.reset_mock()
-                h, recorder = self.run_sweep(stop="5", tc=tc, delay=delay)
+                h, recorder = self.run_sweep(stop="5", tc=tc, settle=settle)
                 self.assertEqual(h.root.reads, [1] + [wait_ms] * 4)
                 self.assertIn(("configure", ("Sine", True, code)), h.stfmr_lockin_controllers["830"].calls)
-                self.assertIn(f"each point waits {wait_ms / 1000:g} s", self.message())
-                self.assertEqual(events(recorder)[0]["settings"]["effective_point_wait_s"], wait_ms / 1000)
+                self.assertIn(f"SR830 TC: {tc} (12 dB/oct); each point settles {wait_ms / 1000:g} s "
+                              f"(7 × TC {tc}; Settle s {settle} s) then averages 2 s", self.message())
+                self.assertAlmostEqual(events(recorder)[0]["settings"]["effective_settle_s"], wait_ms / 1000)
 
     def test_the_re_read_after_a_sensitivity_change_waits_too(self):
         h, recorder = self.run_sweep(stop="5", start_only=True)
@@ -324,12 +341,14 @@ class Sr830TimeConstantTests(NoWindows):
         h.stfmr_lockin_controllers["830"].retry_next = True   # the next read changes SENS
         h.root.drain()
         self.assertTrue(any(e["event"] == "sr830_autorange_retry" for e in events(recorder)))
-        self.assertEqual(h.root.reads, [1] + [5000] * 5, "the re-read waited 0.5 s")
+        # The re-read waits the effective settle, 7 x TC (it was 5 x TC).
+        self.assertEqual(h.root.reads, [1] + [7000] * 5)
         self.assertEqual(len(read_csv(recorder.csv_path)), 3)
 
     def test_dual_meter_points_and_both_re_reads_wait_too(self):
         h, recorder = self.run_sweep(meter="MFLI + SR830", stop="5", start_only=True)
-        self.assertIn("SR830 TC: 1 s (12 dB/oct); each point waits 5 s", self.message())
+        self.assertIn("SR830 TC: 1 s (12 dB/oct), MFLI TC: 1 s; each point settles 7 s "
+                      "(7 × SR830 TC 1 s, 7 × MFLI TC 1 s; Settle s 1 s) then averages 2 s", self.message())
         while not h.stfmr_lockin_rows:
             h.root.step()
         h.stfmr_lockin_controllers["830"].retry_next = True   # an SR830 range change
@@ -349,33 +368,37 @@ class Sr830TimeConstantTests(NoWindows):
         # The stand-in MFLI's first-point range check re-reads point 1 once,
         # then the one above.
         self.assertEqual(names.count("mfli_autorange_retry"), 2)
-        # Before: 0.5 s per point, max(0.5, 10 x 0.1 s) = 1 s for each re-read.
-        # At the 1 s defaults of both TCs (user, 2026-10-14) each point waits
-        # 5 x 1 s = 5 s and each re-read max(5 s, 10 x the 1 s MFLI TC) = 10 s:
-        # the MFLI's first-point re-read, then the SR830's and the MFLI's.
-        self.assertEqual(h.root.reads, [1, 10000, 5000, 5000, 5000, 10000, 10000, 5000])
+        # At the 1 s defaults of both TCs each point settles 7 x 1 s = 7 s
+        # (user, 2026-10-14; 5 x the SR830 TC = 5 s before) and each re-read
+        # waits max(7 s, 10 x the 1 s MFLI TC) = 10 s: the MFLI's first-point
+        # re-read, then the SR830's and the MFLI's.
+        self.assertEqual(h.root.reads, [1, 10000, 7000, 7000, 7000, 10000, 10000, 7000])
         self.assertEqual({e["settle_s"] for e in events(recorder) if e["event"] == "mfli_autorange_retry"},
                          {10.0})
         rows = read_csv(recorder.csv_path)
         self.assertEqual([row["meter"] for row in rows], ["MFLI", "SR830"] * 3)
         self.assertEqual([row["sr830_time_constant_s"] for row in rows], ["nan", "1.0"] * 3)
+        # Both meters averaged over the same window, so as many readings each.
+        self.assertEqual({row["sample_count"] for row in rows}, {"21"})
 
-    def test_the_mfli_alone_keeps_wait_per_point_and_records_no_sr830_tc(self):
+    def test_the_mfli_alone_settles_seven_of_its_time_constants_and_records_no_sr830_tc(self):
         # The SR830 TC is not read when the SR830 is not used, as the MFLI TC
         # is not read for the SR830 alone.
         h, recorder = self.run_sweep(meter="MFLI", tc="not a choice")
         text = self.message()
         self.assertNotIn("SR830 TC", text)
-        self.assertIn("Estimated at least 4.0 s.", text)    # 2 x 4 waits of 0.5 s
+        self.assertIn("MFLI TC: 1 s; each point settles 7 s (7 × TC 1 s; Settle s 1 s) then averages 2 s", text)
+        # 2 frequencies x 4 settles of 7 s, 2 x 3 saved points of 2 s.
+        self.assertIn("Estimated at least 68.0 s (8 settles of 7 s + 6 averages of 2 s).", text)
         # 10 s: the stand-in MFLI's first-point range check re-reads point 1
-        # after max(Wait/pt, 10 x the MFLI TC), as before, now with the 1 s
-        # default TC (user, 2026-10-14; 1 s with the old 0.1 s).  The other
-        # points still wait Wait/pt alone.
-        self.assertEqual(h.root.reads, [1, 10000, 500, 500, 500, 500] * 2)
+        # after max(the effective settle, 10 x the MFLI TC).  The other points
+        # settle 7 x the 1 s MFLI TC: the MFLI alone waited Wait/pt (0.5 s)
+        # before, half a TC (user, 2026-10-14).
+        self.assertEqual(h.root.reads, [1, 10000, 7000, 7000, 7000, 7000] * 2)
         rows = read_csv(recorder.csv_path)
         self.assertEqual(len(rows), 6)
         self.assertEqual({row["sr830_time_constant_s"] for row in rows}, {"nan"})
-        self.assertEqual(events(recorder)[0]["settings"]["effective_point_wait_s"], 0.5)
+        self.assertEqual(events(recorder)[0]["settings"]["effective_settle_s"], 7.0)
         self.error.assert_not_called()
 
     def test_a_choice_not_in_the_list_is_refused_before_anything_starts(self):
@@ -412,36 +435,44 @@ class Sr830TimeConstantTests(NoWindows):
             setattr(a, f"stfmr_lockin_{name}_button", Widget("normal"))
         a.stfmr_lockin_meter_combo = Widget("readonly")
         a.stfmr_lockin_sr830_time_constant_combo = combo = Widget("readonly")
-        for running, state in ((True, "disabled"), (False, "readonly")):
+        # Settle s and Acquire s too (user, 2026-10-14).
+        a.stfmr_lockin_settle_entry = settle = Widget("normal")
+        a.stfmr_lockin_acquire_entry = acquire = Widget("normal")
+        for running, state, entry_state in ((True, "disabled", "disabled"), (False, "readonly", "normal")):
             a.stfmr_lockin_running = running
             App._update_stfmr_lockin_ui(a)
             self.assertEqual(combo.state, state, f"running={running}")
             self.assertEqual(a.stfmr_lockin_meter_combo.state, state, "locked as the meter is")
+            self.assertEqual((settle.state, acquire.state), (entry_state, entry_state), f"running={running}")
 
-    def test_the_choice_sits_under_loop_in_the_parameter_table(self):
+    def test_the_choice_sits_beside_its_ref_in_in_the_sr830_row(self):
         """The real page build, on stand-in widgets that keep their options
-        and grid cells (the CI GUI tests check the drawn page)."""
+        and grid cells (the CI GUI tests check the drawn page).  Since
+        2026-10-14 the table is in measurement order and the SR830 row reads
+        Meter, SR830 REF IN, SR830 TC, SR830 autorange (it sat under Loop)."""
         page = build_stfmr_page()
         choice = page.app.stfmr_lockin_sr830_time_constant_combo
         table = choice.master
         self.assertIs(table, page.app.stfmr_lockin_meter_combo.master, "in the parameter table")
         self.assertEqual(choice.kind, "Combobox")
         self.assertEqual((choice.grid_options["row"], choice.grid_options["column"],
-                          choice.grid_options["sticky"]), (3, 7, "ew"))
+                          choice.grid_options["sticky"]), (3, 5, "ew"))
         self.assertEqual((choice.options["state"], choice.options["width"]), ("readonly", 6))
         self.assertEqual(choice.options["values"], tuple(app.STFMR_LOCKIN_SR830_TIME_CONSTANTS))
         self.assertIs(choice.options["textvariable"], page.app.stfmr_lockin_sr830_time_constant_var)
-        self.assertEqual(page.cell(table, 3, 6).options["text"], "SR830 TC:")
-        loop = page.cell(table, 2, 7)                # the cell above: Loop, also 6 wide
-        self.assertEqual((loop.kind, loop.options["width"]), ("Spinbox", 6))
-        self.assertEqual(page.cell(table, 2, 6).options["text"], "Loop:")
-        self.assertEqual(page.cell(table, 3, 2).options["text"], "MFLI TC s:", "the MFLI TC row")
+        self.assertEqual(page.cell(table, 3, 4).options["text"], "SR830 TC:")
+        self.assertEqual(page.cell(table, 3, 2).options["text"], "SR830 REF IN:")
+        self.assertEqual(page.cell(table, 4, 2).options["text"], "MFLI TC s:", "the MFLI TC row")
         self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 3)],
-                         [0, 1, 2, 3, 4, 6, 7], "nothing past the columns rows 0 and 1 use")
-        # The column still gives way, but not below the dropdown (70 px here;
-        # the six-character floor is 50 px).
+                         [0, 1, 2, 3, 4, 5, 6], "Meter, REF IN, TC, then the autorange tick")
+        # Its column gives way, but not below the dropdown (70 px here; the
+        # six-character floor is 50 px).  Column 7 now keeps the Loop
+        # spinbox whole, as the dropdown, as wide, did there before.
+        self.assertEqual(table.column_options[5], {"weight": 1, "minsize": 70})
         self.assertEqual(table.column_options[7], {"weight": 1, "minsize": 70})
-        self.assertEqual(table.column_options[5], {"weight": 1, "minsize": 50})
+        self.assertEqual(table.column_options[9], {"weight": 1, "minsize": 50})
+        loop = page.cell(table, 1, 7)
+        self.assertEqual((loop.kind, loop.options["width"]), ("Spinbox", 6))
         self.assertLessEqual(max(map(len, app.STFMR_LOCKIN_SR830_TIME_CONSTANTS)), 6)
 
 
@@ -471,7 +502,8 @@ class FixedCurrentTests(NoWindows):
         h, recorder = self.run_sweep(meter="MFLI", start="1", end_current="1", loop=4)
         self.assertIn("4 readings per frequency at a fixed 1 A, first two readings of each "
                       "frequency discarded, about 4 points saved", self.message())
-        self.assertIn("Estimated at least 3.0 s.", self.message())     # 6 waits of 0.5 s
+        # 6 settles of 7 x the 1 s MFLI TC, 4 saved readings of Acquire s 2 s.
+        self.assertIn("Estimated at least 50.0 s (6 settles of 7 s + 4 averages of 2 s).", self.message())
         rows = read_csv(recorder.csv_path)
         self.assertEqual([int(r["index"]) for r in rows], [3, 4, 7, 8])
         self.assertEqual([int(r["loop"]) for r in rows], [3, 4, 3, 4])
@@ -503,8 +535,9 @@ class FixedCurrentTests(NoWindows):
         rows = read_csv(recorder.csv_path)
         self.assertEqual([(r["index"], r["meter"]) for r in rows], [("3", "MFLI"), ("3", "SR830")])
         # The MFLI's first-point range check re-reads point 1 once, after
-        # 10 x the 1 s default MFLI TC (user, 2026-10-14; 5 s with 0.1 s).
-        self.assertEqual(h.root.reads, [1, 10000, 5000, 5000])
+        # 10 x the 1 s default MFLI TC (user, 2026-10-14; 5 s with 0.1 s);
+        # each reading after a step settles 7 x TC = 7 s (it was 5 s).
+        self.assertEqual(h.root.reads, [1, 10000, 7000, 7000])
         self.assertEqual(events(recorder)[-1]["saved_points"], 2)
 
     def test_a_sweep_still_discards_two_points_per_loop_with_its_old_status(self):
