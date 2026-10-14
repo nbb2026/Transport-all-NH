@@ -188,6 +188,25 @@ class FieldOutputTests(unittest.TestCase):
         finally:
             self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
 
+    def test_zero_off_is_whole_in_the_1101_px_window(self):
+        """User, 2026-10-15: the red Zero / OFF button at the end of the 4886
+        output row was cut at the right edge on both pages.  Grid squeezes a
+        button that does not fit inside its box, so it never crossed the
+        page's edge and the test above did not see it."""
+        try:
+            for tab_name, button, widgets in (
+                    ("STFMR", self.a.stfmr_lockin_zero_output_button, self.a.stfmr_lockin_resource_widgets),
+                    ("FMR", self.a.stfmr_zero_output_button, self.a.stfmr_device_resource_widgets)):
+                with self.subTest(page=tab_name):
+                    self.arranged(self.LAB_DEFAULT, tab_name, widgets)
+                    box = button.master
+                    self.assertTrue(button.winfo_ismapped())
+                    self.assertGreaterEqual(button.winfo_width(), button.winfo_reqwidth(), "the button is squeezed")
+                    self.assertLessEqual(button.winfo_x() + button.winfo_width(), box.winfo_width() - 2,
+                                         "the button runs past its box's right border")
+        finally:
+            self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
+
     def test_parameter_table_is_aligned(self):
         """Every field in a column starts at the same x and has the same width."""
         self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)

@@ -1,5 +1,19 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## FMR and STFMR: the red Zero / OFF button is whole again (2026-10-15)
+
+- **What was wrong:** in the 1101 px window the program opens with, the 4886
+  output row (Output mode, Target, Voltage limit, Apply output, Show sent
+  values, Zero / OFF) was about 20 px too wide on Windows, so the red
+  Zero / OFF button at its end was cut off on both the FMR and the STFMR
+  page. Grid squeezed the button inside its box, so the existing "nothing is
+  clipped" test, which looks at the page's edge, did not see it.
+- **Fix:** the Target and Voltage limit boxes are 7 characters wide instead
+  of 10 (they hold values like "-2.5" and "5"), which frees about 55 px.
+- **Test:** CI GUI test `test_stfmr_field_output.test_zero_off_is_whole_in_the_1101_px_window`
+  checks on both pages that the button has its full width and ends inside
+  its box.
+
 ## STFMR: default powers 6-18 dBm, default currents -2 to 2 A (2026-10-14)
 
 - **The user's choice (from a screenshot of the page):** P start 6 dBm, P stop

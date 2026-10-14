@@ -16472,14 +16472,17 @@ class CombinedControlApp:
         ttk.Label(output, textvariable=self.stfmr_output_target_label_var).grid(
             row=1, column=2, sticky="e"
         )
+        # Seven characters hold any target or limit ("-10.000"); at ten the
+        # row was about 20 px too wide for the 1101 px window and the red
+        # Zero / OFF button at its end was cut off (user, 2026-10-15).
         ttk.Entry(
-            output, textvariable=self.stfmr_output_target_var, width=10
+            output, textvariable=self.stfmr_output_target_var, width=7
         ).grid(row=1, column=3, padx=(0, 8))
         ttk.Label(output, textvariable=self.stfmr_output_limit_label_var).grid(
             row=1, column=4, sticky="e"
         )
         ttk.Entry(
-            output, textvariable=self.stfmr_output_limit_var, width=10
+            output, textvariable=self.stfmr_output_limit_var, width=7
         ).grid(row=1, column=5, padx=(0, 8))
         self.stfmr_apply_output_button = ttk.Button(
             output,
@@ -16881,14 +16884,16 @@ class CombinedControlApp:
         ttk.Label(
             field_output, textvariable=self.stfmr_lockin_manual_target_label_var
         ).grid(row=1, column=2, sticky="e")
+        # Seven characters, as on the FMR page: at ten the red Zero / OFF
+        # button was cut off in the 1101 px window (user, 2026-10-15).
         ttk.Entry(
-            field_output, textvariable=self.stfmr_lockin_manual_target_var, width=10
+            field_output, textvariable=self.stfmr_lockin_manual_target_var, width=7
         ).grid(row=1, column=3, padx=(0, 8))
         ttk.Label(
             field_output, textvariable=self.stfmr_lockin_manual_limit_label_var
         ).grid(row=1, column=4, sticky="e")
         ttk.Entry(
-            field_output, textvariable=self.stfmr_lockin_manual_limit_var, width=10
+            field_output, textvariable=self.stfmr_lockin_manual_limit_var, width=7
         ).grid(row=1, column=5, padx=(0, 8))
         self.stfmr_lockin_apply_output_button = ttk.Button(
             field_output,
