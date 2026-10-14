@@ -1821,6 +1821,12 @@ NONLOCAL_IV6221_STEP_MA = 0.01
 NONLOCAL_IV6221_CURRENT_MA = 0.1      # RT-E's RTE_TRANSPORT_CURRENT_RMS_MA (Set 6221)
 NONLOCAL_IV6221_FREQUENCY_HZ = NONLOCAL_FREQUENCY_HZ   # RT-E's RTE_TRANSPORT_FREQUENCY_HZ
 NONLOCAL_IV6221_COMPLIANCE_V = 50.0
+# Settle s and Acquire s do not follow the Zurich TC.  At the rack's 1 s
+# default TC an ordinary point is averaged 0.5-1.5 TC after its step, which
+# shows only about a quarter of the step, so a sweep lags by about a point.
+# They were left as they were because only the time-constant defaults were
+# asked to change; about 5 s of Settle s gives settled points (user,
+# 2026-10-14).
 NONLOCAL_IV6221_SETTLE_S = 0.5
 NONLOCAL_IV6221_ACQUIRE_S = 1.0
 NONLOCAL_IV6221_SAMPLE_INTERVAL_S = 0.2
@@ -40978,6 +40984,9 @@ class PPMSPanel(CombinedControlApp):
             self.post_ui(show_range)
             # The Zurich's configured TC; were it missing, the box's 1 s
             # default (user, 2026-10-14; it was 0.1 s, as the box was).
+            # Both callers hold the Zurich lock through this wait, so at 1 s
+            # a ranging idle read keeps Zurich actions and a scan Start's
+            # Zurich set-up waiting up to 4 x 10 s (user, 2026-10-14).
             tau = float(self.zurich_controller.mfli_config.get('timeconstant_s', PPMS_ZURICH_TIME_CONSTANT_S))
             deadline = time.monotonic() + max(.2, 10. * tau)
             while time.monotonic() < deadline:

@@ -42,31 +42,47 @@
     max(Wait/pt, 10 x MFLI TC, 0.2 s) = 10 s (it was 1 s). In MFLI + SR830
     mode both re-reads (after an SR830 or an MFLI range change) wait 10 s
     (1 s at the old defaults).
-  - **STFMR, MFLI alone:** each point still waits Wait/pt alone (0.5 s).
-    No STFMR rule ties it to the MFLI TC, so a point is now read half a
-    time constant after the current step. A 12 dB/oct filter has then
-    reached about 9 % of the step (about 96 % with the old 0.1 s). Raise
-    Wait/pt to about 5 s for settled MFLI points.
-  - **Non-local 6221-IV, with the Zurich measured:** the first point of
-    each pass and the jump back to Start at a new loop wait
+  - **STFMR, MFLI alone:** MFLI is the page's default meter ("Meter"
+    starts at MFLI), so a default STFMR sweep runs this way. Each point
+    still waits Wait/pt alone (0.5 s). No STFMR rule ties it to the MFLI
+    TC, so a point is now read half a time constant after the current step.
+    A 12 dB/oct filter has then reached about 9 % of the step (about 96 %
+    with the old 0.1 s). Raise Wait/pt to about 5 s for settled MFLI points.
+  - **Non-local 6221-IV, with the Zurich measured** (by default the Zurich
+    is the only meter measured, `NONLOCAL_IV6221_DEFAULT_MEASURE`): the
+    first point of each pass and the jump back to Start at a new loop wait
     max(Settle s, 10 x the slowest TC) = 10 s (it was 1 s, unless an SR830's
     front-panel TC was longer). After a Zurich range step the reading waits
     10 x TC = 10 s (it was 1 s). A point still fails when its ranging would
     run past Acquire s + 30 s + 180 s, or after 30 range steps in a row. The
     Start estimate counts 10 s for the first point per pass and frequency
     (it counted 1 s). Other points wait Settle s (0.5 s) and average
-    Acquire s (1 s), as before; no rule ties them to the TC.
+    Acquire s (1 s), as before; no rule ties them to the TC. At the 1 s TC
+    each of these points is therefore averaged 0.5 to 1.5 TC after its
+    current step. Over that window a 12 dB/oct filter shows only about
+    26 % of the step on average (about 100 % with the old 0.1 s). On a
+    sweep each reading lags the current by about one point, and a round
+    trip can show a hysteresis that is not in the sample. Raise Settle s
+    to about 5 s for settled points (about 97 % of each step).
   - **Non-local Gate-VI:** the Zurich runs at 1 s (the log shows
     τ = 1 s). No Gate-VI wait comes from the Zurich TC. The 10 τ settle
     between SR830 orders uses the SR830s' 1 s, as before (10 s).
   - **PPMS and RT-E, Zurich:** after a range change the reading waits
     max(0.2 s, 10 x TC) = 10 s (it was 1 s), at most 4 times per point, so
     up to about 40 s before "Zurich autorange did not settle". With idle
-    autorange on, the idle readout also waits 10 s after a range change.
+    autorange on (after "Set 6221" with a non-zero current), the idle
+    readout also waits 10 s after each range change, up to 4 times. It
+    holds the Zurich all that time, so a Zurich harmonic change or
+    Disconnect clicked meanwhile (they queue on the same Zurich worker),
+    and the Zurich set-up of a scan Start (it takes the same lock), can
+    wait up to about 40 s (about 4 s at the old 0.1 s).
     The Zurich is read once per point, after Settle s and the acquisition
     time (0.5 s + 1 s by default). Those do not follow the TC, so at 1 s
     each Zurich reading comes about 1.5 TC after the setpoint is reached
-    (15 TC with the old 0.1 s).
+    (15 TC with the old 0.1 s). On RT-E the Zurich is the only meter
+    measured by default, so a default RT-E scan reads this way. PPMS
+    measures its three SR830s too; they are set to 1 s on connect, as
+    before.
 - **Tests:** `test_lockin_time_constant_defaults.py` (new) checks every
   changed default is 1 s: the constants, the method defaults, the STFMR and
   Non-local boxes in the source, the PPMS / RT-E box in the real panel
@@ -75,9 +91,12 @@
   harness in `test/test_stfmr_realtime_recording` (now at the 1 s defaults)
   expect 1 s. The 6221-IV page stub in `test_nonlocal_6221_iv` starts at
   1 s too. The CI GUI test `test_panel_defaults` checks that every box shows
-  1 s (not run here: it needs a display). Root `README.md` still says the
-  Non-local TC defaults to 0.1 s; it was outside the files this change
-  could edit.
+  1 s (not run here: it needs a display). The same test file also checks
+  the default meters above (STFMR MFLI, 6221-IV and RT-E the Zurich alone),
+  how much of a step the default 6221-IV window sees, and that the idle
+  PPMS / RT-E readout holds the Zurich for 10 s per range step.
+- **Not yet updated:** root `README.md` still says the Non-local TC
+  defaults to 0.1 s.
 
 ## STFMR: default modulation frequency 117.3 Hz (2026-10-14)
 
