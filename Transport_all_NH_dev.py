@@ -1875,6 +1875,12 @@ NONLOCAL_IV6221_RANGE_SETTLE_TAUS = {"sr830": 5.0, "mfli": 10.0}
 NONLOCAL_IV6221_RANGE_LIMIT_S = 180.0
 # … or after this many range steps in a row (an SR830 spans 26 codes).
 NONLOCAL_IV6221_MAX_RANGE_STEPS = 30
+# Every lock-in reading of a scan waits at least this many time constants
+# after the swept quantity changes, or the page's Settle s / wait if that
+# is longer: at 12 dB/oct (filter order 2) a step has then settled to 99 %
+# (1 - 8 e^-7).  The pages read the time constant of every lock-in they
+# measure with (user, 2026-10-14: 1 s time constants by default).
+LOCKIN_SETTLE_TAUS = 7.0
 # SR830 OFLT codes 0-19 in seconds, to read the front-panel time constant.
 SR830_TIME_CONSTANTS_S = (
     10e-6, 30e-6, 100e-6, 300e-6, 1e-3, 3e-3, 10e-3, 30e-3, 100e-3, 300e-3,
