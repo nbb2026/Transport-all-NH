@@ -417,8 +417,12 @@ class GateVIParseTests(NoWindows):
 
 
 class GateVIWorkerTests(NoWindows):
-    def run_scan(self, ac=None, tc="2", settle=None, event=None):
+    def run_scan(self, ac=None, tc="2", settle=None, event=None, measure=None):
         a = gate_page("1+2", "2")                   # SR830 #8 1+2, the Zurich 2
+        if measure is not None:
+            # A window long enough for several readings on any OS: Windows'
+            # 15.6 ms timer let the 0.05 s default hold one (CI, 2026-10-14).
+            a.nonlocal_vi_measure_var.set(measure)
         if ac is not None:
             ac.mfli_device = "dev4414"
             a.nonlocal_vi_ac_controller = ac
@@ -559,7 +563,7 @@ class GateVIReviewTests(NoWindows):
     run_scan = GateVIWorkerTests.run_scan
 
     def test_a_range_step_drops_the_pass_and_waits_before_reading_on(self):
-        a, _settings, tables, _log = self.run_scan(ZurichRangingAC(), tc="2")
+        a, _settings, tables, _log = self.run_scan(ZurichRangingAC(), tc="2", measure="0.5")
         self.assertEqual(a.nonlocal_vi_stop_event.waits.count(20.0), 1,
                          "10 x the Zurich's 2 s after its range step")
         raw = [row for row in tables["VI_raw.csv"] if row["meter_key"] == "mfli" and row["point_index"] == "1"]
