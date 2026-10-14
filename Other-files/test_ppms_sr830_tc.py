@@ -842,7 +842,7 @@ class ScanStartTimeConstantTests(NoWindows):
 
 
 class LagNoteTests(NoWindows):
-    """A Settle s shorter than 5 time constants of a choice longer than 1 s
+    """A Settle s shorter than 7 time constants (LOCKIN_SETTLE_TAUS) of a choice longer than 1 s
     is noted in the scan-start confirmation; the scan itself is unchanged."""
 
     def note(self, label, settle_s, lockins=("830_a",), build=build_ppms_panel):
@@ -852,17 +852,18 @@ class LagNoteTests(NoWindows):
         return panel._ppms_sr830_tc_lag_note(settle_s, lockins)
 
     def test_long_choices_with_a_short_settle_get_a_note(self):
-        for label, settle in (("3 s", "15"), ("10 s", "50")):
+        for label, settle in (("3 s", "21"), ("10 s", "70")):
             with self.subTest(label=label):
                 text = self.note(label, 0.5)
                 self.assertIn(f"SR830 TC is {label}", text)
-                self.assertIn(f"about {settle} s (5 time constants)", text)
+                self.assertIn(f"about {settle} s (7 time constants)", text)
                 self.assertIn(f"Settle s to at least {settle} s", text)
 
     def test_no_note_otherwise(self):
         self.assertEqual(self.note(None, 0.5), "", "the 1 s default, as scans always ran")
         self.assertEqual(self.note("100 ms", 0.0), "")
-        self.assertEqual(self.note("10 s", 50.0), "", "Settle s covers 5 time constants")
+        self.assertEqual(self.note("10 s", 70.0), "", "Settle s covers 7 time constants")
+        self.assertIn("70 s", self.note("10 s", 50.0), "5 time constants are not enough now")
         self.assertEqual(self.note("10 s", 0.5, lockins=()), "", "only the Zurich measures")
         self.assertEqual(self.note(None, 0.5, build=build_rte_panel), "", "RT-E has no such choice")
 

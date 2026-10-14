@@ -38413,11 +38413,11 @@ class CombinedControlApp:
         default_code = STFMR_LOCKIN_SR830_TIME_CONSTANTS[PPMS_SR830_DEFAULT_TIME_CONSTANT]
         if code is None or code <= default_code:
             return ""
-        settle_s = STFMR_LOCKIN_SR830_SETTLE_TAUS * SR830_TIME_CONSTANTS_S[code]
+        settle_s = LOCKIN_SETTLE_TAUS * SR830_TIME_CONSTANTS_S[code]
         if stable_s >= settle_s:
             return ""
         return (f"\n\nSR830 TC is {label}: an SR830 output takes about {settle_s:g} s "
-                f"(5 time constants) to settle, but Settle s is {stable_s:g} s, so each "
+                f"({LOCKIN_SETTLE_TAUS:g} time constants) to settle, but Settle s is {stable_s:g} s, so each "
                 "reading lags the scan. Set Settle s to at least "
                 f"{settle_s:g} s for settled readings.")
 
