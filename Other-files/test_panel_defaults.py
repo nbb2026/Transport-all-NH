@@ -427,7 +427,7 @@ class PanelDefaultTests(unittest.TestCase):
         # The Zurich's reference input and TC are on the rack only.
         self.assertEqual(len(self.widgets("TCombobox", a.nonlocal_vi_mfli_reference_source_var)), 1)
         self.assertEqual(len(self.widgets("TEntry", a.nonlocal_mfli_tc_var)), 1)
-        self.assertEqual(a.nonlocal_mfli_tc_var.get(), "0.1")
+        self.assertEqual(a.nonlocal_mfli_tc_var.get(), "1")   # 1 s (user, 2026-10-14; was 0.1)
         # RT-E's rack Zurich (user, 2026-10-08): DEV4414 on Trigger In 1; the
         # Ref. follows the chosen Zurich's wiring.
         self.assertEqual((a.nonlocal_vi_mfli_device_var.get(), a.nonlocal_vi_mfli_reference_source_var.get()),
@@ -552,6 +552,18 @@ class PanelDefaultTests(unittest.TestCase):
             "830_c": ("3", True),
             "zurich": ("1+2+3", True),
         })
+
+    def test_every_lock_in_time_constant_box_starts_at_1_s(self):
+        """User, 2026-10-14: "all default lock-in time constant change to
+        1s".  The PPMS and RT-E Zurich TC, the Non-local rack's Zurich TC and
+        STFMR's MFLI TC s and SR830 TC all start at 1 s (three were 0.1 s and
+        the SR830's 100 ms)."""
+        a = self.app
+        for name, panel in (("PPMS", a.ppms_panel), ("RT-E", a.rte_panel)):
+            self.assertEqual(panel.zurich_timeconstant.get(), "1", name)
+        self.assertEqual(a.nonlocal_mfli_tc_var.get(), "1")
+        self.assertEqual(a.stfmr_lockin_mfli_timeconstant_var.get(), "1")
+        self.assertEqual(a.stfmr_lockin_sr830_time_constant_var.get(), "1 s")
 
 
 class NotebookTabTests(unittest.TestCase):

@@ -282,8 +282,9 @@ class TwoPanelTests(unittest.TestCase):
         for key in ('830_a', '830_b', '830_c'):
             panel.ppms_lockin_selection[key].set(False)
         panel.connect_ppms2_zurich()
-        controller.configure_second_harmonic.assert_called_once_with(.1)
-        controller.configure_third_harmonic.assert_called_once_with(.1)
+        # At the TC box's 1 s default (user, 2026-10-14; it was 0.1 s).
+        controller.configure_second_harmonic.assert_called_once_with(1.0)
+        controller.configure_third_harmonic.assert_called_once_with(1.0)
         self.assertEqual(controller.configure_mfli.call_args.kwargs['external_reference_demodulator'], 3)
         panel.ppms_harmonic_plot_frames = {key: Mock() for key in panel.ppms_harmonic_plot_frames}
         with patch.object(panel, '_redraw_ppms_transport_plot'):
@@ -471,9 +472,10 @@ class TwoPanelTests(unittest.TestCase):
         controller.connect_mfli.assert_called_once_with('dev4414')
         # The Super Zurich's own Data Server, not DEV4435's USB-link server.
         self.assertEqual(controller.mfli_server_candidates, (('192.168.68.250', 8004),))
+        # At the TC box's 1 s default (user, 2026-10-14; it was 0.1 s).
         controller.configure_mfli.assert_called_once_with('AC', 2, 'R',
             reference_source='Trigger In 1', sample_rate_hz=app.NONLOCAL_SAMPLE_HZ,
-            input_impedance='10 MΩ', input_scaling=1.0, timeconstant_s=.1, external_reference_demodulator=3)
+            input_impedance='10 MΩ', input_scaling=1.0, timeconstant_s=1.0, external_reference_demodulator=3)
         controller.read_mfli.return_value = dict(X=1e-6, Y=-2e-6, R=2.236e-6,
             phase_deg=-63.435, reference_frequency_hz=317.3, reference_valid=True, status_text='OK')
         panel._poll_ppms2_zurich()

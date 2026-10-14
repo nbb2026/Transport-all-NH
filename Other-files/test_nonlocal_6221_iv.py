@@ -145,7 +145,7 @@ def page(source, **values):
     a.nonlocal_vi_marker_line_var = Var("4")
     a.nonlocal_iv6221_harmonic_vars = {"8": Var("2"), "9": Var("2"), "mfli": Var("1+2+3")}
     a.nonlocal_iv6221_measure_vars = {"8": Var(True), "9": Var(False), "mfli": Var(False)}
-    a.nonlocal_mfli_tc_var = Var("0.1")
+    a.nonlocal_mfli_tc_var = Var("1")      # the rack TC's 1 s default (user, 2026-10-14; was 0.1)
     a.nonlocal_vi_mfli_reference_source_var = Var("Aux Input 1")
     a.nonlocal_vi_lockin_resource_vars = {"8": Var("GPIB0::8::INSTR"), "9": Var("GPIB0::9::INSTR")}
     a.nonlocal_vi_mfli_device_var = Var("DEV4435 (Normal)")

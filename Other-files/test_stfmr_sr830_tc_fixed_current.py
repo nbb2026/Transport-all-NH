@@ -1,7 +1,8 @@
 """STFMR page, two changes the user approved on 2026-10-13, one check each:
 
-- an 'SR830 TC' choice (default 100 ms; the old fixed value was 1 s), with every SR830 reading of
-  a sweep waiting at least 5 time constants (12 dB/oct settling);
+- an 'SR830 TC' choice (default 100 ms then; the old fixed value was 1 s, and since
+  2026-10-14 the default is 1 s again, as every lock-in time constant), with every SR830
+  reading of a sweep waiting at least 5 time constants (12 dB/oct settling);
 - fixed-current runs (Start A = Stop A): only the first two readings of each
   frequency are discarded, so such a run saves data.
 
@@ -234,7 +235,7 @@ class Sr830TimeConstantTests(NoWindows):
     """STFMR set the SR830 to a fixed 1 s (OFLT 10, 12 dB/oct) while the
     default Wait/pt is 0.5 s, so each SR830 point was a lagged reading."""
 
-    def test_the_choices_are_the_sr830_oflt_codes_and_100_ms_is_the_default(self):
+    def test_the_choices_are_the_sr830_oflt_codes_and_1_s_is_the_default(self):
         choices = app.STFMR_LOCKIN_SR830_TIME_CONSTANTS
         self.assertEqual(list(choices), ["1 ms", "3 ms", "10 ms", "30 ms", "100 ms",
                                          "300 ms", "1 s", "3 s", "10 s"])
@@ -242,10 +243,11 @@ class Sr830TimeConstantTests(NoWindows):
             number, unit = label.split()
             seconds = float(number) * (1e-3 if unit == "ms" else 1.0)
             self.assertAlmostEqual(app.SR830_TIME_CONSTANTS_S[code], seconds, delta=seconds * 1e-9, msg=label)
-        # User, 2026-10-13: 100 ms by default (the old fixed value was 1 s).
-        self.assertEqual(app.STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT, "100 ms")
-        self.assertEqual(choices["100 ms"], 8)
-        self.assertEqual(app.STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE, 8)
+        # User, 2026-10-14: every lock-in time constant starts at 1 s, so the
+        # default is 1 s again (100 ms from 2026-10-13; a fixed 1 s before).
+        self.assertEqual(app.STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT, "1 s")
+        self.assertEqual(choices["1 s"], 10)
+        self.assertEqual(app.STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE, 10)
         self.assertEqual(app.STFMR_LOCKIN_SR830_SETTLE_TAUS, 5.0)
 
     def test_configure_sends_the_chosen_code_in_the_same_place_and_reads_it_back(self):
@@ -254,8 +256,8 @@ class Sr830TimeConstantTests(NoWindows):
                 fake = FakeSR830()
                 controller = app.STFMRSR830Controller(lambda _message: None)
                 controller.instrument = fake
-                if code == 8:
-                    result = controller.configure()      # the default, 100 ms (user, 2026-10-13)
+                if code == 10:
+                    result = controller.configure()      # the default, 1 s (user, 2026-10-14)
                 else:
                     result = controller.configure("Sine", True, code)
                 self.assertEqual(fake.writes, sr830_setup(code))
@@ -294,14 +296,15 @@ class Sr830TimeConstantTests(NoWindows):
         self.assertEqual(events(recorder)[-1]["outcome"], "completed")
         self.error.assert_not_called()
 
-    def test_the_default_100_ms_keeps_the_0_5_s_pace(self):
-        """User, 2026-10-13: the default SR830 TC is 100 ms, so a default
-        sweep (Wait/pt 0.5 s) waits 0.5 s per point and sends OFLT 8."""
+    def test_the_default_1_s_waits_5_s_per_point(self):
+        """User, 2026-10-14: the default SR830 TC is 1 s (it was 100 ms), so
+        a default sweep (Wait/pt 0.5 s) sends OFLT 10 and waits 5 x TC = 5 s
+        per point, not the 0.5 s it waited with 100 ms."""
         h, recorder = self.run_sweep(stop="5", tc=app.STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT)
-        self.assertIn("SR830 TC: 100 ms (12 dB/oct); each point waits 0.5 s", self.message())
-        self.assertEqual(h.root.reads, [1, 500, 500, 500, 500])
-        self.assertIn(("configure", ("Sine", True, 8)), h.stfmr_lockin_controllers["830"].calls)
-        self.assertEqual(events(recorder)[0]["settings"]["effective_point_wait_s"], 0.5)
+        self.assertIn("SR830 TC: 1 s (12 dB/oct); each point waits 5 s", self.message())
+        self.assertEqual(h.root.reads, [1, 5000, 5000, 5000, 5000])
+        self.assertIn(("configure", ("Sine", True, 10)), h.stfmr_lockin_controllers["830"].calls)
+        self.assertEqual(events(recorder)[0]["settings"]["effective_point_wait_s"], 5.0)
 
     def test_the_wait_is_the_longer_of_wait_per_point_and_five_time_constants(self):
         for tc, delay, code, wait_ms in (("100 ms", "0.5", 8, 500), ("300 ms", "0.5", 9, 1500),
@@ -347,9 +350,12 @@ class Sr830TimeConstantTests(NoWindows):
         # then the one above.
         self.assertEqual(names.count("mfli_autorange_retry"), 2)
         # Before: 0.5 s per point, max(0.5, 10 x 0.1 s) = 1 s for each re-read.
-        self.assertEqual(h.root.reads, [1] + [5000] * 7)
+        # At the 1 s defaults of both TCs (user, 2026-10-14) each point waits
+        # 5 x 1 s = 5 s and each re-read max(5 s, 10 x the 1 s MFLI TC) = 10 s:
+        # the MFLI's first-point re-read, then the SR830's and the MFLI's.
+        self.assertEqual(h.root.reads, [1, 10000, 5000, 5000, 5000, 10000, 10000, 5000])
         self.assertEqual({e["settle_s"] for e in events(recorder) if e["event"] == "mfli_autorange_retry"},
-                         {5.0})
+                         {10.0})
         rows = read_csv(recorder.csv_path)
         self.assertEqual([row["meter"] for row in rows], ["MFLI", "SR830"] * 3)
         self.assertEqual([row["sr830_time_constant_s"] for row in rows], ["nan", "1.0"] * 3)
@@ -361,9 +367,11 @@ class Sr830TimeConstantTests(NoWindows):
         text = self.message()
         self.assertNotIn("SR830 TC", text)
         self.assertIn("Estimated at least 4.0 s.", text)    # 2 x 4 waits of 0.5 s
-        # 1 s: the stand-in MFLI's first-point range check re-reads point 1
-        # after max(Wait/pt, 10 x the 0.1 s MFLI TC), as before.
-        self.assertEqual(h.root.reads, [1, 1000, 500, 500, 500, 500] * 2)
+        # 10 s: the stand-in MFLI's first-point range check re-reads point 1
+        # after max(Wait/pt, 10 x the MFLI TC), as before, now with the 1 s
+        # default TC (user, 2026-10-14; 1 s with the old 0.1 s).  The other
+        # points still wait Wait/pt alone.
+        self.assertEqual(h.root.reads, [1, 10000, 500, 500, 500, 500] * 2)
         rows = read_csv(recorder.csv_path)
         self.assertEqual(len(rows), 6)
         self.assertEqual({row["sr830_time_constant_s"] for row in rows}, {"nan"})
@@ -494,8 +502,9 @@ class FixedCurrentTests(NoWindows):
         self.assertIn("about 2 points saved", self.message())            # one field point, two rows
         rows = read_csv(recorder.csv_path)
         self.assertEqual([(r["index"], r["meter"]) for r in rows], [("3", "MFLI"), ("3", "SR830")])
-        # The MFLI's first-point range check re-reads point 1 once.
-        self.assertEqual(h.root.reads, [1, 5000, 5000, 5000])
+        # The MFLI's first-point range check re-reads point 1 once, after
+        # 10 x the 1 s default MFLI TC (user, 2026-10-14; 5 s with 0.1 s).
+        self.assertEqual(h.root.reads, [1, 10000, 5000, 5000])
         self.assertEqual(events(recorder)[-1]["saved_points"], 2)
 
     def test_a_sweep_still_discards_two_points_per_loop_with_its_old_status(self):

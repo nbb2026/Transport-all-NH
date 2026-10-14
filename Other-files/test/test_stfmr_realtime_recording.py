@@ -168,9 +168,10 @@ def harness(folder, meter='MFLI', stop='6', end_current='1'):
         'mod_start': '317.3', 'mod_end': '317.3', 'delay': '0', 'limit': '10', 'loop': 1,
         'start': '-1', 'stop': end_current, 'step': '0.5',
         'sr830_reference': 'Sine', 'sr830_auto_range': True,
-        # The page's 'SR830 TC' default (user, 2026-10-13).
+        # The page's 'SR830 TC' and 'MFLI TC s' defaults: every lock-in time
+        # constant starts at 1 s (user, 2026-10-14; the MFLI's was 0.1 s).
         'sr830_time_constant': '1 s',
-        'mfli_timeconstant': '0.1', 'mfli_auto_range': True, 'reference': 'Aux Input 1',
+        'mfli_timeconstant': '1', 'mfli_auto_range': True, 'reference': 'Aux Input 1',
         'status': '', 'field': '', 'voltage': '', 'reference_status': '',
         'save_path': '',
     }
@@ -268,7 +269,7 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(set(rows[0]), set(app.STFMRScanRecorder.FIELDNAMES))
         history = events(recorder)
         self.assertEqual(history[0]['settings']['meter'], 'MFLI')
-        self.assertEqual(history[0]['settings']['mfli_timeconstant_s'], 0.1)
+        self.assertEqual(history[0]['settings']['mfli_timeconstant_s'], 1.0)
         # Two Zurich lock-ins exist; the run log names the one used.
         self.assertEqual(history[0]['settings']['mfli_device'], 'dev4435')
         self.assertEqual(sum(r['event']=='startup_point_discarded' for r in history), 4)
@@ -478,7 +479,7 @@ class StreamingTests(unittest.TestCase):
         # the jump from stop back to start (review, 2026-10-09).
         self.assertEqual([int(r['index']) for r in rows], [3, 4, 5, 8, 9, 10])
         self.assertEqual([int(r['loop']) for r in rows], [1]*3+[2]*3)
-        self.assertTrue(all(float(r['mfli_timeconstant_s']) == 0.1 for r in rows))
+        self.assertTrue(all(float(r['mfli_timeconstant_s']) == 1.0 for r in rows))
 
     def test_preflight_flush_failure_never_enables_output(self):
         h = harness(self.tmp.name)

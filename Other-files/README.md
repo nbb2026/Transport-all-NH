@@ -1,5 +1,84 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Lock-in time constants: every default is 1 s (2026-10-14)
+
+- **The user's choice:** "all default lock-in time constant change to 1s".
+  Every lock-in time-constant box now starts at 1 s. A value typed or
+  chosen by hand is used as before. Only the starting values changed:
+  every wait computed from a time constant keeps its rule, so the waits
+  below follow from the new values.
+- **What changed (page, box: old -> new):**
+  - **STFMR, "MFLI TC s":** 0.1 -> 1 s
+    (`STFMR_LOCKIN_MFLI_TIME_CONSTANT_S`; also the value recorded when the
+    MFLI is not used).
+  - **STFMR, "SR830 TC":** 100 ms (OFLT 8) -> 1 s (OFLT 10)
+    (`STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT`,
+    `STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE`, which is also the default of
+    `STFMRSR830Controller.configure`). It was a fixed 1 s until 2026-10-13,
+    then a choice with 100 ms as the default; now 1 s again.
+  - **Non-local, the rack's Zurich "TC (s)"** (used by 6221-IV and
+    Gate-VI): 0.1 -> 1 s (`NONLOCAL_MFLI_TIME_CONSTANT_S`).
+  - **PPMS "Time constant s" and RT-E "TC (s)"** (the Zurich row): 0.1 ->
+    1 s (new `PPMS_ZURICH_TIME_CONSTANT_S`). The Zurich range-change wait
+    also falls back to it when no TC is configured (it fell back to 0.1 s).
+- **Already 1 s, left alone:** `NONLOCAL_LOCKIN_TIME_CONSTANT_S` (the
+  default of `configure_mfli`). The PPMS and RT-E SR830s are set to
+  OFLT 10 (1 s) on connect, then their front-panel value is used. Gate-VI
+  writes 1 s to its SR830s. 6221-IV keeps each SR830's front-panel time
+  constant; the program sets no value there. `configure_second_harmonic` and
+  `configure_third_harmonic` take the TC of their page's box; they have no
+  default of their own. The MOKE light, motor and magnet pages, CIDWM,
+  MOKE-24 and FMR have no lock-in. `Test_Microwave_NH_dev.py` (a separate
+  program, not changed here) still starts its "MFLI time constant s" at
+  0.1 s.
+- **Timing at the new defaults** (Wait/pt 0.5 s, Settle and Acquire as
+  shipped):
+  - **STFMR, SR830 or MFLI + SR830:** each point (all but the discarded
+    first of each frequency) waits max(Wait/pt, 5 x TC) = 5 s (it was 0.5 s
+    at 100 ms). An SR830 range change re-reads after the same 5 s. The
+    Start estimate counts 5 s per point, so a default 601-current sweep
+    takes about 50 min per frequency instead of 5 min.
+  - **STFMR, MFLI range change:** the re-read waits
+    max(Wait/pt, 10 x MFLI TC, 0.2 s) = 10 s (it was 1 s). In MFLI + SR830
+    mode both re-reads (after an SR830 or an MFLI range change) wait 10 s
+    (1 s at the old defaults).
+  - **STFMR, MFLI alone:** each point still waits Wait/pt alone (0.5 s).
+    No STFMR rule ties it to the MFLI TC, so a point is now read half a
+    time constant after the current step. A 12 dB/oct filter has then
+    reached about 9 % of the step (about 96 % with the old 0.1 s). Raise
+    Wait/pt to about 5 s for settled MFLI points.
+  - **Non-local 6221-IV, with the Zurich measured:** the first point of
+    each pass and the jump back to Start at a new loop wait
+    max(Settle s, 10 x the slowest TC) = 10 s (it was 1 s, unless an SR830's
+    front-panel TC was longer). After a Zurich range step the reading waits
+    10 x TC = 10 s (it was 1 s). A point still fails when its ranging would
+    run past Acquire s + 30 s + 180 s, or after 30 range steps in a row. The
+    Start estimate counts 10 s for the first point per pass and frequency
+    (it counted 1 s). Other points wait Settle s (0.5 s) and average
+    Acquire s (1 s), as before; no rule ties them to the TC.
+  - **Non-local Gate-VI:** the Zurich runs at 1 s (the log shows
+    τ = 1 s). No Gate-VI wait comes from the Zurich TC. The 10 τ settle
+    between SR830 orders uses the SR830s' 1 s, as before (10 s).
+  - **PPMS and RT-E, Zurich:** after a range change the reading waits
+    max(0.2 s, 10 x TC) = 10 s (it was 1 s), at most 4 times per point, so
+    up to about 40 s before "Zurich autorange did not settle". With idle
+    autorange on, the idle readout also waits 10 s after a range change.
+    The Zurich is read once per point, after Settle s and the acquisition
+    time (0.5 s + 1 s by default). Those do not follow the TC, so at 1 s
+    each Zurich reading comes about 1.5 TC after the setpoint is reached
+    (15 TC with the old 0.1 s).
+- **Tests:** `test_lockin_time_constant_defaults.py` (new) checks every
+  changed default is 1 s: the constants, the method defaults, the STFMR and
+  Non-local boxes in the source, the PPMS / RT-E box in the real panel
+  constructor, and the waits above. `test_stfmr_sr830_tc_fixed_current`,
+  `test_ppms_two_panels`, `test/test_instrument_safety_logic` and the STFMR
+  harness in `test/test_stfmr_realtime_recording` (now at the 1 s defaults)
+  expect 1 s. The 6221-IV page stub in `test_nonlocal_6221_iv` starts at
+  1 s too. The CI GUI test `test_panel_defaults` checks that every box shows
+  1 s (not run here: it needs a display). Root `README.md` still says the
+  Non-local TC defaults to 0.1 s; it was outside the files this change
+  could edit.
+
 ## STFMR: default modulation frequency 117.3 Hz (2026-10-14)
 
 - **The user's choice:** "Mod. start Hz" and "Mod. end Hz" now both start at
@@ -366,7 +445,8 @@
   in the free cell under Loop and as wide as the Loop spinbox, so the table
   keeps its width in the 1101 px window; its column gives way in a narrower
   window only down to the dropdown's width. The default is 100 ms (user,
-  2026-10-13; the fixed value had been 1 s), still at 12 dB/oct, with an
+  2026-10-13; the fixed value had been 1 s; superseded on 2026-10-14: the
+  default is 1 s again, see the top section), still at 12 dB/oct, with an
   OFLT? read-back, as for SENS, that stops the sweep with the outputs off on
   a mismatch. As for the MFLI TC, Start reads it only when that lock-in is
   used; a value not in the list is refused, and the dropdown is locked during
@@ -374,7 +454,8 @@
 - **SR830 wait:** whenever the SR830 is read (SR830 alone or MFLI + SR830),
   each point and each re-read after a range change waits the longer of
   Wait/pt and 5 × TC (12 dB/oct settling). With the default 100 ms that is
-  the default 0.5 s Wait/pt; at 1 s an SR830 point waits 5 s. The Start confirmation
+  the default 0.5 s Wait/pt; at 1 s (the default since 2026-10-14) an SR830
+  point waits 5 s. The Start confirmation
   shows the TC and the wait, and the duration estimate uses the wait. The run
   log records `sr830_time_constant_index`, `sr830_time_constant_s` and
   `effective_point_wait_s`; the live CSV gains a last column,
@@ -2228,10 +2309,10 @@ cables, it showed "Locked". The two pages differed in three ways:
   **TC (s)** after its status.
   - **Ref.:** the reference input, moved from the Gate-VI read settings
     (default still Aux Input 1).
-  - **TC (s):** `nonlocal_mfli_tc_var`, default 0.1 s, used by 6221-IV and
-    Gate-VI.
+  - **TC (s):** `nonlocal_mfli_tc_var`, default 0.1 s (1 s since
+    2026-10-14, see the top section), used by 6221-IV and Gate-VI.
   - **Change for Gate-VI:** its Zurich TC was a fixed 1 s and now follows
-    the rack (0.1 s by default). Its SR830s keep 1 s.
+    the rack (0.1 s by default then; 1 s since 2026-10-14). Its SR830s keep 1 s.
 - **6221-IV as RT-E:** the STFMR-style Meter list is replaced by RT-E's
   layout and start-up values (`NONLOCAL_IV6221_*`).
   - **Settings:** 0.1 mA RMS, 17.3 Hz, 50 V; Set 6221; Trigger line;
@@ -3891,7 +3972,8 @@ Mac's narrower fonts had hidden. Fixed:
   be read, a lower range is not guessed from a small R value.
 - Every range change keeps the current current, discards the readings taken before the
   change, waits `max(per-point wait, 10 × MFLI time constant, 0.2 s)`, then re-reads LS475
-  and MFLI. With a 0.1 s time constant the wait is at least 1 s. The existing rule that the
+  and MFLI. With a 0.1 s time constant the wait is at least 1 s (10 s at the 1 s
+  default since 2026-10-14). The existing rule that the
   first two current points of each frequency are not saved is unchanged.
 - At most three range changes per point; if the last wait still shows overload/near full
   scale, or the firmware range change times out or the read-back fails, the current point

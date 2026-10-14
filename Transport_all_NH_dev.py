@@ -1625,6 +1625,11 @@ PPMS_HARMONIC_ORDERS = (1, 2, 3)
 PPMS_HARMONIC_LABELS = {1: "1st harmonic", 2: "2nd harmonic", 3: "3rd harmonic"}
 PPMS_METER_COLORS = {"830_a": "#0072B2", "830_b": "#E69F00", "830_c": "#009E73", "zurich": "#CC79A7"}
 PPMS_ZURICH_MODE_ORDERS = {"1": (1,), "2": (2,), "3": (3,), "1+2": (1, 2), "1+2+3": (1, 2, 3)}
+# The Zurich's time constant on the PPMS and RT-E pages ("Time constant s" /
+# "TC (s)"): 1 s by default, as every lock-in time constant the program starts
+# with, so all pages agree unless a box is changed (user, 2026-10-14; the box
+# started at 0.1 s).  After a Zurich range change the reading waits 10 of these.
+PPMS_ZURICH_TIME_CONSTANT_S = 1.0
 # SR830 slots accept the same selections as the Zurich: a multi-order choice
 # runs one scan pass per order, with the meter re-tuned between passes.
 PPMS_HARMONIC_MODE_ORDERS = PPMS_ZURICH_MODE_ORDERS
@@ -1847,8 +1852,10 @@ NONLOCAL_FSCAN_MAX_HZ = 100000          # the 6221's sine
 # reading (the microwave test program's 5/f), besides the scan's own settle.
 NONLOCAL_FSCAN_SETTLE_PERIODS = 5.0
 # The Zurich MFLI time constant on the Non-local rack, as on RT-E, PPMS and
-# STFMR (the Gate-VI and 6221-IV scans both use it).
-NONLOCAL_MFLI_TIME_CONSTANT_S = 0.1
+# STFMR (the Gate-VI and 6221-IV scans both use it).  1 s by default, as
+# every lock-in time constant the program starts with: the user wants the
+# same 1 s everywhere unless a box is changed (user, 2026-10-14; was 0.1 s).
+NONLOCAL_MFLI_TIME_CONSTANT_S = 1.0
 # The Non-local rack's Zurich row reads the reference lock once a second
 # while the page is idle, as the RT-E row does ("Locked" / "Warning").
 NONLOCAL_MFLI_POLL_MS = 1000
@@ -1995,19 +2002,24 @@ STFMR_LOCKIN_DEFAULT_START_A = -3.0
 STFMR_LOCKIN_DEFAULT_STOP_A = 3.0
 STFMR_LOCKIN_DEFAULT_STEP_A = 0.01
 STFMR_LOCKIN_DEFAULT_DELAY_S = 0.5
-STFMR_LOCKIN_MFLI_TIME_CONSTANT_S = 0.1
+# The "MFLI TC s" box starts at 1 s, as every lock-in time constant the
+# program starts with (user, 2026-10-14; was 0.1 s).  An MFLI range change
+# then waits at least 10 x TC = 10 s before the re-read.
+STFMR_LOCKIN_MFLI_TIME_CONSTANT_S = 1.0
 STFMR_LOCKIN_SR830_SENSITIVITY_CODE = 13  # 50 uV full scale
-STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE = 8  # 100 ms, the default choice below
+STFMR_LOCKIN_SR830_TIME_CONSTANT_CODE = 10  # 1 s, the default choice below
 # The 'SR830 TC' choices and their OFLT codes (SR830 manual: OFLT 0 = 10 us,
 # stepping 1-3-10 up to 19 = 30 ks, so 10 = 1 s; see SR830_TIME_CONSTANTS_S).
-# Sweeps used a fixed 1 s.  The user chose 100 ms as the default: with the
-# 5 x TC wait below it keeps the default 0.5 s Wait/pt pace.  The slope stays
-# 12 dB/oct (OFSL 1) (user, 2026-10-13).
+# Sweeps first used a fixed 1 s.  On 2026-10-13 the user made it a choice
+# with 100 ms as the default, which with the 5 x TC wait below kept the
+# default 0.5 s Wait/pt pace.  The user now wants every lock-in time constant
+# to start at 1 s, so the default is 1 s again and a default SR830 point waits
+# 5 s (user, 2026-10-14).  The slope stays 12 dB/oct (OFSL 1).
 STFMR_LOCKIN_SR830_TIME_CONSTANTS = {
     "1 ms": 4, "3 ms": 5, "10 ms": 6, "30 ms": 7, "100 ms": 8,
     "300 ms": 9, "1 s": 10, "3 s": 11, "10 s": 12,
 }
-STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT = "100 ms"
+STFMR_LOCKIN_SR830_DEFAULT_TIME_CONSTANT = "1 s"
 # At 12 dB/oct an SR830 output settles in about 5 time constants, so every
 # SR830 reading of a sweep but the discarded first of each frequency waits at
 # least this many, whatever Wait/pt says:
@@ -3001,8 +3013,8 @@ class STFMRSR830Controller(SafeVisaIdentityController):
             choices = ", ".join(STFMR_LOCKIN_SR830_REFERENCE_INPUTS)
             raise ValueError(f"SR830 REF IN must be one of: {choices}")
         reference_slope = STFMR_LOCKIN_SR830_REFERENCE_INPUTS[reference_input]
-        # The page's 'SR830 TC' choice; 100 ms is the default
-        # (user, 2026-10-13).
+        # The page's 'SR830 TC' choice (user, 2026-10-13); 1 s is the
+        # default (user, 2026-10-14; it was 100 ms).
         if time_constant_code not in STFMR_LOCKIN_SR830_TIME_CONSTANTS.values():
             raise ValueError(f"SR830 time constant code {time_constant_code!r} is not an 'SR830 TC' choice")
         time_constant_code = int(time_constant_code)
@@ -40744,7 +40756,9 @@ class PPMSPanel(CombinedControlApp):
         self.zurich_resource = tk.StringVar(value=zurich_mfli_label("MF-DEV4414"))
         self.zurich_reference = tk.StringVar(value="Trigger In 1")
         self.zurich_harmonic = tk.StringVar(value="1+2+3")
-        self.zurich_timeconstant = tk.StringVar(value="0.1")
+        # 1 s, as every lock-in time constant the program starts with
+        # (user, 2026-10-14; it was "0.1").
+        self.zurich_timeconstant = tk.StringVar(value=f"{PPMS_ZURICH_TIME_CONSTANT_S:g}")
         self.zurich_expected_frequency = PPMS_TRANSPORT_FREQUENCY_HZ
         self.zurich_status = tk.StringVar(value="Not connected")
         self.zurich_values = tk.StringVar(value="X: -- V    Y: -- V    R: -- V    θ: -- °    Ref: -- Hz")
@@ -40962,7 +40976,9 @@ class PPMSPanel(CombinedControlApp):
                     self.zurich_status.set(f"Autorange; waiting to settle: {text}")
                     self._set_connection_indicator('zurich_reference', False)
             self.post_ui(show_range)
-            tau = float(self.zurich_controller.mfli_config.get('timeconstant_s', .1))
+            # The Zurich's configured TC; were it missing, the box's 1 s
+            # default (user, 2026-10-14; it was 0.1 s, as the box was).
+            tau = float(self.zurich_controller.mfli_config.get('timeconstant_s', PPMS_ZURICH_TIME_CONSTANT_S))
             deadline = time.monotonic() + max(.2, 10. * tau)
             while time.monotonic() < deadline:
                 if self.closing or self.zurich_closed or (scanning and self.ppms_field_scan_stop_event.is_set()):
