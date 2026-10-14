@@ -16749,7 +16749,9 @@ class CombinedControlApp:
             4, 0, "MFLI reference:", self.stfmr_lockin_reference_var,
             kind="combo", values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS), width=12,
         )
-        parameter(
+        # Kept so the sweep can lock it: with the MFLI read, 7 x its TC is
+        # part of every point's settle (review, 2026-10-14).
+        self.stfmr_lockin_mfli_timeconstant_entry = parameter(
             4, 1, "MFLI TC s:", self.stfmr_lockin_mfli_timeconstant_var,
             width=7,
         )
@@ -17026,8 +17028,12 @@ class CombinedControlApp:
                 state="disabled" if self.stfmr_lockin_running else "readonly"
             )
         # Settle s and Acquire s set every wait and window of the sweep, so
-        # they are locked as the SR830 TC is (user, 2026-10-14).
-        for name in ("stfmr_lockin_settle_entry", "stfmr_lockin_acquire_entry"):
+        # they are locked as the SR830 TC is (user, 2026-10-14).  So is
+        # "MFLI TC s": read at Start, 7 x it is the settle of every point
+        # that reads the MFLI, and a value typed mid-sweep would show a TC
+        # the sweep is not using (review, 2026-10-14).
+        for name in ("stfmr_lockin_settle_entry", "stfmr_lockin_acquire_entry",
+                     "stfmr_lockin_mfli_timeconstant_entry"):
             if hasattr(self, name):
                 getattr(self, name).configure(
                     state="disabled" if self.stfmr_lockin_running else "normal"
@@ -17421,6 +17427,21 @@ class CombinedControlApp:
         """The clock of a point's Acquire s window (time.monotonic).  The
         Tk-free tests give it the time of their stand-in event loop."""
         return time.monotonic()
+
+    @staticmethod
+    def _stfmr_lockin_duration_text(seconds: float) -> str:
+        """A sweep time as "45 s", "88 min" or "10.5 h": seconds under
+        2 min, minutes under 1 h, hours from there.  Shared by the Start
+        estimate ("about 1.5 h") and the status line's time left
+        ("~1.5 h left"): at about 9 s a point the time left reached five
+        digits of seconds ("remaining about 33000.0 s"), as long as the
+        52-character status label itself (review, 2026-10-14)."""
+        seconds = max(float(seconds), 0.0)
+        if seconds >= 3600.0:
+            return f"{seconds / 3600.0:.1f} h"
+        if seconds >= 120.0:
+            return f"{seconds / 60.0:.0f} min"
+        return f"{seconds:.0f} s"
 
     @classmethod
     def _stfmr_lockin_average_samples(
@@ -17963,12 +17984,12 @@ class CombinedControlApp:
         # (user, 2026-10-14).  The reads themselves come on top.
         settles = max(total_points - passes, 0)
         estimate = settles * effective_settle_s + saved_field_points * acquire_s
-        if estimate >= 3600.0:
-            estimate_scale = f"; about {estimate / 3600.0:.1f} h"
-        elif estimate >= 120.0:
-            estimate_scale = f"; about {estimate / 60.0:.0f} min"
-        else:
-            estimate_scale = ""
+        # The seconds come first; from 2 min the minutes or hours follow, as
+        # the status line's time left reads (review, 2026-10-14).
+        estimate_scale = (
+            f"; about {self._stfmr_lockin_duration_text(estimate)}"
+            if estimate >= 120.0 else ""
+        )
         fixed_current = self.stfmr_lockin_points_per_loop == 1
         if not messagebox.askyesno(
             "STFMR scan",
@@ -18450,6 +18471,21 @@ class CombinedControlApp:
             self._read_next_stfmr_lockin_point,
         )
 
+    def _check_stfmr_lockin_sample(self, sample: dict[str, object], **point) -> bool:
+        """_accept_stfmr_lockin_sample, but a check that raises ends the
+        sweep through the output-off sequence and returns False.  It runs
+        on every reading of the Acquire s window, about 21 times a point at
+        the defaults; an exception escaping the Tk callback left the sweep
+        running with nothing scheduled and no read in flight, and Stop then
+        neither zeroed the 4886 nor switched the RF off (review,
+        2026-10-14)."""
+        try:
+            return self._accept_stfmr_lockin_sample(sample, **point)
+        except BaseException as error:
+            self._set_stfmr_lockin_overload_state(None)
+            self._finish_stfmr_lockin_scan(error=error)
+            return False
+
     def _accept_stfmr_lockin_sample(
         self, sample: dict[str, object], *, index: int, current: float,
         frequency_ghz: float, field_g: float,
@@ -18536,12 +18572,27 @@ class CombinedControlApp:
         if dual and (not valid or sample.get("input_overload") is True):
             self._finish_stfmr_lockin_scan(error=RuntimeError("MFLI reference unlocked or overloaded; current dual-meter point not saved"))
             return False
-        if dual and not all(math.isfinite(value) for data in (sample, secondary)
-                for value in (self._stfmr_lockin_sample_component(data, "X"),
-                              self._stfmr_lockin_sample_component(data, "Y"),
-                              float(data.get("phase_deg", math.nan)))):
-            self._finish_stfmr_lockin_scan(error=RuntimeError("Dual-meter reading contains invalid X/Y/Theta; current point not saved"))
-            return False
+        if dual:
+            # _stfmr_lockin_sample_component raises on a missing or
+            # non-finite X or Y instead of returning nan.  Uncaught, that
+            # escaped the Tk callback and left the sweep running with nothing
+            # scheduled, so Stop could not zero the 4886 or switch the RF
+            # off.  Any such failure is an invalid reading that ends the
+            # sweep here (review, 2026-10-14).
+            try:
+                finite = all(
+                    math.isfinite(value) for data in (sample, secondary)
+                    for value in (
+                        self._stfmr_lockin_sample_component(data, "X"),
+                        self._stfmr_lockin_sample_component(data, "Y"),
+                        float(data.get("phase_deg", math.nan)),
+                    )
+                )
+            except Exception:
+                finite = False
+            if not finite:
+                self._finish_stfmr_lockin_scan(error=RuntimeError("Dual-meter reading contains invalid X/Y/Theta; current point not saved"))
+                return False
         if meter == "SR830":
             auto_range_action = str(sample.get("auto_range", ""))
             if auto_range_action:
@@ -18632,7 +18683,7 @@ class CombinedControlApp:
                 self._set_stfmr_lockin_overload_state(None)
                 self._finish_stfmr_lockin_scan(error=error)
                 return
-            if not self._accept_stfmr_lockin_sample(
+            if not self._check_stfmr_lockin_sample(
                 sample, index=index, current=current,
                 frequency_ghz=frequency_ghz, field_g=field_g,
             ):
@@ -18707,7 +18758,7 @@ class CombinedControlApp:
                 self._set_stfmr_lockin_overload_state(None)
                 self._finish_stfmr_lockin_scan(error=error)
                 return
-            if not self._accept_stfmr_lockin_sample(
+            if not self._check_stfmr_lockin_sample(
                 sample, index=acquisition["index"], current=acquisition["current"],
                 frequency_ghz=acquisition["frequency_ghz"],
                 field_g=acquisition["field_g"],
@@ -18914,12 +18965,16 @@ class CombinedControlApp:
         else:
             # "~120 s left" with several modulation frequencies, whose
             # longer label pushed "remaining about 120.0 s" off the
-            # 52-character status label (user, 2026-10-13).
+            # 52-character status label (user, 2026-10-13).  The time left
+            # is in s, min or h as the Start estimate is: at about 9 s a
+            # point, seconds ran to five digits and could be cut off the
+            # label (review, 2026-10-14).
+            left = self._stfmr_lockin_duration_text(remaining)
             self.stfmr_lockin_status_var.set(
                 f"{self._stfmr_lockin_pass_label(frequency_ghz)}; scanning {completed}/{total}; "
                 f"I={current:+.5g} A; "
-                + (f"~{remaining:.0f} s left" if self._stfmr_lockin_several_modulations()
-                   else f"remaining about {remaining:.1f} s")
+                + (f"~{left} left" if self._stfmr_lockin_several_modulations()
+                   else f"remaining about {left}")
             )
         if done_in_frequency >= len(self.stfmr_lockin_points):
             if not self._stfmr_lockin_log_event(

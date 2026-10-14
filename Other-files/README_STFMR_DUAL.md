@@ -5,6 +5,7 @@ Main program: `Magneto_Electro_Optical_Microwave_Transport_NH_dev.py`.
 Select `MFLI + SR830` under "Meter" on the STFMR page and connect both lock-ins plus the
 KEPCO 4886, LS475 and SMB100A. The single-meter `MFLI` and `SR830` modes remain.
 The meter mode is locked during a scan; connecting an instrument in dual mode does not switch back to single mode.
+Settle s, Acquire s, "SR830 TC" and "MFLI TC s" are read at Start and locked during a scan too (2026-10-14).
 
 ## Acquisition and display
 
@@ -21,8 +22,8 @@ The meter mode is locked during a scan; connecting an instrument in dual mode do
   readings of both meters are discarded and the same point is read again, from its first reading, after the wait:
   max(0.1 s, the settle, 10 × the MFLI TC) after an SR830 change, max(the settle, 10 × the MFLI TC, 0.2 s) after an
   MFLI change, so 10 s at the defaults. In dual mode, any read failure, reference loss, invalid SR830 status, MFLI
-  overload or invalid X/Y/Theta in any reading of the window aborts the scan through the existing output-off
-  sequence, and the point is not saved.
+  overload or invalid X/Y/Theta (missing or non-finite) in any reading of the window aborts the scan through the
+  existing output-off sequence, and the point is not saved; so does any other failure in checking a reading.
 - The SR830 time constant is the "SR830 TC" choice (1 ms to 10 s, default 1 s since 2026-10-14, 100 ms before;
   12 dB/oct). Until 2026-10-14 an SR830 point waited the longer of Wait/pt and 5 × its time constant; the MFLI
   alone waited Wait/pt.

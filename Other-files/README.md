@@ -118,6 +118,39 @@
   CI GUI test `test_stfmr_field_output` checks the drawn table rows, the
   SR830 TC beside its REF IN, the actions below the table at 1101 px and
   plots of at least 55 px (not run here: it needs a display).
+- **Review fixes (2026-10-14):**
+  - A reading whose checks raise (in MFLI + SR830 mode a missing or
+    non-finite X or Y did: `_stfmr_lockin_sample_component` raises rather
+    than returning nan) no longer escapes the Tk callback. It left the
+    sweep running with nothing scheduled, and Stop then neither zeroed the
+    4886 nor switched the RF off. The dual X/Y/Theta check now counts such
+    a value as invalid and ends the sweep through the output-off sequence
+    ("Dual-meter reading contains invalid X/Y/Theta; current point not
+    saved"), and `_check_stfmr_lockin_sample` wraps every reading's checks
+    so any other failure there ends it the same way. The real read paths
+    already reject non-finite values, so this was latent, but the check now
+    runs on every reading (about 21 a point).
+  - **"MFLI TC s" is locked during a sweep**, as Settle s, Acquire s and
+    the SR830 TC are: 7 x it is the settle of every point that reads the
+    MFLI, and a value typed mid-sweep showed a TC the sweep was not using.
+  - **Time left in s, min or h:** the status line read "remaining about
+    33000.0 s" for a 7-carrier sweep at about 9 s a point, about as wide as
+    the 52-character label. It now reads "remaining about 9.2 h" (one
+    modulation frequency) or "~9.2 h left" (several), from the same helper
+    (`_stfmr_lockin_duration_text`: seconds under 2 min, minutes under 1 h)
+    as the Start estimate's "about 1.5 h".
+  - New tests in `test_stfmr_settle_acquire.py`: a near-full-scale MFLI
+    reading later in the window runs the firmware autorange as
+    "overload/high", re-reads after 10 s and saves an uncontaminated mean;
+    near full scale on every attempt, the fourth range change of one point
+    ends the sweep with the outputs off ("after 3 retries"); an SR830 range
+    change later in a dual window restarts both meters after 10 s with
+    paired, uncontaminated rows; a non-finite X (MFLI or SR830) in a dual
+    window and any raising check end the sweep with the outputs off and
+    nothing scheduled; the duration text. Updated: the lock test
+    (`test_stfmr_sr830_tc_fixed_current`), the status-line patterns and a
+    width check of hours left (`test_stfmr_mod_prime_range`), and the CI GUI
+    test `test_stfmr_field_output` (the MFLI TC entry is the kept one).
 - **Not yet verified:** on the lab PC with the instruments (the read pace a
   real GPIB bus allows, the MFLI at 50 Hz), and the CI screenshots.
 

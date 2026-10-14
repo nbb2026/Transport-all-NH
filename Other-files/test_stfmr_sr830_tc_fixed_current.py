@@ -435,15 +435,19 @@ class Sr830TimeConstantTests(NoWindows):
             setattr(a, f"stfmr_lockin_{name}_button", Widget("normal"))
         a.stfmr_lockin_meter_combo = Widget("readonly")
         a.stfmr_lockin_sr830_time_constant_combo = combo = Widget("readonly")
-        # Settle s and Acquire s too (user, 2026-10-14).
+        # Settle s and Acquire s too (user, 2026-10-14), and "MFLI TC s",
+        # 7 x which is the settle of every point that reads the MFLI
+        # (review, 2026-10-14).
         a.stfmr_lockin_settle_entry = settle = Widget("normal")
         a.stfmr_lockin_acquire_entry = acquire = Widget("normal")
+        a.stfmr_lockin_mfli_timeconstant_entry = mfli_tc = Widget("normal")
         for running, state, entry_state in ((True, "disabled", "disabled"), (False, "readonly", "normal")):
             a.stfmr_lockin_running = running
             App._update_stfmr_lockin_ui(a)
             self.assertEqual(combo.state, state, f"running={running}")
             self.assertEqual(a.stfmr_lockin_meter_combo.state, state, "locked as the meter is")
-            self.assertEqual((settle.state, acquire.state), (entry_state, entry_state), f"running={running}")
+            self.assertEqual((settle.state, acquire.state, mfli_tc.state), (entry_state,) * 3,
+                             f"running={running}")
 
     def test_the_choice_sits_beside_its_ref_in_in_the_sr830_row(self):
         """The real page build, on stand-in widgets that keep their options
@@ -463,6 +467,8 @@ class Sr830TimeConstantTests(NoWindows):
         self.assertEqual(page.cell(table, 3, 4).options["text"], "SR830 TC:")
         self.assertEqual(page.cell(table, 3, 2).options["text"], "SR830 REF IN:")
         self.assertEqual(page.cell(table, 4, 2).options["text"], "MFLI TC s:", "the MFLI TC row")
+        self.assertIs(page.cell(table, 4, 3), page.app.stfmr_lockin_mfli_timeconstant_entry,
+                      "kept, so a sweep can lock it (review, 2026-10-14)")
         self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 3)],
                          [0, 1, 2, 3, 4, 5, 6], "Meter, REF IN, TC, then the autorange tick")
         # Its column gives way, but not below the dropdown (70 px here; the

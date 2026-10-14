@@ -68,7 +68,9 @@ class PatternSR830(Device):
 
 class PatternMFLI(PatternSR830):
     """The same pattern, spelt as the real MFLI reading is: X, Y, R and the
-    read channel's voltage (R), upper case."""
+    read channel's voltage (R), upper case.  Its raw input extrema are
+    unknown (so no range rule acts on them) and at half the range, unless
+    the test's hook gives a reading its own."""
 
     def read_mfli(self, expected):
         raw = self.read_sample(expected)
@@ -76,8 +78,10 @@ class PatternMFLI(PatternSR830):
             "X": raw["x_v"], "Y": raw["y_v"], "R": raw["r_v"], "voltage": raw["r_v"],
             "phase_deg": raw["phase_deg"], "reference_frequency_hz": raw["reference_frequency_hz"],
             "reference_valid": raw["reference_valid"], "input_range_v": self.mfli_config["input_range_v"],
-            "input_overload": raw.get("input_overload", False), "input_utilization": 0.5,
-            "input_extrema_valid": False, "device_status_flags": raw.get("device_status_flags", 0),
+            "input_overload": raw.get("input_overload", False),
+            "input_utilization": raw.get("input_utilization", 0.5),
+            "input_extrema_valid": raw.get("input_extrema_valid", False),
+            "device_status_flags": raw.get("device_status_flags", 0),
             "auto_range": "",
         }
 
@@ -449,6 +453,181 @@ class RangeAndFailureTests(Sweeps):
         end = events(recorder)[-1]
         self.assertEqual((end["outcome"], end["outputs_off"]), ("stopped", True))
         self.assertIsNone(h.stfmr_lockin_acquisition)
+
+
+class WindowRangeReviewTests(Sweeps):
+    """Review, 2026-10-14: the near-full-scale MFLI step of a later reading
+    in the window, its abort after three range changes in one point, and an
+    SR830 range change in a later reading of a dual window were untested."""
+
+    assert_pattern_mean = AcquisitionTests.assert_pattern_mean
+
+    def mfli(self, before):
+        def device(h):
+            mfli = PatternMFLI(h)
+            mfli.before = before
+            return mfli
+        return device
+
+    def assert_stopped_with_outputs_off(self, h, recorder, text):
+        self.error.assert_called_once()
+        self.assertIn(text, self.error.call_args.args[1])
+        end = events(recorder)[-1]
+        self.assertEqual((end["outcome"], end["outputs_off"]), ("error", True))
+        self.assertIn(("zero",), h.stfmr_lockin_controllers["kepco"].calls)
+        self.assertIn(("rf_off",), h.stfmr_lockin_controllers["smb"].calls)
+        self.assertFalse(h.stfmr_lockin_running)
+        self.assertIsNone(h.stfmr_lockin_acquisition)
+        self.assertEqual(h.root.pending, {}, "nothing left scheduled")
+
+    def test_a_near_full_scale_mfli_reading_in_the_window_ranges_and_restarts_the_point(self):
+        state = {"done": False}
+
+        def before(index, k, sample):
+            if index == 2 and k == 4 and not state["done"]:
+                state["done"] = True
+                sample = dict(sample, input_extrema_valid=True, input_utilization=0.9)
+            return sample
+
+        h, recorder = self.sweep(meter="MFLI", mfli=self.mfli(before), stop="5")
+        self.error.assert_not_called()
+        retries = [e for e in events(recorder) if e["event"] == "mfli_autorange_retry"]
+        self.assertEqual([e["point_index"] for e in retries], [1, 3])     # the first-point check, then this
+        self.assertIn("overload/high", retries[1]["action"])
+        self.assertEqual(retries[1]["settle_s"], 10.0)                    # max(7 s, 10 x TC, 0.2 s)
+        self.assertEqual(retries[1]["input_overload"], False, "near full scale, not overloaded")
+        mfli = h.stfmr_lockin_mfli_controller
+        self.assertEqual([c[1] for c in mfli.calls if c[0] == "autorange"],
+                         ["STFMR frequency start", "overload/high"])
+        self.assertEqual(h.root.reads, [1, 10000, 7000, 7000, 10000, 7000, 7000])
+        rows = read_csv(recorder.csv_path)
+        self.assertEqual(len(rows), 3)
+        for row in rows:
+            self.assert_pattern_mean(row)                     # nothing of the readings before the change
+        self.assertIn("overload/high", rows[0]["mfli_auto_range_action"])
+        self.assertEqual(rows[1]["mfli_auto_range_action"], "")
+        self.assertEqual(events(recorder)[-1]["outcome"], "completed")
+
+    def test_a_fourth_range_change_in_one_point_ends_the_sweep_with_the_outputs_off(self):
+        """Near full scale on every attempt: three range changes restart the
+        point, each after 10 s; the fourth is refused (the limit of three
+        range changes per point) and the sweep ends as a failed read does."""
+        def before(index, k, sample):
+            if index == 2 and k == 4:
+                sample = dict(sample, input_extrema_valid=True, input_utilization=0.9)
+            return sample
+
+        h, recorder = self.sweep(meter="MFLI", mfli=self.mfli(before), stop="5")
+        self.assert_stopped_with_outputs_off(
+            h, recorder, "MFLI auto-range still overloaded or near full scale after 3 retries; "
+            "the current point was not saved")
+        retries = [e for e in events(recorder) if e["event"] == "mfli_autorange_retry"]
+        self.assertEqual([(e["point_index"], "overload/high" in e["action"]) for e in retries],
+                         [(1, False), (3, True), (3, True), (3, True)])
+        self.assertEqual(h.root.reads, [1, 10000, 7000, 7000, 10000, 10000, 10000])
+        self.assertEqual(read_csv(recorder.csv_path), [], "no part of the point is saved")
+
+    def test_an_sr830_range_change_in_a_dual_window_restarts_both_meters(self):
+        state = {"done": False}
+
+        def mfli_before(index, k, sample):
+            if index == 2 and not state["done"] and k < 5:
+                sample = dict(sample, x_v=999e-6)            # read before the SR830's change
+            return sample
+
+        def sr830_before(index, k, sample):
+            if index == 2 and not state["done"]:
+                if k < 5:
+                    sample = dict(sample, x_v=999e-6)        # readings on the old range
+                else:
+                    state["done"] = True
+                    sample = dict(sample, auto_range="SENS 13->14 (overload/high)", measurement_valid=False)
+            return sample
+
+        def sr830(h):
+            device = PatternSR830(h)
+            device.before = sr830_before
+            return device
+
+        h, recorder = self.sweep(meter="MFLI + SR830", sr830=sr830, mfli=self.mfli(mfli_before), stop="5")
+        self.error.assert_not_called()
+        retries = [e for e in events(recorder) if e["event"] == "sr830_autorange_retry"]
+        self.assertEqual([(e["point_index"], e["action"], e["dual"], e["mfli_action"]) for e in retries],
+                         [(3, "SENS 13->14 (overload/high)", True, "")])
+        # max(0.1 s, the 7 s settle, 10 x the 1 s MFLI TC).
+        self.assertEqual(h.root.reads, [1, 10000, 7000, 7000, 10000, 7000, 7000])
+        rows = read_csv(recorder.csv_path)
+        self.assertEqual([r["meter"] for r in rows], ["MFLI", "SR830"] * 3, "no partial or unpaired row")
+        for row in rows:
+            self.assert_pattern_mean(row)
+        self.assertEqual(events(recorder)[-1]["outcome"], "completed")
+
+
+class DualInvalidReadingReviewTests(Sweeps):
+    """Review, 2026-10-14: a non-finite X in a dual window raised out of the
+    Tk callback and left the sweep running with nothing scheduled, so Stop
+    could not zero the 4886 or switch the RF off."""
+
+    assert_stopped = WindowRangeReviewTests.assert_stopped_with_outputs_off
+
+    def test_a_non_finite_x_in_a_dual_window_ends_the_sweep_with_the_outputs_off(self):
+        for meter_name, x in (("MFLI", math.nan), ("SR830", math.inf)):
+            with self.subTest(meter=meter_name):
+                self.error.reset_mock()
+
+                def before(index, k, sample):
+                    if index == 2 and k == 3:
+                        sample = dict(sample, x_v=x)         # R stays finite
+                    return sample
+
+                def mfli(h):
+                    device = PatternMFLI(h)
+                    if meter_name == "MFLI":
+                        device.before = before
+                    return device
+
+                def sr830(h):
+                    device = PatternSR830(h)
+                    if meter_name == "SR830":
+                        device.before = before
+                    return device
+
+                h, recorder = self.sweep(meter="MFLI + SR830", sr830=sr830, mfli=mfli, stop="5")
+                self.assert_stopped(h, recorder, "Dual-meter reading contains invalid X/Y/Theta; "
+                                                 "current point not saved")
+                self.assertEqual(read_csv(recorder.csv_path), [])
+
+    def test_any_check_that_raises_ends_the_sweep_with_the_outputs_off(self):
+        """The same for an unforeseen failure in a reading's checks."""
+        h, recorder = self.sweep(meter="SR830", sr830=PatternSR830, stop="5", start_only=True)
+        accept = h._accept_stfmr_lockin_sample
+        calls = []
+
+        def failing(sample, **point):
+            calls.append(point["index"])
+            if len(calls) == 10:
+                raise ValueError("unexpected reading")
+            return accept(sample, **point)
+
+        h._accept_stfmr_lockin_sample = failing
+        h.root.drain()
+        self.assert_stopped(h, recorder, "unexpected reading")
+        self.assertEqual(calls[-1], 2, "in the first saved point's window")
+        self.assertEqual(read_csv(recorder.csv_path), [])
+
+
+class TimeLeftReviewTests(NoWindows):
+    """Review, 2026-10-14: at about 9 s a point the status line's time left
+    ran to five digits of seconds; it is now in s, min or h, as the Start
+    estimate is."""
+
+    def test_the_shared_duration_text(self):
+        text = App._stfmr_lockin_duration_text
+        for seconds, expected in ((-5, "0 s"), (0, "0 s"), (45.4, "45 s"), (119.4, "119 s"),
+                                  (120, "2 min"), (3000, "50 min"), (3599, "60 min"),
+                                  (3600, "1.0 h"), (5300, "1.5 h"), (5398, "1.5 h"), (37800, "10.5 h")):
+            with self.subTest(seconds=seconds):
+                self.assertEqual(text(seconds), expected)
 
 
 class ValidationTests(Sweeps):

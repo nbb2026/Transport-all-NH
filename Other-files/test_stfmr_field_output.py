@@ -464,6 +464,8 @@ class FieldOutputTests(unittest.TestCase):
                          ("117.3", "117.3"))   # user, 2026-10-14
         self.assertIs(table.grid_slaves(row=2, column=5)[0], self.a.stfmr_lockin_settle_entry)
         self.assertIs(table.grid_slaves(row=2, column=7)[0], self.a.stfmr_lockin_acquire_entry)
+        # Kept so a sweep can lock it (review, 2026-10-14).
+        self.assertIs(table.grid_slaves(row=4, column=3)[0], self.a.stfmr_lockin_mfli_timeconstant_entry)
         self.assertEqual(table.grid_slaves(row=5), [], "five rows")
         try:
             for width in (self.LAB_DEFAULT, LAB_WIDE):

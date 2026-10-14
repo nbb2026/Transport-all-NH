@@ -302,7 +302,9 @@ class ModulationSweepTests(SweepTests):
         scanning = [s for s in statuses if "; scanning " in s]
         self.assertTrue(scanning)
         for status in scanning:
-            self.assertRegex(status, r"^[56] GHz/3(07|11|13) Hz; scanning \d+/24; I=[-+][0-9.]+ A; ~\d+ s left$")
+            # The time left in s, min or h (review, 2026-10-14).
+            self.assertRegex(status, r"^[56] GHz/3(07|11|13) Hz; scanning \d+/24; I=[-+][0-9.]+ A; "
+                                     r"~(\d+ s|\d+ min|\d+\.\d h) left$")
         self.assertTrue(statuses[-1].startswith(
             "Multi-frequency scan complete: 2 frequencies, 3 modulation frequencies, 12 points saved"))
 
@@ -424,7 +426,10 @@ class DefaultSweepTests(SweepTests):
         scanning = [s for s in statuses if "; scanning " in s]
         self.assertTrue(scanning)
         for status in scanning:
-            self.assertRegex(status, r"^[56] GHz; scanning \d+/10; I=[-+][0-9.]+ A; remaining about \d+\.\d s$")
+            # The wording as before; the time left in s, min or h, as the
+            # Start estimate's (review, 2026-10-14).
+            self.assertRegex(status, r"^[56] GHz; scanning \d+/10; I=[-+][0-9.]+ A; "
+                                     r"remaining about (\d+ s|\d+ min|\d+\.\d h)$")
         self.assertEqual(statuses[-1], "Multi-frequency scan complete: 2 frequencies, 6 points saved; "
                                        "4886/SMB100A outputs OFF; CSV saved")
         series = h._stfmr_lockin_current_field_series(h.stfmr_lockin_rows, "MFLI", "mfli")
@@ -539,6 +544,7 @@ class TableTests(NoWindows):
             self.assertIs(field.options["textvariable"], variable)
         self.assertIs(page.cell(table, 2, 5), a.stfmr_lockin_settle_entry)
         self.assertIs(page.cell(table, 2, 7), a.stfmr_lockin_acquire_entry)
+        self.assertIs(page.cell(table, 4, 3), a.stfmr_lockin_mfli_timeconstant_entry)
         self.assertEqual(page.cell(table, 1, 7).kind, "Spinbox", "Loop")
         self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 3)], [0, 1, 2, 3, 4, 5, 6])
         self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 4)], [0, 1, 2, 3, 4])
@@ -694,7 +700,9 @@ class StatusWidthTests(SweepTests):
         self.assertIn("Mod. 1009 Hz done; zeroing; LFO to 1013 Hz at 5 GHz", reviewed)
         self.assertIn("5 GHz/1013 Hz: start I=-1 A sent; start pre-read now", reviewed)
         self.assertIn("5 GHz/1009 Hz done; zeroing and switching to 6 GHz", reviewed)
-        self.assertTrue([s for s in reviewed if re.search(r"; ~\d{4,} s left$", s)], "a long time left")
+        # A long time left, now in min or h (review, 2026-10-14).
+        self.assertTrue([s for s in reviewed if re.search(r"; ~(\d+ min|\d+\.\d h) left$", s)],
+                        "a long time left")
         for status in reviewed:
             with self.subTest(status=status):
                 self.assertLessEqual(width_in_zeros(status), self.LABEL)
@@ -712,6 +720,25 @@ class StatusWidthTests(SweepTests):
                            self.LABEL)
         h.stfmr_lockin_modulation_frequencies_hz = [317.3]
         self.assertEqual(h._stfmr_lockin_pass_label(5.0), "5 GHz", "one modulation frequency: as before")
+
+    def test_hours_left_fit_at_the_new_pace(self):
+        """Review, 2026-10-14: at about 9 s a point (7 s settle, 2 s
+        average) a sweep over 7 carriers, 4207 points, showed "remaining
+        about 33000.0 s", about as wide as the label itself; the time left
+        is now in s, min or h, as the Start estimate is."""
+        h, recorder = self.sweep(start="317.3", end="317.3", start_only=True)
+        h.stfmr_lockin_started -= 40000.0
+        h.root.drain()
+        self.error.assert_not_called()
+        scanning = [s for s in h.stfmr_lockin_status_var.history if "; scanning " in s]
+        self.assertTrue([s for s in scanning if re.search(r"; remaining about \d+\.\d h$", s)], "hours left")
+        left = App._stfmr_lockin_duration_text
+        self.assertEqual((left(33000.0), left(37800.0)), ("9.2 h", "10.5 h"))
+        for status in scanning + [
+                f"10 GHz; scanning 500/4207; I=-2.92 A; remaining about {left(33000.0)}",
+                f"10 GHz/1013 Hz; scanning 500/4207; I=-2.92 A; ~{left(37800.0)} left"]:
+            with self.subTest(status=status):
+                self.assertLessEqual(width_in_zeros(status), self.LABEL)
 
 
 def legend_rows(meter, carriers, modulations):
