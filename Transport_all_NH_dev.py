@@ -1639,6 +1639,11 @@ PPMS_ZURICH_MODE_ORDERS = {"1": (1,), "2": (2,), "3": (3,), "1+2": (1, 2), "1+2+
 # with, so all pages agree unless a box is changed (user, 2026-10-14; the box
 # started at 0.1 s).  After a Zurich range change the reading waits 10 of these.
 PPMS_ZURICH_TIME_CONSTANT_S = 1.0
+# The PPMS page's "Acquire s": 1 s, but 5 s for a Temperature scan (user,
+# 2026-10-16).  Switching the scan mode puts the new mode's default in the
+# box unless the operator typed another value there.
+PPMS_ACQUISITION_S = 1.0
+PPMS_TEMPERATURE_ACQUISITION_S = 5.0
 # SR830 slots accept the same selections as the Zurich: a multi-order choice
 # runs one scan pass per order, with the meter re-tuned between passes.
 PPMS_HARMONIC_MODE_ORDERS = PPMS_ZURICH_MODE_ORDERS
@@ -15470,7 +15475,7 @@ class CombinedControlApp:
         self.ppms_field_scan_step_var = tk.StringVar(value="1000")
         self.ppms_field_scan_loop_var = tk.IntVar(value=1)
         self.ppms_field_scan_stable_var = tk.StringVar(value="0.5")
-        self.ppms_acquisition_time_var = tk.StringVar(value="1")
+        self.ppms_acquisition_time_var = tk.StringVar(value=f"{PPMS_ACQUISITION_S:g}")
         self.ppms_field_scan_eta_var = tk.StringVar(value="Remaining: --")
         self.ppms_field_scan_status_var = tk.StringVar(value="Scan: not started")
         self.ppms_field_scan_running = False
@@ -16278,6 +16283,9 @@ class CombinedControlApp:
             values = defaults[self.ppms_simple_mode.get()]
             for var, value in zip(self.ppms_simple_range, values): var.set(value)
             unit.set(values[3])
+            # Acquire s: 5 s for a Temperature scan, 1 s otherwise, unless
+            # the operator typed a value (user, 2026-10-16).
+            self._apply_ppms_mode_acquisition_default(self.ppms_simple_mode.get())
             self._update_ppms_control_ui()
             if not self.ppms_field_scan_rows:
                 self.ppms_plot_axis = {"Temperature": "temperature", "Field": "field", "Field+Temperature": "field", "Angle+Temperature": "angle", "Angle": "angle", "Current": "current", "Current+Temperature": "current"}[self.ppms_simple_mode.get()]
@@ -39021,6 +39029,25 @@ class CombinedControlApp:
             choices = ", ".join(STFMR_LOCKIN_SR830_TIME_CONSTANTS)
             raise ValueError(f"SR830 TC must be one of: {choices}")
         return STFMR_LOCKIN_SR830_TIME_CONSTANTS[label]
+
+    @staticmethod
+    def _ppms_acquisition_default(mode) -> str:
+        """The PPMS "Acquire s" default for a scan mode: 5 s for a
+        Temperature scan, 1 s otherwise (user, 2026-10-16)."""
+        seconds = PPMS_TEMPERATURE_ACQUISITION_S if mode == "Temperature" else PPMS_ACQUISITION_S
+        return f"{seconds:g}"
+
+    def _apply_ppms_mode_acquisition_default(self, mode) -> None:
+        """On a scan-mode change, put the new mode's Acquire s default in the
+        box, unless the box holds something other than the previous mode's
+        default, i.e. a value the operator typed (user, 2026-10-16)."""
+        shown = self.__dict__.get("ppms_acquisition_default_shown", f"{PPMS_ACQUISITION_S:g}")
+        new = self._ppms_acquisition_default(mode)
+        if str(self.ppms_acquisition_time_var.get()).strip() == shown:
+            self.ppms_acquisition_time_var.set(new)
+            self.ppms_acquisition_default_shown = new
+        else:
+            self.ppms_acquisition_default_shown = None
 
     def _ppms_lockin_settle(self, stable_s: float, active_lockins, zurich: bool):
         """(wait s, slowest TC s, its meter) before a PPMS or RT-E scan point

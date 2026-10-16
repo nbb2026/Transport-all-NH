@@ -1,5 +1,14 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## PPMS: Acquire s defaults to 5 s for a Temperature scan (2026-10-16)
+
+- **The user's choice:** on the PPMS page, choosing the Temperature scan puts
+  5 s in "Acquire s" (`PPMS_TEMPERATURE_ACQUISITION_S`); every other mode,
+  including the combined Field/Angle/Current + Temperature scans, keeps 1 s
+  (`PPMS_ACQUISITION_S`). A value the operator typed in the box is kept when
+  the mode changes. RT-E is unchanged.
+- **Test:** `test_ppms_acquisition_default`.
+
 ## FMR and STFMR: the red Zero / OFF button is whole again (2026-10-15)
 
 - **What was wrong:** in the 1101 px window the program opens with, the 4886
