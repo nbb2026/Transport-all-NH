@@ -93,6 +93,37 @@
   angles; with several angles the series names get an `_ang_…` part, the
   legend and the pass label name the angle ("5 GHz/30°"), within the
   52-character status label, and the finish status counts the angles.
+- **Review fixes (review, 2026-10-17):**
+  - The 4886 is zeroed before **every** move, the first one too: with an
+    output left on from the manual panel (2 A, say) the first move turned
+    the stage with the magnet on. A failed zero ends the sweep before
+    anything is switched on; the log says so and each `stage_move` event has
+    `kepco_zeroed_before`.
+  - An unconfirmed stop is refused with "press Stop stage first (check the
+    stage)", as on RT-E, at Start, before a hand move and before a CLR /
+    EO=1; the advice was to Disconnect and Connect again, and a new Connect
+    clears the flag without ever confirming the stop.
+  - Stop stage during a queued Disconnect queues nothing (the button is
+    locked meanwhile): `disconnect()` sends STOP itself if the stage turns.
+    A STOP behind it had found the handle closed and reported "STOP was not
+    sent … CHECK THE STAGE".
+  - An idle Stop stage's STOP job counts as a stage job until it ends: Start,
+    Move stage and Set motor 0° are locked meanwhile (Stop stage stays
+    usable, and never queues a second STOP).
+  - KEPCO Zero / OFF also stops a hand move (the sweep's stop event, which
+    the move watches, as RT-E's OFF buttons do): STOP from the worker, or
+    nothing sent for a queued move, and no CLR or EO=1 behind its Yes.
+  - With the motor connected, closing the page does not cancel its queue
+    (the motor's Disconnect must run on the worker), so every other queued
+    job does nothing once the page is closing: no instrument Connect, PX=0,
+    move, stage check, fix or read after the close.
+  - From Start until its stage check ends, every box and tick of the
+    parameter table is locked (they are already read), and `begin()` reads
+    no box: Step A, the MFLI reference, the addresses and the safety tick
+    come from what Start read.
+  - The confirmation says plainly that, with the motor connected, 0 to 0
+    turns the stage to 0° first (by design), and that the 4886 is at zero
+    during every move.
 - **Tests:** `test_stfmr_motor_angle` (new: the angle list, the plan at
   Start, the loop order, the angle-change sequence and its
   previous_frequency_hz, a Stop during a move, a refusal mid-sweep, the

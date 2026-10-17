@@ -229,9 +229,12 @@ class AngleListTests(unittest.TestCase):
         self.assertEqual(app.stfmr_angle_summary((), 10, False), "Angle: motor not used")
         self.assertEqual(app.stfmr_angle_summary(self.angles(0, 90, 10), 10, True),
                          "Angle: 0 → 90°, step 10°, 10 angles (the motor turns the SAMPLE HOLDER with its "
-                         "wires; angle outermost)")
+                         "wires; angle outermost; the 4886 at zero during every move)")
+        # With the motor connected 0 to 0 turns the stage to 0°, by design,
+        # and the line says so plainly (review, 2026-10-17).
         self.assertEqual(app.stfmr_angle_summary((0.0,), 10, True),
-                         "Angle: 0° (one angle; the motor turns the SAMPLE HOLDER with its wires)")
+                         "Angle: 0° (one angle: the stage turns to 0° first, the motor turning the SAMPLE "
+                         "HOLDER with its wires; the 4886 at zero during the move)")
         self.assertEqual(app.NEWMARK_SPEED_DEG_S, 5.0)
         self.assertEqual(app.stfmr_angle_move_seconds((0.0, 90.0), 0.0), 18.0)
         self.assertEqual(app.stfmr_angle_move_seconds((0.0, 90.0), 30.0), 24.0, "from where the stage is")
@@ -274,7 +277,10 @@ class AnglePlanTests(MotorBase):
     def test_an_unconfirmed_stop_is_refused(self):
         run = self.make()
         run.motor.motion_may_run = True
-        with self.assertRaisesRegex(RuntimeError, "last stop was not confirmed.*Disconnect on the Motor row"):
+        # Stop stage first, as RT-E's advice: a reconnect would clear the flag
+        # without ever confirming the stop (review, 2026-10-17).
+        with self.assertRaisesRegex(RuntimeError, r"^The Newmark NSC-A1's last stop was not confirmed, so it may "
+                                                  r"still be turning: press Stop stage first \(check the stage\)$"):
             run.h._stfmr_lockin_angle_plan()
         run.h.start_stfmr_lockin_scan()
         self.error.assert_called_once()
@@ -328,15 +334,17 @@ class AngleSweepTests(MotorBase):
         # The confirmation names the angles, the stage and the move time.
         text = self.confirm.call_args.args[1]
         self.assertIn("Angle: 0 → 90°, step 90°, 2 angles (the motor turns the SAMPLE HOLDER with its wires; "
-                      "angle outermost); the stage is at +0.000° now\n", text)
+                      "angle outermost; the 4886 at zero during every move); the stage is at +0.000° now\n", text)
         self.assertIn(" + 18 s of stage moves at 5°/s", text)
         self.assertTrue(text.endswith("Start now, turn the stage and enable the 4886 and SMB100A outputs?"))
 
     def test_the_first_move_comes_before_anything_is_switched_on(self):
         run = self.sweep(angles=("30", "60", "30"))
         self.error.assert_not_called()
-        self.assertEqual(run.h.log[0], ("motor", "move", 30.0))
-        self.assertEqual(run.h.log[1][:2], ("smb", "configure"))
+        # The 4886 zeroed first, as before every move (review, 2026-10-17).
+        self.assertEqual(run.h.log[0], ("kepco", "zero"))
+        self.assertEqual(run.h.log[1], ("motor", "move", 30.0))
+        self.assertEqual(run.h.log[2][:2], ("smb", "configure"))
         first_output = run.h.log.index(next(e for e in run.h.log if e[:2] == ("kepco", "output")))
         self.assertGreater(first_output, 1)
         self.assertIn("X300000", run.sim.received)
@@ -380,8 +388,8 @@ class AngleSweepTests(MotorBase):
         self.assertEqual([e for e in run.h.log if e[0] == "motor"], [("motor", "move", 0.0)])
         rows = read_csv(run.recorder.csv_path)
         self.assertEqual({r["stage_angle_deg"] for r in rows}, {"0.0"})
-        self.assertIn("Angle: 0° (one angle; the motor turns the SAMPLE HOLDER with its wires)",
-                      self.confirm.call_args.args[1])
+        self.assertIn("Angle: 0° (one angle: the stage turns to 0° first, the motor turning the SAMPLE HOLDER "
+                      "with its wires; the 4886 at zero during the move)", self.confirm.call_args.args[1])
         # One angle reads as before in the status lines and the legend.
         self.assertFalse([s for s in run.h.stfmr_lockin_status_var.history if "°" in s and "GHz/" in s])
 
@@ -1051,7 +1059,7 @@ class HandMoveTests(MotorBase):
         h = run.h
         h.stop_stfmr_lockin_stage()
         h.root.drain()
-        self.assertEqual(h.submitted, [run.motor.stop])
+        self.assertEqual([fn.__name__ for fn in h.submitted], ["stop_job"])
         self.assertIn("STOP", run.sim.received)
         self.assertEqual(h.stfmr_lockin_motor_status_var.get(), "+0.000°")
         self.assertIn("STFMR Newmark NSC-A1: Stop stage: stopped at +0.000°", h.logged)
@@ -1191,6 +1199,226 @@ class HandMoveTests(MotorBase):
         self.assertIsNone(h.newmark_stage_ownership.owner)
 
 
+class ReviewFixTests(MotorBase):
+    """The adversarial review of 2026-10-17 ("ship after fixes")."""
+
+    class Card:
+        """A write-only 4886 card that logs each command in the sweep's log."""
+
+        def __init__(self, log):
+            self.log = log
+
+        def write_raw(self, payload):
+            self.log.append(("kepco-write", payload.decode("ascii")))
+
+        def clear(self):
+            pass
+
+        def close(self):
+            pass
+
+    def test_1_the_4886_is_zeroed_before_the_first_move(self):
+        """The user applies 2 A with the manual panel, then starts angles
+        0 to 90: the 4886 (the real controller) is zeroed and switched off
+        before the stage turns, as before every move mid-sweep."""
+        run = self.make(angles=("30", "60", "30"))
+        h = run.h
+        kepco = app.STFMRKepco4886Controller(lambda _text: None)
+        kepco.instrument = self.Card(h.log)
+        h.stfmr_lockin_controllers["kepco"] = kepco
+        kepco.set_output("CURR", 2.0, 5.0)                 # the manual panel: 2 A, output on
+        self.assertTrue(kepco.output_owned)
+        manual = len(h.log)
+        h.start_stfmr_lockin_scan()
+        h.root.drain()
+        self.error.assert_not_called()
+        sweep = h.log[manual:]
+        self.assertEqual(sweep[:3], [("kepco-write", "CURR 0.000000"), ("kepco-write", "OUTP OFF"),
+                                     ("motor", "move", 30.0)], "zero and OFF, then the move")
+        before_second = sweep[:sweep.index(("motor", "move", 60.0))]
+        self.assertEqual(before_second[-2:], [("kepco-write", "CURR 0.000000"), ("kepco-write", "OUTP OFF")])
+        self.assertIn("STFMR sweep: 4886 zeroed before the first stage move", h.logged)
+        moves = [e for e in events(h.last_recorder) if e["event"] == "stage_move"]
+        self.assertEqual([e["kepco_zeroed_before"] for e in moves], [True, True])
+
+    def test_1_a_failed_zero_ends_the_sweep_before_anything_is_switched_on(self):
+        run = self.make(angles=("30", "60", "30"))
+        h = run.h
+        h.stfmr_lockin_controllers["kepco"].zero_error = True
+        h.start_stfmr_lockin_scan()
+        h.root.drain()
+        self.error.assert_called_once()
+        self.assertIn("zero failed", self.error.call_args.args[1])
+        self.assertEqual(run.sim.moves, [], "the stage did not turn")
+        self.assertFalse([e for e in h.log if e[0] in ("smb", "830", "motor") and e[1] != "rf_off"])
+        self.assertFalse([e for e in h.log if e[:2] == ("kepco", "output")])
+        self.assertFalse(h.stfmr_lockin_running)
+
+    def test_2_an_unconfirmed_stop_says_stop_stage_everywhere(self):
+        run = self.make()
+        run.motor.motion_may_run = True
+        expected = "press Stop stage first (check the stage)"
+        with self.assertRaises(RuntimeError) as plan:
+            run.h._stfmr_lockin_angle_plan()
+        with self.assertRaises(RuntimeError) as fix:
+            run.h._stfmr_lockin_require_motor_fix_ready()
+        with self.assertRaises(RuntimeError) as hand_fix:
+            run.h._stfmr_lockin_require_stage_fix_ready()
+        run.h.move_stfmr_lockin_stage()
+        for message in (str(plan.exception), str(fix.exception), str(hand_fix.exception),
+                        self.error.call_args.args[1]):
+            with self.subTest(message=message):
+                self.assertIn(expected, message)
+                self.assertNotIn("Disconnect", message)
+        source = Path(app.__file__).read_text(encoding="utf-8")
+        for advice in ("Disconnect and Connect it again", "press Disconnect on the Motor row",
+                       "The page has no Stop stage button"):
+            self.assertNotIn(advice, source)
+
+    def test_3_stop_stage_during_a_queued_disconnect_queues_nothing(self):
+        executor = Deferred()
+        run = self.make(executor=executor)
+        h = run.h
+        h.disconnect_stfmr_lockin_motor()
+        self.assertTrue(h.stfmr_lockin_motor_disconnect_pending)
+        h.stop_stfmr_lockin_stage()
+        self.assertEqual(len(executor.jobs), 1, "no STOP behind the Disconnect")
+        self.assertIn("STFMR Newmark NSC-A1: Stop stage during Disconnect: the Disconnect sends STOP first if the "
+                      "stage turns", h.logged)
+        executor.run()
+        h.root.drain()
+        self.error.assert_not_called()
+        self.assertFalse(run.motor.connected)
+        self.assertEqual(h.stfmr_lockin_motor_status_var.get(), "Not connected")
+        self.assertFalse(h.stfmr_lockin_motor_disconnect_pending)
+        self.assertNotIn("STOP", run.sim.received, "the stage was still, so nothing to stop")
+
+    def test_4_an_idle_stop_locks_start_move_and_set_zero_until_it_ends(self):
+        executor = Deferred()
+        run = self.make(executor=executor)
+        h = run.h
+        h.stop_stfmr_lockin_stage()
+        self.assertEqual(len(executor.jobs), 1)
+        self.assertTrue(h.stfmr_lockin_stage_stop_pending)
+        self.assertTrue(h._stfmr_lockin_motor_locked() and h._stfmr_lockin_stage_job_pending())
+        h.move_stfmr_lockin_stage()
+        h.set_stfmr_lockin_motor_zero()
+        h.start_stfmr_lockin_scan()
+        h.stop_stfmr_lockin_stage()                     # usable, but never a second STOP behind the first
+        self.assertEqual(len(executor.jobs), 1, "nothing else queued")
+        self.error.assert_not_called()
+        self.confirm.assert_not_called()
+        executor.run()
+        h.root.drain()
+        self.assertFalse(h.stfmr_lockin_stage_stop_pending)
+        self.assertEqual(run.sim.received.count("STOP"), 1)
+        self.assertEqual(h.stfmr_lockin_motor_status_var.get(), "+0.000°")
+        h.stfmr_lockin_stage_target_var.set("5")
+        h.move_stfmr_lockin_stage()                     # unlocked again
+        executor.run()
+        h.root.drain()
+        self.assertEqual(run.sim.moves, ["X50000"])
+
+    def test_5_zero_off_stops_a_hand_move(self):
+        def kepco_zero_ready(h):
+            kepco = h.stfmr_lockin_controllers["kepco"]
+            kepco.lock = threading.Lock()
+            kepco.force_output_off = mock.Mock()
+            h._show_stfmr_lockin_kepco_state = mock.Mock()
+            return kepco
+        # During the move: STOP from the worker.
+        run = self.make()
+        h = run.h
+        kepco = kepco_zero_ready(h)
+        h.stfmr_lockin_stage_target_var.set("90")
+        h.move_hooks[90.0] = lambda: run.clock.hooks.append((run.clock.t + 3.0, h.zero_stfmr_lockin_kepco_output))
+        h.move_stfmr_lockin_stage()
+        h.root.drain()
+        kepco.force_output_off.assert_called_once_with()
+        self.assertTrue(h.stfmr_lockin_stop_event.is_set(), "the hand move's stop event")
+        self.assertIn("STOP", run.sim.received[run.sim.received.index("X900000"):])
+        self.assertFalse(run.motor.motion_may_run)
+        # Queued: nothing is sent.
+        executor = Deferred()
+        run = self.make(executor=executor)
+        h = run.h
+        kepco_zero_ready(h)
+        h.stfmr_lockin_stage_target_var.set("30")
+        h.move_stfmr_lockin_stage()
+        h.zero_stfmr_lockin_kepco_output()
+        executor.run()
+        h.root.drain()
+        self.assertEqual(run.sim.moves, [])
+        self.assertIn("STFMR Newmark NSC-A1: Move stage stopped: not moved", h.logged)
+
+    def test_6_queued_jobs_do_nothing_once_closing_and_the_disconnect_runs(self):
+        executor = Deferred()
+        run = self.make(executor=executor)
+        h = run.h
+        sr830 = h.stfmr_lockin_controllers["830"]
+        sr830.connect = mock.Mock()
+        h.stfmr_lockin_connect_buttons = {"830": mock.Mock()}
+        h.stfmr_lockin_disconnect_buttons = {"830": mock.Mock()}
+        h.stfmr_lockin_resource_widgets = {"830": mock.Mock()}
+        h.stfmr_lockin_connection_vars = {"830": Variable("Not connected")}
+        h.connect_stfmr_lockin_device("830")                # an instrument Connect, queued
+        h.set_stfmr_lockin_motor_zero()                     # answered Yes, queued
+        h.root.drain()
+        jobs = len(executor.jobs)
+        self.assertEqual(jobs, 2)
+        h.stfmr_lockin_live_future = h.stfmr_lockin_future = None
+        h.safe_close_stfmr_lockin()
+        self.assertEqual(len(executor.jobs), jobs + 1, "the motor's Disconnect, queued last")
+        executor.run()
+        sr830.connect.assert_not_called()
+        self.assertNotIn("PX=0", run.sim.received)
+        self.assertFalse(run.motor.connected, "the Disconnect still ran on the worker")
+        self.assertIsNone(h.newmark_stage_ownership.owner)
+        # A queued hand move, Start's check and a fix after the close: nothing.
+        for queue in ("move", "check"):
+            with self.subTest(queue=queue):
+                executor = Deferred()
+                run = self.make(executor=executor)
+                h = run.h
+                if queue == "move":
+                    h.stfmr_lockin_stage_target_var.set("30")
+                    h.move_stfmr_lockin_stage()
+                else:
+                    h.start_stfmr_lockin_scan()
+                h.stfmr_lockin_live_future = h.stfmr_lockin_future = None
+                h.safe_close_stfmr_lockin()
+                executor.run()
+                self.assertEqual(run.sim.moves, [])
+                run.motor.check_ready.assert_not_called()
+                self.assertFalse(run.motor.connected)
+
+    def test_7_begin_uses_what_start_read(self):
+        executor = Deferred()
+        run = self.make(executor=executor)
+        h = run.h
+        h.start_stfmr_lockin_scan()
+        self.assertTrue(h.stfmr_lockin_motor_check_pending)
+        # Typed while the check runs (the boxes are locked then; a stand-in
+        # page has no widgets to lock): none of it is used.
+        h.stfmr_lockin_step_var.set("0.25")
+        h.stfmr_lockin_reference_var.set("Trigger In 1")
+        h.stfmr_lockin_resource_vars["kepco"].set("GPIB0::99::INSTR")
+        h.stfmr_lockin_manual_safety_var.set(True)
+        while executor.jobs or h.root.pending:
+            executor.run()
+            if h.root.pending:
+                h.root.step()
+        self.error.assert_not_called()
+        settings = events(h.last_recorder)[0]["settings"]
+        self.assertEqual(settings["current_step_a"], 0.5)
+        self.assertEqual(settings["mfli_reference_source"], "Aux Input 1")
+        self.assertEqual(settings["resources"]["kepco"], app.STFMR_LOCKIN_DEFAULT_RESOURCES["kepco"])
+        self.assertEqual(h.stfmr_lockin_reference_source, "Aux Input 1")
+        source = Path(app.__file__).read_text(encoding="utf-8")
+        begin = source[source.index("        def begin() -> None:"):source.index("        self._stfmr_lockin_check_motor(begin)")]
+        self.assertNotRegex(begin, r"\w+_vars?(\[[^\]]+\])?\.get\(\)|\bvar\.get\(\)", "begin() reads no box")
+
+
 class PageWidgetTests(unittest.TestCase):
     """The real page build on stand-in widgets (the CI GUI tests check the
     drawn page in the 1101 px and 2000 px windows)."""
@@ -1275,7 +1503,8 @@ class PageWidgetTests(unittest.TestCase):
         a.closing = a.stfmr_lockin_closed = False
         a.stfmr_lockin_running = a.stfmr_lockin_starting = False
         a.stfmr_lockin_motor_busy = a.stfmr_lockin_motor_check_pending = False
-        a.stfmr_lockin_stage_prompt_open = False
+        a.stfmr_lockin_stage_prompt_open = a.stfmr_lockin_stage_stop_pending = False
+        a.stfmr_lockin_motor_disconnect_pending = False
         a.stfmr_lockin_gauss_busy = False
         a.stfmr_lockin_rows = []
         a.stfmr_lockin_meter_var = Variable("SR830")
@@ -1310,7 +1539,8 @@ class PageWidgetTests(unittest.TestCase):
                                         stage_stop="normal", angles=["normal"] * 3, start="normal",
                                         stop="disabled"), "connected, idle")
         for flag in ("stfmr_lockin_running", "stfmr_lockin_starting", "stfmr_lockin_motor_busy",
-                     "stfmr_lockin_motor_check_pending", "stfmr_lockin_stage_prompt_open"):
+                     "stfmr_lockin_motor_check_pending", "stfmr_lockin_stage_prompt_open",
+                     "stfmr_lockin_stage_stop_pending"):         # an idle STOP (review, 2026-10-17)
             with self.subTest(flag=flag):
                 setattr(a, flag, True)
                 result = states()
@@ -1322,6 +1552,41 @@ class PageWidgetTests(unittest.TestCase):
                 if flag in ("stfmr_lockin_running", "stfmr_lockin_motor_check_pending"):
                     self.assertEqual(result["angles"], ["disabled"] * 3)
                     self.assertEqual(result["stop"], "normal", "Stop / zero stays usable")
+        # A Disconnect queued or running: Stop stage is locked too, as the
+        # Disconnect sends STOP itself (review, 2026-10-17).
+        a.stfmr_lockin_motor_busy = a.stfmr_lockin_motor_disconnect_pending = True
+        self.assertEqual(states()["stage_stop"], "disabled")
+        a.stfmr_lockin_motor_busy = a.stfmr_lockin_motor_disconnect_pending = False
+
+    def test_every_input_is_locked_during_the_stage_check(self):
+        """Review, 2026-10-17: during Start's stage check only the angle boxes
+        were locked; every other input was already read, so an edit then
+        showed on the page but was not used."""
+        page = build_stfmr_page()
+        a = page.app
+        a.closing = a.stfmr_lockin_closed = False
+        a.stfmr_lockin_running = a.stfmr_lockin_starting = False
+        a.stfmr_lockin_motor_busy = a.stfmr_lockin_stage_prompt_open = False
+        a.stfmr_lockin_gauss_busy = False
+        a.stfmr_lockin_rows = []
+        a.stfmr_lockin_meter_var = Variable("SR830")
+        a.stfmr_lockin_controllers = {key: types.SimpleNamespace(connected=True, output_owned=False)
+                                      for key in ("kepco", "gauss", "smb", "830")}
+        a.stfmr_lockin_mfli_controller = types.SimpleNamespace(mfli_connected=False)
+        a.stfmr_lockin_motor = types.SimpleNamespace(connected=False)
+        a.instrument_connection_indicators = {}
+        inputs = a.stfmr_lockin_parameter_inputs
+        self.assertGreaterEqual(len(inputs), 25, "every box and tick of the table")
+        for pending in (True, False):
+            a.stfmr_lockin_motor_check_pending = pending
+            App._update_stfmr_lockin_ui(a)
+            with self.subTest(pending=pending):
+                states = {w.options.get("state") for w, _idle in inputs}
+                if pending:
+                    self.assertEqual(states, {"disabled"})
+                else:
+                    self.assertEqual([w.options.get("state") for w, _idle in inputs], [idle for _w, idle in inputs])
+                    self.assertIn("readonly", states, "the dropdowns back to readonly")
 
 
 class CloseTests(MotorBase):

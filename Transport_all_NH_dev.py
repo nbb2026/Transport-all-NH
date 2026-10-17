@@ -6081,15 +6081,19 @@ def stfmr_angle_list(start_deg, stop_deg, step_deg) -> tuple[float, ...]:
 def stfmr_angle_summary(angles, step_deg, motor_used) -> str:
     """The Start confirmation's angle line (user, 2026-10-17), e.g. "Angle:
     0 → 90°, step 10°, 10 angles (the motor turns the SAMPLE HOLDER with its
-    wires; angle outermost)", "Angle: 0° (one angle; ...)" or, without the
-    motor, "Angle: motor not used"."""
+    wires; angle outermost; the 4886 at zero during every move)", or,
+    without the motor, "Angle: motor not used".  With the motor connected
+    the angles are used even 0 to 0, by design: the line then says plainly
+    that the stage turns to 0° first (review, 2026-10-17)."""
     if not motor_used:
         return "Angle: motor not used"
     values = [float(value) for value in angles]
     if len(values) == 1:
-        return f"Angle: {values[0]:g}° (one angle; the motor turns the SAMPLE HOLDER with its wires)"
+        return (f"Angle: {values[0]:g}° (one angle: the stage turns to {values[0]:g}° first, the motor turning "
+                "the SAMPLE HOLDER with its wires; the 4886 at zero during the move)")
     return (f"Angle: {values[0]:g} → {values[-1]:g}°, step {abs(float(step_deg)):g}°, {len(values)} angles "
-            "(the motor turns the SAMPLE HOLDER with its wires; angle outermost)")
+            "(the motor turns the SAMPLE HOLDER with its wires; angle outermost; the 4886 at zero during every "
+            "move)")
 
 
 def stfmr_angle_move_seconds(angles, from_deg=0.0) -> float:
@@ -14970,6 +14974,10 @@ class CombinedControlApp:
         self.stfmr_lockin_stage_stop_event = threading.Event()
         self.stfmr_lockin_stage_move_pending = False
         self.stfmr_lockin_stage_prompt_open = False
+        # An idle Stop stage's STOP job queued or running, and a Disconnect
+        # queued or running (review, 2026-10-17): see stop_stfmr_lockin_stage.
+        self.stfmr_lockin_stage_stop_pending = False
+        self.stfmr_lockin_motor_disconnect_pending = False
         self.stfmr_lockin_angle_start_var = tk.StringVar(
             value=f"{STFMR_LOCKIN_DEFAULT_ANGLE_START_DEG:g}"
         )
@@ -17192,6 +17200,10 @@ class CombinedControlApp:
         # One aligned table, as on the PPMS page.  Each label is right-aligned
         # against its field and every field in a column is the same width, so
         # the boxes line up straight down the page.
+        # Every box and tick of the table, with its idle state: Start's stage
+        # check locks them all (review, 2026-10-17; _update_stfmr_lockin_ui).
+        self.stfmr_lockin_parameter_inputs = []
+
         def parameter(row, pair, label, variable, *, kind="entry", values=(), width=8):
             ttk.Label(params, text=label).grid(
                 row=row, column=2 * pair, sticky="e",
@@ -17209,6 +17221,7 @@ class CombinedControlApp:
             else:
                 widget = ttk.Entry(params, textvariable=variable, width=width)
             widget.grid(row=row, column=2 * pair + 1, sticky="ew", pady=1)
+            self.stfmr_lockin_parameter_inputs.append((widget, "readonly" if kind == "combo" else "normal"))
             return widget
 
         # In a window too narrow for the table only the plain number fields
@@ -17222,6 +17235,7 @@ class CombinedControlApp:
             box = ttk.Checkbutton(params, text=text, variable=variable)
             box.grid(row=row, column=2 * pair, columnspan=2, sticky="w",
                      padx=(12, 0), pady=1)
+            self.stfmr_lockin_parameter_inputs.append((box, "normal"))
             return box
 
         # The table in measurement order, one row per stage (user,
@@ -17719,31 +17733,36 @@ class CombinedControlApp:
     def _update_stfmr_lockin_ui(self) -> None:
         if not hasattr(self, "stfmr_lockin_start_button"):
             return
+        # Start's stage check (and its question) comes after every input was
+        # read: from Start until it ends, the inputs the sweep locks are
+        # locked too, and so is every other box of the parameter table, whose
+        # value is already taken (review, 2026-10-17: an edit then showed on
+        # the page but was not used).
+        motor_check = self.__dict__.get("stfmr_lockin_motor_check_pending", False)
+        sweep_locked = self.stfmr_lockin_running or motor_check
         if hasattr(self, "stfmr_lockin_meter_combo"):
             self.stfmr_lockin_meter_combo.configure(
-                state="disabled" if self.stfmr_lockin_running else "readonly"
+                state="disabled" if sweep_locked else "readonly"
             )
         if hasattr(self, "stfmr_lockin_mfli_auto_range_check"):
             self.stfmr_lockin_mfli_auto_range_check.configure(
-                state="disabled" if self.stfmr_lockin_running else "normal"
+                state="disabled" if sweep_locked else "normal"
             )
         # The SR830 TC is read at Start and sets every wait of the sweep, so
         # it is locked like the meter until the sweep ends (user, 2026-10-13).
         if hasattr(self, "stfmr_lockin_sr830_time_constant_combo"):
             self.stfmr_lockin_sr830_time_constant_combo.configure(
-                state="disabled" if self.stfmr_lockin_running else "readonly"
+                state="disabled" if sweep_locked else "readonly"
             )
         # Settle s and Acquire s set every wait and window of the sweep, so
         # they are locked as the SR830 TC is (user, 2026-10-14).  So is
         # "MFLI TC s": read at Start, LOCKIN_SETTLE_TAUS x it is the settle
         # of every point that reads the MFLI, and a value typed mid-sweep
-        # would show a TC
-        # the sweep is not using (review, 2026-10-14).  So are P start, P
+        # would show a TC the sweep is not using (review, 2026-10-14).  So are P start, P
         # stop and P step: the power list is read at Start (user,
-        # 2026-10-14).  So are Angle start, Angle stop and Step °, also
-        # while Start's stage check runs (user, 2026-10-17): the angle list
-        # is read at Start, before that check.
-        motor_check = self.__dict__.get("stfmr_lockin_motor_check_pending", False)
+        # 2026-10-14).  So are Angle start, Angle stop and Step ° (user,
+        # 2026-10-17).  All of them also while Start's stage check runs.
+        managed = []
         for name in ("stfmr_lockin_settle_entry", "stfmr_lockin_acquire_entry",
                      "stfmr_lockin_mfli_timeconstant_entry",
                      "stfmr_lockin_power_start_entry",
@@ -17753,10 +17772,20 @@ class CombinedControlApp:
                      "stfmr_lockin_angle_stop_entry",
                      "stfmr_lockin_angle_step_entry"):
             if hasattr(self, name):
-                locked = self.stfmr_lockin_running or (motor_check and "_angle_" in name)
                 getattr(self, name).configure(
-                    state="disabled" if locked else "normal"
+                    state="disabled" if sweep_locked else "normal"
                 )
+                managed.append(getattr(self, name))
+        for name in ("stfmr_lockin_meter_combo", "stfmr_lockin_mfli_auto_range_check",
+                     "stfmr_lockin_sr830_time_constant_combo"):
+            if hasattr(self, name):
+                managed.append(getattr(self, name))
+        # The table's other boxes (f, A, Loop, Comp. V, Mod., the lock-ins'
+        # references and SR830 autorange): locked during the check only, as
+        # before otherwise (review, 2026-10-17).
+        for widget, idle in self.__dict__.get("stfmr_lockin_parameter_inputs", ()):
+            if not any(widget is other for other in managed):
+                widget.configure(state="disabled" if motor_check else idle)
         self._update_stfmr_lockin_motor_row()
         # The device rows follow the sweep too.  Only Connect / Disconnect
         # re-checked them, so during a sweep the unused lock-in's Connect (and
@@ -17906,10 +17935,14 @@ class CombinedControlApp:
         if self.closing:
             return
         controller = self.stfmr_lockin_controllers["kepco"]
-        if self.__dict__.get("stfmr_lockin_motor_check_pending", False):
-            # During Start's stage check (or behind its question's Yes) the
-            # start is abandoned too, as an OFF button does on RT-E: no CLR
-            # or EO=1 is sent after it (user, 2026-10-17).
+        if not self.stfmr_lockin_running:
+            # The sweep's stop event, as RT-E's OFF buttons set the scan's:
+            # during Start's stage check (or behind its question's Yes) the
+            # start is abandoned (user, 2026-10-17), and a hand move, which
+            # watches it too, stops (STOP from the worker; a queued one sends
+            # nothing), with no CLR or EO=1 sent behind its Yes (review,
+            # 2026-10-17).  A new Start or Move stage clears it.  During a
+            # sweep stop_stfmr_lockin_scan below sets it.
             self.stfmr_lockin_stop_event.set()
         if not controller.connected:
             return
@@ -17951,6 +17984,20 @@ class CombinedControlApp:
         self._show_stfmr_lockin_kepco_state()
         self.stfmr_lockin_status_var.set("KEPCO zeroed and output off")
 
+    def _stfmr_lockin_page_closing(self) -> bool:
+        """True once the page closes.  With the motor connected, the close no
+        longer cancels the page's queue (the motor's Disconnect must run on
+        the worker), so every other queued job checks this first and does
+        nothing then: no instrument opened after the page's VISA sessions
+        were closed, no PX=0, move, check or fix after the close (review,
+        2026-10-17)."""
+        return bool(getattr(self, "closing", False) or self.__dict__.get("stfmr_lockin_closed", False))
+
+    def _stfmr_lockin_require_page_open(self) -> None:
+        """For a queued read: raise instead of reading once the page closes."""
+        if self._stfmr_lockin_page_closing():
+            raise RuntimeError("STFMR is closing")
+
     def connect_stfmr_lockin_device(self, key: str) -> None:
         # As Disconnect: not during a sweep.  Connecting the unused lock-in
         # switched the Meter selector, which left the live X/Y/theta plots
@@ -17978,9 +18025,15 @@ class CombinedControlApp:
             device, servers = zurich_mfli_choice(resource)
             controller = self.stfmr_lockin_mfli_controller
             controller.mfli_server_candidates = servers
-            operation = lambda: controller.connect_mfli(device)
+            connect = lambda: controller.connect_mfli(device)
         else:
-            operation = lambda: self.stfmr_lockin_controllers[key].connect(resource)
+            connect = lambda: self.stfmr_lockin_controllers[key].connect(resource)
+
+        def operation():
+            # Queued behind a job and the page closed meanwhile: no session
+            # is opened after the close (review, 2026-10-17).
+            self._stfmr_lockin_require_page_open()
+            return connect()
         future = self.stfmr_lockin_executor.submit(operation)
 
         def finished() -> None:
@@ -18018,11 +18071,16 @@ class CombinedControlApp:
                     messagebox.showerror("STFMR instrument disconnect", str(error), parent=self.root)
             self._set_stfmr_lockin_device_ui(key, False)
             return
-        operation = (
+        disconnect = (
             self.stfmr_lockin_mfli_controller.disconnect_mfli
             if key == "mfli"
             else self.stfmr_lockin_controllers[key].disconnect
         )
+
+        def operation():
+            # The page's close disconnects it itself (review, 2026-10-17).
+            if not self._stfmr_lockin_page_closing():
+                disconnect()
         future = self.stfmr_lockin_executor.submit(operation)
         # Until it finishes: a row refresh in the meantime (a Read, a Meter
         # change) must not enable Disconnect again (review, 2026-10-13).
@@ -18052,6 +18110,8 @@ class CombinedControlApp:
             or self.__dict__.get("stfmr_lockin_motor_busy", False)
             or self.__dict__.get("stfmr_lockin_motor_check_pending", False)
             or self.__dict__.get("stfmr_lockin_stage_prompt_open", False)
+            # An idle Stop stage's STOP job (review, 2026-10-17).
+            or self.__dict__.get("stfmr_lockin_stage_stop_pending", False)
         )
 
     def _update_stfmr_lockin_motor_row(self) -> None:
@@ -18080,7 +18140,10 @@ class CombinedControlApp:
                 widget.configure(state="normal" if connected and not locked else "disabled")
         stop = self.__dict__.get("stfmr_lockin_stage_stop_button")
         if stop is not None:
+            # Locked while a Disconnect is queued or runs, which sends STOP
+            # itself if the stage turns (review, 2026-10-17).
             stop.configure(state="normal" if connected and not self.closing and not self.stfmr_lockin_closed
+                           and not self.__dict__.get("stfmr_lockin_motor_disconnect_pending", False)
                            else "disabled")
 
     def _show_stfmr_lockin_motor_state(self, angle_deg=None, text=None) -> None:
@@ -18127,6 +18190,8 @@ class CombinedControlApp:
         resource = self.stfmr_lockin_motor_resource_var.get().strip()
 
         def operation():
+            if self._stfmr_lockin_page_closing():
+                return None     # closed meanwhile: not opened (review, 2026-10-17)
             motor.connect(resource)
             try:
                 return motor.read_state()
@@ -18246,6 +18311,12 @@ class CombinedControlApp:
         motor = self.stfmr_lockin_motor
 
         def job():
+            if self._stfmr_lockin_page_closing():
+                # Queued, then the page closed: no CLR, EO=1 or move (review,
+                # 2026-10-17).
+                if fix is not None:
+                    self.thread_log(f"STFMR {motor.label}: {fix[0]} not sent: STFMR is closing after the Yes")
+                return None
             if fix is not None:
                 command, function = fix
                 held = self._stfmr_lockin_stage_fix_held()
@@ -18320,7 +18391,7 @@ class CombinedControlApp:
         if self.stfmr_lockin_stage_stop_event.is_set():
             return "Stop stage was pressed"
         if self.stfmr_lockin_stop_event.is_set():
-            return "Stop / zero was pressed"
+            return "Zero / OFF was pressed"
         return None
 
     def _stfmr_lockin_require_stage_fix_ready(self) -> None:
@@ -18412,12 +18483,38 @@ class CombinedControlApp:
         if motor.in_move or self.__dict__.get("stfmr_lockin_stage_move_pending", False):
             self._show_stfmr_lockin_motor_state(text="Stopping…")
             return
+        if self.__dict__.get("stfmr_lockin_motor_disconnect_pending", False):
+            # Behind a queued Disconnect a STOP would find the handle closed
+            # and report "STOP was not sent (… not connected): CHECK THE
+            # STAGE", which is not so: disconnect() itself sends STOP first if
+            # the stage turns, and says so if it cannot confirm it (review,
+            # 2026-10-17).  The button is locked meanwhile too.
+            self.thread_log(f"STFMR {motor.label}: Stop stage during Disconnect: the Disconnect sends STOP first "
+                            "if the stage turns")
+            return
+        if self.__dict__.get("stfmr_lockin_stage_stop_pending", False):
+            return      # a STOP is queued already: never a second one behind it
+        def stop_job():
+            # The page's close disconnects the stage, which sends STOP first
+            # if it turns (review, 2026-10-17).
+            self._stfmr_lockin_require_page_open()
+            return motor.stop()
+
         try:
-            future = self.stfmr_lockin_executor.submit(motor.stop)
+            future = self.stfmr_lockin_executor.submit(stop_job)
         except RuntimeError:
             return      # the worker is shutting down; the page's close stops the stage
+        # The STOP job counts as a stage job until it ends (review,
+        # 2026-10-17): stop() flags the stage as possibly turning until the
+        # stop is confirmed, so Start, Move stage and Set motor 0° are locked
+        # meanwhile instead of being refused with a misleading text.  Stop
+        # stage itself stays usable.
+        self.stfmr_lockin_stage_stop_pending = True
+        self._show_stfmr_lockin_motor_state(text="Stopping…")
+        self._update_stfmr_lockin_ui()
 
         def finished() -> None:
+            self.stfmr_lockin_stage_stop_pending = False
             if self.closing or self.stfmr_lockin_closed:
                 return
             try:
@@ -18467,6 +18564,8 @@ class CombinedControlApp:
             return
 
         def operation():
+            if self._stfmr_lockin_page_closing():
+                return None     # answered Yes, then closed: no PX=0 (review, 2026-10-17)
             motor.set_zero()
             return motor.read_state()
 
@@ -18521,12 +18620,15 @@ class CombinedControlApp:
             return None
 
         self.stfmr_lockin_motor_busy = True
+        # Stop stage is locked and queues nothing until it ends: disconnect()
+        # sends STOP itself if the stage turns (review, 2026-10-17).
+        self.stfmr_lockin_motor_disconnect_pending = True
         self._show_stfmr_lockin_motor_state(text="Disconnecting…")
         self._update_stfmr_lockin_motor_row()
         try:
             future = self.stfmr_lockin_executor.submit(operation)
         except BaseException as error:
-            self.stfmr_lockin_motor_busy = False
+            self.stfmr_lockin_motor_busy = self.stfmr_lockin_motor_disconnect_pending = False
             self._show_stfmr_lockin_motor_state()
             self._update_stfmr_lockin_motor_row()
             if not self.closing:
@@ -18534,7 +18636,7 @@ class CombinedControlApp:
             return
 
         def finished() -> None:
-            self.stfmr_lockin_motor_busy = False
+            self.stfmr_lockin_motor_busy = self.stfmr_lockin_motor_disconnect_pending = False
             if self.closing or self.stfmr_lockin_closed:
                 return
             try:
@@ -18868,9 +18970,11 @@ class CombinedControlApp:
             return
         self.stfmr_lockin_gauss_busy = True
         self._update_stfmr_lockin_ui()
-        future = self.stfmr_lockin_executor.submit(
-            self.stfmr_lockin_controllers["gauss"].read_field
-        )
+        def read_field():
+            self._stfmr_lockin_require_page_open()      # review, 2026-10-17
+            return self.stfmr_lockin_controllers["gauss"].read_field()
+
+        future = self.stfmr_lockin_executor.submit(read_field)
 
         def finished() -> None:
             self.stfmr_lockin_gauss_busy = False
@@ -18926,6 +19030,7 @@ class CombinedControlApp:
             expected_hz = STFMR_LOCKIN_DEFAULT_LFO_HZ
 
         def operation():
+            self._stfmr_lockin_require_page_open()      # review, 2026-10-17
             field = (
                 self.stfmr_lockin_controllers["gauss"].read_field()
                 if read_field else None
@@ -19164,6 +19269,7 @@ class CombinedControlApp:
             self.__dict__.get("stfmr_lockin_motor_check_pending", False)
             or self.__dict__.get("stfmr_lockin_motor_busy", False)
             or self.__dict__.get("stfmr_lockin_stage_prompt_open", False)
+            or self.__dict__.get("stfmr_lockin_stage_stop_pending", False)
         )
 
     def _run_stfmr_lockin_start_step(self, step, *, refresh: bool = False) -> None:
@@ -19263,6 +19369,16 @@ class CombinedControlApp:
             # on this page or whose last stop was not confirmed.
             angle_plan = self._stfmr_lockin_angle_plan()
             angles_deg = angle_plan["angles"]
+            # Every other box the run log names, read here too, so that
+            # begin() reads no box: with the motor, Start's stage check
+            # comes between (review, 2026-10-17: Step A was read again in
+            # begin()).
+            captured = {
+                "reference_source": self.stfmr_lockin_reference_var.get(),
+                "resources": {key: var.get() for key, var in self.stfmr_lockin_resource_vars.items()},
+                "current_step_a": abs(float(self.stfmr_lockin_step_var.get())),
+                "safety_confirmed": bool(self.stfmr_lockin_manual_safety_var.get()),
+            }
         except BaseException as error:
             messagebox.showerror("STFMR scan", str(error), parent=self.root)
             return
@@ -19360,15 +19476,19 @@ class CombinedControlApp:
                 if not motor.connected:
                     raise RuntimeError(f"The {motor.label} is no longer connected; the sweep was not started")
                 if motor.in_move or motor.motion_may_run:
-                    raise RuntimeError(f"The {motor.label}'s last stop was not confirmed; the sweep was not started")
-            reference_source = self.stfmr_lockin_reference_var.get()
+                    raise RuntimeError(f"The {motor.label}'s last stop was not confirmed, so the sweep was not "
+                                       "started: press Stop stage first (check the stage)")
+            # As read at Start, with the other inputs: with the motor the
+            # stage check comes between, and a box read here could differ
+            # from what the sweep uses (review, 2026-10-17).
+            reference_source = captured["reference_source"]
             settings = {
                 "program": Path(__file__).name,
                 "python_version": sys.version,
-                "resources": {key: var.get() for key, var in self.stfmr_lockin_resource_vars.items()},
+                "resources": captured["resources"],
                 "connected": {key: self._stfmr_lockin_connected(key) for key in self.stfmr_lockin_resource_vars},
                 # Two Zurich lock-ins exist, so record which one took the data.
-                "mfli_device": zurich_mfli_choice(self.stfmr_lockin_resource_vars["mfli"].get())[0],
+                "mfli_device": zurich_mfli_choice(captured["resources"]["mfli"])[0],
                 "mfli_identity": str(getattr(self.stfmr_lockin_mfli_controller, "mfli_identity", "") or ""),
                 "meter": meter, "frequencies_ghz": frequencies_ghz,
                 "acquisition_mode": "sequential_same_current" if meter == "MFLI + SR830" else "single",
@@ -19386,7 +19506,7 @@ class CombinedControlApp:
                 "modulation_end_hz": modulation_end_hz,
                 "current_start_a": points[0],
                 "current_stop_a": points[self.stfmr_lockin_points_per_loop - 1],
-                "current_step_a": abs(float(self.stfmr_lockin_step_var.get())),
+                "current_step_a": captured["current_step_a"],
                 "loops": len(points) // self.stfmr_lockin_points_per_loop,
                 "points_per_loop": self.stfmr_lockin_points_per_loop,
                 "voltage_limit_v": limit_v,
@@ -19408,7 +19528,7 @@ class CombinedControlApp:
                 "mfli_auto_range": mfli_auto_range,
                 "mfli_reference_source": reference_source,
                 "mfli_sample_rate_hz": 1.0 / STFMR_LOCKIN_SAMPLE_INTERVAL_S,
-                "safety_confirmed": bool(self.stfmr_lockin_manual_safety_var.get()),
+                "safety_confirmed": captured["safety_confirmed"],
                 # The stage angles, the outermost loop, and the motor (user,
                 # 2026-10-17); without the motor angles_deg is [] and the
                 # CSV's stage_angle_deg is blank.
@@ -19550,12 +19670,13 @@ class CombinedControlApp:
         angles = list(stfmr_angle_list(start_text, stop_text, step_text))
         if motor.in_move or motor.motion_may_run:
             # An unconfirmed stop may have left the stage turning the sample
-            # and its wires.  The page has no Stop stage button: Disconnect
-            # sends STOP if it still turns, and a new Connect starts afresh.
+            # and its wires: Stop stage first, as on RT-E, which confirms the
+            # stop (review, 2026-10-17: the advice was to Disconnect and
+            # Connect again, and a new Connect clears motion_may_run without
+            # ever confirming the stop).
             raise RuntimeError(
-                f"The {motor.label}'s last stop was not confirmed, so it may still be turning: check the "
-                "stage, then press Disconnect on the Motor row (it sends STOP if the stage still turns) and "
-                "Connect again"
+                f"The {motor.label}'s last stop was not confirmed, so it may still be turning: press Stop "
+                "stage first (check the stage)"
             )
         plan.update(angles=angles, used=True, step=abs(float(step_text)),
                     text=stfmr_angle_summary(angles, step_text, True))
@@ -19607,8 +19728,9 @@ class CombinedControlApp:
         if not motor.connected:
             raise RuntimeError(f"Connect the {motor.label} first (the Motor row)")
         if motor.in_move or motor.motion_may_run:
+            # Stop stage, as RT-E's advice (review, 2026-10-17).
             raise RuntimeError(f"The {motor.label}'s last stop was not confirmed, so it may still be turning: "
-                               "check the stage, then Disconnect and Connect it again")
+                               "press Stop stage first (check the stage)")
 
     def _stfmr_lockin_start_not_started(self, reason, *, dialog: bool = False,
                                         title: str = "STFMR scan not started") -> None:
@@ -19655,6 +19777,12 @@ class CombinedControlApp:
         self._update_stfmr_lockin_ui()
 
         def job():
+            if self._stfmr_lockin_page_closing():
+                # Nothing after the page's close: no check, CLR or EO=1
+                # (review, 2026-10-17).
+                if fix is not None:
+                    self.thread_log(f"STFMR {motor.label}: {fix[0]} not sent: STFMR is closing after the Yes")
+                return None
             if fix is not None:
                 command, function = fix
                 held = self._stfmr_lockin_motor_fix_held()
@@ -19923,8 +20051,17 @@ class CombinedControlApp:
             if initial:
                 # The first angle before anything is configured or switched
                 # on (user, 2026-10-17).  Stopped during the move: nothing
-                # more is sent, and the sweep ends stopped.
+                # more is sent, and the sweep ends stopped.  The 4886 is
+                # zeroed first, as before every move mid-sweep: an output
+                # left on from the manual panel (2 A, say) would otherwise
+                # hold the magnet on while the stage turned (review,
+                # 2026-10-17).  zero_output undoes this program's own output
+                # (the manual panel's included); a failure ends the sweep here,
+                # with nothing switched on.
                 if angle_target is not None:
+                    with visa_operation("KEPCO 4886", "zeroing before the first stage move"):
+                        self.stfmr_lockin_controllers["kepco"].zero_output()
+                    self.thread_log("STFMR sweep: 4886 zeroed before the first stage move")
                     moved["state"] = self._stfmr_lockin_move_stage(angle_target)
                     if moved["state"] is None:
                         return
@@ -20035,10 +20172,13 @@ class CombinedControlApp:
                 # angle's pass records it (user, 2026-10-17).
                 self.stfmr_lockin_stage_angle_deg = state["angle_deg"]
                 self._show_stfmr_lockin_motor_state(state["angle_deg"])
+                # The 4886 was zeroed before every move, the first included
+                # (review, 2026-10-17).
                 if not self._stfmr_lockin_log_event(
                     "stage_move", target_deg=angle_target, px=state["px"],
                     angle_deg=state["angle_deg"], steps_per_degree=state["steps_per_degree"],
                     angle_index=self.stfmr_lockin_angle_index + 1, initial=initial,
+                    kepco_zeroed_before=True,
                 ):
                     return
             ready = {"power_dbm": power_dbm}
@@ -20184,6 +20324,7 @@ class CombinedControlApp:
         meter = self.stfmr_lockin_selected_meter
 
         def prime() -> None:
+            self._stfmr_lockin_require_page_open()      # review, 2026-10-17
             # Exercise the same read path as a real point, but intentionally
             # keep this startup sample out of plots/CSV.
             self._stfmr_retry_read(
@@ -20513,6 +20654,7 @@ class CombinedControlApp:
         meter = self.stfmr_lockin_selected_meter
 
         def read_point():
+            self._stfmr_lockin_require_page_open()      # review, 2026-10-17
             field = self._stfmr_retry_read(
                 "Lake Shore 475",
                 lambda: self.stfmr_lockin_controllers["gauss"].read_field(),
@@ -20593,6 +20735,7 @@ class CombinedControlApp:
         meter = self.stfmr_lockin_selected_meter
 
         def read_sample():
+            self._stfmr_lockin_require_page_open()      # review, 2026-10-17
             started = self._stfmr_lockin_clock()
             return started, self._stfmr_lockin_read_meters(meter, first=False)
 
@@ -42557,11 +42700,13 @@ class CombinedControlApp:
         # worker, the thread that holds its USB handles (a move running now
         # sees the stop event set above and sends STOP itself first;
         # disconnect() also sends STOP if the stage still turns).  So the
-        # worker is shut down without cancelling what is queued: the queue's
-        # other jobs (a live read, a sweep job, which returns at once on the
-        # stop event) are cancelled by hand, and the disconnect runs after
-        # the job in progress.  Without the stage connected (or connecting)
-        # here, as before.
+        # worker is shut down without cancelling what is queued: the live
+        # read and the sweep's job are cancelled by hand, every other queued
+        # job of the page does nothing once it is closing
+        # (_stfmr_lockin_page_closing: no instrument connect, PX=0, move,
+        # stage check or fix; review, 2026-10-17), and the disconnect runs
+        # after the job in progress.  Without the stage connected (or
+        # connecting) here, as before.
         motor = self.__dict__.get("stfmr_lockin_motor")
         if motor is not None and (motor.connected or self.__dict__.get("stfmr_lockin_motor_busy", False)):
             ownership = self._newmark_stage_ownership()
