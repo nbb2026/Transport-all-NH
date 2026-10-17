@@ -13875,6 +13875,75 @@ class TkCameraWindow:
             self._draw(self.latest_frame)
 
 
+# The optional file-name step of a scan Start and its run folder, shared by
+# the SHV and STFMR pages (user, 2026-10-18: "also add the name file step in
+# STFMR save process", after SHV's "write a log of SHV and save results in a
+# folder").  The prompt, the rule and the reserved names are SHV's since its
+# file-name step: a valid Windows file name without a path, a typed ".csv"
+# dropped.  The rule is checked on the Mac too, so a name made there can be
+# opened on the lab PC.
+SCAN_FILE_NAME_PROMPT = "Optional file name (leave blank for a timestamped default):"
+WINDOWS_RESERVED_FILE_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+)
+
+
+def scan_file_stem(name: str) -> str:
+    """The typed name as a file stem: stripped, a typed ".csv" dropped; ""
+    when blank (the page's timestamped default then).  ValueError unless it
+    is a valid Windows file name without a path."""
+    stem = str(name).strip()
+    if not stem:
+        return ""
+    if stem.lower().endswith(".csv"):
+        stem = stem[:-4]
+    if (not stem or stem.endswith((".", " ")) or re.search(r'[<>:"/\\|?*\x00-\x1f]', stem)
+            or stem.split(".")[0].upper() in WINDOWS_RESERVED_FILE_NAMES):
+        raise ValueError("Use a valid Windows file name without a path.")
+    return stem
+
+
+def ask_scan_file_stem(parent, title: str) -> str | None:
+    """The file-name step of a Start: the stem ("" for blank), or None when
+    it is cancelled or the name is refused (the refusal shown, titled as the
+    step), and then nothing starts and nothing is made."""
+    name = simpledialog.askstring(title, SCAN_FILE_NAME_PROMPT, parent=parent)
+    if name is None:
+        return None
+    try:
+        return scan_file_stem(name)
+    except ValueError as error:
+        messagebox.showerror(title, str(error), parent=parent)
+        return None
+
+
+def make_scan_run_folder(parent: Path, stem: str) -> Path:
+    """Make and return <parent>/<stem>/, or <stem>_01, _02, ... when the name
+    is taken (by a folder or a file), as SHV's live CSV took _01, _02 ...
+    before it had a run folder.  No exist_ok: another run's folder is never
+    reused, so nothing in it can be overwritten."""
+    suffix = 0
+    while True:
+        directory = Path(parent) / (f"{stem}_{suffix:02d}" if suffix else stem)
+        try:
+            directory.mkdir()
+        except FileExistsError:
+            suffix += 1
+            continue
+        return directory
+
+
+def scan_log_line(name: str, details: dict) -> str:
+    """One line of a scan's run log, JSON: {timestamp, event, ...details};
+    STFMRScanRecorder's format, shared with SHVScanRecorder (2026-10-18)."""
+    record = {
+        "timestamp": datetime_module.datetime.now().astimezone().isoformat(timespec="milliseconds"),
+        "event": name,
+        **details,
+    }
+    return json.dumps(record, ensure_ascii=False, default=str) + "\n"
+
+
 class STFMRScanRecorder:
     """Append-only, per-run files; called on the GUI acquisition path only.
 
@@ -13908,18 +13977,27 @@ class STFMRScanRecorder:
         "stage_angle_deg",
     )
 
-    def __init__(self, parent: Path, settings: dict[str, object]) -> None:
-        stamp = datetime_module.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        stem = f"STFMR_field_scan_{stamp}"
-        self.directory = Path(parent) / stem
+    def __init__(self, parent: Path, settings: dict[str, object], name: str = "") -> None:
+        # name: the Start's file-name step (user, 2026-10-18): a typed name
+        # makes <parent>/<name>/ (or <name>_01, ... when taken, the files
+        # named as the folder); blank keeps the timestamped default.  The
+        # columns, events and everything else are the same either way.
+        if name:
+            self.directory = make_scan_run_folder(Path(parent), name)
+            stem = self.directory.name
+        else:
+            stamp = datetime_module.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            stem = f"STFMR_field_scan_{stamp}"
+            self.directory = Path(parent) / stem
         self.csv_path = self.directory / f"{stem}.csv"
         self.log_path = self.directory / f"{stem}.log"
         self.csv_handle = None
         self.log_handle = None
         self.rows_written = 0
         self.closed = False
-        # No exist_ok: a name collision must never overwrite another run.
-        self.directory.mkdir()
+        if not name:
+            # No exist_ok: a name collision must never overwrite another run.
+            self.directory.mkdir()
         try:
             self.log_handle = self.log_path.open("x", encoding="utf-8")
             self.csv_handle = self.csv_path.open("x", newline="", encoding="utf-8-sig")
@@ -13947,12 +14025,7 @@ class STFMRScanRecorder:
     def event(self, name: str, **details) -> None:
         if self.closed:
             raise RuntimeError("STFMR log is closed")
-        record = {
-            "timestamp": datetime_module.datetime.now().astimezone().isoformat(timespec="milliseconds"),
-            "event": name,
-            **details,
-        }
-        self.log_handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        self.log_handle.write(scan_log_line(name, details))
         self._sync(self.log_handle)
 
     def append_point(self, row: dict[str, object]) -> None:
@@ -13984,6 +14057,83 @@ class STFMRScanRecorder:
                     except BaseException as error:
                         errors.append(f"Failed to close {name}: {error}")
         return errors
+
+
+class SHVScanRecorder:
+    """An SHV scan's run folder and its log (user, 2026-10-18: "like ST-FMR,
+    pls also write a log of SHV and save results in a folder").
+
+    <folder>/<stem>/ (or <stem>_01, ... when taken) holds <stem>.csv, the
+    live CSV, made empty here and still appended row by row, each fsynced, by
+    _append_ppms_live_csv with its columns unchanged, and <stem>.log, JSON
+    lines as STFMRScanRecorder's: {timestamp, event, ...details}, each
+    flushed and fsynced.  Both are opened "x": nothing is ever overwritten.
+
+    The rte-control worker and the Tk thread both write (a Stop, a log line
+    of either), so every write and the close hold one lock.  A write never
+    raises: the STOP, the 6221 off and the KEPCO off of a failure must never
+    be skipped for a bad disk.  The first failure is kept instead, and the
+    worker raises it at its next check(), outside any instrument step, so the
+    scan ends through the normal failure path, as when a live-CSV row cannot
+    be written.  close() is best effort and returns what went wrong."""
+
+    def __init__(self, parent: Path, stem: str) -> None:
+        self.directory = make_scan_run_folder(Path(parent), stem)
+        name = self.directory.name
+        self.csv_path = self.directory / f"{name}.csv"
+        self.log_path = self.directory / f"{name}.log"
+        self.lock = threading.Lock()
+        self.failure: BaseException | None = None
+        self.closed = False
+        self.log_handle = None
+        try:
+            with self.csv_path.open("x", encoding="utf-8-sig", newline=""):
+                pass
+            self.log_handle = self.log_path.open("x", encoding="utf-8")
+        except BaseException:
+            # The folder and any file made stay, as evidence; nothing starts.
+            self.closed = True
+            raise
+
+    def event(self, name: str, **details) -> bool:
+        """Write one record, from either thread; False when it was not
+        written (the log closed, or the write failed: then kept for check())."""
+        with self.lock:
+            if self.closed:
+                return False
+            try:
+                self.log_handle.write(scan_log_line(name, details))
+                STFMRScanRecorder._sync(self.log_handle)
+                return True
+            except Exception as error:
+                if self.failure is None:
+                    self.failure = error
+                return False
+
+    def check(self) -> None:
+        """On the worker, between instrument steps: a failed write ends the scan."""
+        error = self.failure
+        if error is not None:
+            raise RuntimeError(f"The SHV log could not be written ({error}); the scan stopped") from error
+
+    def close(self, outcome: str, **details) -> list[str]:
+        """run_finished, then close; best effort, once (the later calls do
+        nothing).  The errors are returned for the page to show."""
+        with self.lock:
+            if self.closed:
+                return []
+            errors = []
+            try:
+                self.log_handle.write(scan_log_line("run_finished", dict(outcome=outcome, **details)))
+                STFMRScanRecorder._sync(self.log_handle)
+            except Exception as error:
+                errors.append(f"Failed to write the closing log entry: {error}")
+            self.closed = True
+            try:
+                self.log_handle.close()
+            except Exception as error:
+                errors.append(f"Failed to close the log: {error}")
+            return errors
 
 
 # Side-by-side/stacked flips of one pair, within a second at one window
@@ -19413,6 +19563,14 @@ class CombinedControlApp:
             )
             if folder is None or self.closing or self.stfmr_lockin_closed:
                 return
+            # The file-name step, SHV's (user, 2026-10-18: "also add the
+            # name file step in STFMR save process"): a typed name is the run
+            # folder's and its files' name, blank keeps the timestamped
+            # STFMR_field_scan_<stamp>.  Cancel or a refused name starts
+            # nothing and makes nothing, as Cancel in the folder dialog.
+            file_stem = ask_scan_file_stem(self.root, "STFMR file name")
+            if file_stem is None or self.closing or self.stfmr_lockin_closed:
+                return
             # The whole f x A sweep runs once per modulation frequency
             # (user, 2026-10-13) and, inside it, once per power (user,
             # 2026-10-14), so every count below is per pass, one pass per
@@ -19505,6 +19663,8 @@ class CombinedControlApp:
             settings = {
                 "program": Path(__file__).name,
                 "python_version": sys.version,
+                # The file-name step's name, "" when left blank (user, 2026-10-18).
+                "file_name": file_stem,
                 "resources": captured["resources"],
                 "connected": {key: self._stfmr_lockin_connected(key) for key in self.stfmr_lockin_resource_vars},
                 # Two Zurich lock-ins exist, so record which one took the data.
@@ -19568,7 +19728,7 @@ class CombinedControlApp:
                 "stage_moves_s_estimate": move_s,
             }
             try:
-                recorder = STFMRScanRecorder(Path(folder), settings)
+                recorder = STFMRScanRecorder(Path(folder), settings, name=file_stem)
             except BaseException as error:
                 messagebox.showerror(
                     "STFMR save path", f"Could not create the live data files; scan not started: {error}", parent=self.root
@@ -45571,6 +45731,10 @@ class NewmarkNSCA1Controller:
         self.motion_may_run = False     # a move command was sent and it has not been seen stopped since
         self.stop_finished = False      # a stop sequence ran to its end (stopped or not)
         self.in_move = False            # move_to_deg is running: its own loop watches the stop event
+        # The last read_state() of this session, with the wall-clock time it
+        # was read: an SHV Angle Start logs it as where the stage was, from
+        # the Tk thread, which never calls the DLL (user, 2026-10-18).
+        self.last_state = None
 
     @property
     def connected(self) -> bool:
@@ -45811,9 +45975,12 @@ class NewmarkNSCA1Controller:
         mst = self.status()
         px = self.number("PX")
         spd = self.steps_per_degree
-        return {"px": px, "mst": mst, "moving": bool(mst & NEWMARK_MOVING),
-                "status_text": newmark_describe_status(mst), "steps_per_degree": spd,
-                "angle_deg": px / spd if spd else None}
+        state = {"px": px, "mst": mst, "moving": bool(mst & NEWMARK_MOVING),
+                 "status_text": newmark_describe_status(mst), "steps_per_degree": spd,
+                 "angle_deg": px / spd if spd else None}
+        self.last_state = dict(state, read_at=datetime_module.datetime.now().astimezone().isoformat(
+            timespec="milliseconds"))
+        return state
 
     # ---- motion --------------------------------------------------------------
     def _check_ready(self):
@@ -46143,11 +46310,37 @@ def rte_scan_plan(mode, start, end, step, loops=1, round_trip=True):
                  for point, value in enumerate(nodes, 1))
 
 
-# The widest status line the RT-E scan box shows (an Angle scan stopped at
-# a stage move): the stage block goes beside the lock-in choices only when the
-# scan box keeps the room for it on one line (user, 2026-10-17; the messages
-# are in CI's RTEStatusRowTests).
+# The room the RT-E scan box keeps for its status line: the stage block goes
+# beside the lock-in choices only when the scan box keeps it on one line
+# (user, 2026-10-17; the messages are in CI's RTEStatusRowTests).  It is the
+# widest line until 2026-10-18 (an Angle scan stopped at a stage move, about
+# 505 px in Arial 15 px), kept so the layout is unchanged: since the scans
+# end with the outputs zeroed (user, 2026-10-18) every line is narrower: at
+# most about 504 px, "Stopped; KEPCO and 6221 not confirmed zeroed; stage
+# stopped at -359.999°", which a worker that ran never leaves, else 483 px.
 RTE_STATUS_WIDEST_EXAMPLE = "Stopped; outputs held unless OFF was requested; stage stopped at -359.999°"
+
+
+def rte_outputs_text(results, check=True):
+    """The outputs part of an SHV finish status, from the scan end's
+    zeroing (user, 2026-10-18): "KEPCO and 6221 zeroed", or each output's
+    result, "zero FAILED" in capitals.  ": check it" is left out when the
+    stage's place follows (Angle), to keep the line on one line; the dialog
+    and the log say it in full."""
+    if not results:
+        return "KEPCO and 6221 not confirmed zeroed" + (": check them" if check else "")
+    six, kepco = results.get("6221", ""), results.get("kepco", "")
+    six_ok, kepco_ok = six == "zeroed", kepco in ("zeroed", "not connected")
+    if six_ok and kepco == "zeroed":
+        return "KEPCO and 6221 zeroed"
+    if not six_ok and not kepco_ok:
+        return "zero FAILED: 6221 and KEPCO" + (": check them" if check else "")
+    text = (("6221 zeroed" if six_ok else "6221 zero FAILED") + "; "
+            + ("KEPCO zeroed" if kepco == "zeroed" else "KEPCO not connected" if kepco == "not connected"
+               else "KEPCO zero FAILED"))
+    return text + (": check it" if check and not (six_ok and kepco_ok) else "")
+
+
 # The RT-E scan box's note by mode: what Start, End and Step are and where
 # the field comes from (user, 2026-10-17).  At most 40 characters (its box).
 RTE_SCAN_NOTES = {
@@ -47096,6 +47289,7 @@ class RTEPanel(PPMSPanel):
         scan running, STOP is queued on the worker too, so a stage left
         turning (an unconfirmed stop) can be stopped."""
         self.rte_stage_stop_event.set()
+        self._rte_log('stop_requested', button='Stop stage')     # a running scan's log (user, 2026-10-18)
         stage = self.rte_controllers.get('newmark')
         if self.rte_closed or self.closing or stage is None or not stage.connected:
             return
@@ -47190,6 +47384,7 @@ class RTEPanel(PPMSPanel):
                          lambda _: self.rte_drive_live.set(f'KEPCO programmed: {target:+g} A / limit {limit:g} V'))
 
     def _rte_zero(self):
+        self._rte_log('stop_requested', button='KEPCO Zero / OFF')     # a running scan's log (user, 2026-10-18)
         self.ppms_field_scan_stop_event.set()
         if self.rte_closed:
             return
@@ -47318,7 +47513,9 @@ class RTEPanel(PPMSPanel):
             self.post_ui(lambda value=field: self.rte_field_live.set(f'LS475 field: {value:+.7g} G'))
             tolerance = max(STFMR_FIELD_SETTLE_ABS_TOLERANCE_G, abs(field) * STFMR_FIELD_SETTLE_REL_TOLERANCE)
             if len(readings) == STFMR_FIELD_SETTLE_REQUIRED_SAMPLES and max(readings) - min(readings) <= tolerance:
+                self._rte_log('field_settled', field_g=field, readings_g=readings)
                 return field
+        self._rte_log('field_not_settled', timeout_s=STFMR_FIELD_SETTLE_TIMEOUT_S, readings_g=readings)
         self.thread_log(f'SHV: the LS475 field did not settle within {STFMR_FIELD_SETTLE_TIMEOUT_S:g} s (last '
                         f'readings {", ".join(f"{value:+.6g}" for value in readings)} G); the scan goes on')
         return field
@@ -47413,7 +47610,8 @@ class RTEPanel(PPMSPanel):
                     'points.\n\n'
                     f'Each angle waits {settle_text} before it is read; the scan takes at least {least_text}.\n\n'
                     f'The field is fixed: the KEPCO is set once to {field_current:+g} A (voltage limit {limit:g} V), '
-                    'settled on the LS475 and held for the whole scan.\n\n'
+                    'settled on the LS475 and held during the scan. When the scan ends (completed, stopped or '
+                    'failed) the 6221 and then the KEPCO are zeroed; the stage stays where the scan left it.\n\n'
                     'The Newmark stage turns the SAMPLE HOLDER with its wires attached, at '
                     f'{NEWMARK_SPEED_DEG_S:g}°/s, to each angle counted from the stage zero (absolute moves, all '
                     f'within ±{NEWMARK_CABLE_LIMIT_DEG:g}° of it). Can the wires follow?\n\nStart the scan?',
@@ -47422,14 +47620,22 @@ class RTEPanel(PPMSPanel):
         folder = filedialog.askdirectory(parent=self.root, title='SHV live CSV folder')
         if not folder:
             return
-        name = simpledialog.askstring('SHV file name', 'Optional file name (leave blank for a timestamped default):', parent=self.root)
-        if name is None:
+        # The file-name step, shared with the STFMR page since 2026-10-18; the
+        # name is the run folder's, <folder>/<name>/, and its files' (user,
+        # 2026-10-18: "write a log of SHV and save results in a folder").
+        typed = ask_scan_file_stem(self.root, 'SHV file name')
+        if typed is None:
             return
-        stem = name.strip() or time.strftime('SHV_%Y%m%d_%H%M%S')
-        if stem.lower().endswith('.csv'):
-            stem = stem[:-4]
-        if not stem or stem.endswith(('.', ' ')) or re.search(r'[<>:"/\\|?*\x00-\x1f]', stem) or stem.split('.')[0].upper() in {'CON', 'PRN', 'AUX', 'NUL', *(f'COM{i}' for i in range(1, 10)), *(f'LPT{i}' for i in range(1, 10))}:
-            messagebox.showerror('SHV file name', 'Use a valid Windows file name without a path.', parent=self.root)
+        stem = typed or time.strftime('SHV_%Y%m%d_%H%M%S')
+        # The run log's settings and instrument state, read now with the
+        # inputs: for Angle the stage check comes between, and begin() reads
+        # no box (user, 2026-10-18).
+        try:
+            run_settings = self._rte_run_settings(mode, plan, passes, settings, limit, field_current, stable,
+                                                  duration, pass_settles, settle_s, typed)
+        except Exception as error:
+            messagebox.showerror('SHV run log', f'Could not gather the settings for the run log; the scan was not '
+                                 f'started: {error}', parent=self.root)
             return
         # The scan's stop event (and for Angle the stage's) is cleared here,
         # before an Angle scan's stage check, so that an old Stop does not stop
@@ -47440,22 +47646,37 @@ class RTEPanel(PPMSPanel):
         if mode == 'Angle':
             self.rte_stage_stop_event.clear()
 
-        def begin():
-            # The live CSV and the scan itself: at once for Field and Current,
-            # after the stage check for Angle (user, 2026-10-17).
+        def begin(stage_check_mst=None):
+            # The run folder, its live CSV and log, and the scan itself: at
+            # once for Field and Current, after the stage check for Angle
+            # (user, 2026-10-17).  The folder <folder>/<stem>/ (or <stem>_01,
+            # ...), with <stem>.csv and <stem>.log (user, 2026-10-18); if
+            # they cannot be made, or the log's first entry cannot be
+            # written, no scan starts.
             try:
-                suffix = 0
-                while True:
-                    path = Path(folder) / (f'{stem}_{suffix:02d}.csv' if suffix else f'{stem}.csv')
-                    try:
-                        with path.open('x', encoding='utf-8-sig', newline=''):
-                            pass
-                        break
-                    except FileExistsError:
-                        suffix += 1
+                recorder = SHVScanRecorder(Path(folder), stem)
             except OSError as error:
-                messagebox.showerror('SHV CSV', str(error), parent=self.root)
+                messagebox.showerror('SHV run folder', 'Could not create the run folder and its files; the scan '
+                                     f'was not started: {error}', parent=self.root)
                 return
+            prepared = dict(run_settings, run_folder=str(recorder.directory), csv_path=str(recorder.csv_path),
+                            log_path=str(recorder.log_path))
+            if mode == 'Angle':
+                # Where the stage was: its last reading, from the worker (the
+                # Tk thread never calls the DLL), and the stage check's MST
+                # just now; the first stage_move reads it back again.
+                stage_now, live = self.rte_controllers['newmark'], self.__dict__.get('rte_stage_live')
+                prepared['stage_at_start'] = dict(stage_now.__dict__.get('last_state') or {},
+                                                  stage_check_mst=stage_check_mst,
+                                                  live_line=live.get() if live is not None else '')
+            if not recorder.event('run_prepared', **prepared):
+                problem = recorder.failure
+                recorder.close('not_started', error=str(problem))
+                messagebox.showerror('SHV run folder', 'Could not write the run log; the scan was not started: '
+                                     f'{problem}', parent=self.root)
+                return
+            self.rte_recorder, self.rte_run_folder = recorder, recorder.directory
+            path = recorder.csv_path
             self.ppms_live_csv_path, self.ppms_live_csv_fields = path, None
             self.ppms_field_scan_running = True
             self.ppms_active_scan_mode = mode
@@ -47497,46 +47718,69 @@ class RTEPanel(PPMSPanel):
                     f'{self.ppms_field_scan_total} points')
             self._update_ppms_control_ui()
             self._redraw_ppms_transport_plot()
-            self.thread_log(f'SHV {mode} scan; CSV: {path}; {len(plan)} points x {len(passes)} harmonic pass(es)'
+            self.thread_log(f'SHV {mode} scan; run folder: {recorder.directory} ({path.name} and '
+                            f'{recorder.log_path.name}); {len(plan)} points x {len(passes)} harmonic pass(es)'
                             + (f'; stage {first:g}° to {last:g}°, KEPCO {field_current:+g} A held' if mode == 'Angle' else '')
                             + f'; each reading waits {settle_text}; at least {least_text}')
             # The wait announced here; the worker logs only a different one (a
             # harmonic pass with fewer lock-ins).
             self.ppms_scan_settle_logged = settle_s
             def finished(future):
+                outcome, error_text, reason, where = 'completed', '', '', ''
+                # Every ending zeroed the 6221 and the KEPCO on the worker
+                # (user, 2026-10-18); the status says how it went.
+                results = self.__dict__.get('rte_scan_outputs')
+                outputs = rte_outputs_text(results, check=mode != 'Angle')
                 try:
                     future.result()
-                    status = ('Completed; 6221 current set to 0 (output OFF, read back)' if mode == 'Current'
-                              else 'Completed; outputs held')
-                except PPMSScanCancelled:
-                    status = 'Stopped; outputs held unless OFF was requested'
+                    status = f'Completed; {outputs}'
+                except PPMSScanCancelled as stopped:
+                    outcome, reason = 'stopped', str(stopped)
+                    status = f'Stopped; {outputs}'
                 except Exception as error:
+                    outcome, error_text = 'error', str(error)
                     status = f'Failed: {short_status_error(error, 100)}'
-                    detail = str(error)
-                    where = ''
                     if mode == 'Angle':
                         # Where the stage is after a failure, "NOT confirmed stopped"
                         # included, goes to the log and the dialog; the status line
                         # keeps only the failure, to stay on one line (user, 2026-10-13).
                         where = self.rte_stage_where or 'stage not moved'
-                        detail += f'\n\n{where[:1].upper()}{where[1:]}'
                     self.thread_log('SHV scan ' + status + (f'; {where}' if where else ''))
-                    if not self.closing and not self.rte_closed:
-                        messagebox.showerror('SHV scan', detail, parent=self.root)
-                if mode == 'Angle' and not status.startswith('Failed'):
+                if mode == 'Angle' and outcome != 'error':
                     status += f'; {self.rte_stage_where}'     # where the stage is (user, 2026-10-13)
+                # The log's last entry and its close, on every way a scan ends,
+                # before any dialog (user, 2026-10-18): the outcome, the error
+                # or why it stopped, the points saved, the finish status (what
+                # it says of the outputs) and where the stage is.
+                self._rte_close_recorder(
+                    outcome, error=error_text, **({'stop_reason': reason} if reason else {}),
+                    points_saved=len(self.ppms_field_scan_rows), status=status, outputs=results,
+                    **({'stage': self.rte_stage_where or 'stage not moved'} if mode == 'Angle' else {}))
+                zeroing = ('At the end: ' + '; '.join(f'{name} {results[key]}' for name, key in
+                                                      (('6221', '6221'), ('KEPCO', 'kepco')))
+                           if results else 'At the end: the 6221 and the KEPCO were not confirmed zeroed')
+                if not self.closing and not self.rte_closed:
+                    if outcome == 'error':
+                        detail = error_text + (f'\n\n{where[:1].upper()}{where[1:]}' if where else '')
+                        messagebox.showerror('SHV scan', f'{detail}\n\n{zeroing}', parent=self.root)
+                    elif not results or 'FAILED' in f"{results['6221']} {results['kepco']}":
+                        messagebox.showerror('SHV outputs', f'The scan {outcome}, but an output was not '
+                                             f'confirmed at zero: CHECK IT.\n\n{zeroing}', parent=self.root)
                 self.ppms_field_scan_running = False
                 if not self.closing and not self.rte_closed:
                     self.ppms_field_scan_status_var.set(status)
                     self._update_ppms_control_ui()
+            self.rte_scan_outputs = None     # this scan's zeroing, set by its worker
             try:
                 future = self.ppms_executor.submit(self._rte_harmonic_scan_worker, mode, plan, passes, limit, stable, duration,
                                                    *((field_current,) if mode == 'Angle' else ()))
             except Exception as error:
                 self.ppms_field_scan_running = False
+                self._rte_close_recorder('not_started', error=str(error), points_saved=0)
                 self._update_ppms_control_ui()
                 messagebox.showerror('SHV scan not started', str(error), parent=self.root)
                 return
+            self.rte_scan_future = future
             future.add_done_callback(lambda f: self.post_ui(lambda: finished(f)))
         if mode != 'Angle':
             begin()
@@ -47573,34 +47817,232 @@ class RTEPanel(PPMSPanel):
                 self.thread_log(f'SHV Angle scan not started: {pressed} was pressed during the stage check')
                 not_started(f'{pressed} was pressed')
                 return
-            begin()
+            begin(_mst)
         self._rte_stage_job(stage.check_ready, then=checked, failed=not_started)
 
+    # ---- the run folder's log (user, 2026-10-18: "like ST-FMR, pls also write a
+    # log of SHV and save results in a folder") ------------------------------------
+    def _rte_run_settings(self, mode, plan, passes, settings, limit, field_current, stable, duration,
+                          pass_settles, settle_s, typed_name):
+        """run_prepared's settings and instrument state, on the Tk thread at
+        Start with the other inputs: the program, the plan and its timing,
+        the harmonic passes, the lock-ins, the 6221 and the KEPCO, every
+        resource with its state and identity, the motor and the safety tick.
+        Only what the page already holds is read; no instrument is asked."""
+        state = self.__dict__
+
+        def box(variable):
+            try:
+                return variable.get()
+            except Exception:
+                return None
+
+        resources = {}
+        boxes = {**state.get('ppms_resource_vars', {}), **state.get('rte_resources', {})}
+        for key, controller in {**state.get('ppms_instrument_controllers', {}),
+                                **state.get('rte_controllers', {})}.items():
+            typed = box(boxes[key]) if key in boxes else None
+            resources[key] = dict(label=str(getattr(controller, 'label', key)),
+                                  resource=str(getattr(controller, 'resource_name', '') or typed or ''),
+                                  connected=bool(getattr(controller, 'connected', False)),
+                                  identity=str(getattr(controller, 'identity', '') or ''))
+        zurich = state.get('zurich_controller')
+        zurich_text = str(box(state['zurich_resource']) or '') if 'zurich_resource' in state else ''
+        zurich_device = zurich_mfli_choice(zurich_text)[0] if zurich_text else ''
+        resources['zurich'] = dict(label='Zurich MFLI', resource=zurich_text, device=zurich_device,
+                                   connected=bool(getattr(zurich, 'mfli_connected', False)),
+                                   identity=str(getattr(zurich, 'mfli_identity', '') or ''))
+        # Every scan autoranges its lock-ins, except while the 6221 output is at zero.
+        autorange = 'on during the scan (not while the 6221 current is zero)'
+        lockins = {}
+        for key in settings['active_lockins']:
+            harmonic_key = PPMS_SR830_HARMONIC_SETTING_KEYS[key]
+            lockins[PPMS_SR830_LABELS.get(key, key)] = dict(
+                key=key, resource=resources.get(key, {}).get('resource', ''),
+                harmonics=[config[harmonic_key] for config in passes if key in config['active_lockins']],
+                time_constant_s=self._ppms_lockin_settle(0.0, (key,), False)[1], autorange=autorange)
+        if state.get('zurich_scan_enabled'):
+            lockins['Zurich'] = dict(key='zurich', device=zurich_device, harmonics=state.get('zurich_scan_harmonic'),
+                                     reference=state.get('zurich_scan_reference'),
+                                     time_constant_s=self._ppms_lockin_settle(0.0, (), True)[1], autorange=autorange)
+        values = [box(variable) for variable in state.get('ppms_simple_range', ())]
+        targets = [target for _loop, _point, target in plan]
+        loops = plan[-1][0]
+        stage = state.get('rte_controllers', {}).get('newmark')
+        safety = state.get('ppms_control_safety_var')
+        round_trip = state.get('rte_round_trip')
+        return dict(
+            program=Path(__file__).name, app_version=APP_VERSION, python_version=sys.version,
+            file_name=typed_name, mode=mode,
+            plan=dict(start=values[0] if values else None, end=values[1] if len(values) > 1 else None,
+                      step=values[2] if len(values) > 2 else None,
+                      unit={'Field': 'A (KEPCO)', 'Angle': 'deg (stage)'}.get(mode, 'mA RMS (6221)'),
+                      loops=loops, round_trip=bool(box(round_trip)) if round_trip is not None else None,
+                      points=len(plan), points_per_loop=len(plan) // loops,
+                      harmonic_passes=len(passes), total_points=len(plan) * len(passes),
+                      first_target=targets[0],
+                      farthest_target=max(targets, key=lambda value: abs(value - targets[0]))),
+            timing=dict(settle_s=stable, acquire_s=duration, effective_settle_s=settle_s,
+                        settle_time_constants=LOCKIN_SETTLE_TAUS,
+                        per_pass=[dict(harmonic_pass=index, effective_settle_s=wait, slowest_tc_s=tc,
+                                       slowest_meter=meter)
+                                  for index, (wait, tc, meter) in enumerate(pass_settles, 1)]),
+            harmonic_passes=[dict(harmonic_pass=index,
+                                  harmonics={PPMS_SR830_LABELS.get(key, key): config[PPMS_SR830_HARMONIC_SETTING_KEYS[key]]
+                                             for key in config['active_lockins']},
+                                  zurich_harmonics=state.get('zurich_scan_harmonic') if state.get('zurich_scan_enabled')
+                                  else '')
+                             for index, config in enumerate(passes, 1)],
+            lockins=lockins,
+            source_6221=dict(current_rms_ma=settings['current_rms_ma'], frequency_hz=settings['frequency_hz'],
+                             compliance_v=settings['compliance_v'],
+                             note='the plan gives the currents' if mode == 'Current' else ''),
+            kepco=(dict(current_a=field_current, voltage_limit_v=limit, held=True) if mode == 'Angle'
+                   else dict(current_a='the plan', voltage_limit_v=limit) if mode == 'Field'
+                   else dict(used=False)),
+            resources=resources,
+            motor=dict(connected=bool(getattr(stage, 'connected', False)),
+                       identity=str(getattr(stage, 'identity', '') or ''),
+                       version=str(getattr(stage, 'version', '') or ''),
+                       usb_serial=str(getattr(stage, 'resource_name', '') or ''),
+                       steps_per_degree=getattr(stage, 'steps_per_degree', None),
+                       speed_deg_s=NEWMARK_SPEED_DEG_S, cable_limit_deg=NEWMARK_CABLE_LIMIT_DEG),
+            safety_confirmed=bool(box(safety)) if safety is not None else None)
+
+    def _rte_log(self, name, **details):
+        """One event in the running scan's log, from either thread; never
+        raises (SHVScanRecorder keeps a failure for _rte_log_check)."""
+        recorder = self.__dict__.get('rte_recorder')
+        if recorder is not None:
+            recorder.event(name, **details)
+
+    def _rte_log_check(self):
+        """On the worker, between instrument steps: a failed log write ends
+        the scan here, through the normal failure path (the 6221 off at
+        once, then the end's zeroing of both), as a failed live-CSV write
+        does."""
+        recorder = self.__dict__.get('rte_recorder')
+        if recorder is not None:
+            recorder.check()
+
+    def _rte_close_recorder(self, outcome, **details):
+        """run_finished and the close, best effort, once, on the Tk thread
+        at a finish or on the worker at the program's close; what went
+        wrong is logged, and shown unless the page is closing."""
+        recorder = self.__dict__.get('rte_recorder')
+        self.rte_recorder = None
+        if recorder is None or recorder.closed:
+            return
+        errors = recorder.close(outcome, **details)
+        self.thread_log(f'SHV run folder {recorder.directory}: {outcome}; {recorder.csv_path.name} and '
+                        f'{recorder.log_path.name} closed')
+        if errors:
+            problem = '; '.join(errors)
+            self.thread_log(f'SHV run log: {problem}')
+            if not self.closing and not self.rte_closed:
+                messagebox.showerror('SHV run log', f'The run log was not closed cleanly: {problem}\n\nThe live '
+                                     f'CSV keeps every saved point: {recorder.csv_path}', parent=self.root)
+
+    def thread_log(self, message):
+        """The page's log line, and while a scan's log is open also its
+        "note" (user, 2026-10-18), from whichever thread logs it."""
+        super().thread_log(message)
+        self._rte_log('note', text=message)
+
+    def ppms_sources_off(self):
+        # A Stop of a running scan, in its log (user, 2026-10-18).
+        self._rte_log('stop_requested', button='6221 / 2400 OFF')
+        super().ppms_sources_off()
+
     def _rte_harmonic_scan_worker(self, mode, plan, passes, limit, stable, duration, field_current=None):
+        # Every ending of a scan, completed, stopped or failed, zeroes the
+        # 6221 and then the KEPCO, here on the worker once the scan's own
+        # clean-up has run (a moving stage is stopped there first), each
+        # step tried whatever the other did; the stage stays where the scan
+        # left it (user, 2026-10-18: "when finish scan in SHV, automatically
+        # zero the Kepco and 6221 pls"; until then a completed Current scan
+        # switched the 6221 off and the other endings held the outputs).  The
+        # results are for finished(), the log and the dialog.
+        self.rte_scan_outputs = None
+        try:
+            self._rte_harmonic_passes_worker(mode, plan, passes, limit, stable, duration, field_current)
+        finally:
+            self.rte_scan_outputs = self._rte_zero_outputs_after_scan()
+
+    def _rte_harmonic_passes_worker(self, mode, plan, passes, limit, stable, duration, field_current):
+        # The log (user, 2026-10-18); a failed write ends the scan here,
+        # before anything is switched on.
+        self._rte_log('scan_started', mode=mode, points=len(plan), harmonic_passes=len(passes))
+        self._rte_log_check()
         for index, settings in enumerate(passes):
             self._rte_wait(0)
+            harmonics = dict(harmonic_pass=index + 1, harmonics={
+                PPMS_SR830_LABELS.get(key, key): settings[PPMS_SR830_HARMONIC_SETTING_KEYS[key]]
+                for key in settings['active_lockins']})
             if index:
                 try:
                     for key in settings['active_lockins']:
                         self._rte_set_harmonic(key, settings[PPMS_SR830_HARMONIC_SETTING_KEYS[key]])
+                    self._rte_log('harmonic_pass', **harmonics)
+                    self._rte_log_check()
                 except PPMSScanCancelled:
                     raise
                 except Exception:
                     self._stop_ppms_transport_source()
                     raise
+            else:
+                self._rte_log('harmonic_pass', **harmonics)
+                self._rte_log_check()
             self._rte_scan_worker(mode, plan, dict(settings, continue_source=bool(index),
                                   progress_offset=index * len(plan)), limit, stable, duration,
                                   *((field_current,) if mode == 'Angle' else ()))
-        if mode == 'Current':
-            self._rte_zero_6221_after_scan()
 
     def _rte_zero_6221_after_scan(self):
-        """A completed Current scan ends at zero current (user's request,
-        2026-10-07): the 6221 output is turned off and read back.  Stop and
-        Field scans keep their outputs as before."""
+        """The 6221 at zero: its output turned off and read back (OUTP? 0),
+        as a completed Current scan did since the user's request of
+        2026-10-07; at every scan ending since 2026-10-18 (user)."""
         self._stop_ppms_transport_source()
-        if self._ppms_query_numbers('6221', 'OUTP?', 1)[0] != 0:
-            raise RuntimeError('Current scan completed, but the 6221 output did not read back OFF')
+        state = self._ppms_query_numbers('6221', 'OUTP?', 1)[0]
+        if state != 0:
+            raise RuntimeError(f'the 6221 output did not read back OFF (OUTP? {state:g})')
+
+    def _rte_zero_outputs_after_scan(self):
+        """At a scan's end, on the worker: the 6221 off and read back, then
+        the KEPCO as its "KEPCO Zero / OFF" button zeroes it
+        (force_output_off: zero and OUTP OFF, whoever switched it on), each
+        tried whatever the other did, as the failure clean-up does.  Never
+        raises: returns each output's result, "zeroed", "not connected" (a
+        Current scan needs no KEPCO) or "zero FAILED: <error>"; the log
+        has them (user, 2026-10-18)."""
+        results = {}
+        try:
+            self._rte_zero_6221_after_scan()
+            results['6221'] = 'zeroed'
+        except Exception as error:
+            results['6221'] = f'zero FAILED: {error}'
+        kepco = self.rte_controllers.get('kepco')
+        try:
+            if kepco is None or not kepco.connected:
+                results['kepco'] = 'not connected'
+            else:
+                kepco.force_output_off()
+                results['kepco'] = 'zeroed'
+        except Exception as error:
+            results['kepco'] = f'zero FAILED: {error}'
+        self._rte_log('outputs_zeroed', **{'6221': results['6221'], 'kepco': results['kepco']})
+        self.thread_log(f"SHV scan end: 6221 {results['6221']}; KEPCO {results['kepco']}")
+
+        def show():
+            if self.rte_closed or self.closing:
+                return
+            # The lines the OFF buttons leave (the KEPCO's is its Zero / OFF's).
+            for name, key, text in (('rte_drive_live', 'kepco', 'KEPCO: zeroed and output OFF'),
+                                    ('ppms_current_live_var', '6221', 'OFF / 0 mA')):
+                line = self.__dict__.get(name)
+                if line is not None and results[key] == 'zeroed':
+                    line.set(text)
+        self.post_ui(show)
+        return results
 
     def _rte_update_current(self, settings):
         """Change only the running sine amplitude, without abort/reset/re-arm."""
@@ -47619,6 +48061,9 @@ class RTEPanel(PPMSPanel):
             sweep_peak = math.sqrt(2.0) * max(p[2] for p in plan) * 1e-3 if mode == 'Current' else None
             for index, (loop, point, target) in enumerate(plan, 1):
                 self._rte_wait(0)
+                # The point's number in the whole scan, all harmonic passes
+                # counted: the progress bar's, and the log's "index".
+                progress = index + settings.get('progress_offset', 0)
                 point_settings = dict(settings)
                 if mode == 'Current':
                     point_settings['current_rms_ma'] = target
@@ -47635,6 +48080,7 @@ class RTEPanel(PPMSPanel):
                             kepco.set_output('CURR', target, limit)
                         else:
                             kepco.set_scan_current(target)
+                        self._rte_log('field_programmed', index=progress, current_a=target, voltage_limit_v=limit)
                         self.post_ui(lambda value=target: self.rte_drive_live.set(f'KEPCO programmed: {value:+g} A'))
                         self._rte_settle_field()
                     except PPMSScanCancelled:
@@ -47642,6 +48088,10 @@ class RTEPanel(PPMSPanel):
                     except Exception:
                         field_failure = True
                         raise
+                    # Outside the field's try: a failed log write is not a
+                    # field failure, so it takes the normal failure path, as
+                    # a failed live-CSV row (user, 2026-10-18).
+                    self._rte_log_check()
                 elif mode == 'Angle':
                     # The field first, once: the KEPCO current box's value with
                     # the voltage limit, settled on the LS475 and then held
@@ -47650,6 +48100,8 @@ class RTEPanel(PPMSPanel):
                         try:
                             self._rte_wait(0)
                             self.rte_controllers['kepco'].set_output('CURR', field_current, limit)
+                            self._rte_log('field_programmed', index=progress, current_a=field_current,
+                                          voltage_limit_v=limit, held=True)
                             self.post_ui(lambda value=field_current: self.rte_drive_live.set(
                                 f'KEPCO programmed: {value:+g} A (held)'))
                             self._rte_settle_field()
@@ -47658,6 +48110,7 @@ class RTEPanel(PPMSPanel):
                         except Exception:
                             field_failure = True
                             raise
+                        self._rte_log_check()
                     try:
                         self._rte_wait(0)
                         stage_state = self._rte_scan_move_stage(target)
@@ -47666,6 +48119,12 @@ class RTEPanel(PPMSPanel):
                     except Exception:
                         stage_failure = True
                         raise
+                    # The move's read-back, outside the stage's try: a failed
+                    # log write after a finished move is not a stage failure
+                    # (user, 2026-10-18).
+                    self._rte_log('stage_move', index=progress, target_deg=target, angle_deg=stage_state['angle_deg'],
+                                  px=stage_state['px'], steps_per_degree=stage_state['steps_per_degree'])
+                    self._rte_log_check()
                 # The lock-in settle before the reading: Settle s, or
                 # LOCKIN_SETTLE_TAUS (1, the user's 1 x TC) time constants of
                 # the slowest lock-in measured if longer, at every point, the
@@ -47703,6 +48162,8 @@ class RTEPanel(PPMSPanel):
                         and abs(drift_g) > max(STFMR_FIELD_SETTLE_ABS_TOLERANCE_G,
                                                abs(before) * STFMR_FIELD_SETTLE_REL_TOLERANCE)):
                     drift_noted = True
+                    self._rte_log('field_drift', index=progress, harmonic_pass=settings.get('harmonic_pass', 1),
+                                  field_before_g=before, field_after_g=measured, field_drift_g=drift_g)
                     self.thread_log(f'SHV {mode} point {index}: the LS475 field changed by {drift_g:+.6g} G during '
                                     f'the acquisition ({before:+.6g} -> {measured:+.6g} G); point saved, scan goes on '
                                     '(later drifts of this pass are in the field_drift_g column only)')
@@ -47742,7 +48203,14 @@ class RTEPanel(PPMSPanel):
                     row = dict.fromkeys(self.ppms_field_scan_rows[0], '') | row
                 self._append_ppms_live_csv(row)
                 self.ppms_field_scan_rows.append(row)
-                self.post_ui(lambda data=dict(row), progress=index + settings.get('progress_offset', 0): self._rte_show_point(data, progress))
+                self.post_ui(lambda data=dict(row), progress=progress: self._rte_show_point(data, progress))
+                # The saved point in the log; a failed write ends the scan
+                # after it, as a failed live-CSV row does (user, 2026-10-18).
+                x_column = {'Field': 'measured_field_g', 'Angle': 'stage_angle_deg'}.get(mode, '6221_current_rms_ma')
+                self._rte_log('point_saved', index=progress, harmonic_pass=settings.get('harmonic_pass', 1),
+                              loop=loop, point=point, target=target, x_column=x_column, x=row[x_column],
+                              field_before_g=before, field_after_g=measured, field_drift_g=drift_g)
+                self._rte_log_check()
         except PPMSScanCancelled:
             raise
         except Exception as error:
@@ -47801,6 +48269,7 @@ class RTEPanel(PPMSPanel):
             self.thread_log(f'SHV stage STOP after the failure failed: {stop_error}')
         # Always logged, so an unconfirmed stop is never only worked out
         # (user, 2026-10-13); finished() also puts it in the error dialog.
+        self._rte_log('stage_failure', error=str(error), stage=self.rte_stage_where)
         self.thread_log(f'SHV Angle scan, after the stage failure: {self.rte_stage_where}')
 
     def _rte_show_point(self, row, progress):
@@ -47824,8 +48293,9 @@ class RTEPanel(PPMSPanel):
 
     def stop_ppms_field_scan(self):
         if self.ppms_field_scan_running:
+            self._rte_log('stop_requested', button='Stop')
             self.ppms_field_scan_stop_event.set()
-            self.ppms_field_scan_status_var.set('Stopping; completed CSV points and outputs kept')
+            self.ppms_field_scan_status_var.set('Stopping; completed CSV points kept; KEPCO and 6221 zeroed next')
             self.ppms_field_scan_stop_button.configure(state='disabled')
 
     def _redraw_ppms_transport_plot(self):
@@ -47874,8 +48344,12 @@ class RTEPanel(PPMSPanel):
     def save_ppms_field_scan_csv(self):
         if not self.ppms_field_scan_rows or self.ppms_field_scan_running:
             return
+        # The dialog opens in the last scan's run folder (user, 2026-10-18).
+        folder = self.__dict__.get('rte_run_folder')
+        where = {'initialdir': str(folder)} if folder is not None and Path(folder).is_dir() else {}
         path = filedialog.asksaveasfilename(parent=self.root, title='Save SHV CSV as',
-            defaultextension='.csv', filetypes=(('CSV', '*.csv'),), initialfile=time.strftime('SHV_%Y%m%d_%H%M%S.csv'))
+            defaultextension='.csv', filetypes=(('CSV', '*.csv'),), initialfile=time.strftime('SHV_%Y%m%d_%H%M%S.csv'),
+            **where)
         if not path:
             return
         try:
@@ -47889,6 +48363,7 @@ class RTEPanel(PPMSPanel):
     def safe_close_ppms(self):
         if self.rte_closed:
             return
+        self._rte_log('stop_requested', button='the program closing')     # a running scan's log (user, 2026-10-18)
         self.rte_closed = self.ppms_closed = self.zurich_closed = True
         self.ppms_field_scan_stop_event.set()
         # A stage move by hand watches this one too (and the scan's); it sends STOP itself.
@@ -47901,6 +48376,21 @@ class RTEPanel(PPMSPanel):
         ownership = self._newmark_stage_ownership()
         # Queued after the scan on the one-worker executor: no write can follow OFF.
         def cleanup():
+            # A running scan's log, if its finish has not closed it: the scan
+            # ran before this job on the one worker, so it has ended (user,
+            # 2026-10-18).  Best effort, before any instrument is closed.
+            if self.__dict__.get('rte_recorder') is not None:
+                future = self.__dict__.get('rte_scan_future')
+                try:
+                    error = future.exception(timeout=0) if future is not None else None
+                    outcome = ('completed' if error is None else 'stopped' if isinstance(error, PPMSScanCancelled)
+                               else 'error')
+                except Exception as problem:
+                    error, outcome = problem, 'error'
+                self._rte_close_recorder(outcome, error='' if outcome != 'error' else str(error),
+                                         points_saved=len(self.__dict__.get('ppms_field_scan_rows') or ()),
+                                         status='the program closed', stage=self.rte_stage_where,
+                                         outputs=self.__dict__.get('rte_scan_outputs'))
             # The stage first (STOP if it is moving, then Close), on this
             # worker thread, which holds its USB handle; then the rest as before.
             stage = self.rte_controllers.get('newmark')

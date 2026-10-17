@@ -70,7 +70,8 @@ class PanelDefaultTests(unittest.TestCase):
     def test_rte_selection_gives_one_plot_row_per_harmonic(self):
         panel = self.app.rte_panel
         orders = panel._ppms2_measured_orders()
-        self.assertEqual(sorted(orders), [1, 2, 3])
+        # The Zurich at 1+2 by default (user's figure, 2026-10-18; was 1+2+3).
+        self.assertEqual(sorted(orders), [1, 2])
         self.assertTrue(all(meters == ["zurich"] for meters in orders.values()),
                         f"only the Zurich is measured by default: {orders}")
 
@@ -639,13 +640,23 @@ class RTEStatusRowTests(unittest.TestCase):
         # px in Arial, 485 px in DejaVu Sans (the same digits as the
         # "0.0864 s: 7 x 0.0123 s" it replaces; at 1 x TC the wait is the TC).
         "Each reading now waits 0.0864 s: 1 x 0.0864 s TC of the Zurich",
-        "Stopping; completed CSV points and outputs kept",
-        "Completed; 6221 current set to 0 (output OFF, read back)",
+        # Every ending zeroes the 6221 and the KEPCO (user, 2026-10-18; the
+        # outputs were held, and a Current scan's 6221 alone set to 0, until
+        # then), so the finish lines say how that went.
+        "Stopping; completed CSV points kept; KEPCO and 6221 zeroed next",
+        "Completed; " + app.rte_outputs_text({"6221": "zeroed", "kepco": "zeroed"}),
+        "Completed; " + app.rte_outputs_text({"6221": "zero FAILED: x", "kepco": "not connected"}),
+        "Completed; " + app.rte_outputs_text({"6221": "zero FAILED: x", "kepco": "zero FAILED: y"}),
         # The Angle scan's (2026-10-13), at their longest: six significant
         # digits ({:g}) for the angles and the KEPCO current, 100000 points.
         "SHV Angle -359.995° to 359.995°, KEPCO -9.87654 A held; 100000 points",
-        "Stopped; outputs held unless OFF was requested; stage stopped at -359.999°",
-        "Completed; outputs held; stage at +360.000°",
+        "Stopped; " + app.rte_outputs_text({"6221": "zeroed", "kepco": "zeroed"}, check=False)
+        + "; stage stopped at -359.999°",
+        "Stopped; " + app.rte_outputs_text({"6221": "zero FAILED: x", "kepco": "zeroed"}, check=False)
+        + "; stage stopped at -359.999°",
+        "Stopped; " + app.rte_outputs_text(None, check=False) + "; stage stopped at -359.999°",
+        "Completed; " + app.rte_outputs_text({"6221": "zeroed", "kepco": "zeroed"}, check=False)
+        + "; stage at +360.000°",
         # An Angle Start that did not start (review, 2026-10-17): the longest
         # fixed reason, and the widest refusal the stage check or a fix can
         # give, cut to 44 characters (about 478 px in Arial 15 px).

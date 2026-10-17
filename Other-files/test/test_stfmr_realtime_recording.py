@@ -240,6 +240,8 @@ class StreamingTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.confirm = patch.object(app.messagebox, 'askyesno', return_value=True).start()
         self.error = patch.object(app.messagebox, 'showerror').start()
+        # Start's file-name step (2026-10-18), left blank: the timestamped default.
+        self.file_name = patch.object(app.simpledialog, 'askstring', return_value='').start()
         self.addCleanup(patch.stopall)
 
     def start(self, **kwargs):

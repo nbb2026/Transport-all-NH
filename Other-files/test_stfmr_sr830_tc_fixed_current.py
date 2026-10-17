@@ -212,7 +212,11 @@ class NoWindows(unittest.TestCase):
             patches.append(mock.patch.object(tkinter.messagebox, name, unexpected))
         for name in ("askdirectory", "asksaveasfilename", "askopenfilename", "askopenfilenames"):
             patches.append(mock.patch.object(tkinter.filedialog, name, unexpected))
-        for name in ("askstring", "askfloat", "askinteger"):
+        # Start's file-name step (user, 2026-10-18): left blank, the
+        # timestamped STFMR_field_scan_<stamp> default these tests expect.
+        self.file_name = mock.Mock(return_value="")
+        patches.append(mock.patch.object(tkinter.simpledialog, "askstring", self.file_name))
+        for name in ("askfloat", "askinteger"):
             patches.append(mock.patch.object(tkinter.simpledialog, name, unexpected))
         for patcher in patches:
             patcher.start()

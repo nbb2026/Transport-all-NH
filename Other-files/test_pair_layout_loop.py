@@ -117,6 +117,14 @@ class RTEStageBlockTests(Built, unittest.TestCase):
         for index in range(notebook.index("end")):
             if notebook.tab(index, "text") == "SHV":
                 notebook.select(index)
+        # The Zurich at 1+2+3, three plot rows, the worst case for height:
+        # SHV starts at 1+2 since the user's figure (2026-10-18), and every
+        # plot must still keep its 55 px when the user picks 1+2+3.  As the
+        # harmonic box does (its <<ComboboxSelected>>); the Zurich is not
+        # connected, so nothing is sent.
+        cls.a.rte_panel.zurich_harmonic.set("1+2+3")
+        cls.a.rte_panel._apply_ppms2_zurich_harmonic()
+        cls.root.update()
 
     def layouts(self):
         """(settings beside the scan box, params beside the lock-ins, where the block is)."""
@@ -247,7 +255,8 @@ class RTEStageBlockTests(Built, unittest.TestCase):
         self.root.geometry(f"1101x{CI_SHOT_HEIGHT}+0+0")
         self.root.update()
         canvases = self.a.rte_panel.ppms_harmonic_canvases
-        self.assertEqual(len(canvases), 9, "the Zurich at 1+2+3: three rows of X, Y, theta")
+        self.assertEqual(len(canvases), 9, "the Zurich at 1+2+3 (set above): three rows of X, Y, theta")
+        self.assertEqual(sorted(self.a.rte_panel._ppms2_measured_orders()), [1, 2, 3])
         # The layout numbers, for the record (user, 2026-10-17).
         print(f"SHV plots at {self.root.winfo_width()}x{self.root.winfo_height()} px: "
               f"{sorted({c.winfo_height() for c in canvases.values()})} px tall")
@@ -264,6 +273,34 @@ class RTEStageBlockTests(Built, unittest.TestCase):
             for key, canvas in canvases.items():
                 with self.subTest(width=width, plot=key):
                     self.assertGreaterEqual(canvas.winfo_height(), 55, "Increase the window height")
+
+    def test_at_the_default_1_plus_2_two_rows_are_drawn_and_the_third_is_hidden(self):
+        """The SHV default, the Zurich at 1+2 (user's figure, 2026-10-18):
+        the first- and second-harmonic rows keep their 55 px in the 1101 px
+        window and at 2000 px, and the third row is hidden."""
+        panel = self.a.rte_panel
+        canvases = panel.ppms_harmonic_canvases
+        try:
+            panel.zurich_harmonic.set(app.RTE_ZURICH_DEFAULT_HARMONICS)
+            panel._apply_ppms2_zurich_harmonic()
+            self.assertEqual(app.RTE_ZURICH_DEFAULT_HARMONICS, "1+2")
+            self.assertEqual(sorted(panel._ppms2_measured_orders()), [1, 2])
+            for width, height in ((1101, CI_SHOT_HEIGHT), (LAB_WIDE, self.height)):
+                self.root.geometry(f"{width}x{height}+0+0")
+                self.root.update()
+                print(f"SHV plots at 1+2, {self.root.winfo_width()}x{self.root.winfo_height()} px: "
+                      f"{sorted({c.winfo_height() for k, c in canvases.items() if k[0] != 3})} px tall")
+                for key, canvas in canvases.items():
+                    with self.subTest(width=width, plot=key):
+                        if key[0] == 3:
+                            self.assertFalse(canvas.winfo_ismapped(), "the third-harmonic row is hidden")
+                        else:
+                            self.assertTrue(canvas.winfo_ismapped())
+                            self.assertGreaterEqual(canvas.winfo_height(), 55, "Increase the window height")
+        finally:
+            panel.zurich_harmonic.set("1+2+3")
+            panel._apply_ppms2_zurich_harmonic()
+            self.root.update()
 
     def test_the_motor_row_lines_up_with_the_rack_rows(self):
         """User, 2026-10-17: the stage's connection is the rack's fifth row,

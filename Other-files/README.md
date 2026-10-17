@@ -1,5 +1,96 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## SHV run folder and log; the STFMR file-name step; SHV scans end with the KEPCO and 6221 zeroed (2026-10-18)
+
+- **Run folder (user: "like ST-FMR, pls also write a log of SHV and save
+  results in a folder"):** after the folder and file-name dialogs, an SHV
+  Start makes `<folder>/<name>/` (blank name: `SHV_<date>_<time>`; a name in
+  use, by a folder or a file, gets `_01`, `_02` …, the files named as the
+  folder). It holds `<name>.csv`, the live CSV as before (same columns, one
+  fsynced row per point), and `<name>.log`. Nothing is ever overwritten
+  (`mkdir` without `exist_ok`, files opened `"x"`). If the folder or its
+  files cannot be made, or the log's first entry cannot be written, no scan
+  starts and a dialog says why. The Start log line names the folder; the
+  finish logs "SHV run folder …: <outcome>; … closed". Save CSV as opens in
+  the last run folder. `SHVScanRecorder`, `make_scan_run_folder`.
+- **The log:** JSON lines as the STFMR run log's (`scan_log_line`):
+  `{"timestamp", "event", …}`, each flushed and fsynced, written under one
+  lock from the rte-control worker and the Tk thread. Events:
+  `run_prepared` (program, `APP_VERSION`, Python; the file name, the mode,
+  the plan, Settle s / Acquire s / the effective settle per pass, the
+  harmonic passes, each measured lock-in with its harmonics, time constant
+  and autorange, the Zurich device, the 6221 current / frequency /
+  compliance, the KEPCO current and voltage limit, every resource with its
+  state and identity, the motor's identity / version / steps per degree,
+  the safety tick; for Angle `stage_at_start`: the stage's last reading on
+  the worker with its time, and the stage check's MST: the Tk thread never
+  calls the DLL), `scan_started`, `harmonic_pass`, `field_programmed`,
+  `field_settled` / `field_not_settled`, `stage_move` (target, angle, PX),
+  `point_saved` (index, loop, point, target, x, field before / after,
+  drift), `field_drift`, `stop_requested` (Stop, Stop stage, KEPCO Zero /
+  OFF, 6221 / 2400 OFF, the program closing), `stage_failure` (where the
+  stage is), `outputs_zeroed`, `note` (every SHV log line of the running
+  scan) and `run_finished` (outcome completed / stopped / error /
+  not_started, the error or why it stopped, points saved, the finish
+  status, each output's zeroing, where the stage is). A write never
+  raises: the first failure is kept and the worker raises it at its next
+  check, outside any instrument step, so the scan ends through the normal
+  failure path, as for a failed live-CSV row. The close is best effort, on
+  every ending: finished(), or the clean-up job on the worker when the
+  program closes mid-scan. The Newmark controller keeps its last
+  `read_state()` (`last_state`) for `stage_at_start`.
+- **STFMR file-name step (user: "also add the name file step in STFMR save
+  process"):** after its folder dialog the STFMR Start asks "Optional file
+  name (leave blank for a timestamped default):" ("STFMR file name"), with
+  SHV's rule (a valid Windows name, no path, no reserved name; a typed
+  ".csv" dropped). Cancel, or a refused name, starts nothing and makes
+  nothing. A typed name makes `<folder>/<name>/` with `<name>.csv` and
+  `<name>.log` (`_01`, `_02` … when in use); blank keeps
+  `STFMR_field_scan_<stamp>`. The recorder's columns and events are
+  unchanged; `run_prepared`'s settings record `file_name`. One rule and
+  one folder maker for both pages: `scan_file_stem`, `ask_scan_file_stem`,
+  `make_scan_run_folder`.
+- **Every SHV scan ends with the KEPCO and the 6221 zeroed (user: "when
+  finish scan in SHV, automatically zero the Kepco and 6221 pls"):**
+  completed, stopped (Stop, Stop stage) or failed, the rte-control worker,
+  after the scan's own clean-up (a moving stage is stopped there first),
+  switches the 6221 off and reads OUTP? back as 0, then zeroes the KEPCO as
+  its "KEPCO Zero / OFF" button does (`force_output_off`: zero and OUTP
+  OFF); each step is tried whatever the other did. The stage is not moved.
+  Until now a completed Current scan switched only the 6221 off and the
+  other endings held both outputs. Status: "Completed; KEPCO and 6221
+  zeroed" / "Stopped; KEPCO and 6221 zeroed" (Angle: "; stage at …" as
+  before); a failure keeps "Failed: …" and its dialog adds "At the end:
+  6221 …; KEPCO …". A zero that fails says so: "Completed; 6221 zeroed;
+  KEPCO zero FAILED: check it" (Angle: without ": check it", then the
+  stage), a "SHV outputs" dialog with "CHECK IT", the log line "SHV scan
+  end: …" and `run_finished`'s `outputs`. A Current scan with no KEPCO
+  connected says "KEPCO not connected". Closing the program mid-scan: the
+  scan's end zeroes both on the worker before the clean-up job closes the
+  instruments. The Angle Yes/No says the field is held during the scan
+  and both outputs are zeroed when it ends; "Stopping; completed CSV
+  points kept; KEPCO and 6221 zeroed next". `rte_outputs_text`,
+  `_rte_zero_outputs_after_scan`. Every finish line stays within the
+  status label's width (the widest about 483 px in Arial 15 px, under the
+  reserved `RTE_STATUS_WIDEST_EXAMPLE`).
+- **CI (8a70db9's run 39050618501):** the SHV layout tests set the Zurich to
+  1+2+3 (three plot rows, the worst case for height) before they measure,
+  and a new test checks the default 1+2: the two rows shown keep 55 px at
+  1101 and 2000 px and the third is hidden; `test_panel_defaults` expects
+  orders [1, 2].
+- **Tests (window-free):** `test_scan_run_folder` (the name rule and
+  prompt, unique folders, `SHVScanRecorder`: files, JSON lines, a failed
+  write, two threads, the close; the STFMR name step: typed, blank, in use,
+  refused, Cancel); `test_rte_angle_end_to_end` `RunLogTests` (an Angle
+  scan's events in order with every DLL call on the worker, Field and
+  Current scans, name clashes, a folder or first entry that cannot be
+  made, a Stop in a move, Stop stage from the Tk thread, a stage failure,
+  a log write failure ending the scan safely, closing mid-scan, a worker
+  that cannot take the scan) and `ScanEndZeroTests` (a KEPCO zero that
+  fails, a 6221 off that fails still zeroing the KEPCO, a failed scan, the
+  status texts); the worker and Start tests in `test_rte_panel` and
+  `test_rte_angle_scan` follow the new endings.
+
 ## RT-E renamed SHV; new SHV start-up defaults (2026-10-18)
 
 - **Rename (user: "rename RT-E as SHV"):** the tab, the box titles (SHV

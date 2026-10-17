@@ -19,6 +19,8 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 import csv
 import ctypes
+import datetime
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -34,6 +36,9 @@ from test_ppms_two_panels import ImmediateExecutor, Var
 from test_rte_angle_scan import Clock, EndsShort, Recorder, RecordingDLL, Sim, script
 
 _guards = []
+# The end of every SHV scan (user, 2026-10-18): the 6221 off and read back,
+# then the KEPCO's Zero / OFF.
+ZEROED = [("6221", "off"), ("6221", "OUTP?"), ("kepco", "force_off")]
 
 
 def setUpModule():
@@ -90,6 +95,8 @@ class Kepco:
 
     def force_output_off(self):
         self.log.append(("kepco", "force_off", threading.get_ident()))
+        self.output_owned, self.cached_current_a = False, 0.0
+        return {}
 
     def disconnect(self):
         pass
@@ -150,7 +157,11 @@ class EndToEnd(unittest.TestCase):
         panel.ppms_executor = h.executor
         panel.root = h.root = Root()
         panel.post_ui = h.ui.append
-        panel.thread_log = h.logged.append
+        # The page's log lines, at once; the page's own thread_log still runs,
+        # so a running scan's lines are also its run log's notes (2026-10-18).
+        guard = patch.object(app.CombinedControlApp, "thread_log", lambda _self, message: h.logged.append(message))
+        guard.start()
+        self.addCleanup(guard.stop)
         # The plots: what each redraw would draw.
         h.draw = Mock()
         guard = patch.object(app.CombinedControlApp, "_draw_nonlocal_series", h.draw)
@@ -212,11 +223,18 @@ class EndToEnd(unittest.TestCase):
                 if command.startswith("HARM "):
                     h.harmonic[key] = int(command.split()[1])
 
-            def query(key, command, count):
-                assert command == "HARM?", command
-                return (h.harmonic[key],)
             panel._ppms_write_sr830_checked = write
-            panel._ppms_query_numbers = query
+        h.harmonic = h.__dict__.get("harmonic", {})
+
+        def query(key, command, count):
+            # The 6221's OUTP? after the end's off (user, 2026-10-18), and an
+            # SR830's HARM? between harmonic passes.
+            if command == "OUTP?":
+                h.log.append(("6221", "OUTP?", threading.get_ident()))
+                return (0,)
+            assert command == "HARM?", command
+            return (h.harmonic[key],)
+        panel._ppms_query_numbers = query
         h.points = 0
 
         def sample(settings_lockins):
@@ -331,15 +349,18 @@ class AngleScanTests(EndToEnd):
         self.assertEqual(sequence[:2], [("6221", "on"), ("kepco", "set_output")])
         settle = sequence[2:2 + app.STFMR_FIELD_SETTLE_REQUIRED_SAMPLES]
         self.assertEqual(settle, [("gauss", "read")] * app.STFMR_FIELD_SETTLE_REQUIRED_SAMPLES)
-        points = sequence[2 + app.STFMR_FIELD_SETTLE_REQUIRED_SAMPLES:]
+        points = sequence[2 + app.STFMR_FIELD_SETTLE_REQUIRED_SAMPLES:-3]
         expected = []
         for index, angle in enumerate((0.0, 10.0, 20.0, 10.0, 0.0)):
             expected += [("stage", "move", angle), ("stage", "at", angle), ("gauss", "read"),
                          ("lockins", "first" if index == 0 else "read"), ("gauss", "read")]
         self.assertEqual(points, expected)
         self.assertEqual([e[2:5] for e in h.log if e[:2] == ("kepco", "set_output")], [("CURR", 1.5, 5.0)])
-        self.assertEqual(self.names(h, "kepco", "6221"), [("6221", "on"), ("kepco", "set_output")],
-                         "the KEPCO and the 6221 are held after the scan, as on a Field scan")
+        # The end: the 6221 off and read back, then the KEPCO zeroed (user,
+        # 2026-10-18: "when finish scan in SHV, automatically zero the Kepco
+        # and 6221 pls"; both were held until then).
+        self.assertEqual(sequence[-3:], ZEROED)
+        self.assertEqual(self.names(h, "kepco", "6221"), [("6221", "on"), ("kepco", "set_output")] + ZEROED)
         # Every instrument call and every DLL call on the rte-control worker.
         self.assertEqual({entry[-1] for entry in h.log}, {h.worker})
         self.assertEqual({thread for _name, thread in h.dll.calls}, {h.worker})
@@ -359,7 +380,9 @@ class AngleScanTests(EndToEnd):
         self.assertEqual({r["kepco_voltage_limit_v"] for r in rows}, {"5.0"})
         self.assertEqual(rows[0]["first_point_windows"], "2")
         # The finish and the live lines.
-        self.assertEqual(panel.ppms_field_scan_status_var.get(), "Completed; outputs held; stage at +0.000°")
+        self.assertEqual(panel.ppms_field_scan_status_var.get(), "Completed; KEPCO and 6221 zeroed; stage at +0.000°")
+        self.assertEqual((panel.rte_drive_live.get(), panel.ppms_current_live_var.get()),
+                         ("KEPCO: zeroed and output OFF", "OFF / 0 mA"))
         self.assertEqual(panel.rte_stage_live.get(), "Stage: +0.000° (10000 steps/°)")
         self.assertEqual(panel.rte_field_live.get(), "LS475 field: +123 G")
         self.assertEqual(panel.ppms_field_scan_total, 5)
@@ -469,12 +492,16 @@ class AngleScanStopTests(EndToEnd):
         self.assertNotIn("ABORT", received)
         self.assertFalse(h.stage.motion_may_run)
         status = panel.ppms_field_scan_status_var.get()
-        self.assertTrue(status.startswith("Stopped; outputs held unless OFF was requested; stage stopped at +"), status)
+        self.assertTrue(status.startswith("Stopped; KEPCO and 6221 zeroed; stage stopped at +"), status)
         where = float(status.rsplit(" ", 1)[1].rstrip("°"))
         self.assertTrue(0 < where < 90, where)
         self.assertEqual([float(r["stage_angle_deg"]) for r in self.rows(h)], [0.0], "the first angle's row kept")
-        self.assertEqual(self.names(h, "kepco", "6221"), [("6221", "on"), ("kepco", "set_output")],
-                         "outputs held: a Stop switches nothing off")
+        self.assertEqual(self.names(h, "kepco", "6221"), [("6221", "on"), ("kepco", "set_output")] + ZEROED,
+                         "a Stop zeroes both, once the stage has stopped")
+        moves = [entry[:3] for entry in h.log]
+        self.assertLess(moves.index(("stage", "move", 90.0)), moves.index(("6221", "off", h.worker)),
+                        "the stopped move (STOP confirmed) before the zeroing; the stage is not moved again")
+        self.assertEqual([e[2] for e in h.log if e[:2] == ("stage", "move")], [0.0, 90.0])
         self.assertFalse(panel.ppms_field_scan_running)
         self.assertIn(f"SHV Newmark NSC-A1 connected (Ace-Series-SDE, V231BL): {h.stage.scale_text()}", h.logged)
 
@@ -493,11 +520,11 @@ class AngleScanStopTests(EndToEnd):
         self.pump(h)
         h.showerror.assert_not_called()
         self.assertEqual(panel.ppms_field_scan_status_var.get(),
-                         "Stopped; outputs held unless OFF was requested; stage at +0.000°")
+                         "Stopped; KEPCO and 6221 zeroed; stage at +0.000°")
         self.assertEqual([e for e in h.log if e[0] == "lockins"], [], "the point was not read")
         self.assertEqual([e[2] for e in h.log if e[:2] == ("stage", "move")], [0.0], "no further move")
 
-    def test_a_failed_move_stops_the_6221_holds_the_field_and_says_where(self):
+    def test_a_failed_move_stops_the_6221_then_zeroes_both_and_says_where(self):
         h = self.make(EndsShort(), span=("0", "10", "10"), round_trip=False)
         panel = h.panel
         self.start(h)
@@ -506,8 +533,10 @@ class AngleScanStopTests(EndToEnd):
         self.assertIn("not at the target", message)
         self.assertIn("Stage stopped at +9.999°", message)
         self.assertTrue(panel.ppms_field_scan_status_var.get().startswith("Failed: "))
-        self.assertEqual(self.names(h, "kepco", "6221"), [("6221", "on"), ("kepco", "set_output"), ("6221", "off")],
-                         "a stage failure: the 6221 off, the KEPCO's field held")
+        self.assertEqual(self.names(h, "kepco", "6221"),
+                         [("6221", "on"), ("kepco", "set_output"), ("6221", "off")] + ZEROED,
+                         "a stage failure: the 6221 off at once, then the end's zeroing of both")
+        self.assertIn("At the end: 6221 zeroed; KEPCO zeroed", message)
         self.assertIn("SHV Angle scan, after the stage failure: stage stopped at +9.999°", h.logged)
         self.assertEqual([float(r["stage_angle_deg"]) for r in self.rows(h)], [0.0])
 
@@ -527,6 +556,482 @@ class AngleScanStopTests(EndToEnd):
         self.assertEqual({thread for _name, thread in h.dll.calls}, {h.worker})
         self.assertEqual([e[2] for e in h.log if e[:2] == ("stage", "move")], [0.0], "no further move")
         self.assertIsNone(panel._newmark_stage_ownership().owner)
+
+
+class FlakyLog:
+    """The run log's file, whose next ``failures`` writes raise as a full
+    disk would; everything else goes to the real file."""
+
+    def __init__(self, handle, failures=1):
+        self.handle, self.failures = handle, failures
+
+    def write(self, text):
+        if self.failures:
+            self.failures -= 1
+            raise OSError(28, "No space left on device")
+        return self.handle.write(text)
+
+    def __getattr__(self, name):
+        return getattr(self.handle, name)
+
+
+class RunLogBase(EndToEnd):
+    """The page of the scans above, with which thread wrote each log event
+    and Field and Current scans on it."""
+
+    def make(self, *args, **kwargs):
+        h = super().make(*args, **kwargs)
+        # Which thread wrote each event, from the recorder's own event().
+        h.writes = []
+        real = app.SHVScanRecorder.event
+
+        def event(recorder, name, **details):
+            h.writes.append((name, threading.get_ident()))
+            return real(recorder, name, **details)
+        guard = patch.object(app.SHVScanRecorder, "event", event)
+        guard.start()
+        self.addCleanup(guard.stop)
+        real_close = app.SHVScanRecorder.close
+
+        def close(recorder, outcome, **details):
+            h.writes.append(("close", threading.get_ident()))
+            return real_close(recorder, outcome, **details)
+        guard = patch.object(app.SHVScanRecorder, "close", close)
+        guard.start()
+        self.addCleanup(guard.stop)
+        return h
+
+    def make_mode(self, mode, span, **kwargs):
+        """A Field or Current scan on the same page (the KEPCO, the LS475
+        and the 6221 fakes); the stage stays connected and still."""
+        h = self.make(**kwargs)
+        panel = h.panel
+        panel.ppms_simple_mode.set(mode)
+        panel._rte_mode_changed()
+        for variable, value in zip(panel.ppms_simple_range, span):
+            variable.set(value)
+        panel._update_ppms_transport_current = lambda settings: h.log.append(
+            ("6221", "current", settings["current_rms_ma"], threading.get_ident()))
+        h.log.clear()
+        return h
+
+    @staticmethod
+    def events(h):
+        folder = h.panel.rte_run_folder
+        with (folder / f"{folder.name}.log").open(encoding="utf-8") as handle:
+            return [json.loads(line) for line in handle]
+
+    @staticmethod
+    def without_notes(events):
+        return [event["event"] for event in events if event["event"] != "note"]
+
+    def assert_closed(self, h):
+        self.assertIsNone(h.panel.rte_recorder, "the page let the recorder go")
+        self.assertEqual(self.events(h)[-1]["event"], "run_finished")
+
+
+class RunLogTests(RunLogBase):
+    """The SHV run folder and its log (user, 2026-10-18: "like ST-FMR, pls
+    also write a log of SHV and save results in a folder"), on the real
+    page, worker and stage controller of the scans above."""
+
+    def test_a_whole_angle_scan_is_logged_in_order(self):
+        h = self.make()
+        before = dict(h.stage.last_state)
+        self.start(h)
+        panel = h.panel
+        h.showerror.assert_not_called()
+        # The run folder <folder>/<name>/, its two files and nothing else.
+        folder = Path(h.folder.name) / "angle"
+        self.assertEqual(panel.rte_run_folder, folder)
+        self.assertEqual(sorted(p.name for p in Path(h.folder.name).iterdir()), ["angle"])
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), ["angle.csv", "angle.log"])
+        self.assertEqual(panel.ppms_live_csv_path, folder / "angle.csv")
+        self.assertEqual(len(self.rows(h)), 5, "the live CSV as before, in the folder")
+        events = self.events(h)
+        expected = ["run_prepared", "scan_started", "harmonic_pass", "field_programmed", "field_settled"]
+        for _angle in range(5):
+            expected += ["stage_move", "point_saved"]
+        self.assertEqual(self.without_notes(events), expected + ["outputs_zeroed", "run_finished"])
+        for event in events:
+            datetime.datetime.fromisoformat(event["timestamp"])
+        # run_prepared: the settings and the instruments at Start.
+        prepared = events[0]
+        self.assertEqual((prepared["program"], prepared["app_version"]), ("Transport_all_NH_dev.py", app.APP_VERSION))
+        self.assertTrue(prepared["python_version"])
+        self.assertEqual((prepared["file_name"], prepared["mode"]), ("angle", "Angle"))
+        self.assertEqual((prepared["run_folder"], prepared["csv_path"], prepared["log_path"]),
+                         (str(folder), str(folder / "angle.csv"), str(folder / "angle.log")))
+        plan = prepared["plan"]
+        self.assertEqual((plan["start"], plan["end"], plan["step"], plan["loops"], plan["round_trip"]),
+                         ("0", "20", "10", 1, True))
+        self.assertEqual((plan["points"], plan["harmonic_passes"], plan["total_points"], plan["first_target"],
+                          plan["farthest_target"]), (5, 1, 5, 0.0, 20.0))
+        self.assertEqual((prepared["timing"]["settle_s"], prepared["timing"]["acquire_s"]), (0.0, 0.01))
+        self.assertEqual(prepared["timing"]["effective_settle_s"], 0.001, "1 x the Zurich's 1 ms TC")
+        self.assertEqual(prepared["harmonic_passes"], [{"harmonic_pass": 1, "harmonics": {}, "zurich_harmonics": "1+2"}])
+        self.assertEqual(list(prepared["lockins"]), ["Zurich"])
+        self.assertEqual((prepared["lockins"]["Zurich"]["harmonics"], prepared["lockins"]["Zurich"]["time_constant_s"]),
+                         ("1+2", 0.001))
+        self.assertEqual(prepared["source_6221"]["current_rms_ma"], float(panel.ppms_transport_current_var.get()))
+        self.assertEqual(prepared["kepco"], {"current_a": 1.5, "voltage_limit_v": 5.0, "held": True})
+        self.assertEqual(prepared["resources"]["newmark"]["identity"], "Ace-Series-SDE")
+        self.assertTrue(prepared["resources"]["newmark"]["connected"])
+        self.assertTrue(prepared["resources"]["kepco"]["connected"])
+        self.assertTrue(prepared["resources"]["zurich"]["connected"])
+        self.assertEqual((prepared["motor"]["identity"], prepared["motor"]["version"],
+                          prepared["motor"]["steps_per_degree"]), ("Ace-Series-SDE", "V231BL", 10000))
+        # Where the stage was: its last reading on the worker (at Connect)
+        # and the stage check's MST; nothing was read for the log.
+        at_start = prepared["stage_at_start"]
+        self.assertEqual((at_start["angle_deg"], at_start["px"], at_start["read_at"]),
+                         (before["angle_deg"], before["px"], before["read_at"]))
+        self.assertEqual(at_start["stage_check_mst"], 0)
+        self.assertIs(prepared["safety_confirmed"], True)
+        # The run, in order.
+        by_name = {}
+        for event in events:
+            by_name.setdefault(event["event"], []).append(event)
+        self.assertEqual(by_name["scan_started"][0]["points"], 5)
+        self.assertEqual(by_name["field_programmed"][0]["current_a"], 1.5)
+        self.assertEqual(by_name["field_settled"][0]["field_g"], 123.0)
+        self.assertEqual([(e["target_deg"], e["angle_deg"], e["px"]) for e in by_name["stage_move"]],
+                         [(0.0, 0.0, 0), (10.0, 10.0, 100000), (20.0, 20.0, 200000), (10.0, 10.0, 100000),
+                          (0.0, 0.0, 0)])
+        saved = by_name["point_saved"]
+        self.assertEqual([(e["index"], e["loop"], e["point"], e["x"]) for e in saved],
+                         [(1, 1, 1, 0.0), (2, 1, 2, 10.0), (3, 1, 3, 20.0), (4, 1, 4, 10.0), (5, 1, 5, 0.0)])
+        self.assertEqual({(e["x_column"], e["field_before_g"], e["field_after_g"], e["field_drift_g"]) for e in saved},
+                         {("stage_angle_deg", 123.0, 123.0, 0.0)})
+        finished = events[-1]
+        self.assertEqual((finished["outcome"], finished["error"], finished["points_saved"], finished["status"],
+                          finished["stage"]),
+                         ("completed", "", 5, "Completed; KEPCO and 6221 zeroed; stage at +0.000°", "stage at +0.000°"))
+        self.assertEqual(finished["outputs"], {"6221": "zeroed", "kepco": "zeroed"})
+        (zeroed,) = [e for e in events if e["event"] == "outputs_zeroed"]
+        self.assertEqual((zeroed["6221"], zeroed["kepco"]), ("zeroed", "zeroed"))
+        # Every SHV log line of the run is a note, the Start line naming the folder.
+        notes = [event["text"] for event in events if event["event"] == "note"]
+        self.assertTrue(notes[0].startswith(f"SHV Angle scan; run folder: {folder} (angle.csv and angle.log)"), notes)
+        self.assertTrue(set(notes) <= set(h.logged))
+        self.assertIn(f"SHV run folder {folder}: completed; angle.csv and angle.log closed", h.logged)
+        self.assert_closed(h)
+        # Both threads wrote: the Tk thread at Start and at the finish, the
+        # worker during the scan; every DLL call stayed on the worker.
+        threads = {}
+        for name, thread in h.writes:
+            threads.setdefault(name, set()).add(thread)
+        tk_thread = threading.get_ident()
+        self.assertEqual(threads["run_prepared"], {tk_thread})
+        self.assertEqual(threads["close"], {tk_thread}, "run_finished and the close at the finish")
+        for name in ("scan_started", "harmonic_pass", "field_programmed", "field_settled", "stage_move",
+                     "point_saved"):
+            self.assertEqual(threads[name], {h.worker}, name)
+        self.assertEqual({thread for _name, thread in h.dll.calls}, {h.worker})
+        # Save CSV as opens in the run folder.
+        with patch.object(app.filedialog, "asksaveasfilename", return_value="") as ask:
+            panel.save_ppms_field_scan_csv()
+        self.assertEqual(ask.call_args.kwargs["initialdir"], str(folder))
+
+    def test_a_name_in_use_gets_a_suffix_and_nothing_is_overwritten(self):
+        h = self.make(span=("0", "10", "10"), round_trip=False)
+        self.start(h)
+        first = Path(h.folder.name) / "angle"
+        kept = {p.name: p.read_bytes() for p in first.iterdir()}
+        # A file of the same name, as another run might have left.
+        (Path(h.folder.name) / "angle_01").write_text("not a folder", encoding="utf-8")
+        for expected in ("angle_02", "angle_03"):
+            self.start(h)
+            h.showerror.assert_not_called()
+            folder = Path(h.folder.name) / expected
+            self.assertEqual(h.panel.rte_run_folder, folder)
+            self.assertEqual(sorted(p.name for p in folder.iterdir()), [f"{expected}.csv", f"{expected}.log"])
+            self.assertEqual(len(self.rows(h)), 2)
+        self.assertEqual({p.name: p.read_bytes() for p in first.iterdir()}, kept, "the first run untouched")
+        self.assertEqual((Path(h.folder.name) / "angle_01").read_text(encoding="utf-8"), "not a folder")
+        # A blank name: SHV_<date>_<time>.
+        with patch.object(app.simpledialog, "askstring", return_value=""):
+            self.start(h)
+        self.assertRegex(h.panel.rte_run_folder.name, r"^SHV_\d{8}_\d{6}(_\d\d)?$")
+
+    def test_a_folder_that_cannot_be_made_starts_nothing(self):
+        h = self.make()
+        missing = Path(h.folder.name) / "missing"
+        with patch.object(app.filedialog, "askdirectory", return_value=str(missing)):
+            self.start(h)
+        h.showerror.assert_called_once()
+        self.assertEqual(h.showerror.call_args.args[0], "SHV run folder")
+        self.assertIn("the scan was not started", h.showerror.call_args.args[1])
+        self.assertEqual([e for e in h.log if e[0] in ("6221", "kepco", "lockins")], [], "nothing switched on")
+        self.assertEqual([e for e in h.log if e[:2] == ("stage", "move")], [])
+        self.assertFalse(h.panel.ppms_field_scan_running)
+        self.assertFalse(missing.exists())
+        self.assertIsNone(h.panel.__dict__.get("rte_recorder"))
+
+    def test_a_first_log_entry_that_cannot_be_written_starts_nothing(self):
+        h = self.make()
+        real = app.scan_log_line
+
+        def line(name, details):
+            if name == "run_prepared":
+                raise OSError(28, "No space left on device")
+            return real(name, details)
+        with patch.object(app, "scan_log_line", line):
+            self.start(h)
+        self.assertEqual(h.showerror.call_args.args[0], "SHV run folder")
+        self.assertIn("Could not write the run log", h.showerror.call_args.args[1])
+        self.assertEqual([e for e in h.log if e[0] in ("6221", "kepco", "lockins", "stage")], [])
+        folder = Path(h.folder.name) / "angle"
+        with (folder / "angle.log").open(encoding="utf-8") as handle:
+            (closing,) = [json.loads(text) for text in handle]
+        self.assertEqual((closing["event"], closing["outcome"]), ("run_finished", "not_started"))
+        self.assertIsNone(h.panel.__dict__.get("rte_recorder"))
+
+    def test_a_field_scan_is_logged_in_order(self):
+        h = self.make_mode("Field", ("0", "1", "1"))
+        self.start(h)
+        h.showerror.assert_not_called()
+        events = self.events(h)
+        expected = ["run_prepared", "scan_started", "harmonic_pass"]
+        for _point in range(3):
+            expected += ["field_programmed", "field_settled", "point_saved"]
+        self.assertEqual(self.without_notes(events), expected + ["outputs_zeroed", "run_finished"])
+        self.assertEqual([e["current_a"] for e in events if e["event"] == "field_programmed"], [0.0, 1.0, 0.0])
+        self.assertEqual({(e["x_column"], e["x"]) for e in events if e["event"] == "point_saved"},
+                         {("measured_field_g", 123.0)})
+        self.assertEqual(events[0]["kepco"], {"current_a": "the plan", "voltage_limit_v": 5.0})
+        self.assertNotIn("stage_at_start", events[0])
+        self.assertEqual((events[-1]["outcome"], events[-1]["points_saved"], events[-1]["status"]),
+                         ("completed", 3, "Completed; KEPCO and 6221 zeroed"))
+        self.assertEqual(self.names(h, "kepco", "6221")[-3:], ZEROED)
+        self.assertNotIn("stage", events[-1])
+        self.assert_closed(h)
+
+    def test_a_current_scan_is_logged_in_order(self):
+        h = self.make_mode("Current", ("0.5", "1.5", "0.5"))
+        self.start(h)
+        h.showerror.assert_not_called()
+        events = self.events(h)
+        self.assertEqual(self.without_notes(events),
+                         ["run_prepared", "scan_started", "harmonic_pass", "point_saved", "point_saved",
+                          "point_saved", "outputs_zeroed", "run_finished"])
+        self.assertEqual([(e["target"], e["x_column"], e["x"]) for e in events if e["event"] == "point_saved"],
+                         [(0.5, "6221_current_rms_ma", 0.5), (1.0, "6221_current_rms_ma", 1.0),
+                          (1.5, "6221_current_rms_ma", 1.5)])
+        self.assertEqual(events[0]["kepco"], {"used": False})
+        self.assertEqual((events[-1]["outcome"], events[-1]["status"]),
+                         ("completed", "Completed; KEPCO and 6221 zeroed"))
+        # A Current scan never drives the KEPCO; it is zeroed at the end all
+        # the same (user, 2026-10-18), after the 6221.
+        self.assertEqual([e[:2] for e in h.log if e[0] == "kepco"], [("kepco", "force_off")])
+        self.assertEqual(self.names(h, "kepco", "6221")[-3:], ZEROED)
+        self.assert_closed(h)
+
+    def test_a_stop_during_a_move_is_logged(self):
+        h = self.make(span=("0", "90", "90"), round_trip=False)
+        panel = h.panel
+        h.move_hooks[90.0] = lambda: h.clock.hooks.append((h.clock.t + 3.0, panel.stop_ppms_field_scan))
+        self.start(h)
+        h.showerror.assert_not_called()
+        events = self.events(h)
+        self.assertEqual(self.without_notes(events),
+                         ["run_prepared", "scan_started", "harmonic_pass", "field_programmed", "field_settled",
+                          "stage_move", "point_saved", "stop_requested", "outputs_zeroed", "run_finished"])
+        (stop,) = [e for e in events if e["event"] == "stop_requested"]
+        self.assertEqual(stop["button"], "Stop")
+        finished = events[-1]
+        self.assertEqual((finished["outcome"], finished["error"], finished["points_saved"]), ("stopped", "", 1))
+        self.assertTrue(finished["stage"].startswith("stage stopped at +"), finished)
+        self.assertEqual(finished["status"], panel.ppms_field_scan_status_var.get())
+        self.assertIn("SHV stopped at a stage move", finished["stop_reason"])
+        self.assert_closed(h)
+
+    def test_a_stage_failure_is_logged(self):
+        h = self.make(EndsShort(), span=("0", "10", "10"), round_trip=False)
+        self.start(h)
+        events = self.events(h)
+        self.assertEqual(self.without_notes(events),
+                         ["run_prepared", "scan_started", "harmonic_pass", "field_programmed", "field_settled",
+                          "stage_move", "point_saved", "stage_failure", "outputs_zeroed", "run_finished"])
+        (failure,) = [e for e in events if e["event"] == "stage_failure"]
+        self.assertIn("not at the target", failure["error"])
+        self.assertEqual(failure["stage"], "stage stopped at +9.999°")
+        finished = events[-1]
+        self.assertEqual((finished["outcome"], finished["points_saved"], finished["stage"]),
+                         ("error", 1, "stage stopped at +9.999°"))
+        self.assertIn("not at the target", finished["error"])
+        self.assertTrue(finished["status"].startswith("Failed: "))
+        self.assertIn("SHV Angle scan, after the stage failure: stage stopped at +9.999°",
+                      [e["text"] for e in events if e["event"] == "note"])
+        self.assert_closed(h)
+
+    def test_a_log_write_failure_ends_the_scan_safely(self):
+        h = self.make(span=("0", "20", "10"), round_trip=False)
+        panel = h.panel
+        # The write after the move to 20 deg (its stage_move) fails once.
+        h.move_hooks[20.0] = lambda: setattr(panel.rte_recorder, "log_handle", FlakyLog(panel.rte_recorder.log_handle))
+        self.start(h)
+        h.showerror.assert_called_once()
+        self.assertEqual(h.showerror.call_args.args[0], "SHV scan")
+        self.assertIn("The SHV log could not be written", h.showerror.call_args.args[1])
+        self.assertTrue(panel.ppms_field_scan_status_var.get().startswith("Failed: The SHV log could not be written"))
+        # The normal failure path, as for a failed live-CSV row: the 6221 off,
+        # the KEPCO's field held, the stage at rest where it was (no STOP).
+        self.assertEqual(self.names(h, "kepco", "6221"),
+                         [("6221", "on"), ("kepco", "set_output"), ("6221", "off")] + ZEROED)
+        self.assertNotIn("STOP", h.sim.received)
+        self.assertFalse(h.stage.motion_may_run)
+        self.assertEqual([float(r["stage_angle_deg"]) for r in self.rows(h)], [0.0, 10.0], "no row after the failure")
+        events = self.events(h)
+        self.assertEqual(self.without_notes(events),
+                         ["run_prepared", "scan_started", "harmonic_pass", "field_programmed", "field_settled",
+                          "stage_move", "point_saved", "stage_move", "point_saved", "outputs_zeroed",
+                          "run_finished"])
+        self.assertEqual((events[-1]["outcome"], events[-1]["points_saved"], events[-1]["stage"]),
+                         ("error", 2, "stage at +20.000°"))
+        self.assertIn("No space left on device", events[-1]["error"])
+        self.assert_closed(h)
+
+    def test_a_stop_button_from_the_tk_thread_is_logged(self):
+        h = self.make(span=("0", "10", "10"), round_trip=False, tc_zurich="1")
+        panel = h.panel
+        panel.start_ppms_field_scan()
+        self.pump(h, until=lambda: panel.ppms_field_scan_running)
+        deadline = time.monotonic() + 30
+        while not [e for e in h.log if e[:2] == ("stage", "at")] and time.monotonic() < deadline:
+            time.sleep(0.02)
+        panel._rte_stage_stop()
+        self.pump(h)
+        events = self.events(h)
+        (stop,) = [e for e in events if e["event"] == "stop_requested"]
+        self.assertEqual(stop["button"], "Stop stage")
+        self.assertIn(("stop_requested", threading.get_ident()), h.writes, "written from the Tk thread")
+        self.assertEqual(events[-1]["outcome"], "stopped")
+        self.assert_closed(h)
+
+    def test_closing_the_program_mid_scan_closes_the_log(self):
+        h = self.make(span=("0", "10", "10"), round_trip=False, tc_zurich="1")
+        panel = h.panel
+        panel.zurich_executor = Mock()
+        panel.start_ppms_field_scan()
+        self.pump(h, until=lambda: panel.ppms_field_scan_running)
+        deadline = time.monotonic() + 30
+        while not [e for e in h.log if e[:2] == ("stage", "at")] and time.monotonic() < deadline:
+            time.sleep(0.02)
+        panel.safe_close_ppms()
+        h.executor.shutdown(wait=True)
+        events = self.events(h)
+        self.assertEqual(self.without_notes(events)[-3:], ["stop_requested", "outputs_zeroed", "run_finished"])
+        (stop,) = [e for e in events if e["event"] == "stop_requested"]
+        self.assertEqual(stop["button"], "the program closing")
+        # The close leaves neither output on: the scan's end zeroed both on
+        # the worker, before the clean-up job closed the stage.
+        self.assertEqual(self.names(h, "kepco", "6221")[-3:], ZEROED)
+        finished = events[-1]
+        self.assertEqual((finished["outcome"], finished["status"], finished["points_saved"]),
+                         ("stopped", "the program closed", 0))
+        # Closed by the clean-up job on the worker, after the scan, before the stage.
+        self.assertIn(("close", h.worker), h.writes)
+        self.assertIn(("stop_requested", threading.get_ident()), h.writes)
+        self.assertIsNone(panel.rte_recorder)
+        self.assertEqual({thread for _name, thread in h.dll.calls}, {h.worker})
+
+    def test_a_scan_the_worker_cannot_take_closes_its_log(self):
+        h = self.make_mode("Field", ("0", "1", "1"))
+        panel = h.panel
+        refusing = Mock()
+        refusing.submit.side_effect = RuntimeError("cannot schedule new futures after shutdown")
+        panel.ppms_executor = refusing
+        panel.start_ppms_field_scan()
+        self.assertEqual(h.showerror.call_args.args[0], "SHV scan not started")
+        self.assertFalse(panel.ppms_field_scan_running)
+        events = self.events(h)
+        self.assertEqual(self.without_notes(events), ["run_prepared", "run_finished"])
+        self.assertEqual((events[-1]["outcome"], events[-1]["points_saved"]), ("not_started", 0))
+        self.assertIsNone(panel.rte_recorder)
+
+
+
+class ScanEndZeroTests(RunLogBase):
+    """User, 2026-10-18: "when finish scan in SHV, automatically zero the
+    Kepco and 6221 pls": each ending zeroes the 6221 (off, read back), then
+    the KEPCO (its Zero / OFF), on the worker, each step tried whatever the
+    other did; a zero that fails is said on the status line, in a dialog
+    and in the log."""
+
+    def test_a_kepco_zero_that_fails_is_reported(self):
+        h = self.make(span=("0", "10", "10"), round_trip=False)
+
+        def refused():
+            h.log.append(("kepco", "force_off", threading.get_ident()))
+            raise RuntimeError("KEPCO 4886 zero/OFF not confirmed: 'OUTP OFF' VI_ERROR_TMO")
+        h.kepco.force_output_off = refused
+        self.start(h)
+        panel = h.panel
+        self.assertEqual(self.names(h, "kepco", "6221")[-3:], ZEROED)
+        self.assertEqual(panel.ppms_field_scan_status_var.get(), "Completed; 6221 zeroed; KEPCO zero FAILED; stage at +10.000°")
+        h.showerror.assert_called_once()
+        title, message = h.showerror.call_args.args
+        self.assertEqual(title, "SHV outputs")
+        self.assertIn("CHECK IT", message)
+        self.assertIn("KEPCO zero FAILED: KEPCO 4886 zero/OFF not confirmed: 'OUTP OFF' VI_ERROR_TMO", message)
+        self.assertNotEqual(panel.rte_drive_live.get(), "KEPCO: zeroed and output OFF")
+        finished = self.events(h)[-1]
+        self.assertEqual(finished["outputs"]["kepco"],
+                         "zero FAILED: KEPCO 4886 zero/OFF not confirmed: 'OUTP OFF' VI_ERROR_TMO")
+        self.assertEqual(finished["outcome"], "completed")
+        self.assertIn("SHV scan end: 6221 zeroed; KEPCO zero FAILED: KEPCO 4886 zero/OFF not confirmed: "
+                      "'OUTP OFF' VI_ERROR_TMO", h.logged)
+        self.assertEqual({entry[-1] for entry in h.log}, {h.worker})
+
+    def test_a_6221_off_that_fails_still_zeroes_the_kepco(self):
+        h = self.make_mode("Field", ("0", "1", "1"))
+
+        def refused():
+            h.log.append(("6221", "off", threading.get_ident()))
+            raise RuntimeError("6221 output OFF not confirmed: VI_ERROR_TMO")
+        h.panel._stop_ppms_transport_source = refused
+        self.start(h)
+        panel = h.panel
+        self.assertEqual(self.names(h, "kepco", "6221")[-2:], [("6221", "off"), ("kepco", "force_off")],
+                         "the KEPCO after the failed 6221 off (no read-back of a refused off)")
+        self.assertEqual(panel.ppms_field_scan_status_var.get(), "Completed; 6221 zero FAILED; KEPCO zeroed: check it")
+        self.assertEqual(h.showerror.call_args.args[0], "SHV outputs")
+        self.assertEqual(self.events(h)[-1]["outputs"],
+                         {"6221": "zero FAILED: 6221 output OFF not confirmed: VI_ERROR_TMO", "kepco": "zeroed"})
+        self.assertEqual({entry[-1] for entry in h.log}, {h.worker})
+
+    def test_a_failed_scan_zeroes_both_and_its_dialog_says_so(self):
+        h = self.make_mode("Field", ("0", "1", "1"))
+        h.gauss.read_field = Mock(side_effect=RuntimeError("LS475 read failed"))
+        self.start(h)
+        # The field failure's own clean-up (the 6221 off, the KEPCO's
+        # safe off), then the end's zeroing of both.
+        self.assertEqual(self.names(h, "kepco", "6221"),
+                         [("6221", "on"), ("kepco", "set_output"), ("6221", "off"), ("kepco", "off")] + ZEROED)
+        status = h.panel.ppms_field_scan_status_var.get()
+        self.assertEqual(status, "Failed: LS475 read failed", "a failure keeps its text")
+        title, message = h.showerror.call_args.args
+        self.assertEqual(title, "SHV scan")
+        self.assertTrue(message.endswith("At the end: 6221 zeroed; KEPCO zeroed"), message)
+        self.assertEqual(self.events(h)[-1]["outputs"], {"6221": "zeroed", "kepco": "zeroed"})
+
+    def test_the_finish_status_lines(self):
+        zeroed = {"6221": "zeroed", "kepco": "zeroed"}
+        self.assertEqual(app.rte_outputs_text(zeroed), "KEPCO and 6221 zeroed")
+        self.assertEqual(app.rte_outputs_text({"6221": "zeroed", "kepco": "not connected"}),
+                         "6221 zeroed; KEPCO not connected")
+        self.assertEqual(app.rte_outputs_text({"6221": "zeroed", "kepco": "zero FAILED: x"}),
+                         "6221 zeroed; KEPCO zero FAILED: check it")
+        self.assertEqual(app.rte_outputs_text({"6221": "zeroed", "kepco": "zero FAILED: x"}, check=False),
+                         "6221 zeroed; KEPCO zero FAILED")
+        self.assertEqual(app.rte_outputs_text({"6221": "zero FAILED: x", "kepco": "zeroed"}),
+                         "6221 zero FAILED; KEPCO zeroed: check it")
+        self.assertEqual(app.rte_outputs_text({"6221": "zero FAILED: x", "kepco": "zero FAILED: y"}),
+                         "zero FAILED: 6221 and KEPCO: check them")
+        self.assertEqual(app.rte_outputs_text({"6221": "zero FAILED: x", "kepco": "zero FAILED: y"}, check=False),
+                         "zero FAILED: 6221 and KEPCO")
+        self.assertEqual(app.rte_outputs_text(None), "KEPCO and 6221 not confirmed zeroed: check them")
 
 
 if __name__ == "__main__":

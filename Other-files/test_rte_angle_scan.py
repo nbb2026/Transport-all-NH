@@ -923,6 +923,17 @@ class AngleScanWorkerTests(StageBase):
         h.panel._rte_harmonic_scan_worker("Angle", plan, passes or [self.settings()], 5., 0., .001, 1.5)
         return h
 
+    def assert_zeroed_at_the_end(self, panel, failure_offs=0):
+        """Every ending, completed, stopped or failed, zeroes the 6221 (off,
+        OUTP? read back) and then the KEPCO (its Zero / OFF button's
+        force_output_off) on the worker (user, 2026-10-18), after the
+        failure's own clean-up (``failure_offs`` 6221 offs); the stage is
+        not moved for it."""
+        self.assertEqual(panel._stop_ppms_transport_source.call_count, failure_offs + 1)
+        self.assertEqual(panel._ppms_query_numbers.call_args.args, ("6221", "OUTP?", 1))
+        panel.rte_controllers["kepco"].force_output_off.assert_called_once_with()
+        self.assertEqual(panel.rte_scan_outputs, {"6221": "zeroed", "kepco": "zeroed"})
+
     def test_rows_columns_and_the_field_set_once(self):
         h = self.run_scan()
         panel, kepco = h.panel, h.panel.rte_controllers["kepco"]
@@ -946,7 +957,7 @@ class AngleScanWorkerTests(StageBase):
         keys = list(rows[0])
         self.assertEqual(keys[keys.index("measured_field_g") + 1:keys.index("stable_s")],
                          ["stage_target_deg", "stage_angle_deg", "stage_position_steps", "stage_steps_per_degree"])
-        panel._stop_ppms_transport_source.assert_not_called()
+        self.assert_zeroed_at_the_end(panel)
         self.assertEqual(panel.rte_stage_where, "stage at +0.000°")
         self.assertTrue(h.ui, "points and stage angles are posted to the Tk thread")
 
@@ -1011,7 +1022,7 @@ class AngleScanWorkerTests(StageBase):
         self.assertEqual(len(panel.ppms_field_scan_rows), 1)
         self.assertTrue(panel.rte_stage_where.startswith("stage stopped at +"), panel.rte_stage_where)
         self.assertTrue(0 < h.sim.px < 50000)
-        panel._stop_ppms_transport_source.assert_not_called()
+        self.assert_zeroed_at_the_end(panel)
         panel.rte_controllers["kepco"].safe_output_off.assert_not_called()
 
     def test_stop_stage_during_acquisition_ends_the_scan_before_the_next_move(self):
@@ -1024,10 +1035,10 @@ class AngleScanWorkerTests(StageBase):
         panel._acquire_ppms_first_point.side_effect = first_point
         with self.assertRaisesRegex(app.PPMSScanCancelled, r"stage at \+0\.000°"):
             self.run_scan(h=h)
-        self.assertEqual(h.sim.moves, [])
-        panel._stop_ppms_transport_source.assert_not_called()
+        self.assertEqual(h.sim.moves, [], "and the stage is not moved for the zeroing")
+        self.assert_zeroed_at_the_end(panel)
 
-    def test_a_stage_error_stops_the_6221_and_keeps_the_field(self):
+    def test_a_stage_error_stops_the_6221_and_zeroes_both_at_the_end(self):
         # The driver off or a latched limit error that appears once the scan
         # runs fails the scan through the stage-failure path: no question
         # mid-scan with the outputs on (every dialog fails this module's
@@ -1043,21 +1054,21 @@ class AngleScanWorkerTests(StageBase):
                 with self.assertRaises(kind):
                     self.run_scan(h=h, plan=app.rte_scan_plan("Angle", 5, 10, 5, 1, False))
                 panel = h.panel
-                panel._stop_ppms_transport_source.assert_called_once()
+                self.assert_zeroed_at_the_end(panel, failure_offs=1)
                 panel.rte_controllers["kepco"].safe_output_off.assert_not_called()
                 self.assertIn("STOP", h.sim.received, "a stage failure sends STOP")
                 self.assertFalse({"CLR", "EO=1"} & set(h.sim.received))
                 self.assertEqual(h.sim.moves, [])
                 self.assertEqual(panel.ppms_field_scan_rows, [])
 
-    def test_px_off_the_target_stops_the_6221_sends_stop_and_keeps_the_field(self):
+    def test_px_off_the_target_sends_stop_stops_the_6221_and_zeroes_both(self):
         h = self.make(EndsShort())
         with self.assertRaisesRegex(app.NewmarkMotionError, "not at the target"):
             self.run_scan(h=h)
         panel = h.panel
         self.assertEqual(len(panel.ppms_field_scan_rows), 1, "the point at 0 deg (no move) was saved")
         self.assertEqual(h.sim.received.count("STOP"), 1)
-        panel._stop_ppms_transport_source.assert_called_once()
+        self.assert_zeroed_at_the_end(panel, failure_offs=1)
         panel.rte_controllers["kepco"].safe_output_off.assert_not_called()
         self.assertTrue(panel.rte_stage_where.startswith("stage stopped at +4.999"), panel.rte_stage_where)
 
@@ -1066,7 +1077,7 @@ class AngleScanWorkerTests(StageBase):
         with self.assertRaisesRegex(app.NewmarkMotionError, "did not end within"):
             self.run_scan(h=h)
         self.assertEqual(h.sim.received.count("STOP"), 1, "the driver's STOP; the page does not repeat it")
-        h.panel._stop_ppms_transport_source.assert_called_once()
+        self.assert_zeroed_at_the_end(h.panel, failure_offs=1)
         h.panel.rte_controllers["kepco"].safe_output_off.assert_not_called()
 
     def test_a_stop_in_the_gap_after_x_ends_the_scan_where_the_stage_really_stopped(self):
@@ -1090,7 +1101,7 @@ class AngleScanWorkerTests(StageBase):
         self.assertIsNone(h.sim.motion)
         self.assertTrue(panel.rte_stage_where.startswith("stage stopped at +"), panel.rte_stage_where)
         panel.thread_log.assert_any_call(f"SHV Angle scan, after the stage failure: {panel.rte_stage_where}")
-        panel._stop_ppms_transport_source.assert_called_once()
+        self.assert_zeroed_at_the_end(panel, failure_offs=1)
         panel.rte_controllers["kepco"].safe_output_off.assert_not_called()
 
     def test_a_stop_that_is_not_confirmed_is_logged(self):
@@ -1101,7 +1112,7 @@ class AngleScanWorkerTests(StageBase):
         self.assertEqual(panel.rte_stage_where, "stage NOT confirmed stopped: CHECK THE STAGE")
         panel.thread_log.assert_any_call("SHV Angle scan, after the stage failure: stage NOT confirmed stopped: "
                                          "CHECK THE STAGE")
-        panel._stop_ppms_transport_source.assert_called_once()
+        self.assert_zeroed_at_the_end(panel, failure_offs=1)
         # The page's own STOP (a failure before X, so the driver's did not run).
         h = self.make(Runaway())
         h.stage.connect("auto")
@@ -1130,7 +1141,7 @@ class AngleScanWorkerTests(StageBase):
         keys = list(rows[0])
         self.assertEqual(keys[-2:], ["field_before_g", "field_drift_g"], "after every older column")
         panel.rte_controllers["kepco"].safe_output_off.assert_not_called()
-        panel._stop_ppms_transport_source.assert_not_called()
+        self.assert_zeroed_at_the_end(panel)
         self.assertEqual(h.sim.moves, ["X50000", "X100000", "X50000", "X0"])
         notes = [c.args[0] for c in panel.thread_log.call_args_list if "changed by" in c.args[0]]
         self.assertEqual(notes, ["SHV Angle point 1: the LS475 field changed by +32 G during the acquisition "
@@ -1141,7 +1152,7 @@ class AngleScanWorkerTests(StageBase):
         # The settle wait before the first point: after its 15 s the scan
         # goes on with a note, not a failure (user, 2026-10-18).
         panel = types.SimpleNamespace(thread_log=Mock(), post_ui=lambda f: None, rte_field_live=Var(""),
-                                      _rte_wait=lambda seconds: None)
+                                      _rte_wait=lambda seconds: None, _rte_log=Mock())
         readings = iter([0., 10., 20., 30., 40., 50., 60., 70., 80., 90.])
         panel._rte_read_field = lambda: next(readings)
         clock = iter(range(0, 100, 2))
@@ -1150,12 +1161,16 @@ class AngleScanWorkerTests(StageBase):
         self.assertEqual(field, 70.)
         panel.thread_log.assert_called_once_with("SHV: the LS475 field did not settle within 15 s (last readings "
                                                  "+50, +60, +70 G); the scan goes on")
+        # And the run log's event (user, 2026-10-18).
+        panel._rte_log.assert_called_once_with("field_not_settled", timeout_s=15, readings_g=[50., 60., 70.])
         # Three agreeing readings still end the wait at once.
         readings = iter([5., 5.5, 5.2, 99.])
         panel._rte_read_field = lambda: next(readings)
         panel.thread_log.reset_mock()
+        panel._rte_log.reset_mock()
         self.assertEqual(app.RTEPanel._rte_settle_field(panel), 5.2)
         panel.thread_log.assert_not_called()
+        panel._rte_log.assert_called_once_with("field_settled", field_g=5.2, readings_g=[5., 5.5, 5.2])
 
     def test_a_field_read_failure_while_settling_switches_the_kepco_off_before_any_move(self):
         h = self.make()
@@ -1164,7 +1179,8 @@ class AngleScanWorkerTests(StageBase):
             self.run_scan(h=h)
         self.assertEqual(h.sim.moves, [])
         h.panel.rte_controllers["kepco"].safe_output_off.assert_called_once()
-        h.panel._stop_ppms_transport_source.assert_called_once()
+        # The field failure's own clean-up (6221 off, KEPCO off), then the end's zeroing.
+        self.assert_zeroed_at_the_end(h.panel, failure_offs=1)
 
     def test_a_field_read_failure_switches_the_kepco_off(self):
         h = self.make()
@@ -1528,7 +1544,10 @@ class AngleStartTests(unittest.TestCase):
         run = self.start(yes=False)
         question = run.askyesno.call_args.args[1]
         for text in ("from 0° to 10° (step 5°, round trip)", "5 angles x 1 harmonic pass(es) = 5 points",
-                     "set once to +1.5 A (voltage limit 5 V)", "held for the whole scan",
+                     "set once to +1.5 A (voltage limit 5 V)",
+                     # Held during the scan, zeroed at its end (user, 2026-10-18).
+                     "held during the scan. When the scan ends (completed, stopped or failed) the 6221 and then "
+                     "the KEPCO are zeroed; the stage stays where the scan left it.",
                      "SAMPLE HOLDER with its wires attached", "within ±360°",
                      # The wait before each reading, and the shortest the
                      # scan can take: 5 x (1 s + 1 s) + 1 s (user, 2026-10-14:
@@ -1591,20 +1610,26 @@ class AngleStartTests(unittest.TestCase):
         run.panel.ppms_executor.submit.assert_called_once()
 
     def test_completed_and_stopped_status_lines_say_where_the_stage_is(self):
-        for outcome, where, expected in (
-                (None, "stage at +10.000°", "Completed; outputs held; stage at +10.000°"),
-                (app.PPMSScanCancelled("stop"), "stage stopped at +2.500°",
-                 "Stopped; outputs held unless OFF was requested; stage stopped at +2.500°"),
-                (RuntimeError("Zurich reference unlocked"), "stage at +5.000°",
+        # Every ending zeroes the KEPCO and the 6221 (user, 2026-10-18): the
+        # status says so, the failure dialog too.
+        zeroed = {"6221": "zeroed", "kepco": "zeroed"}
+        kepco_failed = {"6221": "zeroed", "kepco": "zero FAILED: KEPCO 4886 zero/OFF not confirmed: 'OUTP OFF' timeout"}
+        for outcome, where, outputs, expected in (
+                (None, "stage at +10.000°", zeroed, "Completed; KEPCO and 6221 zeroed; stage at +10.000°"),
+                (app.PPMSScanCancelled("stop"), "stage stopped at +2.500°", zeroed,
+                 "Stopped; KEPCO and 6221 zeroed; stage stopped at +2.500°"),
+                (None, "stage at +10.000°", kepco_failed, "Completed; 6221 zeroed; KEPCO zero FAILED; stage at +10.000°"),
+                (RuntimeError("Zurich reference unlocked"), "stage at +5.000°", zeroed,
                  "Failed: Zurich reference unlocked"),
                 (app.NewmarkStageError("X50000: the USB transaction failed (it is not repeated)"),
-                 "stage NOT confirmed stopped: CHECK THE STAGE",
+                 "stage NOT confirmed stopped: CHECK THE STAGE", kepco_failed,
                  "Failed: X50000: the USB transaction failed (it is not repeated)")):
             with self.subTest(expected=expected):
                 future = Future()
                 run = self.start(executor=rte_tests.StartExecutor(future))
                 self.assertEqual(run.panel.rte_stage_where, "stage not moved")
                 run.panel.rte_stage_where = where       # as the worker leaves it
+                run.panel.rte_scan_outputs = outputs    # the worker's zeroing
                 with patch.object(app.messagebox, "showerror") as showerror:
                     if outcome is None:
                         future.set_result(None)
@@ -1613,13 +1638,23 @@ class AngleStartTests(unittest.TestCase):
                 self.assertEqual(run.panel.ppms_field_scan_status_var.get(), expected)
                 self.assertFalse(run.panel.ppms_field_scan_running)
                 failed = outcome is not None and not isinstance(outcome, app.PPMSScanCancelled)
-                self.assertEqual(showerror.call_count, int(failed))
+                at_the_end = f"At the end: 6221 {outputs['6221']}; KEPCO {outputs['kepco']}"
                 if failed:
                     # The status line keeps only the failure; where the stage is
-                    # goes to the dialog and the log (user, 2026-10-13).
+                    # and the zeroing go to the dialog and the log (user,
+                    # 2026-10-13 and 2026-10-18).
+                    showerror.assert_called_once()
                     self.assertEqual(showerror.call_args.args[1],
-                                     f"{outcome}\n\n{where[:1].upper()}{where[1:]}")
+                                     f"{outcome}\n\n{where[:1].upper()}{where[1:]}\n\n{at_the_end}")
                     run.panel.thread_log.assert_any_call(f"SHV scan {expected}; {where}")
+                elif outputs is kepco_failed:
+                    # A zero that failed: its own dialog, "CHECK IT".
+                    showerror.assert_called_once()
+                    self.assertEqual(showerror.call_args.args[0], "SHV outputs")
+                    self.assertIn("CHECK IT", showerror.call_args.args[1])
+                    self.assertIn(at_the_end, showerror.call_args.args[1])
+                else:
+                    showerror.assert_not_called()
 
 
 class AnglePageTests(unittest.TestCase):

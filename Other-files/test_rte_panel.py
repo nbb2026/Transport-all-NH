@@ -130,42 +130,85 @@ class RTE(unittest.TestCase):
             self.assertEqual(panel._acquire_ppms_first_point.call_count, count)
             # Never between passes; once, at the end (the next test).
             panel._stop_ppms_transport_source.assert_called_once()
+            panel.rte_controllers['kepco'].force_output_off.assert_called_once_with()
 
-    def test_a_completed_current_scan_ends_with_the_6221_off(self):
-        panel = self.harmonic_panel(('1+2+3', '2', '3'))
+    def ordered(self, panel):
+        """The scan's acquisitions and its end's zeroing, in one call list."""
         order = Mock()
         order.attach_mock(panel._average_ppms_transport_sample, 'acquire')
         order.attach_mock(panel._acquire_ppms_first_point, 'acquire_first')
         order.attach_mock(panel._stop_ppms_transport_source, 'off')
         order.attach_mock(panel._ppms_query_numbers, 'query')
+        order.attach_mock(panel.rte_controllers['kepco'].force_output_off, 'kepco_zero')
+        return order
+
+    def test_a_completed_current_scan_ends_with_the_6221_off(self):
+        panel = self.harmonic_panel(('1+2+3', '2', '3'))
+        order = self.ordered(panel)
         panel._rte_set_harmonic = Mock()
         panel._rte_harmonic_scan_worker('Current', ((1, 1, .1), (1, 2, .2)),
                                       panel._rte_harmonic_passes(self.settings()), 5., 0., .001)
         names = [c[0] for c in order.mock_calls]
-        self.assertEqual(names[-2:], ['off', 'query'], "off after the last point, then read back")
+        # Every ending zeroes the 6221 (off, read back) and then the KEPCO
+        # (its Zero / OFF) since 2026-10-18 (user).
+        self.assertEqual(names[-3:], ['off', 'query', 'kepco_zero'], "off after the last point, read back, KEPCO")
         self.assertEqual(names.count('off'), 1, "never between harmonic passes")
-        self.assertEqual(order.mock_calls[-1].args, ('6221', 'OUTP?', 1))
+        self.assertEqual(order.mock_calls[-2].args, ('6221', 'OUTP?', 1))
         panel.rte_controllers['kepco'].safe_output_off.assert_not_called()
+        self.assertEqual(panel.rte_scan_outputs, {'6221': 'zeroed', 'kepco': 'zeroed'})
 
-    def test_a_6221_that_does_not_read_back_off_is_reported(self):
+    def test_a_6221_that_does_not_read_back_off_is_reported_and_the_kepco_still_zeroed(self):
         panel = self.harmonic_panel(('1', '2', '3'))
         panel._ppms_query_numbers = Mock(return_value=(1.,))
-        with self.assertRaisesRegex(RuntimeError, 'did not read back OFF'):
-            panel._rte_harmonic_scan_worker('Current', ((1, 1, .1),),
-                                          panel._rte_harmonic_passes(self.settings()), 5., 0., .001)
-
-    def test_field_scans_and_stops_keep_their_outputs(self):
+        panel._rte_harmonic_scan_worker('Current', ((1, 1, .1),),
+                                      panel._rte_harmonic_passes(self.settings()), 5., 0., .001)
+        self.assertEqual(panel.rte_scan_outputs['6221'], 'zero FAILED: the 6221 output did not read back OFF (OUTP? 1)')
+        self.assertEqual(panel.rte_scan_outputs['kepco'], 'zeroed')
+        panel.rte_controllers['kepco'].force_output_off.assert_called_once_with()
+        # An off command that raises: the KEPCO is still zeroed after it.
         panel = self.harmonic_panel(('1', '2', '3'))
+        panel._stop_ppms_transport_source.side_effect = RuntimeError('6221 timeout')
+        panel._rte_harmonic_scan_worker('Current', ((1, 1, .1),),
+                                      panel._rte_harmonic_passes(self.settings()), 5., 0., .001)
+        self.assertEqual(panel.rte_scan_outputs, {'6221': 'zero FAILED: 6221 timeout', 'kepco': 'zeroed'})
+        panel.rte_controllers['kepco'].force_output_off.assert_called_once_with()
+
+    def test_a_kepco_zero_that_fails_is_reported(self):
+        panel = self.harmonic_panel(('1', '2', '3'))
+        panel.rte_controllers['kepco'].force_output_off.side_effect = RuntimeError(
+            "KEPCO 4886 zero/OFF not confirmed: 'OUTP OFF' timeout")
+        panel.thread_log = Mock()
         panel._rte_harmonic_scan_worker('Field', ((1, 1, -1.), (1, 2, 1.)),
                                       panel._rte_harmonic_passes(self.settings()), 5., 0., .001)
-        panel._stop_ppms_transport_source.assert_not_called()
+        self.assertEqual(panel.rte_scan_outputs, {
+            '6221': 'zeroed', 'kepco': "zero FAILED: KEPCO 4886 zero/OFF not confirmed: 'OUTP OFF' timeout"})
+        panel.thread_log.assert_any_call("SHV scan end: 6221 zeroed; KEPCO zero FAILED: KEPCO 4886 zero/OFF not "
+                                         "confirmed: 'OUTP OFF' timeout")
+        # A Current scan without a KEPCO connected: nothing to zero there.
+        panel = self.harmonic_panel(('1', '2', '3'))
+        panel.rte_controllers['kepco'].connected = False
+        panel._rte_harmonic_scan_worker('Current', ((1, 1, .1),),
+                                      panel._rte_harmonic_passes(self.settings()), 5., 0., .001)
+        self.assertEqual(panel.rte_scan_outputs, {'6221': 'zeroed', 'kepco': 'not connected'})
+        panel.rte_controllers['kepco'].force_output_off.assert_not_called()
+
+    def test_field_scans_and_stops_zero_both_outputs(self):
+        # Until 2026-10-18 they held them; now every ending zeroes both (user).
+        panel = self.harmonic_panel(('1', '2', '3'))
+        order = self.ordered(panel)
+        panel._rte_harmonic_scan_worker('Field', ((1, 1, -1.), (1, 2, 1.)),
+                                      panel._rte_harmonic_passes(self.settings()), 5., 0., .001)
+        self.assertEqual([c[0] for c in order.mock_calls][-3:], ['off', 'query', 'kepco_zero'])
         panel.rte_controllers['kepco'].safe_output_off.assert_not_called()
         panel = self.harmonic_panel(('1', '2', '3'))
+        order = self.ordered(panel)
         panel._append_ppms_live_csv.side_effect = lambda row: panel.ppms_field_scan_stop_event.set()
         with self.assertRaises(app.PPMSScanCancelled):
             panel._rte_harmonic_scan_worker('Current', ((1, 1, .1), (1, 2, .2)),
                                           panel._rte_harmonic_passes(self.settings()), 5., 0., .001)
-        panel._stop_ppms_transport_source.assert_not_called()
+        self.assertEqual([c[0] for c in order.mock_calls][-3:], ['off', 'query', 'kepco_zero'])
+        self.assertEqual(panel._stop_ppms_transport_source.call_count, 1)
+        self.assertEqual(panel.rte_scan_outputs, {'6221': 'zeroed', 'kepco': 'zeroed'})
 
     def test_harmonic_failure_does_not_acquire_next_pass(self):
         panel = self.harmonic_panel()
@@ -174,8 +217,10 @@ class RTE(unittest.TestCase):
             panel._rte_harmonic_scan_worker('Current', ((1, 1, .1),),
                                           panel._rte_harmonic_passes(self.settings()), 5., 0., .001)
         self.assertEqual(len(panel.ppms_field_scan_rows), 1)
-        panel._stop_ppms_transport_source.assert_called_once()
+        # The failure's own 6221 off, then the end's zeroing (user, 2026-10-18).
+        self.assertEqual(panel._stop_ppms_transport_source.call_count, 2)
         panel.rte_controllers['kepco'].safe_output_off.assert_not_called()
+        panel.rte_controllers['kepco'].force_output_off.assert_called_once_with()
 
     def test_harmonic_readback_and_cancellation(self):
         panel = self.harmonic_panel()
