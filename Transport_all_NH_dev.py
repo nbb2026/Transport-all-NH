@@ -2048,7 +2048,11 @@ STFMR_FIELD_SETTLE_REL_TOLERANCE = 0.002
 STFMR_FIELD_SETTLE_TARGET_ABS_TOLERANCE_G = 5.0
 STFMR_FIELD_SETTLE_TARGET_REL_TOLERANCE = 0.02
 STFMR_FIELD_SETTLE_TIMEOUT_S = 15.0
-STFMR_LOCKIN_DEFAULT_FREQUENCY_GHZ = 4.0
+# STFMR defaults from the user's screenshot (2026-10-17): f 3 to 9 GHz in
+# 1 GHz steps, P 12 dBm alone (P step 3 dB), current -6 to 6 A in 0.02 A,
+# Mod. 317.3 Hz.  STFMR_LOCKIN_DEFAULT_FREQUENCY_GHZ is f start.
+STFMR_LOCKIN_DEFAULT_FREQUENCY_GHZ = 3.0
+STFMR_LOCKIN_DEFAULT_FREQUENCY_STOP_GHZ = 9.0
 # "P start dBm", "P stop dBm" and "P step dB" replace the single "Power
 # dBm" box, and the default is 12 dBm (user, 2026-10-14: "also add power
 # start, stop, step in ST-FMR module" and "the default power change to 12dBm
@@ -2058,9 +2062,11 @@ STFMR_LOCKIN_DEFAULT_FREQUENCY_GHZ = 4.0
 # The user then set the defaults from a screenshot (2026-10-14): P start
 # 6 dBm, P stop 18 dBm, P step 4 dB, so a default sweep runs at 6, 10, 14
 # and 18 dBm.  STFMR_LOCKIN_DEFAULT_POWER_DBM is P start (the first power).
-STFMR_LOCKIN_DEFAULT_POWER_DBM = 6.0
-STFMR_LOCKIN_DEFAULT_POWER_STOP_DBM = 18.0
-STFMR_LOCKIN_DEFAULT_POWER_STEP_DB = 4.0
+# Since 2026-10-17 (user's screenshot): P start = P stop = 12 dBm, P step
+# 3 dB, so a default sweep runs at 12 dBm alone.
+STFMR_LOCKIN_DEFAULT_POWER_DBM = 12.0
+STFMR_LOCKIN_DEFAULT_POWER_STOP_DBM = 12.0
+STFMR_LOCKIN_DEFAULT_POWER_STEP_DB = 3.0
 # The SMB100A software limit, which configure(), set_power() and the power
 # list all enforce (it was a bare 25 in each place).
 STFMR_SMB100A_MAX_POWER_DBM = 25.0
@@ -2084,10 +2090,11 @@ STFMR_SMB100A_POWER_RESOLUTION_DB = 0.01
 # counts the list before rounding to 0.01 dB, so such a slip is refused, not
 # quietly merged into fewer powers (review, 2026-10-14).
 STFMR_LOCKIN_MAX_POWERS = 1000
-# 117.3 Hz by default (user, 2026-10-14; it was 317.3 Hz).
-STFMR_LOCKIN_DEFAULT_LFO_HZ = 117.3
+# 317.3 Hz by default again (user's screenshot, 2026-10-17; 117.3 Hz from
+# 2026-10-14, 317.3 Hz before).
+STFMR_LOCKIN_DEFAULT_LFO_HZ = 317.3
 # Mod. start / Mod. end replace the single Mod. Hz box: equal, they give that
-# one modulation frequency (117.3 Hz by default); different, every
+# one modulation frequency (317.3 Hz by default); different, every
 # whole-number prime between them, with no step, and the whole f x A sweep
 # runs at each in turn.  At most as many modulation frequencies as the
 # microwave sweep allows frequencies (10000), so a slip of a digit cannot
@@ -2097,10 +2104,11 @@ STFMR_LOCKIN_MAX_MODULATION_FREQUENCIES = 10_000
 # there has no exact list; it also keeps the prime search well under a
 # second (user, 2026-10-13).
 STFMR_LOCKIN_MAX_PRIME_MODULATION_HZ = float(2 ** 53)
-# The magnet current sweep's defaults: -2 A to 2 A in 0.02 A steps, 201
-# currents (user's screenshot, 2026-10-14; it was -3 to 3 A in 0.01 A).
-STFMR_LOCKIN_DEFAULT_START_A = -2.0
-STFMR_LOCKIN_DEFAULT_STOP_A = 2.0
+# The magnet current sweep's defaults: -6 A to 6 A in 0.02 A steps, 601
+# currents (user's screenshot, 2026-10-17; -2 to 2 A from 2026-10-14, -3 to
+# 3 A in 0.01 A before).
+STFMR_LOCKIN_DEFAULT_START_A = -6.0
+STFMR_LOCKIN_DEFAULT_STOP_A = 6.0
 STFMR_LOCKIN_DEFAULT_STEP_A = 0.02
 # "Settle s" and "Acquire s" replace the "Wait/pt s" box (user, 2026-10-14:
 # "add a acquire time in the ST-FMR scan mode, default is 2s. also add a
@@ -14750,7 +14758,7 @@ class CombinedControlApp:
             value=f"{STFMR_LOCKIN_DEFAULT_FREQUENCY_GHZ:g}"
         )
         self.stfmr_lockin_frequency_stop_var = tk.StringVar(
-            value=f"{STFMR_LOCKIN_DEFAULT_FREQUENCY_GHZ:g}"
+            value=f"{STFMR_LOCKIN_DEFAULT_FREQUENCY_STOP_GHZ:g}"
         )
         self.stfmr_lockin_frequency_step_var = tk.StringVar(value="1")
         # Compatibility alias for older focused tests and helper code.

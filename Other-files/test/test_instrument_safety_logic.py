@@ -619,12 +619,14 @@ class InstrumentSafetyTests(unittest.TestCase):
             "830": "GPIB0::9::INSTR",
             "mfli": "dev4435",
         })
-        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_FREQUENCY_GHZ, 4.0)
-        # 12 dBm by default (user, 2026-10-14; it was 6 dBm).
-        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_DBM, 6.0)       # user, 2026-10-14
-        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_STOP_DBM, 18.0)
-        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_STEP_DB, 4.0)
-        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_LFO_HZ, 117.3)  # user, 2026-10-14
+        # The user's screenshot (2026-10-17): f 3 to 9 GHz, 12 dBm alone
+        # (P step 3 dB), Mod. 317.3 Hz.
+        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_FREQUENCY_GHZ, 3.0)
+        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_FREQUENCY_STOP_GHZ, 9.0)
+        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_DBM, 12.0)
+        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_STOP_DBM, 12.0)
+        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_STEP_DB, 3.0)
+        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_LFO_HZ, 317.3)
         # Every lock-in time constant starts at 1 s (user, 2026-10-14; was 0.1 s).
         self.assertEqual(app.STFMR_LOCKIN_MFLI_TIME_CONSTANT_S, 1.0)
         self.assertEqual(

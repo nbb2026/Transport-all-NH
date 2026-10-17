@@ -86,15 +86,16 @@ class FakeSmb100a:
 
 
 class PowerListTests(NoWindows):
-    def test_the_default_is_6_to_18_dbm_in_4_db_steps(self):
-        # The user's screenshot (2026-10-14); 12 dBm alone before that.
-        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_DBM, 6.0)
-        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_STOP_DBM, 18.0)
-        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_STEP_DB, 4.0)
+    def test_the_default_is_12_dbm_alone(self):
+        # The user's screenshot (2026-10-17): P 12 to 12 dBm, P step 3 dB;
+        # current -6 to 6 A in 0.02 A (6 to 18 dBm and -2 to 2 A before).
+        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_DBM, 12.0)
+        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_STOP_DBM, 12.0)
+        self.assertEqual(app.STFMR_LOCKIN_DEFAULT_POWER_STEP_DB, 3.0)
         self.assertEqual(levels(app.STFMR_LOCKIN_DEFAULT_POWER_DBM, app.STFMR_LOCKIN_DEFAULT_POWER_STOP_DBM,
-                                app.STFMR_LOCKIN_DEFAULT_POWER_STEP_DB), (6.0, 10.0, 14.0, 18.0))
+                                app.STFMR_LOCKIN_DEFAULT_POWER_STEP_DB), (12.0,))
         self.assertEqual((app.STFMR_LOCKIN_DEFAULT_START_A, app.STFMR_LOCKIN_DEFAULT_STOP_A,
-                          app.STFMR_LOCKIN_DEFAULT_STEP_A), (-2.0, 2.0, 0.02))
+                          app.STFMR_LOCKIN_DEFAULT_STEP_A), (-6.0, 6.0, 0.02))
         with open(app.__file__, encoding="utf-8") as source:
             text = source.read()
         for name, constant in (("power_start", "STFMR_LOCKIN_DEFAULT_POWER_DBM"),

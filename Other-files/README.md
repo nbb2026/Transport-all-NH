@@ -1,5 +1,22 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## STFMR: defaults from the user's screenshot (2026-10-17)
+
+- **New defaults:** f start 3 GHz, f stop 9 GHz, f step 1 GHz (7 carriers;
+  `STFMR_LOCKIN_DEFAULT_FREQUENCY_GHZ` is f start, the new
+  `STFMR_LOCKIN_DEFAULT_FREQUENCY_STOP_GHZ` f stop); P start = P stop = 12 dBm,
+  P step 3 dB (12 dBm alone); Start A -6, Stop A 6, Step A 0.02 (601
+  currents); Mod. start = Mod. end = 317.3 Hz (117.3 Hz from 2026-10-14).
+  Loop 1, Comp. V 10, Settle s 1, Acquire s 2, Meter MFLI, SR830 REF IN Sine,
+  SR830 TC 1 s, MFLI reference Aux Input 1, MFLI TC 1 s and both autorange
+  ticks were already the defaults. These supersede the 2026-10-14 default
+  sections below.
+- **Time at the defaults:** about 600 x (1 s settle + 2 s average) = 30 min
+  per carrier, about 3.5 h for the seven carriers.
+- **Tests:** `test_stfmr_power_sweep.PowerListTests`,
+  `test_stfmr_mod_prime_range`, `test/test_instrument_safety_logic`, and the
+  CI GUI test `test_stfmr_field_output` (every box's starting value).
+
 ## PPMS: Acquire s defaults to 5 s for a Temperature scan (2026-10-16)
 
 - **The user's choice:** on the PPMS page, choosing the Temperature scan puts

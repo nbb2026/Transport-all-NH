@@ -488,11 +488,13 @@ class FieldOutputTests(unittest.TestCase):
         self.assertEqual((self.a.stfmr_lockin_settle_var.get(), self.a.stfmr_lockin_acquire_var.get()),
                          ("1", "2"))
         self.assertEqual((self.a.stfmr_lockin_mod_start_var.get(), self.a.stfmr_lockin_mod_end_var.get()),
-                         ("117.3", "117.3"))   # user, 2026-10-14
+                         ("317.3", "317.3"))   # user, 2026-10-17
         self.assertEqual((self.a.stfmr_lockin_power_start_var.get(), self.a.stfmr_lockin_power_stop_var.get(),
-                          self.a.stfmr_lockin_power_step_var.get()), ("6", "18", "4"))   # user, 2026-10-14
+                          self.a.stfmr_lockin_power_step_var.get()), ("12", "12", "3"))   # user, 2026-10-17
         self.assertEqual((self.a.stfmr_lockin_start_var.get(), self.a.stfmr_lockin_stop_var.get(),
-                          self.a.stfmr_lockin_step_var.get()), ("-2", "2", "0.02"))
+                          self.a.stfmr_lockin_step_var.get()), ("-6", "6", "0.02"))
+        self.assertEqual((self.a.stfmr_lockin_frequency_start_var.get(), self.a.stfmr_lockin_frequency_stop_var.get(),
+                          self.a.stfmr_lockin_frequency_step_var.get()), ("3", "9", "1"))
         self.assertIs(table.grid_slaves(row=1, column=1)[0], self.a.stfmr_lockin_power_start_entry)
         self.assertIs(table.grid_slaves(row=1, column=3)[0], self.a.stfmr_lockin_power_stop_entry)
         self.assertIs(table.grid_slaves(row=1, column=5)[0], self.a.stfmr_lockin_power_step_entry)
