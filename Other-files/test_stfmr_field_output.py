@@ -149,6 +149,97 @@ class FieldOutputTests(unittest.TestCase):
         self.assertEqual(rows, {"kepco": 0, "gauss": 1, "smb": 2, "830": 3, "mfli": 4})
         self.assertEqual({int(e.master.grid_info()["column"])
                           for e in self.a.stfmr_lockin_resource_widgets.values()}, {0})
+        # The Motor row, the sixth (user, 2026-10-17).
+        motor = self.a.stfmr_lockin_motor_widgets[0].master
+        self.assertEqual((int(motor.grid_info()["row"]), int(motor.grid_info()["column"])), (5, 0))
+        self.assertIs(motor.master, self.a.stfmr_lockin_resource_widgets["kepco"].master.master)
+
+    def test_the_motor_row_lines_up_with_the_other_rows(self):
+        """User, 2026-10-17: "add the connection button for Motor in RT-E and
+        ST-FMR modules": a row laid out as the five above, its label, its
+        18-character "auto" field, Connect, Disconnect, lamp and 13-character
+        status in the same columns, in the 1101 px and 2000 px windows."""
+        entry, connect, disconnect = self.a.stfmr_lockin_motor_widgets
+        kepco = self.a.stfmr_lockin_resource_widgets["kepco"]
+        try:
+            for width in (self.LAB_DEFAULT, LAB_WIDE):
+                with self.subTest(width=width):
+                    self.arranged(width, "STFMR", self.a.stfmr_lockin_resource_widgets)
+                    for mine, theirs in ((entry, kepco), (connect, self.a.stfmr_lockin_connect_buttons["kepco"]),
+                                         (disconnect, self.a.stfmr_lockin_disconnect_buttons["kepco"])):
+                        self.assertEqual((mine.winfo_rootx(), mine.winfo_width()),
+                                         (theirs.winfo_rootx(), theirs.winfo_width()))
+                    labels = {}
+                    for frame, key in ((entry.master, "motor"), (kepco.master, "kepco")):
+                        labels[key] = [w for w in frame.winfo_children() if w.winfo_class() == "TLabel"]
+                    self.assertEqual([str(w.cget("text")) for w in labels["motor"]][0], "Motor:")
+                    self.assertEqual([(w.winfo_rootx(), w.winfo_width()) for w in labels["motor"]],
+                                     [(w.winfo_rootx(), w.winfo_width()) for w in labels["kepco"]])
+                    self.assertTrue(entry.winfo_ismapped() and connect.winfo_ismapped())
+            self.assertEqual(self.a.stfmr_lockin_motor_resource_var.get(), "auto")
+            self.assertEqual(int(entry.cget("width")), 18)
+        finally:
+            self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
+
+    def test_the_stage_controls_share_the_read_ls475_line(self):
+        """User, 2026-10-17: Set motor 0° and Move stage on the STFMR page.
+        Stage °, Move stage, Stop stage and Set motor 0° are kept together on
+        the Read LS475 line of the sweep actions, one line, every text
+        whole, inside the page, in the 1101 px and 2000 px windows; the
+        parameter table and its actions stay side by side at 2000 px."""
+        a = self.a
+        group = [a.stfmr_lockin_stage_target_entry, a.stfmr_lockin_stage_move_button,
+                 a.stfmr_lockin_stage_stop_button, a.stfmr_lockin_motor_zero_button]
+        read = a.stfmr_lockin_read_gauss_button
+        font = tkinter.font.nametofont("TkDefaultFont")
+        table = a.stfmr_lockin_meter_combo.master
+        try:
+            for width in (self.LAB_DEFAULT, LAB_WIDE):
+                with self.subTest(width=width):
+                    self.arranged(width, "STFMR", a.stfmr_lockin_resource_widgets)
+                    tab = a.stfmr_lockin_tab
+                    right = tab.winfo_rootx() + tab.winfo_width()
+                    for widget in group:
+                        self.assertTrue(widget.winfo_ismapped())
+                        self.assertIs(widget.master.master, read.master, "on the Read LS475 line")
+                        self.assertLessEqual(abs(widget.winfo_rooty() + widget.winfo_height() / 2
+                                                 - read.winfo_rooty() - read.winfo_height() / 2), 3, "one line")
+                        self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), right + 1)
+                        if widget.winfo_class() == "TButton":
+                            self.assertLessEqual(font.measure(str(widget.cget("text"))), widget.winfo_width() - 10)
+                    xs = [w.winfo_rootx() for w in group]
+                    self.assertEqual(xs, sorted(xs), "Stage °, Move stage, Stop stage, Set motor 0°")
+                    actions = read.master.master
+                    print(f"STFMR {self.root.winfo_width()} px: table {table.winfo_width()} px "
+                          f"(asks {table.winfo_reqwidth()}), actions {actions.winfo_width()} px "
+                          f"(asks {actions.winfo_reqwidth()}), Read LS475 line {read.master.winfo_reqwidth()} px, "
+                          f"side by side {getattr(table.master, '_pair_side_by_side', None)}")
+            self.assertTrue(getattr(table.master, "_pair_side_by_side", False), "side by side at 2000 px")
+        finally:
+            self.arranged(LAB_WIDE, "STFMR", a.stfmr_lockin_resource_widgets)
+
+    def test_the_stage_controls_follow_the_motor_and_the_sweep(self):
+        a = self.a
+        motor = a.stfmr_lockin_motor
+        hand = (a.stfmr_lockin_stage_target_entry, a.stfmr_lockin_stage_move_button, a.stfmr_lockin_motor_zero_button)
+        states = lambda: ([str(w.cget("state")) for w in hand], str(a.stfmr_lockin_stage_stop_button.cget("state")))
+        try:
+            a._update_stfmr_lockin_ui()
+            self.assertEqual(states(), (["disabled"] * 3, "disabled"), "not connected")
+            motor.handle = object()             # connected, as far as the page can tell
+            a._update_stfmr_lockin_ui()
+            self.assertEqual(states(), (["normal"] * 3, "normal"))
+            a.stfmr_lockin_running = True
+            a._update_stfmr_lockin_ui()
+            self.assertEqual(states(), (["disabled"] * 3, "normal"), "Stop stage stays usable during a sweep")
+            a.stfmr_lockin_running = False
+            a.stfmr_lockin_motor_busy = True
+            a._update_stfmr_lockin_ui()
+            self.assertEqual(states(), (["disabled"] * 3, "normal"), "and during a hand move")
+        finally:
+            motor.handle = None
+            a.stfmr_lockin_running = a.stfmr_lockin_motor_busy = False
+            a._update_stfmr_lockin_ui()
 
     def arranged(self, width, tab_name, widgets):
         """Show a page at a window width; the width is checked, not assumed."""
@@ -437,21 +528,23 @@ class FieldOutputTests(unittest.TestCase):
         TC, SR830 autorange (since 2026-10-13 the TC sat under Loop).  The
         dropdown fills its column, as wide as f step, P step, Step A and
         Settle s above it, and "300 ms" is not cut.  The SR830 row is row 4
-        since the power row (user, 2026-10-14)."""
+        since the power row (user, 2026-10-14), and row 5 since the angle row
+        (user, 2026-10-17), which puts Angle step ° above it too."""
         font = tkinter.font.nametofont("TkTextFont")
         choice = self.a.stfmr_lockin_sr830_time_constant_combo
         table = self.a.stfmr_lockin_meter_combo.master
-        above = [table.grid_slaves(row=row, column=5)[0] for row in (0, 1, 2, 3)]
+        above = [table.grid_slaves(row=row, column=5)[0] for row in (0, 1, 2, 3, 4)]
         try:
             for width in (self.LAB_DEFAULT, LAB_WIDE):
                 with self.subTest(width=width):
                     self.arranged(width, "STFMR", self.a.stfmr_lockin_resource_widgets)
                     self.assertTrue(choice.winfo_ismapped())
-                    self.assertEqual((int(choice.grid_info()["row"]), int(choice.grid_info()["column"])), (4, 5))
-                    (label,) = table.grid_slaves(row=4, column=4)
+                    self.assertEqual((int(choice.grid_info()["row"]), int(choice.grid_info()["column"])), (5, 5))
+                    (label,) = table.grid_slaves(row=5, column=4)
                     self.assertEqual(str(label.cget("text")), "SR830 TC:")
                     self.assertIs(above[1], self.a.stfmr_lockin_power_step_entry)
                     self.assertIs(above[3], self.a.stfmr_lockin_settle_entry)
+                    self.assertIs(above[4], self.a.stfmr_lockin_angle_step_entry)
                     for field in above:
                         self.assertEqual((choice.winfo_x(), choice.winfo_width()),
                                          (field.winfo_x(), field.winfo_width()))
@@ -481,10 +574,12 @@ class FieldOutputTests(unittest.TestCase):
             1: ("P start dBm:", "P stop dBm:", "P step dB:"),     # dB: review, 2026-10-14
             2: ("Start A:", "Stop A:", "Step A:", "Loop:", "Comp. V:"),
             3: ("Mod. start Hz:", "Mod. end Hz:", "Settle s:", "Acquire s:"),
-            4: ("Meter:", "SR830 REF IN:", "SR830 TC:"),
-            5: ("MFLI reference:", "MFLI TC s:"),
+            # The stage angles, below the Mod. row (user, 2026-10-17).
+            4: ("Angle start °:", "Angle stop °:", "Angle step °:"),
+            5: ("Meter:", "SR830 REF IN:", "SR830 TC:"),
+            6: ("MFLI reference:", "MFLI TC s:"),
         }
-        ticks = {4: (6, "SR830 autorange"), 5: (4, "MFLI autorange")}
+        ticks = {5: (6, "SR830 autorange"), 6: (4, "MFLI autorange")}
         self.assertEqual((self.a.stfmr_lockin_settle_var.get(), self.a.stfmr_lockin_acquire_var.get()),
                          ("1", "2"))
         self.assertEqual((self.a.stfmr_lockin_mod_start_var.get(), self.a.stfmr_lockin_mod_end_var.get()),
@@ -495,19 +590,31 @@ class FieldOutputTests(unittest.TestCase):
                           self.a.stfmr_lockin_step_var.get()), ("-6", "6", "0.02"))
         self.assertEqual((self.a.stfmr_lockin_frequency_start_var.get(), self.a.stfmr_lockin_frequency_stop_var.get(),
                           self.a.stfmr_lockin_frequency_step_var.get()), ("3", "9", "1"))
+        self.assertEqual((self.a.stfmr_lockin_angle_start_var.get(), self.a.stfmr_lockin_angle_stop_var.get(),
+                          self.a.stfmr_lockin_angle_step_var.get()), ("0", "0", "10"))   # user, 2026-10-17
+        for column, entry in ((1, self.a.stfmr_lockin_angle_start_entry), (3, self.a.stfmr_lockin_angle_stop_entry),
+                              (5, self.a.stfmr_lockin_angle_step_entry)):
+            self.assertIs(table.grid_slaves(row=4, column=column)[0], entry)
         self.assertIs(table.grid_slaves(row=1, column=1)[0], self.a.stfmr_lockin_power_start_entry)
         self.assertIs(table.grid_slaves(row=1, column=3)[0], self.a.stfmr_lockin_power_stop_entry)
         self.assertIs(table.grid_slaves(row=1, column=5)[0], self.a.stfmr_lockin_power_step_entry)
         self.assertIs(table.grid_slaves(row=3, column=5)[0], self.a.stfmr_lockin_settle_entry)
         self.assertIs(table.grid_slaves(row=3, column=7)[0], self.a.stfmr_lockin_acquire_entry)
         # Kept so a sweep can lock it (review, 2026-10-14).
-        self.assertIs(table.grid_slaves(row=5, column=3)[0], self.a.stfmr_lockin_mfli_timeconstant_entry)
-        self.assertEqual(table.grid_slaves(row=6), [], "six rows")
+        self.assertIs(table.grid_slaves(row=6, column=3)[0], self.a.stfmr_lockin_mfli_timeconstant_entry)
+        self.assertEqual(table.grid_slaves(row=7), [], "seven rows")
+        # And at the lab's 2000 px window, the plots' heights for the record.
+        self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
+        print(f"STFMR plots at {self.root.winfo_width()}x{self.root.winfo_height()} px: "
+              f"{sorted({c.winfo_height() for c in (self.a.stfmr_lockin_x_canvas, self.a.stfmr_lockin_y_canvas, self.a.stfmr_lockin_theta_canvas, self.a.stfmr_lockin_canvas)})} px tall")
         try:
             for width in (self.LAB_DEFAULT, LAB_WIDE):
                 self.arranged(width, "STFMR", self.a.stfmr_lockin_resource_widgets)
                 tab = self.a.stfmr_lockin_tab
                 right = tab.winfo_rootx() + tab.winfo_width()
+                print(f"STFMR table at {self.root.winfo_width()} px: {table.winfo_width()} px wide "
+                      f"(asks {table.winfo_reqwidth()}), its right edge {table.winfo_rootx() + table.winfo_width()}"
+                      f" px, the page's {right} px")
                 for row, labels in rows.items():
                     with self.subTest(width=width, row=row):
                         cells = []
@@ -608,6 +715,10 @@ class FieldOutputTests(unittest.TestCase):
                     self.root.update()
                 a._redraw_stfmr_lockin_live_plots()
                 a._redraw_stfmr_lockin_plot()
+                # The layout numbers, for the record (user, 2026-10-17: the
+                # Motor row and the angle row cost the plots height).
+                print(f"STFMR plots at {self.root.winfo_width()}x{self.root.winfo_height()} px: "
+                      f"{sorted({c.winfo_height() for c in canvases.values()})} px tall")
                 for name, canvas in canvases.items():
                     with self.subTest(height=height, plot=name):
                         self.assertTrue(canvas.winfo_ismapped())

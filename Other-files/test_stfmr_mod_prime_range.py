@@ -329,10 +329,12 @@ class ModulationSweepTests(SweepTests):
         with recorder.csv_path.open(encoding="utf-8-sig") as handle:
             header = handle.readline().strip().split(",")
         self.assertEqual(header, list(app.STFMRScanRecorder.FIELDNAMES))
-        self.assertEqual(len(header), 34)
+        # 35 since the stage's angle, last (user, 2026-10-17).
+        self.assertEqual(len(header), 35)
         self.assertEqual(header.index("modulation_frequency_hz"), 16)
         self.assertEqual(header.index("sr830_time_constant_s"), 29)
-        self.assertEqual(header[-4:], ["settle_s", "effective_settle_s", "acquire_s", "sample_count"])
+        self.assertEqual(header[-5:], ["settle_s", "effective_settle_s", "acquire_s", "sample_count",
+                                       "stage_angle_deg"])
 
     def test_the_confirmation_lists_them_and_the_estimate_counts_them(self):
         h, recorder = self.sweep()
@@ -563,16 +565,20 @@ class TableTests(NoWindows):
             self.assertIs(field.options["textvariable"], variable)
         self.assertIs(page.cell(table, 3, 5), a.stfmr_lockin_settle_entry)
         self.assertIs(page.cell(table, 3, 7), a.stfmr_lockin_acquire_entry)
-        self.assertIs(page.cell(table, 5, 3), a.stfmr_lockin_mfli_timeconstant_entry)
+        # The angle row is row 4 since 2026-10-17 (user), right below the
+        # Mod. row: the SR830 row is row 5 and the MFLI row 6.
+        self.assertIs(page.cell(table, 6, 3), a.stfmr_lockin_mfli_timeconstant_entry)
         self.assertEqual(page.cell(table, 2, 7).kind, "Spinbox", "Loop")
-        self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 4)], [0, 1, 2, 3, 4, 5, 6])
-        self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 5)], [0, 1, 2, 3, 4])
-        everything = [str(w.options.get("text", "")) for row in range(7) for w in page.in_row(table, row)]
-        self.assertEqual(page.in_row(table, 6), [], "six rows")
+        self.assertEqual([w.options.get("text", "") for w in page.in_row(table, 4)[0::2]],
+                         ["Angle start °:", "Angle stop °:", "Angle step °:"])
+        self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 5)], [0, 1, 2, 3, 4, 5, 6])
+        self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 6)], [0, 1, 2, 3, 4])
+        everything = [str(w.options.get("text", "")) for row in range(8) for w in page.in_row(table, row)]
+        self.assertEqual(page.in_row(table, 7), [], "seven rows")
         self.assertNotIn("Mod. Hz:", everything)
         self.assertNotIn("Wait/pt s:", everything, "Wait/pt is gone (user, 2026-10-14)")
         self.assertFalse([t for t in everything if "step" in t.lower() and "Mod" in t], "no Mod. step box")
-        for row in range(6):
+        for row in range(7):
             self.assertLessEqual(max(w.grid_options["column"] for w in page.in_row(table, row)), 9,
                                  "no sixth pair")
 

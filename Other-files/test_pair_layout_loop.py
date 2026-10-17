@@ -129,6 +129,8 @@ class RTEStageBlockTests(Built, unittest.TestCase):
     def test_the_block_costs_no_height_and_fits_at_1101_px(self):
         self.show(1101)
         pair, rows, block = rte_stage_pair(self.a)
+        # Two rows since its connection went to the rack (user, 2026-10-17).
+        self.assertEqual(block.grid_size()[1], 2)
         self.assertLessEqual(block.winfo_reqheight(), rows.winfo_reqheight(),
                              "the block is no taller than the three scan rows")
         scan = pair.master
@@ -193,10 +195,49 @@ class RTEStageBlockTests(Built, unittest.TestCase):
         self.root.update()
         canvases = self.a.rte_panel.ppms_harmonic_canvases
         self.assertEqual(len(canvases), 9, "the Zurich at 1+2+3: three rows of X, Y, theta")
+        # The layout numbers, for the record: the rack's Motor row costs
+        # about one row of plot height here (user, 2026-10-17).
+        print(f"RT-E plots at {self.root.winfo_width()}x{self.root.winfo_height()} px: "
+              f"{sorted({c.winfo_height() for c in canvases.values()})} px tall")
         for key, canvas in canvases.items():
             with self.subTest(plot=key):
                 # _draw_nonlocal_series's compact minimum.
                 self.assertGreaterEqual(canvas.winfo_height(), 55, "Increase the window height")
+        for width in (LAB_WIDE,):
+            # The lab's widened window at the lab screen's height.
+            self.root.geometry(f"{width}x{self.height}+0+0")
+            self.root.update()
+            print(f"RT-E plots at {self.root.winfo_width()}x{self.root.winfo_height()} px: "
+                  f"{sorted({c.winfo_height() for c in canvases.values()})} px tall")
+            for key, canvas in canvases.items():
+                with self.subTest(width=width, plot=key):
+                    self.assertGreaterEqual(canvas.winfo_height(), 55, "Increase the window height")
+
+    def test_the_motor_row_lines_up_with_the_rack_rows(self):
+        """User, 2026-10-17: the stage's connection is the rack's fifth row,
+        "Motor", laid out as the four above it, in the 1101 px and 2000 px
+        windows; its lamp follows the stage."""
+        panel = self.a.rte_panel
+        entry, connect, disconnect = panel.rte_connection_widgets["newmark"]
+        kepco = panel.rte_connection_widgets["kepco"]
+        for width in (1101, LAB_WIDE):
+            with self.subTest(width=width):
+                self.show(width)
+                self.assertIs(entry.master, kepco[0].master, "in the rack")
+                self.assertEqual(int(entry.grid_info()["row"]), 4)
+                for mine, theirs in zip((entry, connect, disconnect), kepco):
+                    self.assertTrue(mine.winfo_ismapped())
+                    self.assertEqual((mine.winfo_rootx(), mine.winfo_width()),
+                                     (theirs.winfo_rootx(), theirs.winfo_width()))
+                status = next(w for w in entry.master.grid_slaves(row=4, column=5))
+                kepco_status = next(w for w in entry.master.grid_slaves(row=0, column=5))
+                self.assertEqual(str(status.cget("textvariable")), str(panel.rte_connections["newmark"]))
+                self.assertEqual((status.winfo_rootx(), status.winfo_width()),
+                                 (kepco_status.winfo_rootx(), kepco_status.winfo_width()))
+                (label,) = entry.master.grid_slaves(row=4, column=0)
+                self.assertEqual(str(label.cget("text")), "Motor")
+        self.assertEqual(panel.rte_resources["newmark"].get(), "auto")
+        self.assertEqual(panel.rte_connections["newmark"].get(), "Not connected")
 
 
 class GuardTests(Built, unittest.TestCase):

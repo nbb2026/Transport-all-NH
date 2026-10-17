@@ -467,23 +467,25 @@ class Sr830TimeConstantTests(NoWindows):
         and grid cells (the CI GUI tests check the drawn page).  Since
         2026-10-14 the table is in measurement order and the SR830 row reads
         Meter, SR830 REF IN, SR830 TC, SR830 autorange (it sat under Loop).
-        It is row 4 since the power row was added (user, 2026-10-14)."""
+        It was row 4 since the power row was added (user, 2026-10-14), and
+        is row 5 since the angle row went in below the Mod. row (user,
+        2026-10-17)."""
         page = build_stfmr_page()
         choice = page.app.stfmr_lockin_sr830_time_constant_combo
         table = choice.master
         self.assertIs(table, page.app.stfmr_lockin_meter_combo.master, "in the parameter table")
         self.assertEqual(choice.kind, "Combobox")
         self.assertEqual((choice.grid_options["row"], choice.grid_options["column"],
-                          choice.grid_options["sticky"]), (4, 5, "ew"))
+                          choice.grid_options["sticky"]), (5, 5, "ew"))
         self.assertEqual((choice.options["state"], choice.options["width"]), ("readonly", 6))
         self.assertEqual(choice.options["values"], tuple(app.STFMR_LOCKIN_SR830_TIME_CONSTANTS))
         self.assertIs(choice.options["textvariable"], page.app.stfmr_lockin_sr830_time_constant_var)
-        self.assertEqual(page.cell(table, 4, 4).options["text"], "SR830 TC:")
-        self.assertEqual(page.cell(table, 4, 2).options["text"], "SR830 REF IN:")
-        self.assertEqual(page.cell(table, 5, 2).options["text"], "MFLI TC s:", "the MFLI TC row")
-        self.assertIs(page.cell(table, 5, 3), page.app.stfmr_lockin_mfli_timeconstant_entry,
+        self.assertEqual(page.cell(table, 5, 4).options["text"], "SR830 TC:")
+        self.assertEqual(page.cell(table, 5, 2).options["text"], "SR830 REF IN:")
+        self.assertEqual(page.cell(table, 6, 2).options["text"], "MFLI TC s:", "the MFLI TC row")
+        self.assertIs(page.cell(table, 6, 3), page.app.stfmr_lockin_mfli_timeconstant_entry,
                       "kept, so a sweep can lock it (review, 2026-10-14)")
-        self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 4)],
+        self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 5)],
                          [0, 1, 2, 3, 4, 5, 6], "Meter, REF IN, TC, then the autorange tick")
         # Its column gives way, but not below the dropdown (70 px here; the
         # six-character floor is 50 px).  Column 7 now keeps the Loop

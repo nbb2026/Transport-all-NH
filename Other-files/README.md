@@ -1,5 +1,107 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## STFMR: stage angles, a Motor row, Move stage and Set motor 0°; RT-E: a Motor row (2026-10-17)
+
+- **The requests:** "add a Start Angle, Stop Angle, Step Angle below mod.
+  Hz in ST-FMR module. Also add the connection button for Motor in RT-E and
+  ST-FMR modules", then "also add Set 0° button for the motor in ST-FMR"
+  and "also add Move stage button for the motor in ST-FMR".
+- **One page at a time:** the Newmark NSC-A1's USB device opens on one
+  page only (`NewmarkStageOwnership`, one per program). A page claims it on
+  the Tk thread before its Connect job is queued and releases it once the
+  handle is closed (Disconnect, a failed Connect, the page closing). A
+  Connect on the other page is refused before anything is sent: "The motor
+  is connected on the RT-E page: disconnect it there first." Each page has
+  its own `NewmarkNSCA1Controller` on its own worker thread. The stage zero
+  (PX=0) is kept in the NSC-A1 across a USB reconnect, so a zero set on one
+  page holds on the other. The controller's log lines start with its
+  `owner_scope` ("RT-E …" or "STFMR …"; they said "RT-E" on both before).
+- **RT-E:** the stage's connection is the rack's fifth row again,
+  **Motor**, laid out as the four above it (label, 18-character "auto"
+  field, Connect, Disconnect, lamp, 13-character "Not connected" /
+  "Connected"). The user accepted that it costs the plots about one row of
+  height in the 1101 px window. Move stage, Stop stage, Set stage 0° and the
+  stage's live line stay in the scan box, now a block of two rows. An Angle
+  Start without the stage says where its row is, or that the STFMR page has
+  it.
+- **STFMR, the Motor row:** a sixth row of "STFMR instrument connections",
+  laid out as the five above. Its status shows "Not connected" /
+  "Connected" and, once known, the angle ("+12.345°"). Connect, Disconnect
+  and every stage call run on the page's worker (`stfmr_lockin_executor`),
+  the thread that connected. The row is locked while a sweep runs or starts,
+  while one of its jobs runs and while a stage question is open. Closing the
+  page disconnects the stage on that worker (STOP first if it turns).
+- **STFMR, the stage by hand:** "Stage °:", **Move stage**, **Stop stage**
+  and **Set motor 0°**, kept together on the Read LS475 line of the sweep
+  actions. They cost the plots no height there (in the 1101 px window the
+  line is under the table, with room to spare; at 2000 px the actions column
+  beside the table is shorter than the table), and the table and the Motor
+  row stay as they are. They work as RT-E's: the target within ±360° of the
+  stage zero (else refused), the page's safety tick, the move on the worker
+  with its progress and the angle read back in the Motor row's status; a
+  latched limit error or the driver off gets RT-E's CLR / EO=1 Yes/No
+  (shared texts, `newmark_fix_prompt`), asked from the Tk event loop with
+  the buttons locked, and no CLR or EO=1 is sent after a Stop stage or the
+  page closing behind the Yes; refused after an unconfirmed stop. **Stop
+  stage** never queues behind a move: during a move it sets the event the
+  move polls (STOP from the worker); with nothing moving it queues `stop()`;
+  during a sweep it ends the sweep stopped (the 4886 zeroed, the RF off). It
+  stays usable whenever the motor is connected here. **Set motor 0°** asks
+  RT-E's Yes/No (shared, `newmark_set_zero_question`), then sets PX=0 and
+  reads it back on the worker. Move stage, its target and Set motor 0° are
+  locked unless the motor is connected here and nothing else runs; a sweep
+  cannot start while a hand move, its question or a Motor row job is
+  pending.
+- **STFMR, the angles:** "Angle start °", "Angle stop °", "Angle step °"
+  (0, 0, 10) in a new table row right below the Mod. row (the SR830 and MFLI
+  rows are now rows 5 and 6). The list is RT-E's rule (`stfmr_angle_list`:
+  `ppms_scan_axis`, every angle within ±360° of the stage zero). With the
+  motor connected on this page the list is used, even 0 to 0 (one move to
+  0°). Without it, 0 to 0 runs the sweep exactly as before, with no motor
+  and the angle column blank; any other angle, or the motor on the RT-E
+  page, is refused at Start, as is a motor whose last stop was not
+  confirmed. The boxes are locked while a sweep runs or starts.
+- **The loop:** angle × modulation × power × carrier × current, the angle
+  outermost. With the motor, Start first runs the stage check (MST, EO, then
+  MST and PX) as a job on the worker, before the folder, the confirmation,
+  the files or any output; a latched limit error or the driver off gets the
+  same Yes/No as RT-E (no fix sent after a Stop / zero, a Stop stage or the
+  page closing behind the Yes; Start locked meanwhile). The confirmation
+  names the angles ("Angle: 0 → 90°, step 10°, 10 angles (the motor turns
+  the SAMPLE HOLDER with its wires; angle outermost)", or "Angle: motor not
+  used"), and its estimate adds the moves at 5°/s. The first move comes in
+  the first configure job, before the SMB100A is configured or anything is
+  switched on. At an angle change the 4886 is zeroed, the stage turns with
+  the RF, AM and LFO on, the modulation (with several; the SR830 reference
+  wait checks it left the last one) and the power (with several, read back)
+  are set back, the first carrier is set and the 4886 comes back on at Start
+  A. Mid-sweep a refusal or any stage error ends the sweep through the
+  output-off path, with no Yes/No; a Stop during a move sends STOP from the
+  worker and the sweep ends stopped ("Stopped; stage at +12.345°; 120 saved;
+  outputs OFF").
+- **Data:** `stage_angle_deg` is the CSV's last column (the angle read back
+  after the move; blank without the motor), in the live CSV and Save CSV.
+  The run log has the angle list and boxes, `motor_used`, the motor's
+  identity, steps/° and speed, a `stage_move` event per move and where the
+  stage ended. The row index, the progress and the time left count the
+  angles; with several angles the series names get an `_ang_…` part, the
+  legend and the pass label name the angle ("5 GHz/30°"), within the
+  52-character status label, and the finish status counts the angles.
+- **Tests:** `test_stfmr_motor_angle` (new: the angle list, the plan at
+  Start, the loop order, the angle-change sequence and its
+  previous_frequency_hz, a Stop during a move, a refusal mid-sweep, the
+  0-to-0 sweep without the motor unchanged, the stage check and the fix flow
+  with its guards, the device owner, the log prefix, the hand controls and
+  their locks, Stop stage never queued behind a move, Set motor 0°, the
+  close, every DLL call of a whole sweep on the worker);
+  `test_rte_angle_scan` (the rack row, the owner on RT-E, the refusal texts
+  that now name the STFMR page); the table and column tests in
+  `test_stfmr_mod_prime_range`, `test_stfmr_power_sweep`,
+  `test_stfmr_sr830_tc_fixed_current` and `test_rte_panel`; on CI only,
+  `test_stfmr_field_output` and `test_pair_layout_loop` (the rows line up,
+  the hand controls fit one line, the table fits, the plots' heights). **Not
+  yet tried on the hardware.**
+
 ## RT-E: the program needs no Newmark test script (2026-10-17)
 
 - **The request:** "can you make the transport_all_NH_dev code not

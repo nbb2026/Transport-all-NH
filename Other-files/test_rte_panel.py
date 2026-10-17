@@ -413,9 +413,15 @@ class RTE(unittest.TestCase):
                 entry = panel.rte_connection_widgets[key][0]
                 self.assertIs(entry.parent.parent, measurement)
                 self.assertNotIn('text', entry.parent.options)
-            # The Newmark stage's connection is in the RT-E scan box, beside
-            # or under the scan rows, not in the rack (user/CI, 2026-10-14).
-            block = panel.rte_connection_widgets['newmark'][0].parent
+            # The Newmark stage's connection is the rack's Motor row again,
+            # laid out as the other rows (user, 2026-10-17); its Move stage,
+            # Stop stage and Set stage 0° stay in the RT-E scan box, beside
+            # or under the scan rows (user/CI, 2026-10-14).
+            for widget in panel.rte_connection_widgets['newmark']:
+                self.assertIs(widget.parent, rack)
+            self.assertEqual(panel.rte_resources['newmark'].get(), 'auto')
+            self.assertEqual(panel.rte_connections['newmark'].get(), 'Not connected')
+            block = panel.rte_stage_stop_button.parent
             self.assertIs(block.parent, panel.rte_start_button.parent.parent)
             self.assertEqual(block.parent.parent.options['text'], 'RT-E scan')
             self.assertNotIn('text', panel.ppms_instruments_frame.options)

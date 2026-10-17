@@ -306,9 +306,10 @@ class StageBase(unittest.TestCase):
         panel.rte_stage_live = Var("Stage: not connected")
         panel.rte_stage_target = Var("0")
         panel.rte_resources = {"newmark": Var("auto")}
-        # No rte_connections["newmark"]: the stage line is the stage's only
-        # text since its controls moved to the scan box (user/CI, 2026-10-14),
-        # so a stray use of it fails here with AttributeError.
+        # The rack's Motor row says "Connected" / "Not connected" again since
+        # its connection moved back to the rack (user, 2026-10-17); the
+        # stage line in the scan box shows the reading.
+        panel.rte_connections = {"newmark": Var("Not connected")}
         panel.rte_drive_live = Var("")
         panel.rte_field_live = Var("")
         panel.ppms_environment_busy = False
@@ -495,12 +496,15 @@ class NewmarkDriverTests(StageBase):
     def test_refusals_before_a_move(self):
         # The latched limit error and the driver off are their own refusals,
         # which the RT-E page offers to fix; their texts say how, on the page,
-        # and name no test script (user, 2026-10-17).
+        # and name no test script (user, 2026-10-17).  The STFMR page offers
+        # the same at a Start with the motor, so they name it too (user,
+        # 2026-10-17).
         refused, latched, off = app.NewmarkRefused, app.NewmarkLimitErrorLatched, app.NewmarkDriverOff
         cases = (("moving", lambda sim: sim._start(sim.px + 10 ** 6, script._now()), "is moving", refused),
                  ("latched", lambda sim: setattr(sim, "latched", 1 << 6),
                   r"limit error is latched \(MST 64: not moving, -limit ERROR \(latched\)\): the move was not sent\. "
-                  r"To clear it, press Move stage or Start an Angle scan on the RT-E page and answer Yes \(CLR\)$",
+                  r"To clear it, press Move stage or Start an Angle scan on the RT-E page, or Start a sweep with "
+                  r"the motor on the STFMR page, and answer Yes \(CLR\)$",
                   latched),
                  ("input", lambda sim: setattr(sim, "inputs", 1 << 5), "polarity problem.*QuickMotion", refused),
                  # A limit input is checked before the latched error: CLR is
@@ -509,8 +513,8 @@ class NewmarkDriverTests(StageBase):
                   "limit input is on at rest.*polarity problem", refused),
                  ("EO=0", lambda sim: setattr(sim, "eo", 0),
                   r"^the motor driver is off \(EO=0\): the position counter would advance without motion, so the "
-                  r"move was not sent\. To switch it on, press Move stage or Start an Angle scan on the RT-E page "
-                  r"and answer Yes \(EO=1\)$", off))
+                  r"move was not sent\. To switch it on, press Move stage or Start an Angle scan on the RT-E page, "
+                  r"or Start a sweep with the motor on the STFMR page, and answer Yes \(EO=1\)$", off))
         for name, arrange, message, kind in cases:
             with self.subTest(name):
                 h = self.make()
@@ -813,6 +817,73 @@ class StageThreadAffinityTests(StageBase):
         self.assertTrue(worker[1].startswith("rte-control"))
         for command in ("X150000", "PX=0", "STOP", "X50000", "X100000", "X0"):
             self.assertIn(command, h.sim.received)
+
+
+# ---- the Motor row and the device owner (user, 2026-10-17) -----------------------
+class MotorRowOwnershipTests(StageBase):
+    """User, 2026-10-17: "add the connection button for Motor in RT-E and
+    ST-FMR modules".  The USB device opens on one page at a time: the RT-E
+    page claims it before its Connect job is queued and releases it once the
+    handle is closed; a Connect while the STFMR page has it is refused."""
+
+    def test_connect_is_refused_while_the_stfmr_page_has_it(self):
+        h = self.make()
+        h.panel._newmark_stage_ownership().claim("STFMR")
+        with patch.object(app.messagebox, "showerror") as showerror:
+            h.panel._rte_connect("newmark")
+            self.drain(h)
+        showerror.assert_called_once_with("RT-E motor", "The motor is connected on the STFMR page: disconnect it "
+                                          "there first.", parent=h.panel.root)
+        self.assertEqual(h.dll.calls, [], "nothing queued or sent")
+        self.assertFalse(h.stage.connected)
+        self.assertEqual(h.panel.rte_connections["newmark"].get(), "Not connected")
+
+    def test_connect_claims_and_disconnect_releases(self):
+        h = self.make()
+        ownership = h.panel._newmark_stage_ownership()
+        with patch.object(app.messagebox, "showerror") as showerror:
+            h.panel._rte_connect("newmark")
+            self.drain(h)
+            self.assertEqual(ownership.owner, "RT-E")
+            self.assertEqual(h.panel.rte_connections["newmark"].get(), "Connected")
+            self.assertEqual(h.panel.rte_stage_live.get(), "Stage: +0.000° (10000 steps/°)")
+            h.panel._rte_disconnect("newmark")
+            self.drain(h)
+        showerror.assert_not_called()
+        self.assertIsNone(ownership.owner)
+        self.assertEqual(h.panel.rte_connections["newmark"].get(), "Not connected")
+        self.assertEqual(h.panel.rte_stage_live.get(), "Stage: not connected")
+
+    def test_a_failed_connect_releases(self):
+        h = self.make(Sim(serials=()))
+        with patch.object(app.messagebox, "showerror") as showerror:
+            h.panel._rte_connect("newmark")
+            self.drain(h)
+        self.assertIn("No Performax USB device found", showerror.call_args.args[1])
+        self.assertIsNone(h.panel._newmark_stage_ownership().owner)
+
+    def test_a_disconnect_still_open_keeps_the_claim(self):
+        h = self.make()
+        h.panel._newmark_stage_ownership().claim("RT-E")
+        with ThreadPoolExecutor(max_workers=1) as other:
+            other.submit(h.stage.connect, "auto").result(timeout=30)
+            with patch.object(app.messagebox, "showerror"):
+                h.panel._rte_disconnect("newmark")      # refused: another thread holds the handles
+                self.drain(h)
+            self.assertTrue(h.stage.connected)
+            self.assertEqual(h.panel._newmark_stage_ownership().owner, "RT-E")
+            other.submit(h.stage.disconnect).result(timeout=30)
+
+    def test_closing_releases(self):
+        h = self.make()
+        with patch.object(app.messagebox, "showerror"):
+            h.panel._rte_connect("newmark")
+            self.drain(h)
+        h.panel.zurich_executor, h.panel.zurich_controller = Mock(), Mock()
+        h.panel.ppms_instrument_controllers = {}
+        h.panel.safe_close_ppms()
+        self.assertFalse(h.stage.connected)
+        self.assertIsNone(h.panel._newmark_stage_ownership().owner)
 
 
 # ---- the scan plan ---------------------------------------------------------------
@@ -1351,10 +1422,13 @@ class ManualStageControlTests(StageBase):
 # ---- Start (Angle), status lines, defaults, plots ---------------------------------
 class AngleStartTests(unittest.TestCase):
     def start(self, mode="Angle", yes=True, stage=True, kepco=True, gauss=True, scale=10000,
-              span=("0", "10", "5"), drive="1.5", limit="5", executor=None, may_run=False):
+              span=("0", "10", "5"), drive="1.5", limit="5", executor=None, may_run=False, owner=None):
         """The real RTEPanel.start_ppms_field_scan up to its submit (as in
-        test_ppms_rte_review), with every dialog answered here."""
+        test_ppms_rte_review), with every dialog answered here.  ``owner``:
+        the page that has the motor's USB device (user, 2026-10-17)."""
         panel = rte_tests.RTE.make_worker(self)
+        if owner is not None:
+            panel._newmark_stage_ownership().claim(owner)
         panel._require_ppms_control_ready = Mock()
         panel._rte_capture_zurich = Mock()
         panel.zurich_scan_enabled = False
@@ -1395,7 +1469,12 @@ class AngleStartTests(unittest.TestCase):
                                      askdirectory=askdirectory)
 
     def test_angle_needs_the_stage_the_kepco_and_the_ls475(self):
-        for options, message in ((dict(stage=False), "Connect the Newmark NSC-A1"),
+        for options, message in ((dict(stage=False), r'Connect the Newmark NSC-A1 \(the "Motor" row of the '
+                                                     r'measurement instruments\) for an angle scan'),
+                                 # The STFMR page has the device (user, 2026-10-17).
+                                 (dict(stage=False, owner="STFMR"),
+                                  "The motor is connected on the STFMR page: disconnect it there and connect it "
+                                  "here"),
                                  (dict(kepco=False), "Connect KEPCO for an angle scan"),
                                  (dict(gauss=False), "Connect LS475"),
                                  (dict(scale=None), "Newmark NSC-A1 has no steps/° scale"),
@@ -1575,27 +1654,51 @@ class AnglePageTests(unittest.TestCase):
             stack.enter_context(patch.object(app.CombinedControlApp, "_draw_nonlocal_series", Mock()))
             return app.RTEPanel(parent, rte_tests.Widget())
 
-    def test_the_stage_controls_are_a_block_in_the_scan_box(self):
+    def test_the_motor_row_is_in_the_rack_and_the_stage_block_in_the_scan_box(self):
         """User/CI, 2026-10-14: a rack row and a row under the settings for
         the stage took about 84 px of height in the 1101 px window, and every
-        plot fell below its 55 px minimum.  The stage's controls are now one
-        block of three rows in the RT-E scan box, paired with the scan rows
-        (beside them when they fit, under them otherwise); the rack and the
-        settings have none of them."""
+        plot fell below its 55 px minimum; the stage's controls became one
+        block of three rows in the RT-E scan box.  User, 2026-10-17: "add the
+        connection button for Motor in RT-E and ST-FMR modules": the
+        connection is the rack's fifth row, "Motor", laid out as the four
+        above it (label, 18-character address, Connect, Disconnect, lamp,
+        13-character status), accepting about one row of plot height; Move
+        stage, Stop stage, Set stage 0° and the live line stay in the scan
+        box as a block of two rows paired with the scan rows."""
         panel = self.build_page()
         entry, connect, disconnect = panel.rte_connection_widgets["newmark"]
-        block = entry.parent
+        rack = panel.rte_connection_widgets["kepco"][0].parent
+        self.assertIs(entry.parent, rack)
+        # Five rack rows: KEPCO, LS475, 6221, 2400, Motor.
+        self.assertEqual({w.grid_options["row"] for w in Recorder.made
+                          if w.parent is rack and "row" in w.grid_options}, {0, 1, 2, 3, 4})
+        row = {w.grid_options["column"]: w for w in Recorder.made
+               if w.parent is rack and w.grid_options.get("row") == 4}
+        lamp = next(w for w in Recorder.made if w.options.get("indicator") == "rte_newmark")
+        self.assertEqual(sorted(row), [0, 1, 2, 3, 4, 5])
+        self.assertEqual((row[0].options["text"], row[0].options["width"]), ("Motor", 13))
+        self.assertEqual((row[1], row[2], row[3], row[4]), (entry, connect, disconnect, lamp))
+        self.assertIs(row[5].options["textvariable"], panel.rte_connections["newmark"])
+        self.assertEqual(row[5].options["width"], 13)
+        self.assertEqual(panel.rte_connections["newmark"].get(), "Not connected")
+        self.assertEqual(panel.rte_resources["newmark"].get(), "auto")
+        # The same widths as the KEPCO row above it, so the columns line up.
+        kepco = {w.grid_options["column"]: w for w in Recorder.made
+                 if w.parent is rack and w.grid_options.get("row") == 0}
+        for column in (0, 1, 2, 3, 5):
+            self.assertEqual(row[column].options.get("width"), kepco[column].options.get("width"), column)
+        self.assertEqual((connect.options["text"], disconnect.options["text"]), ("Connect", "Disconnect"))
+        self.assertNotIn("style", connect.options, "a plain button, as the other rows'")
+        self.assertFalse([w for w in Recorder.made if w.options.get("text") == "Newmark stage"])
+        self.assertFalse([w for w in Recorder.made if w.options.get("text") == "Stage"], "no Stage row left")
+        # The block: two rows in the scan box, paired with the scan rows.
+        block = panel.rte_stage_stop_button.parent
         rows = panel.rte_start_button.parent
         self.assertIs(block.parent, rows.parent, "the block and the scan rows are one pair")
         scan = rows.parent.parent
         self.assertEqual(scan.options.get("text"), "RT-E scan")
-        # The rack keeps its four rows (KEPCO, LS475, 6221, 2400), no stage row.
-        rack = panel.rte_connection_widgets["kepco"][0].parent
-        self.assertEqual({w.grid_options["row"] for w in Recorder.made
-                          if w.parent is rack and "row" in w.grid_options}, {0, 1, 2, 3})
-        self.assertFalse([w for w in Recorder.made if w.options.get("text") == "Newmark stage"])
-        # Three rows level with the scan rows' three (mode/Start/End/Step;
-        # units/Loops/Settle s/Acquire s; Start scan/Stop/Save CSV as/Round trip).
+        # Three scan rows (mode/Start/End/Step; units/Loops/Settle s/Acquire
+        # s; Start scan/Stop/Save CSV as/Round trip).
         self.assertEqual({w.grid_options["row"] for w in Recorder.made
                           if w.parent is rows and "row" in w.grid_options}, {0, 1, 2})
         labels = {w.options["text"]: w for w in Recorder.made
@@ -1605,26 +1708,19 @@ class AnglePageTests(unittest.TestCase):
         self.assertIs(stop, panel.rte_stage_stop_button)
         target = next(w for w in Recorder.made if w.options.get("textvariable") is panel.rte_stage_target)
         live = next(w for w in Recorder.made if w.options.get("textvariable") is panel.rte_stage_live)
-        lamp = next(w for w in Recorder.made if w.options.get("indicator") == "rte_newmark")
         layout = {(w.grid_options["row"], w.grid_options["column"]): w for w in Recorder.made if w.parent is block}
         self.assertEqual(layout, {
-            (0, 0): labels["Stage"], (0, 1): entry, (0, 2): connect, (0, 3): disconnect, (0, 4): lamp,
-            (1, 0): labels["Stage °"], (1, 1): target, (1, 2): move, (1, 3): stop,
-            (2, 0): zero, (2, 2): live})
-        self.assertEqual(panel.rte_resources["newmark"].get(), "auto")
-        self.assertEqual((entry.options["width"], target.options["width"]), (9, 9))
-        self.assertEqual((connect.options["text"], disconnect.options["text"]), ("Connect", "Disconnect"))
-        for button in (connect, disconnect, move, stop, zero):
+            (0, 0): labels["Stage °"], (0, 1): target, (0, 2): move, (0, 3): stop,
+            (1, 0): zero, (1, 2): live})
+        self.assertEqual(target.options["width"], 9)
+        for button in (move, stop, zero):
             # No taller than the entries beside them: the block costs no height.
             self.assertEqual(button.options["style"], "Inline.TButton", button.options["text"])
-        # One live line, a fixed box, for the connection and the reading; the
-        # stage has no separate "Connected" label (the lamp shows it).
+        # One live line, a fixed box, for the reading.
         self.assertEqual(live.options["width"], 32)
         self.assertEqual(panel.rte_stage_live.get(), "Stage: not connected")
-        self.assertNotIn("newmark", panel.rte_connections)
         self.assertEqual([w for w in Recorder.made if w.parent is block and "textvariable" in w.options
-                          and w.options["textvariable"] not in (panel.rte_resources["newmark"], panel.rte_stage_target)],
-                         [live])
+                          and w.options["textvariable"] is not panel.rte_stage_target], [live])
         # The status/progress row, the acquisition state and the field note
         # stay full width under the pair.
         self.assertIs(panel.ppms_field_scan_progress.parent.parent, scan)

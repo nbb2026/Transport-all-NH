@@ -2104,6 +2104,14 @@ STFMR_LOCKIN_MAX_MODULATION_FREQUENCIES = 10_000
 # there has no exact list; it also keeps the prime search well under a
 # second (user, 2026-10-13).
 STFMR_LOCKIN_MAX_PRIME_MODULATION_HZ = float(2 ** 53)
+# Angle start / Angle stop / Angle step, the Newmark stage's angles, the
+# outermost loop of the sweep (user, 2026-10-17: "add a Start Angle, Stop
+# Angle, Step Angle below mod. Hz in ST-FMR module").  0, 0 and 10 by
+# default: with the motor not connected and both angles 0 the sweep runs as
+# before, without the motor (stfmr_angle_list, _stfmr_lockin_angle_plan).
+STFMR_LOCKIN_DEFAULT_ANGLE_START_DEG = 0.0
+STFMR_LOCKIN_DEFAULT_ANGLE_STOP_DEG = 0.0
+STFMR_LOCKIN_DEFAULT_ANGLE_STEP_DEG = 10.0
 # The magnet current sweep's defaults: -6 A to 6 A in 0.02 A steps, 601
 # currents (user's screenshot, 2026-10-17; -2 to 2 A from 2026-10-14, -3 to
 # 3 A in 0.01 A before).
@@ -6033,6 +6041,68 @@ def stfmr_power_summary(values, start_dbm, stop_dbm, step_db) -> str:
         f"{stop:g} in {step:g} dB steps" + (f"; {note}" if note else "")
         + "); the whole f × A sweep runs at each, in this order, with the RF on between them"
     )
+
+
+def stfmr_angle_list(start_deg, stop_deg, step_deg) -> tuple[float, ...]:
+    """The STFMR sweep's stage angles, in degrees from the stage zero, from
+    Angle start °, Angle stop ° and Angle step ° (user, 2026-10-17: "add a
+    Start Angle, Stop Angle, Step Angle below mod. Hz in ST-FMR module").
+
+    The RT-E Angle scan's rule (ppms_scan_axis, as rte_scan_plan uses it):
+    the step's sign is ignored and it must be above 0, also for one angle
+    (as f step and P step); the list runs from Angle start towards Angle
+    stop and ends exactly on it, so the last step may be shorter; at most
+    10001 angles.  Every angle must lie within ±NEWMARK_CABLE_LIMIT_DEG of
+    the stage zero: the stage turns the sample holder with its wires
+    attached.  Each angle is rounded to 1e-9° (0.1 x 3 is not 0.3 in
+    floats; the stage's step is 1e-4°).  Text is accepted, as the boxes
+    give it; anything else raises ValueError, before any output or file."""
+    try:
+        start, stop, step = (float(str(value).strip()) for value in (start_deg, stop_deg, step_deg))
+    except (TypeError, ValueError) as error:
+        raise ValueError("Angle start °, Angle stop ° and Angle step ° must be finite numbers") from error
+    if not all(math.isfinite(value) for value in (start, stop, step)):
+        raise ValueError("Angle start °, Angle stop ° and Angle step ° must be finite numbers")
+    if step == 0.0:
+        raise ValueError("Angle step ° must be greater than 0°")
+    try:
+        angles = ppms_scan_axis(start, stop, step)
+    except ValueError as error:
+        raise ValueError(f"Angle start {start:g}° to Angle stop {stop:g}° in {abs(step):g}° steps: "
+                         f"{error}") from error
+    angles = tuple(float(round(value, 9)) + 0.0 for value in angles)     # + 0.0: never -0
+    outside = [value for value in angles if abs(value) > NEWMARK_CABLE_LIMIT_DEG]
+    if outside:
+        raise ValueError(f"Stage angles must stay within ±{NEWMARK_CABLE_LIMIT_DEG:g}° of the stage zero (the "
+                         f"sample wires); {outside[0]:g}° is outside")
+    return angles
+
+
+def stfmr_angle_summary(angles, step_deg, motor_used) -> str:
+    """The Start confirmation's angle line (user, 2026-10-17), e.g. "Angle:
+    0 → 90°, step 10°, 10 angles (the motor turns the SAMPLE HOLDER with its
+    wires; angle outermost)", "Angle: 0° (one angle; ...)" or, without the
+    motor, "Angle: motor not used"."""
+    if not motor_used:
+        return "Angle: motor not used"
+    values = [float(value) for value in angles]
+    if len(values) == 1:
+        return f"Angle: {values[0]:g}° (one angle; the motor turns the SAMPLE HOLDER with its wires)"
+    return (f"Angle: {values[0]:g} → {values[-1]:g}°, step {abs(float(step_deg)):g}°, {len(values)} angles "
+            "(the motor turns the SAMPLE HOLDER with its wires; angle outermost)")
+
+
+def stfmr_angle_move_seconds(angles, from_deg=0.0) -> float:
+    """About how long a sweep's stage moves take, |Δθ| / NEWMARK_SPEED_DEG_S
+    from ``from_deg`` (where the stage was last seen, else its zero)
+    through every angle in turn, for the Start estimate (user,
+    2026-10-17).  The acceleration and the checks before each move come on
+    top."""
+    total, here = 0.0, float(from_deg)
+    for angle in angles:
+        total += abs(float(angle) - here)
+        here = float(angle)
+    return total / NEWMARK_SPEED_DEG_S
 
 
 def shade_color(color: str, fraction: float) -> str:
@@ -13811,6 +13881,10 @@ class STFMRScanRecorder:
         # row's lock-in its X and Y are the mean of.  Last, so every older column
         # keeps its place; no Wait/pt column existed to remove.
         "settle_s", "effective_settle_s", "acquire_s", "sample_count",
+        # The Newmark stage's angle, read back after the move of the row's
+        # angle (user, 2026-10-17); blank when the sweep does not use the
+        # motor.  Last, so every older column keeps its place.
+        "stage_angle_deg",
     )
 
     def __init__(self, parent: Path, settings: dict[str, object]) -> None:
@@ -14866,6 +14940,55 @@ class CombinedControlApp:
         self.stfmr_lockin_y_canvas = None
         self.stfmr_lockin_theta_canvas = None
         self.stfmr_lockin_progress = None
+        # The Newmark NSC-A1 rotation stage on the STFMR page (user,
+        # 2026-10-17: "add a Start Angle, Stop Angle, Step Angle below mod.
+        # Hz in ST-FMR module.  Also add the connection button for Motor in
+        # RT-E and ST-FMR modules").  The page's own controller: its DLL is
+        # loaded on Connect, never here, and every call of it (Connect,
+        # Disconnect, the Start check, the moves) runs on
+        # stfmr_lockin_executor, the thread that connected.  The USB device
+        # opens on one page at a time (newmark_stage_ownership, created
+        # here before build_ui builds the RT-E page, which shares it).
+        self.newmark_stage_ownership = NewmarkStageOwnership()
+        self.stfmr_lockin_motor = NewmarkNSCA1Controller(self.thread_log, owner_scope="STFMR")
+        self.stfmr_lockin_motor_resource_var = tk.StringVar(value="auto")
+        self.stfmr_lockin_motor_status_var = tk.StringVar(value="Not connected")
+        self.stfmr_lockin_motor_widgets = None      # (entry, Connect, Disconnect) once built
+        self.stfmr_lockin_motor_busy = False        # a Connect or Disconnect job in flight
+        # Start's stage check (MST, EO) and its CLR / EO=1 question: from the
+        # check's job until the sweep starts or does not, Start and the Motor
+        # row stay locked (user, 2026-10-17).
+        self.stfmr_lockin_motor_check_pending = False
+        self.stfmr_lockin_motor_known_deg = None     # the angle last read or moved to, for the estimate
+        # The stage by hand (user, 2026-10-17: "also add Move stage button
+        # for the motor in ST-FMR"), as on RT-E: the target, the event Stop
+        # stage sets (a hand move watches it, and the sweep's stop event,
+        # which the page's closing sets), a hand move queued or running (Stop
+        # stage then never queues a STOP behind it), and the CLR / EO=1
+        # question of a hand move being open (the buttons stay locked).
+        self.stfmr_lockin_stage_target_var = tk.StringVar(value="0")
+        self.stfmr_lockin_stage_stop_event = threading.Event()
+        self.stfmr_lockin_stage_move_pending = False
+        self.stfmr_lockin_stage_prompt_open = False
+        self.stfmr_lockin_angle_start_var = tk.StringVar(
+            value=f"{STFMR_LOCKIN_DEFAULT_ANGLE_START_DEG:g}"
+        )
+        self.stfmr_lockin_angle_stop_var = tk.StringVar(
+            value=f"{STFMR_LOCKIN_DEFAULT_ANGLE_STOP_DEG:g}"
+        )
+        self.stfmr_lockin_angle_step_var = tk.StringVar(
+            value=f"{STFMR_LOCKIN_DEFAULT_ANGLE_STEP_DEG:g}"
+        )
+        # The running sweep's angles, the outermost loop ([] when the motor
+        # is not used), the one in use, and the stage's angle read back after
+        # the last move (None without the motor; the CSV's stage_angle_deg).
+        self.stfmr_lockin_angles_deg: list[float] = []
+        self.stfmr_lockin_angle_index = 0
+        self.stfmr_lockin_stage_angle_deg = None
+        # Where the stage is, for the status line and the error dialog
+        # after a stop or a failure ("stage at +30.000°", "stage stopped at
+        # ...", "stage NOT confirmed stopped: CHECK THE STAGE").
+        self.stfmr_lockin_stage_where = ""
 
         self.build_ui()
         self.notebook.bind(
@@ -14889,6 +15012,19 @@ class CombinedControlApp:
             500, self._stfmr_lockin_live_timer
         )
         self.root.protocol("WM_DELETE_WINDOW", self.request_close)
+
+    def _newmark_stage_ownership(self) -> "NewmarkStageOwnership":
+        """The program's one NewmarkStageOwnership, which the RT-E and STFMR
+        pages share (user, 2026-10-17): the main app's, also from the RT-E
+        page (a PPMSPanel, whose parent_app is the main app).  A page built
+        without the main app (the offline tests' stand-ins) gets one of its
+        own, kept where the main app's would be."""
+        host = self.__dict__.get("parent_app", self)
+        ownership = getattr(host, "__dict__", {}).get("newmark_stage_ownership")
+        if not isinstance(ownership, NewmarkStageOwnership):
+            ownership = NewmarkStageOwnership()
+            host.newmark_stage_ownership = ownership
+        return ownership
 
     def _enforce_english_input_mode(self, event=None) -> None:
         """Reapply English after Windows restores a per-window IME state."""
@@ -16858,8 +16994,9 @@ class CombinedControlApp:
 
         # One row: the instrument connections as a compact single column on
         # the left, the manual 4886 output on the right.  Side by side they
-        # take the height of the five-row list instead of two stacked
-        # sections, which gives the plots more room.
+        # take the height of the list (six rows since the Motor row, user,
+        # 2026-10-17) instead of two stacked sections, which gives the plots
+        # more room.
         top = ttk.Frame(outer)
         top.grid(row=0, column=0, sticky="ew", pady=(0, 4))
         top.columnconfigure(1, weight=1)
@@ -16873,7 +17010,7 @@ class CombinedControlApp:
         # so the connection list keeps its natural width at the left.
         field_output.grid(row=0, column=1, sticky="nsew")
         field_output.columnconfigure(12, weight=1)
-        # The panel is as tall as the five-row connection list; share that
+        # The panel is as tall as the six-row connection list; share that
         # height between its three rows rather than leaving a gap below them.
         for panel_row in range(3):
             field_output.rowconfigure(panel_row, weight=1)
@@ -17004,6 +17141,33 @@ class CombinedControlApp:
                 frame, textvariable=self.stfmr_lockin_connection_vars[key],
                 width=13, anchor="w",
             ).grid(row=0, column=5, sticky="w")
+        # The Newmark NSC-A1 rotation stage, a sixth row laid out as the five
+        # above (user, 2026-10-17: "add the connection button for Motor in
+        # RT-E and ST-FMR modules").  "auto" takes the only Performax USB
+        # device; with several, its USB serial goes in the box.  It is kept
+        # out of the five rows' dictionaries: its controller runs on the
+        # page's worker only, never from the Tk thread as the 4886's Connect
+        # does, and its status also shows the stage's angle once known
+        # ("+12.345°", within the 13 characters), not only "Connected".
+        frame = ttk.Frame(instruments)
+        frame.grid(row=5, column=0, sticky="ew", pady=1)
+        frame.columnconfigure(1, weight=1)
+        frame.columnconfigure(6, weight=1000)
+        ttk.Label(frame, text="Motor:", width=11, anchor="e").grid(row=0, column=0, sticky="e")
+        motor_entry = ttk.Entry(frame, textvariable=self.stfmr_lockin_motor_resource_var, width=18)
+        motor_entry.grid(row=0, column=1, sticky="w", padx=(0, 4))
+        motor_connect = ttk.Button(frame, text="Connect", width=8, command=self.connect_stfmr_lockin_motor)
+        motor_disconnect = ttk.Button(
+            frame, text="Disconnect", width=10, state="disabled",
+            command=self.disconnect_stfmr_lockin_motor,
+        )
+        motor_connect.grid(row=0, column=2, padx=1)
+        motor_disconnect.grid(row=0, column=3, padx=1)
+        self._create_connection_indicator(frame, "stfmr_lockin_motor").grid(row=0, column=4, padx=(5, 1))
+        ttk.Label(
+            frame, textvariable=self.stfmr_lockin_motor_status_var, width=13, anchor="w",
+        ).grid(row=0, column=5, sticky="w")
+        self.stfmr_lockin_motor_widgets = (motor_entry, motor_connect, motor_disconnect)
 
         self._arrange_pair_by_width(top, instruments, field_output)
         # Tab visits the connections first, as they now sit on the left.
@@ -17063,8 +17227,9 @@ class CombinedControlApp:
         # The table in measurement order, one row per stage (user,
         # 2026-10-14: "re-arrange the GUI buttons and windows in the ST-FMR
         # sweep param module and make them in order"): the microwave, the
-        # magnet sweep, the modulation and the timing of each point, then
-        # each lock-in.  At most five label/field pairs per row: a sixth made
+        # magnet sweep, the modulation and the timing of each point, the
+        # stage angles (user, 2026-10-17), then each lock-in.  At most five
+        # label/field pairs per row: a sixth made
         # the table too wide for the 1101 px window the program opens with,
         # which pushed the last box off the page on Windows.  Dropdowns are
         # sized to their longest choice ("MFLI + SR830", "TTL Falling",
@@ -17126,10 +17291,29 @@ class CombinedControlApp:
         self.stfmr_lockin_acquire_entry = parameter(
             3, 3, "Acquire s:", self.stfmr_lockin_acquire_var
         )
-        # Row 4, SR830, led by the Meter choice, which says whether this row,
-        # the MFLI row below or both are used.
+        # Row 4, the Newmark stage's angles, right below the Mod. row (user,
+        # 2026-10-17: "add a Start Angle, Stop Angle, Step Angle below mod.
+        # Hz in ST-FMR module"), the outermost loop of the sweep: the whole
+        # Mod. x P x f x A sweep runs at each angle.  The labels read like
+        # the f and P labels ("f start GHz:", "P start dBm:").  0, 0 and 10
+        # by default: with the motor not connected and both angles 0 the
+        # sweep runs as before, without the motor.  Kept so a sweep can lock
+        # them: the angle list is read at Start.
+        self.stfmr_lockin_angle_start_entry = parameter(
+            4, 0, "Angle start °:", self.stfmr_lockin_angle_start_var
+        )
+        self.stfmr_lockin_angle_stop_entry = parameter(
+            4, 1, "Angle stop °:", self.stfmr_lockin_angle_stop_var
+        )
+        self.stfmr_lockin_angle_step_entry = parameter(
+            4, 2, "Angle step °:", self.stfmr_lockin_angle_step_var
+        )
+
+        # Row 5, SR830, led by the Meter choice, which says whether this row,
+        # the MFLI row below or both are used.  (Rows 4 and 5 before the
+        # angle row of 2026-10-17 moved the SR830 and MFLI rows down.)
         meter_combo = parameter(
-            4, 0, "Meter:", self.stfmr_lockin_meter_var,
+            5, 0, "Meter:", self.stfmr_lockin_meter_var,
             kind="combo", values=("SR830", "MFLI", "MFLI + SR830"), width=12,
         )
         meter_combo.bind(
@@ -17137,7 +17321,7 @@ class CombinedControlApp:
         )
         self.stfmr_lockin_meter_combo = meter_combo
         parameter(
-            4, 1, "SR830 REF IN:", self.stfmr_lockin_sr830_reference_var,
+            5, 1, "SR830 REF IN:", self.stfmr_lockin_sr830_reference_var,
             kind="combo", values=tuple(STFMR_LOCKIN_SR830_REFERENCE_INPUTS), width=12,
         )
         # The SR830 time constant, beside its REF IN, as "MFLI TC s" is beside
@@ -17148,29 +17332,29 @@ class CombinedControlApp:
         # down to this dropdown's width, so, like the others, it is never cut
         # (user, 2026-10-13).
         sr830_tc_combo = parameter(
-            4, 2, "SR830 TC:", self.stfmr_lockin_sr830_time_constant_var,
+            5, 2, "SR830 TC:", self.stfmr_lockin_sr830_time_constant_var,
             kind="combo", values=tuple(STFMR_LOCKIN_SR830_TIME_CONSTANTS), width=6,
         )
         params.columnconfigure(
             5, minsize=max(field_floor, sr830_tc_combo.winfo_reqwidth())
         )
         self.stfmr_lockin_sr830_time_constant_combo = sr830_tc_combo
-        option(4, 3, "SR830 autorange", self.stfmr_lockin_sr830_auto_range_var)
-        # Row 5, MFLI, in the same order as the SR830 row: reference, time
+        option(5, 3, "SR830 autorange", self.stfmr_lockin_sr830_auto_range_var)
+        # Row 6, MFLI, in the same order as the SR830 row: reference, time
         # constant, autorange.
         parameter(
-            5, 0, "MFLI reference:", self.stfmr_lockin_reference_var,
+            6, 0, "MFLI reference:", self.stfmr_lockin_reference_var,
             kind="combo", values=tuple(NONLOCAL_MFLI_REFERENCE_INPUTS), width=12,
         )
         # Kept so the sweep can lock it: with the MFLI read,
         # LOCKIN_SETTLE_TAUS x its TC is part of every point's settle
         # (review, 2026-10-14).
         self.stfmr_lockin_mfli_timeconstant_entry = parameter(
-            5, 1, "MFLI TC s:", self.stfmr_lockin_mfli_timeconstant_var,
+            6, 1, "MFLI TC s:", self.stfmr_lockin_mfli_timeconstant_var,
             width=7,
         )
         self.stfmr_lockin_mfli_auto_range_check = option(
-            5, 2, "MFLI autorange", self.stfmr_lockin_mfli_auto_range_var
+            6, 2, "MFLI autorange", self.stfmr_lockin_mfli_auto_range_var
         )
         # The Loop spinbox now has the narrowest field of its column, which
         # the SR830 TC dropdown, as wide, held before; the column gives way
@@ -17213,6 +17397,38 @@ class CombinedControlApp:
             text="Continuous field read (0.5 s)",
             variable=self.stfmr_lockin_gauss_continuous_var,
         ).pack(side="left", padx=(0, 12))
+        # The Newmark stage by hand, as RT-E's stage block (user,
+        # 2026-10-17: "also add Set 0° button for the motor in ST-FMR" and
+        # "also add Move stage button for the motor in ST-FMR"): the target,
+        # Move stage, Stop stage and Set motor 0°, kept together on this
+        # line.  Here they cost the plots no height: in the 1101 px window
+        # the line is under the table with the page's width to spare, and at
+        # 2000 px the actions column beside the table is shorter than the
+        # table.  The table (at most five pairs a row, already at the 1101 px
+        # window's width) and the Motor connection row (laid out as the other
+        # rows) stay as they are.  Move stage, the target and Set motor 0°
+        # are locked unless the motor is connected here and nothing runs;
+        # Stop stage stays usable whenever it is connected here, also during
+        # a move or a sweep (_update_stfmr_lockin_motor_row).
+        stage_controls = ttk.Frame(readback_row)
+        stage_controls.pack(side="left")
+        ttk.Label(stage_controls, text="Stage °:").pack(side="left", padx=(0, 3))
+        self.stfmr_lockin_stage_target_entry = ttk.Entry(
+            stage_controls, textvariable=self.stfmr_lockin_stage_target_var, width=7, state="disabled",
+        )
+        self.stfmr_lockin_stage_target_entry.pack(side="left", padx=(0, 4))
+        self.stfmr_lockin_stage_move_button = ttk.Button(
+            stage_controls, text="Move stage", command=self.move_stfmr_lockin_stage, state="disabled",
+        )
+        self.stfmr_lockin_stage_move_button.pack(side="left", padx=2)
+        self.stfmr_lockin_stage_stop_button = ttk.Button(
+            stage_controls, text="Stop stage", command=self.stop_stfmr_lockin_stage, state="disabled",
+        )
+        self.stfmr_lockin_stage_stop_button.pack(side="left", padx=2)
+        self.stfmr_lockin_motor_zero_button = ttk.Button(
+            stage_controls, text="Set motor 0°", command=self.set_stfmr_lockin_motor_zero, state="disabled",
+        )
+        self.stfmr_lockin_motor_zero_button.pack(side="left", padx=(2, 0))
         # Live values and the two status lamps share one grid, so every text
         # starts at the same x and the right-hand boxes end at the same x.
         # Column 0 is the lamp gutter (empty beside the values), columns 1-2
@@ -17467,16 +17683,24 @@ class CombinedControlApp:
         # would show a TC
         # the sweep is not using (review, 2026-10-14).  So are P start, P
         # stop and P step: the power list is read at Start (user,
-        # 2026-10-14).
+        # 2026-10-14).  So are Angle start, Angle stop and Angle step, also
+        # while Start's stage check runs (user, 2026-10-17): the angle list
+        # is read at Start, before that check.
+        motor_check = self.__dict__.get("stfmr_lockin_motor_check_pending", False)
         for name in ("stfmr_lockin_settle_entry", "stfmr_lockin_acquire_entry",
                      "stfmr_lockin_mfli_timeconstant_entry",
                      "stfmr_lockin_power_start_entry",
                      "stfmr_lockin_power_stop_entry",
-                     "stfmr_lockin_power_step_entry"):
+                     "stfmr_lockin_power_step_entry",
+                     "stfmr_lockin_angle_start_entry",
+                     "stfmr_lockin_angle_stop_entry",
+                     "stfmr_lockin_angle_step_entry"):
             if hasattr(self, name):
+                locked = self.stfmr_lockin_running or (motor_check and "_angle_" in name)
                 getattr(self, name).configure(
-                    state="disabled" if self.stfmr_lockin_running else "normal"
+                    state="disabled" if locked else "normal"
                 )
+        self._update_stfmr_lockin_motor_row()
         # The device rows follow the sweep too.  Only Connect / Disconnect
         # re-checked them, so during a sweep the unused lock-in's Connect (and
         # every Disconnect) stayed enabled (audit, 2026-10-13).  A row still
@@ -17503,11 +17727,18 @@ class CombinedControlApp:
             self._stfmr_lockin_connected(key)
             for key in ("kepco", "gauss", "smb", *meter_keys)
         )
+        # Locked from Start's stage check until the sweep starts or does not
+        # (user, 2026-10-17), as RT-E's Start is while its stage check and
+        # question are pending, and while a stage job of the Motor row (a
+        # hand move, say) or its question is pending.  Stop / zero stays
+        # usable during the check: it abandons the start (no CLR or EO=1 is
+        # sent after it).
         self.stfmr_lockin_start_button.configure(
-            state="normal" if ready and not self.stfmr_lockin_running else "disabled"
+            state="normal" if ready and not self.stfmr_lockin_running
+            and not self._stfmr_lockin_stage_job_pending() else "disabled"
         )
         self.stfmr_lockin_stop_button.configure(
-            state="normal" if self.stfmr_lockin_running else "disabled"
+            state="normal" if self.stfmr_lockin_running or motor_check else "disabled"
         )
         self.stfmr_lockin_save_button.configure(
             state="normal" if self.stfmr_lockin_rows else "disabled"
@@ -17618,6 +17849,11 @@ class CombinedControlApp:
         if self.closing:
             return
         controller = self.stfmr_lockin_controllers["kepco"]
+        if self.__dict__.get("stfmr_lockin_motor_check_pending", False):
+            # During Start's stage check (or behind its question's Yes) the
+            # start is abandoned too, as an OFF button does on RT-E: no CLR
+            # or EO=1 is sent after it (user, 2026-10-17).
+            self.stfmr_lockin_stop_event.set()
         if not controller.connected:
             return
         if deferred and not self.stfmr_lockin_running:
@@ -17742,6 +17978,523 @@ class CombinedControlApp:
                 if not self.closing:
                     messagebox.showerror("STFMR instrument disconnect", str(error), parent=self.root)
             self._set_stfmr_lockin_device_ui(key, False)
+
+        future.add_done_callback(lambda _future: self.post_ui(finished))
+
+    # ---- the Newmark stage's Motor row (user, 2026-10-17) -------------------------
+    def _stfmr_lockin_motor_locked(self) -> bool:
+        """The Motor row's Connect / Disconnect, Move stage, the target and
+        Set motor 0° are locked while a sweep runs or is starting (its stage
+        check and CLR / EO=1 question included), while a stage job of the
+        page runs (Connect, Disconnect, Set motor 0°, a hand move), while a
+        hand move's CLR / EO=1 question is open, and once the page closes
+        (user, 2026-10-17).  Stop stage is not (_update_stfmr_lockin_motor_row)."""
+        return bool(
+            self.closing or self.stfmr_lockin_closed or self.stfmr_lockin_running
+            or self.__dict__.get("stfmr_lockin_starting", False)
+            or self.__dict__.get("stfmr_lockin_motor_busy", False)
+            or self.__dict__.get("stfmr_lockin_motor_check_pending", False)
+            or self.__dict__.get("stfmr_lockin_stage_prompt_open", False)
+        )
+
+    def _update_stfmr_lockin_motor_row(self) -> None:
+        """Connect, Disconnect, the entry and the lamp of the Motor row, as
+        the other rows', from the controller's handle (a flag: no DLL call on
+        the Tk thread)."""
+        widgets = self.__dict__.get("stfmr_lockin_motor_widgets")
+        motor = self.__dict__.get("stfmr_lockin_motor")
+        if not widgets or motor is None:
+            return
+        entry, connect, disconnect = widgets
+        locked = self._stfmr_lockin_motor_locked()
+        connected = motor.connected
+        connect.configure(state="disabled" if locked or connected else "normal")
+        disconnect.configure(state="normal" if connected and not locked else "disabled")
+        entry.configure(state="disabled" if locked or connected else widget_idle_state(entry))
+        self._set_connection_indicator("stfmr_lockin_motor", connected)
+        # Move stage, its target and Set motor 0°: as Disconnect, only with
+        # the motor connected here and nothing running or starting (user,
+        # 2026-10-17).  Stop stage whenever the motor is connected here, also
+        # during a hand move and a sweep: it is the way to stop the stage.
+        for name in ("stfmr_lockin_motor_zero_button", "stfmr_lockin_stage_move_button",
+                     "stfmr_lockin_stage_target_entry"):
+            widget = self.__dict__.get(name)
+            if widget is not None:
+                widget.configure(state="normal" if connected and not locked else "disabled")
+        stop = self.__dict__.get("stfmr_lockin_stage_stop_button")
+        if stop is not None:
+            stop.configure(state="normal" if connected and not self.closing and not self.stfmr_lockin_closed
+                           else "disabled")
+
+    def _show_stfmr_lockin_motor_state(self, angle_deg=None, text=None) -> None:
+        """The Motor row's status, rte_connections-style: "Not connected",
+        "Connected" or, once known, the stage's angle ("+12.345°", at most 9
+        of its 13 characters within ±360°); ``text`` replaces it
+        ("Connecting…", "CHECK STAGE")."""
+        motor = self.stfmr_lockin_motor
+        if text is None:
+            if not motor.connected:
+                text = "Not connected"
+            elif angle_deg is None:
+                text = "Connected"
+            else:
+                text = f"{angle_deg:+.3f}°"
+        if angle_deg is not None:
+            self.stfmr_lockin_motor_known_deg = angle_deg
+        self.stfmr_lockin_motor_status_var.set(text)
+
+    def _stfmr_lockin_motor_progress(self, _px, degrees) -> None:
+        """A move's angle, from the STFMR worker: shown on the Tk thread."""
+        def show() -> None:
+            if not self.closing and not self.stfmr_lockin_closed:
+                self.stfmr_lockin_motor_status_var.set(f"{degrees:+.3f}°")
+        self.post_ui(show)
+
+    def connect_stfmr_lockin_motor(self) -> None:
+        """Connect the Newmark stage on this page (user, 2026-10-17): the
+        connect and a first read (MST, PX) as one job on the STFMR worker,
+        whose thread then holds the USB handles for every later call.  The
+        page claims the device on the Tk thread first; a Connect while the
+        RT-E page has it is refused before anything is queued."""
+        if self._stfmr_lockin_motor_locked():
+            return
+        motor = self.stfmr_lockin_motor
+        if motor.connected:
+            return
+        ownership = self._newmark_stage_ownership()
+        try:
+            ownership.claim("STFMR")
+        except RuntimeError as error:
+            messagebox.showerror("STFMR motor", str(error), parent=self.root)
+            return
+        resource = self.stfmr_lockin_motor_resource_var.get().strip()
+
+        def operation():
+            motor.connect(resource)
+            try:
+                return motor.read_state()
+            except Exception as error:
+                # Connected all the same (the handle is open, so the lamp and
+                # Disconnect say so); the status says "Connected".
+                self.thread_log(f"STFMR {motor.label}: the first read after Connect failed: {error}")
+                return None
+
+        self.stfmr_lockin_motor_busy = True
+        self._show_stfmr_lockin_motor_state(text="Connecting…")
+        self._update_stfmr_lockin_motor_row()
+        try:
+            future = self.stfmr_lockin_executor.submit(operation)
+        except BaseException as error:
+            self.stfmr_lockin_motor_busy = False
+            ownership.release("STFMR")
+            self._show_stfmr_lockin_motor_state()
+            self._update_stfmr_lockin_motor_row()
+            if not self.closing:
+                messagebox.showerror("STFMR motor connection", str(error), parent=self.root)
+            return
+
+        def finished() -> None:
+            self.stfmr_lockin_motor_busy = False
+            if self.closing or self.stfmr_lockin_closed:
+                return
+            try:
+                state = future.result()
+            except BaseException as error:
+                if not motor.connected:
+                    ownership.release("STFMR")
+                self._show_stfmr_lockin_motor_state()
+                self._update_stfmr_lockin_ui()
+                messagebox.showerror("STFMR motor connection", str(error), parent=self.root)
+                return
+            self._show_stfmr_lockin_motor_state(None if state is None else state.get("angle_deg"))
+            self._update_stfmr_lockin_ui()
+
+        future.add_done_callback(lambda _future: self.post_ui(finished))
+
+    # ---- the stage by hand: Move stage and Stop stage (user, 2026-10-17) --------
+    def move_stfmr_lockin_stage(self) -> None:
+        """Move stage (user, 2026-10-17: "also add Move stage button for the
+        motor in ST-FMR"), as RT-E's: the target from the stage zero, within
+        ±NEWMARK_CABLE_LIMIT_DEG (the sample wires), at 5°/s, as a job on the
+        STFMR worker (move_to_deg); its progress and the angle read back go
+        to the Motor row's status.  The move watches the page's stage-stop
+        event (Stop stage) and the sweep's stop event (the page closing): a
+        Stop sends STOP from the worker.  A latched limit error or the driver
+        off is asked Yes/No (RT-E's question) and fixed on Yes
+        (_stfmr_lockin_stage_job).  Refused without the page's safety tick,
+        with the motor not connected here, while anything else runs, or
+        after an unconfirmed stop (motion_may_run)."""
+        if self._stfmr_lockin_motor_locked():
+            return
+        motor = self.stfmr_lockin_motor
+        try:
+            if not self.stfmr_lockin_manual_safety_var.get():
+                raise RuntimeError("Please tick the safety confirmation in the KEPCO 4886 field output panel first")
+            if not motor.connected:
+                raise RuntimeError(f"Connect the {motor.label} first (the Motor row)")
+            if motor.in_move or motor.motion_may_run:
+                # An unconfirmed stop may have left the stage turning the
+                # sample and its wires (review rule of 2026-10-14, as RT-E).
+                raise RuntimeError(f"The {motor.label}'s last stop was not confirmed, so it may still be turning: "
+                                   "press Stop stage first (check the stage)")
+            try:
+                target = float(str(self.stfmr_lockin_stage_target_var.get()).strip())
+            except (TypeError, ValueError):
+                target = math.nan
+            if not math.isfinite(target) or abs(target) > NEWMARK_CABLE_LIMIT_DEG:
+                raise ValueError(f"The stage angle must be within ±{NEWMARK_CABLE_LIMIT_DEG:g}° of the stage zero "
+                                 "(the sample wires)")
+        except Exception as error:
+            messagebox.showerror("STFMR stage", str(error), parent=self.root)
+            return
+        # Cleared here, as RT-E's Move stage clears both: an old Stop must
+        # not stop this move.
+        self.stfmr_lockin_stage_stop_event.clear()
+        self.stfmr_lockin_stop_event.clear()
+        stop = _EitherEvent(self.stfmr_lockin_stop_event, self.stfmr_lockin_stage_stop_event)
+
+        def move():
+            try:
+                state = motor.move_to_deg(target, stop, on_progress=self._stfmr_lockin_motor_progress)
+            except NewmarkStopRequested as stopped:
+                if not stopped.stopped:
+                    raise       # STOP not confirmed: a failure, not a clean stop
+                angle = None if stopped.before else stopped.px / motor.steps_per_degree
+                self.thread_log(f"STFMR {motor.label}: Move stage stopped: "
+                                + ("not moved" if stopped.before else
+                                   f"stopped at {newmark_angle_text(stopped.px, motor.steps_per_degree)}"))
+                return angle
+            return state["angle_deg"]
+
+        def moved(angle) -> None:
+            if angle is None:
+                # Stopped before it was sent: nothing moved.
+                self._show_stfmr_lockin_motor_state(self.__dict__.get("stfmr_lockin_motor_known_deg"))
+            else:
+                self._show_stfmr_lockin_motor_state(angle)
+
+        self._stfmr_lockin_stage_job(move, moved, moves=True)
+
+    def _stfmr_lockin_stage_job(self, operation, done, *, moves=False, fix=None, fixed=()) -> None:
+        """A hand stage job on the STFMR worker, as RT-E's _rte_stage_job
+        (user, 2026-10-17): the Motor row and Start are locked while it is
+        queued or runs (stfmr_lockin_motor_busy; ``moves``: a move, which
+        Stop stage never queues a STOP behind).  When the stage refuses it
+        with a latched limit error or its driver off, the same Yes/No as
+        RT-E's is asked from the Tk event loop (_stfmr_lockin_offer_stage_fix);
+        on Yes, ``fix`` ((command, function): CLR or EO=1, read back) and
+        ``operation`` run again as one job, unless Stop stage was pressed or
+        the page is closing by the time it runs.  ``fixed``: the problems
+        already fixed in this chain, never asked again."""
+        motor = self.stfmr_lockin_motor
+
+        def job():
+            if fix is not None:
+                command, function = fix
+                held = self._stfmr_lockin_stage_fix_held()
+                if held is not None:
+                    # Queued behind a read (the live poll) after the Yes: no
+                    # CLR or EO=1.  The move then reports the Stop ("not
+                    # moved"); on a closing page nothing more runs.
+                    self.thread_log(f"STFMR {motor.label}: {command} not sent: {held} after the Yes")
+                    if self.closing or self.stfmr_lockin_closed:
+                        return None
+                else:
+                    function()
+            return operation()
+
+        self.stfmr_lockin_motor_busy = True
+        self.stfmr_lockin_stage_move_pending = moves
+        if moves:
+            self._show_stfmr_lockin_motor_state(text="Moving…")
+        self._update_stfmr_lockin_ui()
+        try:
+            future = self.stfmr_lockin_executor.submit(job)
+        except BaseException as error:
+            self.stfmr_lockin_motor_busy = self.stfmr_lockin_stage_move_pending = False
+            self._show_stfmr_lockin_motor_state(self.__dict__.get("stfmr_lockin_motor_known_deg"))
+            self._update_stfmr_lockin_ui()
+            if not self.closing:
+                messagebox.showerror("STFMR stage", str(error), parent=self.root)
+            return
+
+        def finished() -> None:
+            self.stfmr_lockin_motor_busy = self.stfmr_lockin_stage_move_pending = False
+            if self.closing or self.stfmr_lockin_closed:
+                return
+            try:
+                result = future.result()
+            except NEWMARK_FIXABLE_REFUSALS as error:
+                # Not a failure: asked from the Tk event loop, not inside
+                # drain_ui_queue (the rule of 2026-10-14), with the buttons
+                # locked until the answer.
+                refusal = error
+                self.thread_log(f"STFMR {motor.label}: {refusal}")
+                self._show_stfmr_lockin_motor_state(self.__dict__.get("stfmr_lockin_motor_known_deg"))
+                self.stfmr_lockin_stage_prompt_open = True
+                self._update_stfmr_lockin_ui()
+                try:
+                    self.root.after(0, lambda: self._stfmr_lockin_offer_stage_fix(refusal, operation, done, moves,
+                                                                                  fixed))
+                except tk.TclError:
+                    self.stfmr_lockin_stage_prompt_open = False
+                return
+            except BaseException as error:
+                self.thread_log(f"STFMR {motor.label}: {error}")
+                if motor.motion_may_run:
+                    self._show_stfmr_lockin_motor_state(text="CHECK STAGE")
+                elif getattr(error, "px", None) is not None and motor.steps_per_degree:
+                    self._show_stfmr_lockin_motor_state(error.px / motor.steps_per_degree)
+                else:
+                    self._show_stfmr_lockin_motor_state(self.__dict__.get("stfmr_lockin_motor_known_deg"))
+                self._update_stfmr_lockin_ui()
+                messagebox.showerror("STFMR stage", str(error), parent=self.root)
+                return
+            done(result)
+            self._update_stfmr_lockin_ui()
+
+        future.add_done_callback(lambda _future: self.post_ui(finished))
+
+    def _stfmr_lockin_stage_fix_held(self):
+        """Why a CLR or an EO=1 queued after a hand move's Yes must not be
+        sent now, or None (as RT-E's _rte_stage_fix_held)."""
+        if self.closing or self.stfmr_lockin_closed:
+            return "STFMR is closing"
+        if self.stfmr_lockin_stage_stop_event.is_set():
+            return "Stop stage was pressed"
+        if self.stfmr_lockin_stop_event.is_set():
+            return "Stop / zero was pressed"
+        return None
+
+    def _stfmr_lockin_require_stage_fix_ready(self) -> None:
+        """The checks before a hand move's CLR or EO=1, before its question
+        and after its Yes, as RT-E's: the page open, no sweep running or
+        starting, the page's safety tick, the stage connected here and not
+        left turning by an unconfirmed stop."""
+        motor = self.stfmr_lockin_motor
+        if self.closing or self.stfmr_lockin_closed:
+            raise RuntimeError("STFMR is closing")
+        if (self.stfmr_lockin_running or self.__dict__.get("stfmr_lockin_starting", False)
+                or self.__dict__.get("stfmr_lockin_motor_check_pending", False)):
+            raise RuntimeError("An STFMR sweep is running or starting; wait or stop it first")
+        if not self.stfmr_lockin_manual_safety_var.get():
+            raise RuntimeError("Please tick the safety confirmation in the KEPCO 4886 field output panel first")
+        if not motor.connected:
+            raise RuntimeError(f"Connect the {motor.label} first (the Motor row)")
+        if motor.in_move or motor.motion_may_run:
+            raise RuntimeError(f"The {motor.label}'s last stop was not confirmed, so it may still be turning: "
+                               "press Stop stage first (check the stage)")
+
+    def _stfmr_lockin_offer_stage_fix(self, error, operation, done, moves, fixed) -> None:
+        """From the Tk event loop after a hand move's refusal (user,
+        2026-10-17), as RT-E's _rte_offer_stage_fix: no question after a
+        Stop meanwhile, on a closing page, or for a problem this chain
+        already fixed; the checks before the question and after its Yes; on
+        Yes the fix and the move as one job on the STFMR worker."""
+        try:
+            motor = self.stfmr_lockin_motor
+            if self.closing or self.stfmr_lockin_closed:
+                return
+            kind, command, title, question = newmark_fix_prompt(error, "STFMR")
+            function = motor.clear_limit_error if kind is NewmarkLimitErrorLatched else motor.enable_driver
+            held = self._stfmr_lockin_stage_fix_held()
+            if held is not None:
+                # Stop stage (or Stop / zero) pressed while the stage was read:
+                # no question, nothing sent, no move.
+                self.thread_log(f"STFMR {motor.label}: {held} meanwhile: {command} not offered; nothing sent")
+                return
+            try:
+                if kind in fixed:
+                    raise RuntimeError(newmark_fix_again_text(kind, error, command))
+                self._stfmr_lockin_require_stage_fix_ready()
+            except Exception as problem:
+                self.thread_log(f"STFMR {motor.label}: {command} not offered: {problem}")
+                messagebox.showerror("STFMR stage", str(problem), parent=self.root)
+                return
+            if not messagebox.askyesno(title, question, parent=self.root):
+                self.thread_log(f"STFMR {motor.label}: No: {command} not sent; nothing moved")
+                return
+            if self.closing or self.stfmr_lockin_closed:
+                self.thread_log(f"STFMR {motor.label}: {command} not sent: STFMR is closing")
+                return
+            try:
+                self._stfmr_lockin_require_stage_fix_ready()
+            except Exception as problem:
+                self.thread_log(f"STFMR {motor.label}: {command} not sent: {problem}")
+                messagebox.showerror("STFMR stage", str(problem), parent=self.root)
+                return
+            self.thread_log(f"STFMR {motor.label}: Yes: {command} queued on the STFMR worker; it is read back "
+                            "before anything moves")
+            # Answered: the job takes over the lock from the question.
+            self.stfmr_lockin_stage_prompt_open = False
+            self._stfmr_lockin_stage_job(operation, done, moves=moves, fix=(command, function),
+                                         fixed=tuple(fixed) + (kind,))
+        finally:
+            self.stfmr_lockin_stage_prompt_open = False
+            if not self.closing and not self.stfmr_lockin_closed:
+                self._update_stfmr_lockin_ui()
+
+    def stop_stfmr_lockin_stage(self) -> None:
+        """Stop stage (user, 2026-10-17), as RT-E's: always sets the page's
+        stage-stop event.  A hand move watches it and sends STOP from the
+        STFMR worker; so the STOP never waits in the queue behind a move (one
+        queued but not started is then not sent at all).  During a sweep it
+        stops the sweep too, as Stop / zero does: the sweep's move stops
+        (STOP from the worker), and the sweep ends stopped with the 4886
+        zeroed and the RF off.  With nothing moving, STOP is queued on the
+        worker (stop()), so a stage left turning can be stopped; where it
+        stopped goes to the Motor row's status."""
+        self.stfmr_lockin_stage_stop_event.set()
+        motor = self.__dict__.get("stfmr_lockin_motor")
+        if self.closing or self.stfmr_lockin_closed or motor is None or not motor.connected:
+            return
+        if self.stfmr_lockin_running:
+            self.thread_log(f"STFMR {motor.label}: Stop stage during the sweep: the sweep stops")
+            self.stop_stfmr_lockin_scan()
+            return
+        if motor.in_move or self.__dict__.get("stfmr_lockin_stage_move_pending", False):
+            self._show_stfmr_lockin_motor_state(text="Stopping…")
+            return
+        try:
+            future = self.stfmr_lockin_executor.submit(motor.stop)
+        except RuntimeError:
+            return      # the worker is shutting down; the page's close stops the stage
+
+        def finished() -> None:
+            if self.closing or self.stfmr_lockin_closed:
+                return
+            try:
+                result = future.result()
+            except Exception as error:
+                self._show_stfmr_lockin_motor_state(text="CHECK STAGE" if motor.motion_may_run else None)
+                problem = f"Stop stage: STOP was not sent ({error}): CHECK THE STAGE"
+            else:
+                if result["stopped"]:
+                    self._show_stfmr_lockin_motor_state(result["angle_deg"])
+                    self.thread_log(f"STFMR {motor.label}: Stop stage: stopped at "
+                                    f"{newmark_angle_text(result['px'], result['steps_per_degree'])}")
+                    self._update_stfmr_lockin_ui()
+                    return
+                self._show_stfmr_lockin_motor_state(text="CHECK STAGE")
+                notes = result.get("notes") or []
+                problem = ("Stop stage: STOP (then ABORT) sent, but the stage could not be confirmed stopped: "
+                           "CHECK THE STAGE (switch the NSC-A1's 24 V off if it still turns)"
+                           + (f" ({'; '.join(notes)})" if notes else ""))
+            self.thread_log(f"STFMR {motor.label}: {problem}")
+            self._update_stfmr_lockin_ui()
+            messagebox.showerror("STFMR stage", problem, parent=self.root)
+
+        future.add_done_callback(lambda _future: self.post_ui(finished))
+
+    def set_stfmr_lockin_motor_zero(self) -> None:
+        """Set motor 0° (user, 2026-10-17: "also add Set 0° button for the
+        motor in ST-FMR"), as RT-E's Set stage 0°: the same Yes/No
+        (newmark_set_zero_question), then PX=0 (set_zero, read back) and a
+        read of where the stage is, as one job on the STFMR worker; the
+        Motor row's status shows the angle read back.  Not while a sweep
+        runs or starts, or a Connect / Disconnect runs (the button is locked
+        then); without the motor connected here, an error dialog, as on
+        RT-E.  set_zero refuses while MST says the stage moves."""
+        if self._stfmr_lockin_motor_locked():
+            return
+        motor = self.stfmr_lockin_motor
+        if not motor.connected:
+            messagebox.showerror("STFMR stage", f"Connect the {motor.label} first (the Motor row)",
+                                 parent=self.root)
+            return
+        if not messagebox.askyesno("STFMR stage zero", newmark_set_zero_question(), parent=self.root):
+            return
+        # Checked again after the question: a sweep cannot have started
+        # meanwhile (the question is modal), but the page may be closing.
+        if self._stfmr_lockin_motor_locked() or not motor.connected:
+            return
+
+        def operation():
+            motor.set_zero()
+            return motor.read_state()
+
+        self.stfmr_lockin_motor_busy = True
+        self._show_stfmr_lockin_motor_state(text="Setting 0°…")
+        self._update_stfmr_lockin_motor_row()
+        try:
+            future = self.stfmr_lockin_executor.submit(operation)
+        except BaseException as error:
+            self.stfmr_lockin_motor_busy = False
+            self._show_stfmr_lockin_motor_state()
+            self._update_stfmr_lockin_motor_row()
+            if not self.closing:
+                messagebox.showerror("STFMR stage", str(error), parent=self.root)
+            return
+
+        def finished() -> None:
+            self.stfmr_lockin_motor_busy = False
+            if self.closing or self.stfmr_lockin_closed:
+                return
+            try:
+                state = future.result()
+            except BaseException as error:
+                self.thread_log(f"STFMR {motor.label}: Set motor 0° failed: {error}")
+                self._show_stfmr_lockin_motor_state()
+                self._update_stfmr_lockin_ui()
+                messagebox.showerror("STFMR stage", str(error), parent=self.root)
+                return
+            self._show_stfmr_lockin_motor_state(state["angle_deg"])
+            self._update_stfmr_lockin_ui()
+
+        future.add_done_callback(lambda _future: self.post_ui(finished))
+
+    def disconnect_stfmr_lockin_motor(self) -> None:
+        """Disconnect on the STFMR worker: STOP first if the stage is moving
+        (bounded), then Close; the device is released for the other page once
+        the handle is closed, even when its stop was not confirmed (then the
+        status says CHECK STAGE and a dialog says why)."""
+        if self._stfmr_lockin_motor_locked():
+            return
+        motor = self.stfmr_lockin_motor
+        if not motor.connected:
+            return
+
+        def operation():
+            try:
+                motor.disconnect()
+            except Exception as error:
+                if motor.connected:
+                    raise       # still open: the row stays connected
+                return error    # closed, but its stop was not confirmed
+            return None
+
+        self.stfmr_lockin_motor_busy = True
+        self._show_stfmr_lockin_motor_state(text="Disconnecting…")
+        self._update_stfmr_lockin_motor_row()
+        try:
+            future = self.stfmr_lockin_executor.submit(operation)
+        except BaseException as error:
+            self.stfmr_lockin_motor_busy = False
+            self._show_stfmr_lockin_motor_state()
+            self._update_stfmr_lockin_motor_row()
+            if not self.closing:
+                messagebox.showerror("STFMR motor disconnect", str(error), parent=self.root)
+            return
+
+        def finished() -> None:
+            self.stfmr_lockin_motor_busy = False
+            if self.closing or self.stfmr_lockin_closed:
+                return
+            try:
+                failure = future.result()
+            except BaseException as error:
+                self._show_stfmr_lockin_motor_state()
+                self._update_stfmr_lockin_ui()
+                messagebox.showerror("STFMR motor disconnect", str(error), parent=self.root)
+                return
+            if not motor.connected:
+                self._newmark_stage_ownership().release("STFMR")
+                self.stfmr_lockin_motor_known_deg = None
+            self._show_stfmr_lockin_motor_state(text="CHECK STAGE" if failure is not None else None)
+            self._update_stfmr_lockin_ui()
+            if failure is not None:
+                self.thread_log(f"STFMR {motor.label}: {failure}")
+                messagebox.showerror("STFMR motor disconnect", str(failure), parent=self.root)
 
         future.add_done_callback(lambda _future: self.post_ui(finished))
 
@@ -17966,6 +18719,7 @@ class CombinedControlApp:
         frequency_ghz: float = math.nan,
         modulation_frequency_hz: float = math.nan,
         power_dbm: float = math.nan,
+        stage_angle_deg: float = math.nan,
     ) -> None:
         voltage = self._stfmr_lockin_sample_voltage(sample)
         x_value = self._stfmr_lockin_sample_component(sample, "X")
@@ -17986,8 +18740,10 @@ class CombinedControlApp:
                 # Keeps each modulation frequency's curve apart in the live
                 # plots, as the carrier's is (user, 2026-10-13).
                 "modulation_frequency_hz": float(modulation_frequency_hz),
-                # And each power's (user, 2026-10-14).
+                # And each power's (user, 2026-10-14), and each stage
+                # angle's (user, 2026-10-17).
                 "microwave_power_dbm": float(power_dbm),
+                "stage_angle_deg": float(stage_angle_deg),
                 "field_g": float(field_g),
                 "x_v": x_value,
                 "y_v": y_value,
@@ -18333,13 +19089,36 @@ class CombinedControlApp:
         )
 
     def start_stfmr_lockin_scan(self) -> None:
+        # Also not while Start's stage check or its question is pending
+        # (user, 2026-10-17).
         if (self.closing or self.stfmr_lockin_closed
                 or self.stfmr_lockin_running
-                or getattr(self, "stfmr_lockin_starting", False)):
+                or getattr(self, "stfmr_lockin_starting", False)
+                or self._stfmr_lockin_stage_job_pending()):
             return
+        self._run_stfmr_lockin_start_step(self._start_stfmr_lockin_scan)
+
+    def _stfmr_lockin_stage_job_pending(self) -> bool:
+        """Start's stage check or its question, a stage job of the Motor row
+        (Connect, Disconnect, Set motor 0°, a hand move) or a hand move's
+        question: Start waits for it (user, 2026-10-17: "a sweep can't start
+        while a hand move is pending")."""
+        return bool(
+            self.__dict__.get("stfmr_lockin_motor_check_pending", False)
+            or self.__dict__.get("stfmr_lockin_motor_busy", False)
+            or self.__dict__.get("stfmr_lockin_stage_prompt_open", False)
+        )
+
+    def _run_stfmr_lockin_start_step(self, step, *, refresh: bool = False) -> None:
+        """One step of a Start, with its failure handling: the whole Start
+        without the motor, as before; with the motor (user, 2026-10-17) the
+        inputs and the stage check's job first, then, once the check has
+        passed, the rest (folder, confirmation, files, outputs) from the Tk
+        event loop.  refresh: the page's buttons follow the state again
+        after the step (they were locked for the check)."""
         self.stfmr_lockin_starting = True
         try:
-            self._start_stfmr_lockin_scan()
+            step()
         except BaseException as error:
             if self.stfmr_lockin_running:
                 self._finish_stfmr_lockin_scan(error=error)
@@ -18351,6 +19130,8 @@ class CombinedControlApp:
                     messagebox.showerror("STFMR start failed", str(error), parent=self.root)
         finally:
             self.stfmr_lockin_starting = False
+            if refresh and not self.closing and not self.stfmr_lockin_closed:
+                self._update_stfmr_lockin_ui()
 
     def _start_stfmr_lockin_scan(self) -> None:
         try:
@@ -18419,170 +19200,491 @@ class CombinedControlApp:
                 meter, settle_s, acquire_s, sr830_time_constant_code,
                 mfli_timeconstant_s,
             )
+            # The stage angles, the outermost loop, and whether the motor is
+            # used (user, 2026-10-17): refused here, before anything else,
+            # when Angle start / stop ask for a motor that is not connected
+            # on this page or whose last stop was not confirmed.
+            angle_plan = self._stfmr_lockin_angle_plan()
+            angles_deg = angle_plan["angles"]
         except BaseException as error:
             messagebox.showerror("STFMR scan", str(error), parent=self.root)
             return
-        folder = self.select_csv_save_directory(
-            "Select the folder for the STFMR live CSV and log",
-            self.stfmr_lockin_save_directory,
-        )
-        if folder is None or self.closing or self.stfmr_lockin_closed:
-            return
-        # The whole f x A sweep runs once per modulation frequency
-        # (user, 2026-10-13) and, inside it, once per power (user,
-        # 2026-10-14), so every count below is per pass, one pass per
-        # modulation frequency, power and microwave frequency.
-        passes = len(modulation_frequencies_hz) * len(powers_dbm) * len(frequencies_ghz)
-        total_points = passes * len(points)
-        loops_count = max(len(points) // max(self.stfmr_lockin_points_per_loop, 1), 1)
-        # Counted by the discard rule, which a fixed current changes
-        # (user, 2026-10-13).
-        retained_per_frequency = self._stfmr_saved_points_per_frequency(
-            self.stfmr_lockin_points_per_loop, loops_count
-        )
-        saved_field_points = passes * retained_per_frequency
-        estimated_saved = saved_field_points
-        if meter == "MFLI + SR830":
-            estimated_saved *= 2
-        # Every reading after the first of each pass follows a current step
-        # and waits the effective settle; every saved point then averages
-        # Acquire s, while a discarded reading is one reading
-        # (user, 2026-10-14).  The reads themselves come on top.
-        settles = max(total_points - passes, 0)
-        estimate = settles * effective_settle_s + saved_field_points * acquire_s
-        # The seconds come first; from 2 min the minutes or hours follow, as
-        # the status line's time left reads (review, 2026-10-14).
-        estimate_scale = (
-            f"; about {self._stfmr_lockin_duration_text(estimate)}"
-            if estimate >= 120.0 else ""
-        )
-        fixed_current = self.stfmr_lockin_points_per_loop == 1
-        if not messagebox.askyesno(
-            "STFMR scan",
-            f"Microwave: {frequencies_ghz[0]:g} → {frequencies_ghz[-1]:g} GHz, "
-            f"{len(frequencies_ghz)} frequencies\n"
-            + f"{modulation_text}\n"
-            + f"{power_text}\n"
-            + (
-                f"{len(points)} readings per frequency at a fixed {points[0]:g} A, "
-                "first two readings of each frequency discarded, "
-                if fixed_current
-                else f"{len(points)} points per frequency (start→stop), "
-                "first two points of each loop discarded, "
+
+        def begin() -> None:
+            # The rest of the Start: at once without the motor, as before;
+            # with it, once Start's stage check has passed (user,
+            # 2026-10-17).
+            folder = self.select_csv_save_directory(
+                "Select the folder for the STFMR live CSV and log",
+                self.stfmr_lockin_save_directory,
             )
-            + f"about {estimated_saved} points saved\n"
-            + (
-                f"SR830 REF IN: {sr830_reference_input}; "
-                f"Autorange: {'on' if sr830_auto_range else 'off'}\n"
-                if meter == "SR830"
-                else f"MFLI autorange: {'on' if mfli_auto_range else 'off'}\n"
+            if folder is None or self.closing or self.stfmr_lockin_closed:
+                return
+            # The whole f x A sweep runs once per modulation frequency
+            # (user, 2026-10-13) and, inside it, once per power (user,
+            # 2026-10-14), so every count below is per pass, one pass per
+            # modulation frequency, power and microwave frequency.  With the
+            # motor, the whole Mod. x P x f x A sweep runs once per angle
+            # (user, 2026-10-17), so the angles multiply the passes too.
+            passes = (max(len(angles_deg), 1) * len(modulation_frequencies_hz) * len(powers_dbm)
+                      * len(frequencies_ghz))
+            total_points = passes * len(points)
+            loops_count = max(len(points) // max(self.stfmr_lockin_points_per_loop, 1), 1)
+            # Counted by the discard rule, which a fixed current changes
+            # (user, 2026-10-13).
+            retained_per_frequency = self._stfmr_saved_points_per_frequency(
+                self.stfmr_lockin_points_per_loop, loops_count
             )
-            + f"{timing_text}\n"
-            + f"Estimated at least {estimate:.1f} s ({settles} settles of "
-            f"{effective_settle_s:g} s + {saved_field_points} averages of "
-            f"{acquire_s:g} s{estimate_scale}).\n"
-            + f"Live CSV / log saved to: {folder}\n"
-            + "Start now and enable the 4886 and SMB100A outputs?",
-            parent=self.root,
-        ):
+            saved_field_points = passes * retained_per_frequency
+            estimated_saved = saved_field_points
+            if meter == "MFLI + SR830":
+                estimated_saved *= 2
+            # Every reading after the first of each pass follows a current step
+            # and waits the effective settle; every saved point then averages
+            # Acquire s, while a discarded reading is one reading
+            # (user, 2026-10-14).  The reads themselves come on top.
+            settles = max(total_points - passes, 0)
+            estimate = settles * effective_settle_s + saved_field_points * acquire_s
+            # And the stage moves, |Δθ| / 5°/s from where the stage was seen
+            # (by the stage check just before) through every angle (user,
+            # 2026-10-17).
+            known_deg = self.__dict__.get("stfmr_lockin_motor_known_deg") if angle_plan["used"] else None
+            move_s = stfmr_angle_move_seconds(angles_deg, known_deg or 0.0)
+            estimate += move_s
+            angle_line = angle_plan["text"] + (
+                f"; the stage is at {known_deg:+.3f}° now" if known_deg is not None else "")
+            # The seconds come first; from 2 min the minutes or hours follow, as
+            # the status line's time left reads (review, 2026-10-14).
+            estimate_scale = (
+                f"; about {self._stfmr_lockin_duration_text(estimate)}"
+                if estimate >= 120.0 else ""
+            )
+            fixed_current = self.stfmr_lockin_points_per_loop == 1
+            if not messagebox.askyesno(
+                "STFMR scan",
+                f"Microwave: {frequencies_ghz[0]:g} → {frequencies_ghz[-1]:g} GHz, "
+                f"{len(frequencies_ghz)} frequencies\n"
+                + f"{modulation_text}\n"
+                + f"{power_text}\n"
+                + f"{angle_line}\n"
+                + (
+                    f"{len(points)} readings per frequency at a fixed {points[0]:g} A, "
+                    "first two readings of each frequency discarded, "
+                    if fixed_current
+                    else f"{len(points)} points per frequency (start→stop), "
+                    "first two points of each loop discarded, "
+                )
+                + f"about {estimated_saved} points saved\n"
+                + (
+                    f"SR830 REF IN: {sr830_reference_input}; "
+                    f"Autorange: {'on' if sr830_auto_range else 'off'}\n"
+                    if meter == "SR830"
+                    else f"MFLI autorange: {'on' if mfli_auto_range else 'off'}\n"
+                )
+                + f"{timing_text}\n"
+                + f"Estimated at least {estimate:.1f} s ({settles} settles of "
+                f"{effective_settle_s:g} s + {saved_field_points} averages of "
+                f"{acquire_s:g} s"
+                + (f" + {move_s:.0f} s of stage moves at {NEWMARK_SPEED_DEG_S:g}°/s"
+                   if angle_plan["used"] else "")
+                + f"{estimate_scale}).\n"
+                + f"Live CSV / log saved to: {folder}\n"
+                + ("Start now, turn the stage and enable the 4886 and SMB100A outputs?"
+                   if angle_plan["used"] else "Start now and enable the 4886 and SMB100A outputs?"),
+                parent=self.root,
+            ):
+                return
+            if self.closing or self.stfmr_lockin_closed:
+                return
+            motor = self.__dict__.get("stfmr_lockin_motor")
+            if angle_plan["used"]:
+                # Checked again after the dialogs, before any file or output:
+                # only flags, no DLL call here (user, 2026-10-17).
+                if not motor.connected:
+                    raise RuntimeError(f"The {motor.label} is no longer connected; the sweep was not started")
+                if motor.in_move or motor.motion_may_run:
+                    raise RuntimeError(f"The {motor.label}'s last stop was not confirmed; the sweep was not started")
+            reference_source = self.stfmr_lockin_reference_var.get()
+            settings = {
+                "program": Path(__file__).name,
+                "python_version": sys.version,
+                "resources": {key: var.get() for key, var in self.stfmr_lockin_resource_vars.items()},
+                "connected": {key: self._stfmr_lockin_connected(key) for key in self.stfmr_lockin_resource_vars},
+                # Two Zurich lock-ins exist, so record which one took the data.
+                "mfli_device": zurich_mfli_choice(self.stfmr_lockin_resource_vars["mfli"].get())[0],
+                "mfli_identity": str(getattr(self.stfmr_lockin_mfli_controller, "mfli_identity", "") or ""),
+                "meter": meter, "frequencies_ghz": frequencies_ghz,
+                "acquisition_mode": "sequential_same_current" if meter == "MFLI + SR830" else "single",
+                "csv_pair_key": "index + meter; dual mode saves two rows per retained field point",
+                # The first power and modulation frequency under their old names,
+                # for readers of older logs, then the whole lists and the boxes
+                # they came from (user, 2026-10-13 and 2026-10-14).
+                "power_dbm": powers_dbm[0], "powers_dbm": powers_dbm,
+                "power_start_dbm": power_start_dbm, "power_stop_dbm": power_stop_dbm,
+                "power_step_db": power_step_db,
+                "rf_on_between_powers": True,
+                "modulation_frequency_hz": modulation_frequencies_hz[0],
+                "modulation_frequencies_hz": modulation_frequencies_hz,
+                "modulation_start_hz": modulation_start_hz,
+                "modulation_end_hz": modulation_end_hz,
+                "current_start_a": points[0],
+                "current_stop_a": points[self.stfmr_lockin_points_per_loop - 1],
+                "current_step_a": abs(float(self.stfmr_lockin_step_var.get())),
+                "loops": len(points) // self.stfmr_lockin_points_per_loop,
+                "points_per_loop": self.stfmr_lockin_points_per_loop,
+                "voltage_limit_v": limit_v,
+                # Settle s and Acquire s replace Wait/pt s, whose point_delay_s
+                # and effective_point_wait_s are gone (user, 2026-10-14).
+                "settle_s": settle_s,
+                "acquire_s": acquire_s,
+                "settle_time_constants": LOCKIN_SETTLE_TAUS,
+                "effective_settle_s": effective_settle_s,
+                "acquisition_sample_interval_s": STFMR_LOCKIN_SAMPLE_INTERVAL_S,
+                "discard_first_points_per_frequency": 2,
+                "expected_saved_points": estimated_saved,
+                "sr830_ref_in": sr830_reference_input,
+                "sr830_auto_range": sr830_auto_range,
+                "sr830_initial_sensitivity_index": STFMR_LOCKIN_SR830_SENSITIVITY_CODE,
+                "sr830_time_constant_index": sr830_time_constant_code,
+                "sr830_time_constant_s": SR830_TIME_CONSTANTS_S[sr830_time_constant_code],
+                "mfli_timeconstant_s": mfli_timeconstant_s,
+                "mfli_auto_range": mfli_auto_range,
+                "mfli_reference_source": reference_source,
+                "mfli_sample_rate_hz": 1.0 / STFMR_LOCKIN_SAMPLE_INTERVAL_S,
+                "safety_confirmed": bool(self.stfmr_lockin_manual_safety_var.get()),
+                # The stage angles, the outermost loop, and the motor (user,
+                # 2026-10-17); without the motor angles_deg is [] and the
+                # CSV's stage_angle_deg is blank.
+                "angles_deg": list(angles_deg),
+                "angle_start_deg": angle_plan["start"],
+                "angle_stop_deg": angle_plan["stop"],
+                "angle_step_deg": angle_plan["step"],
+                "motor_used": angle_plan["used"],
+                "motor_resource": angle_plan["resource"],
+                "motor_identity": (
+                    f"{motor.identity} {motor.version}".strip() if angle_plan["used"] else ""
+                ),
+                "motor_usb_serial": motor.resource_name if angle_plan["used"] else "",
+                "motor_steps_per_degree": motor.steps_per_degree if angle_plan["used"] else None,
+                "motor_speed_deg_s": NEWMARK_SPEED_DEG_S if angle_plan["used"] else None,
+                "motor_angle_at_start_deg": known_deg,
+                "stage_moves_s_estimate": move_s,
+            }
+            try:
+                recorder = STFMRScanRecorder(Path(folder), settings)
+            except BaseException as error:
+                messagebox.showerror(
+                    "STFMR save path", f"Could not create the live data files; scan not started: {error}", parent=self.root
+                )
+                return
+            self.stfmr_lockin_recorder = recorder
+            self.stfmr_lockin_save_directory = Path(folder)
+            self.stfmr_lockin_save_path_var.set(str(recorder.directory))
+            self.stfmr_lockin_reference_source = reference_source
+            self.stfmr_lockin_rows.clear()
+            self.stfmr_lockin_live_rows.clear()
+            self._redraw_stfmr_lockin_live_plots()
+            self._redraw_stfmr_lockin_plot()
+            self.stfmr_lockin_points = points
+            self.stfmr_lockin_frequencies_ghz = frequencies_ghz
+            self.stfmr_lockin_frequency_index = 0
+            self.stfmr_lockin_index = 0
+            self.stfmr_lockin_started = time.monotonic()
+            self.stfmr_lockin_live_started = self.stfmr_lockin_started
+            self.stfmr_lockin_settle_s = settle_s
+            self.stfmr_lockin_acquire_s = acquire_s
+            self.stfmr_lockin_acquisition = None
+            self.stfmr_lockin_modulation_frequencies_hz = modulation_frequencies_hz
+            self.stfmr_lockin_modulation_index = 0
+            self.stfmr_lockin_expected_hz = modulation_frequencies_hz[0]
+            self.stfmr_lockin_powers_dbm = powers_dbm
+            self.stfmr_lockin_power_index = 0
+            self.stfmr_lockin_power_dbm = powers_dbm[0]
+            # The angles, the outermost loop ([] without the motor); the
+            # first move is in the first configure job, before the RF and
+            # the 4886 are switched on (user, 2026-10-17).
+            self.stfmr_lockin_angles_deg = list(angles_deg)
+            self.stfmr_lockin_angle_index = 0
+            self.stfmr_lockin_stage_angle_deg = None
+            self.stfmr_lockin_stage_where = "stage not moved" if angles_deg else ""
+            self.stfmr_lockin_limit_v = limit_v
+            self.stfmr_lockin_mfli_timeconstant_s = mfli_timeconstant_s
+            self.stfmr_lockin_sr830_time_constant_code = sr830_time_constant_code
+            self.stfmr_lockin_effective_settle_s = effective_settle_s
+            self.stfmr_lockin_sr830_reference_input = sr830_reference_input
+            self.stfmr_lockin_sr830_auto_range = sr830_auto_range
+            self.stfmr_lockin_mfli_auto_range = mfli_auto_range
+            self.stfmr_lockin_mfli_range_attempts = 0
+            self.stfmr_lockin_mfli_range_actions = []
+            self.stfmr_lockin_selected_meter = meter
+            self.stfmr_lockin_stop_event.clear()
+            self.stfmr_lockin_running = True
+            self._set_stfmr_progress(self.stfmr_lockin_progress, 0, total_points)
+            self.stfmr_lockin_status_var.set(
+                f"Turning the stage to {angles_deg[0]:g}°; then the SMB100A and lock-in"
+                if angles_deg else "Configuring the SMB100A and lock-in…"
+            )
+            self._update_stfmr_lockin_ui()
+            self._configure_stfmr_lockin_frequency(initial=True)
+
+        if not angle_plan["used"]:
+            begin()
             return
+        # The motor turns the sample holder: its before-move checks (MST,
+        # then EO) run first, as a job on the STFMR worker, before the
+        # folder, the confirmation, the files or any output, and a latched
+        # limit error or the driver off is asked Yes/No then, never
+        # mid-sweep with the RF on (user, 2026-10-17; as RT-E's Angle Start).
+        self._stfmr_lockin_check_motor(begin)
+
+    # ---- the stage angles and Start's stage check (user, 2026-10-17) ------------
+    def _stfmr_lockin_angle_plan(self) -> dict[str, object]:
+        """The sweep's stage angles and whether the motor is used, from
+        Angle start / Angle stop / Angle step (user, 2026-10-17):
+
+        - the motor connected on this page: the angle list is used, even 0
+          to 0 (one move to 0°);
+        - the motor not connected, and Angle start = Angle stop = 0 (the
+          default): the sweep runs as before, without the motor, with
+          stage_angle_deg blank in the CSV; Angle step is not read;
+        - the motor not connected otherwise, or connected on the RT-E page:
+          refused, with what to do;
+        - the motor's last stop not confirmed (motion_may_run): refused, as
+          RT-E's Start is.
+
+        Only flags are read here: no DLL call on the Tk thread.  The boxes
+        may be missing on an older stand-in page: then 0, 0 and 10."""
+        def box(name: str, default: str) -> str:
+            variable = getattr(self, name, None)
+            return default if variable is None else str(variable.get()).strip()
+
+        start_text = box("stfmr_lockin_angle_start_var", "0")
+        stop_text = box("stfmr_lockin_angle_stop_var", "0")
+        step_text = box("stfmr_lockin_angle_step_var", "10")
+        resource_var = getattr(self, "stfmr_lockin_motor_resource_var", None)
+        resource = "" if resource_var is None else str(resource_var.get()).strip()
+        motor = getattr(self, "stfmr_lockin_motor", None)
+
+        def number(text: str):
+            try:
+                value = float(text)
+            except ValueError:
+                return None
+            return value if math.isfinite(value) else None
+
+        plan = {"angles": [], "used": False, "start": number(start_text), "stop": number(stop_text),
+                "step": number(step_text), "resource": resource, "text": stfmr_angle_summary((), 0, False)}
+        if motor is None or not motor.connected:
+            if plan["start"] == 0.0 and plan["stop"] == 0.0:
+                return plan
+            # A box that is not a number gets its own message first.
+            stfmr_angle_list(start_text, stop_text, step_text)
+            owner = self._newmark_stage_ownership().owner
+            if owner not in (None, "STFMR"):
+                raise RuntimeError(
+                    f"Angle start / Angle stop ask for the motor, but the motor is connected on the {owner} "
+                    "page: disconnect it there and connect it on the Motor row here, or set Angle start and "
+                    "Angle stop to 0 for a sweep without the motor"
+                )
+            raise RuntimeError(
+                "Angle start / Angle stop ask for the motor: connect it on the Motor row of the STFMR "
+                "instrument connections, or set Angle start and Angle stop to 0 for a sweep without the motor"
+            )
+        angles = list(stfmr_angle_list(start_text, stop_text, step_text))
+        if motor.in_move or motor.motion_may_run:
+            # An unconfirmed stop may have left the stage turning the sample
+            # and its wires.  The page has no Stop stage button: Disconnect
+            # sends STOP if it still turns, and a new Connect starts afresh.
+            raise RuntimeError(
+                f"The {motor.label}'s last stop was not confirmed, so it may still be turning: check the "
+                "stage, then press Disconnect on the Motor row (it sends STOP if the stage still turns) and "
+                "Connect again"
+            )
+        plan.update(angles=angles, used=True, step=abs(float(step_text)),
+                    text=stfmr_angle_summary(angles, step_text, True))
+        return plan
+
+    def _stfmr_lockin_after_drain(self, callback) -> None:
+        """Run ``callback`` from the Tk event loop, not inside drain_ui_queue,
+        where a dialog would hold every page's post_ui callbacks until it
+        closed (the rule of the 2026-10-14 review, as RT-E's stage question):
+        the folder dialog, the confirmation and the CLR / EO=1 question come
+        after Start's stage check from here (user, 2026-10-17)."""
+        try:
+            self.root.after(0, callback)
+        except tk.TclError:
+            # The window is being destroyed: nothing is asked or sent.
+            self.stfmr_lockin_motor_check_pending = False
+
+    def _stfmr_lockin_motor_fix_held(self):
+        """Why the Start's check (or a CLR / EO=1 queued after a Yes) must
+        not go on, or None: the page closing, or Stop / zero, the KEPCO Zero /
+        OFF or Stop stage pressed meanwhile, which abandons the start.  Read
+        on the worker as the fix job starts and on the Tk thread after the
+        check, as RT-E's _rte_stage_fix_held (user, 2026-10-17)."""
+        if self.closing or self.stfmr_lockin_closed:
+            return "STFMR is closing"
+        if self.stfmr_lockin_stop_event.is_set():
+            return "Stop / zero was pressed"
+        stage_stop = self.__dict__.get("stfmr_lockin_stage_stop_event")
+        if stage_stop is not None and stage_stop.is_set():
+            return "Stop stage was pressed"
+        return None
+
+    def _stfmr_lockin_require_motor_fix_ready(self) -> None:
+        """The checks before a CLR or an EO=1 on the STFMR page, before its
+        question and again after its Yes (user, 2026-10-17): the page open,
+        no sweep running, the start not abandoned, the page's safety tick,
+        the stage connected here and not left turning by an unconfirmed
+        stop (the controller also refuses while MST says moving)."""
+        motor = self.stfmr_lockin_motor
+        if self.closing or self.stfmr_lockin_closed:
+            raise RuntimeError("STFMR is closing")
+        if self.stfmr_lockin_running:
+            raise RuntimeError("An STFMR sweep is running")
+        held = self._stfmr_lockin_motor_fix_held()
+        if held is not None:
+            raise RuntimeError(f"{held}, so the sweep was not started")
+        if not self.stfmr_lockin_manual_safety_var.get():
+            raise RuntimeError("Please tick the safety confirmation in the KEPCO 4886 field output panel first")
+        if not motor.connected:
+            raise RuntimeError(f"Connect the {motor.label} first (the Motor row)")
+        if motor.in_move or motor.motion_may_run:
+            raise RuntimeError(f"The {motor.label}'s last stop was not confirmed, so it may still be turning: "
+                               "check the stage, then Disconnect and Connect it again")
+
+    def _stfmr_lockin_start_not_started(self, reason, *, dialog: bool = False,
+                                        title: str = "STFMR scan not started") -> None:
+        """A Start with the motor that ends before the sweep: the buttons
+        follow the state again and the status line says why, within its 52
+        characters ("Sweep not started: CLR not sent (No)", or an error cut
+        to fit); the dialog and the log have an error in full (user,
+        2026-10-17)."""
+        self.stfmr_lockin_motor_check_pending = False
         if self.closing or self.stfmr_lockin_closed:
             return
-        reference_source = self.stfmr_lockin_reference_var.get()
-        settings = {
-            "program": Path(__file__).name,
-            "python_version": sys.version,
-            "resources": {key: var.get() for key, var in self.stfmr_lockin_resource_vars.items()},
-            "connected": {key: self._stfmr_lockin_connected(key) for key in self.stfmr_lockin_resource_vars},
-            # Two Zurich lock-ins exist, so record which one took the data.
-            "mfli_device": zurich_mfli_choice(self.stfmr_lockin_resource_vars["mfli"].get())[0],
-            "mfli_identity": str(getattr(self.stfmr_lockin_mfli_controller, "mfli_identity", "") or ""),
-            "meter": meter, "frequencies_ghz": frequencies_ghz,
-            "acquisition_mode": "sequential_same_current" if meter == "MFLI + SR830" else "single",
-            "csv_pair_key": "index + meter; dual mode saves two rows per retained field point",
-            # The first power and modulation frequency under their old names,
-            # for readers of older logs, then the whole lists and the boxes
-            # they came from (user, 2026-10-13 and 2026-10-14).
-            "power_dbm": powers_dbm[0], "powers_dbm": powers_dbm,
-            "power_start_dbm": power_start_dbm, "power_stop_dbm": power_stop_dbm,
-            "power_step_db": power_step_db,
-            "rf_on_between_powers": True,
-            "modulation_frequency_hz": modulation_frequencies_hz[0],
-            "modulation_frequencies_hz": modulation_frequencies_hz,
-            "modulation_start_hz": modulation_start_hz,
-            "modulation_end_hz": modulation_end_hz,
-            "current_start_a": points[0],
-            "current_stop_a": points[self.stfmr_lockin_points_per_loop - 1],
-            "current_step_a": abs(float(self.stfmr_lockin_step_var.get())),
-            "loops": len(points) // self.stfmr_lockin_points_per_loop,
-            "points_per_loop": self.stfmr_lockin_points_per_loop,
-            "voltage_limit_v": limit_v,
-            # Settle s and Acquire s replace Wait/pt s, whose point_delay_s
-            # and effective_point_wait_s are gone (user, 2026-10-14).
-            "settle_s": settle_s,
-            "acquire_s": acquire_s,
-            "settle_time_constants": LOCKIN_SETTLE_TAUS,
-            "effective_settle_s": effective_settle_s,
-            "acquisition_sample_interval_s": STFMR_LOCKIN_SAMPLE_INTERVAL_S,
-            "discard_first_points_per_frequency": 2,
-            "expected_saved_points": estimated_saved,
-            "sr830_ref_in": sr830_reference_input,
-            "sr830_auto_range": sr830_auto_range,
-            "sr830_initial_sensitivity_index": STFMR_LOCKIN_SR830_SENSITIVITY_CODE,
-            "sr830_time_constant_index": sr830_time_constant_code,
-            "sr830_time_constant_s": SR830_TIME_CONSTANTS_S[sr830_time_constant_code],
-            "mfli_timeconstant_s": mfli_timeconstant_s,
-            "mfli_auto_range": mfli_auto_range,
-            "mfli_reference_source": reference_source,
-            "mfli_sample_rate_hz": 1.0 / STFMR_LOCKIN_SAMPLE_INTERVAL_S,
-            "safety_confirmed": bool(self.stfmr_lockin_manual_safety_var.get()),
-        }
-        try:
-            recorder = STFMRScanRecorder(Path(folder), settings)
-        except BaseException as error:
-            messagebox.showerror(
-                "STFMR save path", f"Could not create the live data files; scan not started: {error}", parent=self.root
-            )
-            return
-        self.stfmr_lockin_recorder = recorder
-        self.stfmr_lockin_save_directory = Path(folder)
-        self.stfmr_lockin_save_path_var.set(str(recorder.directory))
-        self.stfmr_lockin_reference_source = reference_source
-        self.stfmr_lockin_rows.clear()
-        self.stfmr_lockin_live_rows.clear()
-        self._redraw_stfmr_lockin_live_plots()
-        self._redraw_stfmr_lockin_plot()
-        self.stfmr_lockin_points = points
-        self.stfmr_lockin_frequencies_ghz = frequencies_ghz
-        self.stfmr_lockin_frequency_index = 0
-        self.stfmr_lockin_index = 0
-        self.stfmr_lockin_started = time.monotonic()
-        self.stfmr_lockin_live_started = self.stfmr_lockin_started
-        self.stfmr_lockin_settle_s = settle_s
-        self.stfmr_lockin_acquire_s = acquire_s
-        self.stfmr_lockin_acquisition = None
-        self.stfmr_lockin_modulation_frequencies_hz = modulation_frequencies_hz
-        self.stfmr_lockin_modulation_index = 0
-        self.stfmr_lockin_expected_hz = modulation_frequencies_hz[0]
-        self.stfmr_lockin_powers_dbm = powers_dbm
-        self.stfmr_lockin_power_index = 0
-        self.stfmr_lockin_power_dbm = powers_dbm[0]
-        self.stfmr_lockin_limit_v = limit_v
-        self.stfmr_lockin_mfli_timeconstant_s = mfli_timeconstant_s
-        self.stfmr_lockin_sr830_time_constant_code = sr830_time_constant_code
-        self.stfmr_lockin_effective_settle_s = effective_settle_s
-        self.stfmr_lockin_sr830_reference_input = sr830_reference_input
-        self.stfmr_lockin_sr830_auto_range = sr830_auto_range
-        self.stfmr_lockin_mfli_auto_range = mfli_auto_range
-        self.stfmr_lockin_mfli_range_attempts = 0
-        self.stfmr_lockin_mfli_range_actions = []
-        self.stfmr_lockin_selected_meter = meter
-        self.stfmr_lockin_stop_event.clear()
-        self.stfmr_lockin_running = True
-        self._set_stfmr_progress(self.stfmr_lockin_progress, 0, total_points)
-        self.stfmr_lockin_status_var.set("Configuring the SMB100A and lock-in…")
+        text = short_status_error(reason, 33) if isinstance(reason, BaseException) else str(reason)
+        self.stfmr_lockin_status_var.set(f"Sweep not started: {text}")
         self._update_stfmr_lockin_ui()
-        self._configure_stfmr_lockin_frequency(initial=True)
+        if dialog and isinstance(reason, BaseException):
+            messagebox.showerror(title, str(reason), parent=self.root)
+
+    def _stfmr_lockin_check_motor(self, begin, fix=None, fixed=()) -> None:
+        """Start's stage check, as RT-E's Angle Start (user, 2026-10-17): the
+        before-move checks (MST, then EO; check_ready) and a read of where the
+        stage is (MST, PX), as one job on the STFMR worker, after the inputs
+        are read and before the folder, the confirmation, the files or any
+        output.  A latched limit error or the driver off is asked Yes/No
+        (_stfmr_lockin_offer_motor_fix, with RT-E's texts); on Yes the fix
+        (CLR / EO=1, read back) and the check run again as one job, and the
+        Start goes on (``begin``) once the check passes.  ``fix``: (command,
+        function) queued by a Yes, not sent if the start was abandoned or the
+        page closed meanwhile; ``fixed``: the problems already fixed in this
+        chain, never asked again.  From here until the sweep starts or does
+        not, Start, the Motor row and the angle boxes are locked; Stop /
+        zero stays usable and abandons the start."""
+        motor = self.stfmr_lockin_motor
+        if fix is None:
+            # A new Start: an old Stop must not hold it, while a Stop / zero
+            # or a Stop stage pressed during the check (or behind a Yes)
+            # does, as on RT-E.
+            self.stfmr_lockin_stop_event.clear()
+            stage_stop = self.__dict__.get("stfmr_lockin_stage_stop_event")
+            if stage_stop is not None:
+                stage_stop.clear()
+            self.stfmr_lockin_motor_status_before = self.stfmr_lockin_status_var.get()
+        self.stfmr_lockin_motor_check_pending = True
+        self.stfmr_lockin_status_var.set("Checking the motor (MST, EO) before the sweep…")
+        self._update_stfmr_lockin_ui()
+
+        def job():
+            if fix is not None:
+                command, function = fix
+                held = self._stfmr_lockin_motor_fix_held()
+                if held is not None:
+                    # The job can wait on the one worker behind a read (the
+                    # live poll) after the Yes: nothing is sent then.
+                    self.thread_log(f"STFMR {motor.label}: {command} not sent: {held} after the Yes")
+                    return None
+                function()
+            motor.check_ready()
+            return motor.read_state()
+
+        try:
+            future = self.stfmr_lockin_executor.submit(job)
+        except BaseException as error:
+            self.thread_log(f"STFMR sweep not started: {error}")
+            self._stfmr_lockin_start_not_started(error, dialog=not self.closing)
+            return
+
+        def checked() -> None:
+            if self.closing or self.stfmr_lockin_closed:
+                self.stfmr_lockin_motor_check_pending = False
+                return
+            held = self._stfmr_lockin_motor_fix_held()
+            if held is not None:
+                self.thread_log(f"STFMR sweep not started: {held} during the stage check")
+                self._stfmr_lockin_start_not_started(held)
+                return
+            try:
+                state = future.result()
+            except NEWMARK_FIXABLE_REFUSALS as error:
+                self._stfmr_lockin_offer_motor_fix(begin, error, fixed)
+                return
+            except BaseException as error:
+                self.thread_log(f"STFMR sweep not started: {error}")
+                self._stfmr_lockin_start_not_started(error, dialog=True)
+                return
+            self.stfmr_lockin_motor_check_pending = False
+            if state is not None:
+                self.stfmr_lockin_motor_known_deg = state.get("angle_deg")
+                self._show_stfmr_lockin_motor_state(state.get("angle_deg"))
+            self.stfmr_lockin_status_var.set(self.__dict__.get("stfmr_lockin_motor_status_before", ""))
+            # Starting stays True through the folder and the confirmation, so
+            # the Motor row and Start stay locked until the sweep runs.
+            self._run_stfmr_lockin_start_step(begin, refresh=True)
+
+        future.add_done_callback(lambda _future: self.post_ui(lambda: self._stfmr_lockin_after_drain(checked)))
+
+    def _stfmr_lockin_offer_motor_fix(self, begin, error, fixed) -> None:
+        """From the Tk event loop, after Start's stage check refused with a
+        latched limit error or the driver off (user, 2026-10-17): the same
+        Yes/No as RT-E (newmark_fix_prompt).  No: nothing is sent and the
+        sweep does not start.  Yes: the checks again, then CLR or EO=1 (read
+        back) and the check on the STFMR worker.  Never asked for a problem
+        this chain already fixed (an error then), on a closing page, after a
+        Stop / zero, or without the page's safety tick."""
+        motor = self.stfmr_lockin_motor
+        kind, command, title, question = newmark_fix_prompt(error, "STFMR")
+        function = motor.clear_limit_error if kind is NewmarkLimitErrorLatched else motor.enable_driver
+        self.thread_log(f"STFMR {motor.label}: {error}")
+        try:
+            if kind in fixed:
+                raise RuntimeError(newmark_fix_again_text(kind, error, command))
+            self._stfmr_lockin_require_motor_fix_ready()
+        except Exception as problem:
+            self.thread_log(f"STFMR {motor.label}: {command} not offered: {problem}")
+            self._stfmr_lockin_start_not_started(problem, dialog=True, title="STFMR stage")
+            return
+        # Start and the Motor row stay locked while the question is open
+        # (stfmr_lockin_motor_check_pending).
+        if not messagebox.askyesno(title, question, parent=self.root):
+            self.thread_log(f"STFMR {motor.label}: No: {command} not sent; nothing moved")
+            self._stfmr_lockin_start_not_started(f"{command} not sent (No)")
+            return
+        if self.closing or self.stfmr_lockin_closed:
+            self.thread_log(f"STFMR {motor.label}: {command} not sent: STFMR is closing")
+            self.stfmr_lockin_motor_check_pending = False
+            return
+        try:
+            self._stfmr_lockin_require_motor_fix_ready()
+        except Exception as problem:
+            self.thread_log(f"STFMR {motor.label}: {command} not sent: {problem}")
+            self._stfmr_lockin_start_not_started(problem, dialog=True, title="STFMR stage")
+            return
+        self.thread_log(f"STFMR {motor.label}: Yes: {command} queued on the STFMR worker; it is read back "
+                        "before anything moves")
+        self._stfmr_lockin_check_motor(begin, fix=(command, function), fixed=tuple(fixed) + (kind,))
 
     def _stfmr_lockin_log_event(self, name: str, **details) -> bool:
         try:
@@ -18611,10 +19713,38 @@ class CombinedControlApp:
         """True while the sweep runs at several powers (user, 2026-10-14)."""
         return len(getattr(self, "stfmr_lockin_powers_dbm", ())) > 1
 
+    def _stfmr_lockin_several_angles(self) -> bool:
+        """True while the sweep runs at several stage angles (user,
+        2026-10-17); one angle (the motor used at 0 to 0, say) reads as
+        before."""
+        return len(getattr(self, "stfmr_lockin_angles_deg", ()) or ()) > 1
+
+    def _stfmr_lockin_angle_deg(self):
+        """The angle of the running pass, or None without the motor."""
+        angles = getattr(self, "stfmr_lockin_angles_deg", None) or []
+        index = getattr(self, "stfmr_lockin_angle_index", 0)
+        return angles[index] if 0 <= index < len(angles) else None
+
+    def _stfmr_lockin_angle_details(self) -> dict[str, object]:
+        """The running pass's angle for a log event ({} without the motor)."""
+        angle = self._stfmr_lockin_angle_deg()
+        if angle is None:
+            return {}
+        return {"angle_deg": angle, "angle_index": getattr(self, "stfmr_lockin_angle_index", 0) + 1}
+
+    def _stfmr_lockin_varying(self) -> int:
+        """How many of the modulation frequency, the power and the angle the
+        pass label names (each when there are several): the status lines
+        get shorter as it grows, to stay within the 52-character label
+        (user, 2026-10-13, 2026-10-14 and 2026-10-17)."""
+        return (int(self._stfmr_lockin_several_modulations()) + int(self._stfmr_lockin_several_powers())
+                + int(self._stfmr_lockin_several_angles()))
+
     def _stfmr_lockin_short_status(self) -> bool:
         """The status lines' short wording, for a pass label that names a
-        modulation frequency or a power (user, 2026-10-13 and 2026-10-14)."""
-        return self._stfmr_lockin_several_modulations() or self._stfmr_lockin_several_powers()
+        modulation frequency, a power or an angle (user, 2026-10-13,
+        2026-10-14 and 2026-10-17)."""
+        return self._stfmr_lockin_varying() > 0
 
     def _stfmr_lockin_pass_label(self, frequency_ghz: float) -> str:
         """'5 GHz' in the status line, or '5 GHz/307 Hz' when the sweep runs
@@ -18622,17 +19752,21 @@ class CombinedControlApp:
         status label is 52 characters wide: '5 GHz, Mod. 307 Hz' pushed the
         time left off its end (user, 2026-10-13).  With several powers the
         power follows in the same way: '5 GHz/12 dBm' or '5 GHz/307 Hz/12
-        dBm' (user, 2026-10-14)."""
+        dBm' (user, 2026-10-14), and with several stage angles the angle
+        last: '5 GHz/30°' or '5 GHz/307 Hz/12 dBm/30°' (user, 2026-10-17)."""
         label = f"{frequency_ghz:g} GHz"
         if self._stfmr_lockin_several_modulations():
             label += f"/{self.stfmr_lockin_expected_hz:g} Hz"
         if self._stfmr_lockin_several_powers():
             label += f"/{self.stfmr_lockin_power_dbm:g} dBm"
+        if self._stfmr_lockin_several_angles():
+            label += f"/{self._stfmr_lockin_angle_deg():g}°"
         return label
 
     def _configure_stfmr_lockin_frequency(
         self, *, initial: bool, modulation_change: bool = False,
-        power_change: bool = False,
+        power_change: bool = False, angle_change: bool = False,
+        previous_modulation_hz: float | None = None,
     ) -> None:
         """Configure one carrier and apply its first current setpoint.
 
@@ -18650,7 +19784,23 @@ class CombinedControlApp:
         stay on: "when sweep power, can you do not close the SMA100? like
         6221 in the current scan, just change its output value" (user,
         2026-10-14).  The SR830 reference is the LFO, which a power change
-        leaves alone, so there is no reference wait."""
+        leaves alone, so there is no reference wait.
+
+        With the motor (user, 2026-10-17) the stage angles are the outermost
+        loop.  initial: the stage turns to the first angle first, before the
+        SMB100A is configured and before the RF and the 4886 are switched on.
+        angle_change: the next angle's pass starts, at the first modulation
+        frequency, power and carrier.  The 4886 is zeroed first, as before a
+        new carrier, then the stage turns (move_to_deg, polling the sweep's
+        stop event), with the SMB100A's RF, AM and LFO left on, as at a power
+        change; then the modulation frequency is set back (with several; its
+        SR830 reference wait checks it has left previous_modulation_hz, the
+        last one), the power is set back (with several; set_power, read
+        back), the first carrier is set and the 4886 comes back on at Start
+        A.  A Stop / zero during the move sends STOP from the worker, and
+        the sweep ends stopped; any stage error ends it through the
+        output-off path (the 4886 zeroed, the RF off), with no Yes/No
+        mid-sweep."""
         self.stfmr_lockin_mfli_initial_range_pending = True
         self.stfmr_lockin_mfli_range_attempts = 0
         self.stfmr_lockin_mfli_range_actions = []
@@ -18671,14 +19821,25 @@ class CombinedControlApp:
         sample_rate_hz = 1.0 / STFMR_LOCKIN_SAMPLE_INTERVAL_S
         expected_hz = self.stfmr_lockin_expected_hz
         # The modulation frequency just left, which the SR830 must be seen to
-        # have left (see wait_for_reference; user, 2026-10-13).
-        previous_hz = (
-            self.stfmr_lockin_modulation_frequencies_hz[
-                self.stfmr_lockin_modulation_index - 1
-            ]
-            if modulation_change and self.stfmr_lockin_modulation_index > 0
-            else None
-        )
+        # have left (see wait_for_reference; user, 2026-10-13).  At an angle
+        # change it is the last one, given by the caller: the index has
+        # already gone back to the first (user, 2026-10-17).
+        if previous_modulation_hz is not None:
+            previous_hz = previous_modulation_hz if modulation_change else None
+        else:
+            previous_hz = (
+                self.stfmr_lockin_modulation_frequencies_hz[
+                    self.stfmr_lockin_modulation_index - 1
+                ]
+                if modulation_change and self.stfmr_lockin_modulation_index > 0
+                else None
+            )
+        # The stage's target: the first angle at the start, the next at an
+        # angle change; None for every other pass and without the motor.
+        angle_target = self._stfmr_lockin_angle_deg() if initial or angle_change else None
+        angle_details = self._stfmr_lockin_angle_details()
+        if angle_details:
+            angle_details["angle_change"] = angle_change
         if not self._stfmr_lockin_log_event(
             "frequency_configure", frequency_ghz=frequency_ghz,
             frequency_index=self.stfmr_lockin_frequency_index + 1,
@@ -18689,16 +19850,27 @@ class CombinedControlApp:
             power_dbm=power_dbm,
             power_index=self.stfmr_lockin_power_index + 1,
             power_change=power_change,
+            **angle_details,
         ):
             return
         # The SMB100A's read-back of the first or a changed power, for the
         # run log.
         power_readback = {}
+        # The stage's state read back after this pass's move (user,
+        # 2026-10-17).
+        moved = {}
 
         def configure() -> None:
             if self.stfmr_lockin_stop_event.is_set():
                 return
             if initial:
+                # The first angle before anything is configured or switched
+                # on (user, 2026-10-17).  Stopped during the move: nothing
+                # more is sent, and the sweep ends stopped.
+                if angle_target is not None:
+                    moved["state"] = self._stfmr_lockin_move_stage(angle_target)
+                    if moved["state"] is None:
+                        return
                 # The first power, as the one power was set before, now read
                 # back before the RF is switched on: a level the SMB100A did
                 # not take raises inside configure(), before "LFO ON" and
@@ -18736,6 +19908,12 @@ class CombinedControlApp:
             else:
                 with visa_operation("KEPCO 4886", "zeroing before the next carrier"):
                     self.stfmr_lockin_controllers["kepco"].zero_output()
+                # The next angle, with the 4886 at zero and the RF, AM and LFO
+                # left on (user, 2026-10-17).
+                if angle_change and angle_target is not None:
+                    moved["state"] = self._stfmr_lockin_move_stage(angle_target)
+                    if moved["state"] is None:
+                        return
                 if modulation_change:
                     with visa_operation("SMB100A", "modulation frequency change"):
                         self.stfmr_lockin_controllers["smb"].set_modulation_frequency(
@@ -18794,6 +19972,18 @@ class CombinedControlApp:
                 self._finish_stfmr_lockin_scan(stopped=True)
                 return
             self._show_stfmr_lockin_kepco_state()
+            state = moved.get("state")
+            if state is not None:
+                # The angle read back after the move: every row of this
+                # angle's pass records it (user, 2026-10-17).
+                self.stfmr_lockin_stage_angle_deg = state["angle_deg"]
+                self._show_stfmr_lockin_motor_state(state["angle_deg"])
+                if not self._stfmr_lockin_log_event(
+                    "stage_move", target_deg=angle_target, px=state["px"],
+                    angle_deg=state["angle_deg"], steps_per_degree=state["steps_per_degree"],
+                    angle_index=self.stfmr_lockin_angle_index + 1, initial=initial,
+                ):
+                    return
             ready = {"power_dbm": power_dbm}
             # The first power is read back too (review, 2026-10-14).
             if initial or power_change:
@@ -18803,14 +19993,19 @@ class CombinedControlApp:
                 modulation_frequency_hz=expected_hz, **ready,
             ):
                 return
-            # With several modulation frequencies (or powers, 2026-10-14)
-            # the label is longer, so the rest is shorter to stay within the
-            # 52-character status label; one modulation frequency and one
-            # power read as before (user, 2026-10-13).
+            # With several modulation frequencies (or powers, 2026-10-14, or
+            # angles, 2026-10-17) the label is longer, so the rest is shorter
+            # to stay within the 52-character status label; one modulation
+            # frequency, one power and one angle read as before (user,
+            # 2026-10-13).  With all three the label is longest, so " sent"
+            # and " now" go too.
             self.stfmr_lockin_status_var.set(
                 f"{self._stfmr_lockin_pass_label(frequency_ghz)}: I="
+                f"{first_current:+.5g} A; pre-read"
+                if self._stfmr_lockin_varying() >= 3 else
+                f"{self._stfmr_lockin_pass_label(frequency_ghz)}: I="
                 f"{first_current:+.5g} A sent; pre-read now"
-                if self._stfmr_lockin_several_powers() else
+                if self._stfmr_lockin_several_powers() or self._stfmr_lockin_several_angles() else
                 f"{self._stfmr_lockin_pass_label(frequency_ghz)}: start I="
                 f"{first_current:+.5g} A sent; start pre-read now"
                 if self._stfmr_lockin_several_modulations() else
@@ -18823,6 +20018,80 @@ class CombinedControlApp:
             )
 
         future.add_done_callback(lambda _future: self.post_ui(configured))
+
+    def _stfmr_lockin_post_motor_text(self, text: str) -> None:
+        """The Motor row's status from the worker, shown on the Tk thread."""
+        def show() -> None:
+            if not self.closing and not self.stfmr_lockin_closed:
+                self.stfmr_lockin_motor_status_var.set(text)
+        self.post_ui(show)
+
+    def _stfmr_lockin_move_stage(self, target_deg):
+        """One absolute stage move of the sweep, on the STFMR worker (user,
+        2026-10-17), at 5°/s from the stage zero, ending with PX exactly at
+        the target.  The move polls the sweep's stop event: a Stop / zero
+        (or the page closing) during it sends STOP from here, waits for it
+        and returns None, and the sweep then ends stopped, its status saying
+        where the stage stopped.  A STOP that could not be confirmed, a
+        refusal (a latched limit error, the driver off: no Yes/No mid-sweep)
+        or any other stage error raises, after the stage was stopped
+        (_stfmr_lockin_stop_stage_after_failure), and the sweep ends through
+        its output-off path.  Returns read_state() after the move."""
+        motor = self.stfmr_lockin_motor
+        spd = motor.steps_per_degree
+        try:
+            state = motor.move_to_deg(target_deg, self.stfmr_lockin_stop_event,
+                                      on_progress=self._stfmr_lockin_motor_progress)
+        except NewmarkStopRequested as stopped:
+            if not stopped.stopped:
+                # STOP, then ABORT, sent, but the stage was not seen still:
+                # a failure, not a clean stop.
+                self.stfmr_lockin_stage_where = "stage NOT confirmed stopped: CHECK THE STAGE"
+                self.thread_log(f"STFMR sweep, after the Stop during a stage move: {self.stfmr_lockin_stage_where}")
+                self._stfmr_lockin_post_motor_text("CHECK STAGE")
+                raise
+            if not stopped.before:
+                where = newmark_angle_text(stopped.px, spd)
+                self.stfmr_lockin_stage_where = f"stage stopped at {where}"
+                self._stfmr_lockin_post_motor_text(where)
+            self.thread_log(f"STFMR sweep stopped at a stage move; {self.stfmr_lockin_stage_where}")
+            return None
+        except Exception as error:
+            self._stfmr_lockin_stop_stage_after_failure(error)
+            raise
+        self.stfmr_lockin_stage_where = f"stage at {state['angle_deg']:+.3f}°"
+        return state
+
+    def _stfmr_lockin_stop_stage_after_failure(self, error) -> None:
+        """STOP after a stage failure in a sweep, as RT-E's Angle scan does,
+        unless the driver's own STOP sequence already ran for it.  Never
+        raises: the 4886 and the RF must still be switched off after it.
+        Where the stage is goes to the log, the status line and the error
+        dialog (user, 2026-10-17)."""
+        motor = self.stfmr_lockin_motor
+        spd = motor.steps_per_degree
+        stopped, px = False, None
+        try:
+            if getattr(error, "stop_ran", False):
+                stopped, px = error.stopped, error.px
+            elif not motor.connected:
+                stopped = None          # nothing to stop: the handle is closed
+            else:
+                result = motor.stop()
+                stopped, px = result["stopped"], result["px"]
+        except Exception as stop_error:
+            stopped = False
+            self.thread_log(f"STFMR stage STOP after the failure failed: {stop_error}")
+        if stopped is None:
+            where, text = "stage not connected", "Not connected"
+        elif stopped:
+            where, text = f"stage stopped at {newmark_angle_text(px, spd)}", newmark_angle_text(px, spd)
+        else:
+            where, text = "stage NOT confirmed stopped: CHECK THE STAGE", "CHECK STAGE"
+        self.stfmr_lockin_stage_where = where
+        self._stfmr_lockin_post_motor_text(text)
+        # Always logged, so an unconfirmed stop is never only worked out.
+        self.thread_log(f"STFMR sweep, after the stage failure: {where}")
 
     def _stfmr_retry_read(self, label: str, operation, attempts: int = 3):
         """Repeat a timed-out instrument read before giving up on the scan.
@@ -19334,16 +20603,24 @@ class CombinedControlApp:
         elapsed = time.monotonic() - self.stfmr_lockin_started
         valid = bool(sample.get("reference_valid", False))
         self._set_stfmr_lockin_reference_state(valid)
-        # Passes before this one: whole modulation frequencies, each with
-        # every power and carrier, then this modulation's whole powers, then
-        # this power's carriers (user, 2026-10-13 and 2026-10-14).
+        # Passes before this one: whole angles, each with every modulation
+        # frequency, power and carrier (user, 2026-10-17), then this angle's
+        # whole modulation frequencies, each with every power and carrier,
+        # then this modulation's whole powers, then this power's carriers
+        # (user, 2026-10-13 and 2026-10-14).
         powers = getattr(self, "stfmr_lockin_powers_dbm", None) or [self.stfmr_lockin_power_dbm]
         power_index = getattr(self, "stfmr_lockin_power_index", 0)
+        angles = getattr(self, "stfmr_lockin_angles_deg", None) or []
+        angle_index = getattr(self, "stfmr_lockin_angle_index", 0) if angles else 0
         completed_before_frequency = (
-            (self.stfmr_lockin_modulation_index * len(powers) + power_index)
-            * len(self.stfmr_lockin_frequencies_ghz)
+            (((angle_index * len(self.stfmr_lockin_modulation_frequencies_hz)
+               + self.stfmr_lockin_modulation_index) * len(powers) + power_index)
+             * len(self.stfmr_lockin_frequencies_ghz))
             + frequency_index
         ) * len(self.stfmr_lockin_points)
+        # The stage's angle read back after this angle's move; blank without
+        # the motor (user, 2026-10-17).
+        stage_angle = getattr(self, "stfmr_lockin_stage_angle_deg", None) if angles else None
         row = {
             "index": completed_before_frequency + index + 1,
             "frequency_index": frequency_index + 1,
@@ -19407,6 +20684,10 @@ class CombinedControlApp:
             "effective_settle_s": self.stfmr_lockin_effective_settle_s,
             "acquire_s": self.stfmr_lockin_acquire_s,
             "sample_count": int(sample.get("sample_count", len(samples))),
+            # The stage's angle, read back after this angle's move (user,
+            # 2026-10-17); blank without the motor.  Last, so every older
+            # column keeps its place.
+            "stage_angle_deg": "" if stage_angle is None else stage_angle,
         }
         pair = [row]
         if dual:
@@ -19440,6 +20721,9 @@ class CombinedControlApp:
                 self._finish_stfmr_lockin_scan(error=error)
                 return
             self.stfmr_lockin_rows.extend(pair)
+            # The angle only with the motor, so a sweep without it calls
+            # this as before (user, 2026-10-17).
+            angle_live = {} if stage_angle is None else {"stage_angle_deg": stage_angle}
             self._append_stfmr_lockin_live_sample(
                 active_meter,
                 sample,
@@ -19448,12 +20732,13 @@ class CombinedControlApp:
                 frequency_ghz=frequency_ghz,
                 modulation_frequency_hz=self.stfmr_lockin_expected_hz,
                 power_dbm=self.stfmr_lockin_power_dbm,
+                **angle_live,
             )
             if dual:
                 self._append_stfmr_lockin_live_sample("SR830", secondary,
                     field_g=field_g, loop=int(row["loop"]), frequency_ghz=frequency_ghz,
                     modulation_frequency_hz=self.stfmr_lockin_expected_hz,
-                    power_dbm=self.stfmr_lockin_power_dbm)
+                    power_dbm=self.stfmr_lockin_power_dbm, **angle_live)
         elif not self._stfmr_lockin_log_event(
             "startup_point_discarded", frequency_ghz=frequency_ghz,
             point_index=index + 1, current_a=current, field_g=field_g,
@@ -19474,7 +20759,7 @@ class CombinedControlApp:
         self.stfmr_lockin_mfli_range_actions = []
         done_in_frequency = self.stfmr_lockin_index
         completed = completed_before_frequency + done_in_frequency
-        total = len(self.stfmr_lockin_modulation_frequencies_hz) * len(powers) * len(
+        total = max(len(angles), 1) * len(self.stfmr_lockin_modulation_frequencies_hz) * len(powers) * len(
             self.stfmr_lockin_frequencies_ghz
         ) * len(self.stfmr_lockin_points)
         self._set_stfmr_progress(
@@ -19520,15 +20805,20 @@ class CombinedControlApp:
             # "I=" or " left" alone still left 53 to 55.  So both go: the
             # "A" still marks the current and the "~" the time left
             # (review, 2026-10-14).
-            both = (
-                self._stfmr_lockin_several_modulations()
-                and self._stfmr_lockin_several_powers()
-            )
+            # The same with several angles (user, 2026-10-17): any two of
+            # the modulation frequency, the power and the angle varying
+            # drop "I=" and " left", and an angle drops "scanning" as a
+            # power does.  With all three the label alone can be about 35
+            # widths ("10.25 GHz/1013 Hz/-12.5 dBm/-180.5°"), so the current
+            # goes too.
+            varying = self._stfmr_lockin_varying()
+            both = varying >= 2
             self.stfmr_lockin_status_var.set(
                 f"{self._stfmr_lockin_pass_label(frequency_ghz)}; "
-                + ("" if self._stfmr_lockin_several_powers() else "scanning ")
+                + ("" if self._stfmr_lockin_several_powers() or self._stfmr_lockin_several_angles()
+                   else "scanning ")
                 + f"{completed}/{total}; "
-                + ("" if both else "I=") + f"{current:+.5g} A; "
+                + ("" if varying >= 3 else ("" if both else "I=") + f"{current:+.5g} A; ")
                 + (f"~{left}" if both
                    else f"~{left} left" if self._stfmr_lockin_short_status()
                    else f"remaining about {left}")
@@ -19544,6 +20834,7 @@ class CombinedControlApp:
                 ) * (2 if dual else 1),
                 modulation_frequency_hz=self.stfmr_lockin_expected_hz,
                 power_dbm=self.stfmr_lockin_power_dbm,
+                **self._stfmr_lockin_angle_details(),
             ):
                 return
             if frequency_index + 1 >= len(
@@ -19574,7 +20865,39 @@ class CombinedControlApp:
                     return
                 modulations = self.stfmr_lockin_modulation_frequencies_hz
                 if self.stfmr_lockin_modulation_index + 1 >= len(modulations):
-                    self._finish_stfmr_lockin_scan()
+                    if angle_index + 1 >= len(angles):
+                        self._finish_stfmr_lockin_scan()
+                        return
+                    # The next angle, the outermost loop: the whole Mod. x P
+                    # x f x A sweep again from the first modulation
+                    # frequency, power and carrier (user, 2026-10-17).  The
+                    # 4886 is zeroed first and the stage turns with the
+                    # SMB100A's RF, AM and LFO on, as at a power change; the
+                    # modulation and the power are set back when there are
+                    # several (the SR830's reference wait then checks it has
+                    # left the last modulation frequency), and the first two
+                    # readings are discarded as after a carrier change.
+                    finished_deg = angles[angle_index]
+                    finished_hz = self.stfmr_lockin_expected_hz
+                    self.stfmr_lockin_angle_index = angle_index + 1
+                    self.stfmr_lockin_modulation_index = 0
+                    self.stfmr_lockin_frequency_index = 0
+                    self.stfmr_lockin_index = 0
+                    self.stfmr_lockin_expected_hz = modulations[0]
+                    self.stfmr_lockin_power_index = 0
+                    self.stfmr_lockin_power_dbm = powers[0]
+                    # Short enough for the 52-character status label.
+                    self.stfmr_lockin_status_var.set(
+                        f"{finished_deg:g}° done; zeroing; stage to "
+                        f"{angles[self.stfmr_lockin_angle_index]:g}° at "
+                        f"{self.stfmr_lockin_frequencies_ghz[0]:g} GHz"
+                    )
+                    self._configure_stfmr_lockin_frequency(
+                        initial=False, angle_change=True,
+                        modulation_change=len(modulations) > 1,
+                        power_change=len(powers) > 1,
+                        previous_modulation_hz=finished_hz,
+                    )
                     return
                 # The next modulation frequency: the whole f x A sweep
                 # again from the first carrier.  Its first two readings
@@ -19608,13 +20931,13 @@ class CombinedControlApp:
             next_frequency = self.stfmr_lockin_frequencies_ghz[
                 self.stfmr_lockin_frequency_index
             ]
-            # With several powers the label names the power too, so the
-            # rest is shorter, to fit the 52-character status label (user,
-            # 2026-10-14).
+            # With several powers (or angles, 2026-10-17) the label names
+            # them too, so the rest is shorter, to fit the 52-character
+            # status label (user, 2026-10-14).
             self.stfmr_lockin_status_var.set(
                 f"{self._stfmr_lockin_pass_label(frequency_ghz)} done; zeroing; to "
                 f"{next_frequency:g} GHz"
-                if self._stfmr_lockin_several_powers() else
+                if self._stfmr_lockin_several_powers() or self._stfmr_lockin_several_angles() else
                 f"{self._stfmr_lockin_pass_label(frequency_ghz)} done; zeroing and switching to "
                 f"{next_frequency:g} GHz"
             )
@@ -19638,6 +20961,12 @@ class CombinedControlApp:
 
     def stop_stfmr_lockin_scan(self) -> None:
         self.stfmr_lockin_stop_event.set()
+        if not self.stfmr_lockin_running and self.__dict__.get("stfmr_lockin_motor_check_pending", False):
+            # During Start's stage check or behind its question's Yes: the
+            # start is abandoned, and no CLR or EO=1 is sent after this
+            # (user, 2026-10-17).  Nothing is on yet.
+            self.stfmr_lockin_status_var.set("Stop / zero pressed: the sweep will not start")
+            return
         self.stfmr_lockin_status_var.set("Stopping and turning outputs off…")
         if self.stfmr_lockin_after_id is not None:
             try:
@@ -19667,29 +20996,47 @@ class CombinedControlApp:
             shutdown_errors.append(f"SMB100A: {shutdown_error}")
             if error is None:
                 error = shutdown_error
+        # Where the stage is, with the motor (user, 2026-10-17): in the run
+        # log's last line, the error dialog and a stop's status line.  The
+        # stage needs nothing here: a move ends inside its job, before this.
+        motor_used = bool(getattr(self, "stfmr_lockin_angles_deg", None))
+        where = (getattr(self, "stfmr_lockin_stage_where", "") or "stage not moved") if motor_used else ""
         recording_errors = self._close_stfmr_lockin_recording(
             "error" if error is not None else "stopped" if stopped else "completed",
             error=str(error) if error is not None else None,
             shutdown_errors=shutdown_errors,
             outputs_off=not shutdown_errors,
+            **({"stage": where} if motor_used else {}),
         )
         if recording_errors:
             error = RuntimeError("; ".join(([str(error)] if error else []) + recording_errors))
         self._update_stfmr_lockin_ui()
         if error is not None:
             self.stfmr_lockin_status_var.set(f"Scan failed (zero/output-off attempted): {error}")
+            if motor_used:
+                self.thread_log(f"STFMR sweep failed; {where}")
             if not self.closing:
-                messagebox.showerror("STFMR scan", str(error), parent=self.root)
+                messagebox.showerror(
+                    "STFMR scan",
+                    str(error) + (f"\n\n{where[:1].upper()}{where[1:]}" if motor_used else ""),
+                    parent=self.root,
+                )
         elif stopped:
+            # With the motor, where the stage stopped first ("Stopped; stage
+            # stopped at +12.345°; 120 saved; outputs OFF"), within the
+            # 52-character status label (user, 2026-10-17).
             self.stfmr_lockin_status_var.set(
-                f"Scan stopped; {len(self.stfmr_lockin_rows)} points saved; outputs OFF"
+                f"Stopped; {where.replace('stage stopped at', 'stage at')}; "
+                f"{len(self.stfmr_lockin_rows)} saved; outputs OFF" if motor_used
+                else f"Scan stopped; {len(self.stfmr_lockin_rows)} points saved; outputs OFF"
             )
         else:
             modulations = len(getattr(self, "stfmr_lockin_modulation_frequencies_hz", ()))
             powers = len(getattr(self, "stfmr_lockin_powers_dbm", ()))
+            angles = len(getattr(self, "stfmr_lockin_angles_deg", None) or ())
             carriers = len(self.stfmr_lockin_frequencies_ghz)
             saved = len(self.stfmr_lockin_rows)
-            if modulations > 1 or powers > 1:
+            if modulations > 1 or powers > 1 or angles > 1:
                 # The point count first: after "Multi-frequency scan
                 # complete: 2 frequencies, 3 powers, " it fell past the end
                 # of the 52-character status label, and with several
@@ -19702,6 +21049,9 @@ class CombinedControlApp:
                     swept.append(f"{modulations} modulation frequencies")
                 if powers > 1:
                     swept.append(f"{powers} powers")
+                # And the angles, when there were several (user, 2026-10-17).
+                if angles > 1:
+                    swept.append(f"{angles} angles")
                 self.stfmr_lockin_status_var.set(
                     f"Scan complete: {saved} points saved; {', '.join(swept)}; "
                     "outputs OFF; CSV saved"
@@ -19833,6 +21183,7 @@ class CombinedControlApp:
         """Plot set current against measured field without joining scan loops."""
         if meter == "MFLI + SR830":
             meter, key = "MFLI", "mfli"
+        angle_part = CombinedControlApp._stfmr_lockin_angle_part(rows)
         modulation_part = CombinedControlApp._stfmr_lockin_modulation_part(rows)
         power_part = CombinedControlApp._stfmr_lockin_power_part(rows)
         series: dict[str, list[tuple[float, float]]] = {}
@@ -19850,11 +21201,39 @@ class CombinedControlApp:
                 continue
             loop = max(1, int(row.get("loop", 1)))
             series_key = (
-                f"{key}{modulation_part(row)}{power_part(row)}"
+                f"{key}{angle_part(row)}{modulation_part(row)}{power_part(row)}"
                 f"_freq_{frequency_ghz:.12g}_loop_{loop}"
             )
             series.setdefault(series_key, []).append((current_a, field_g))
         return series if series else {key: []}
+
+    @staticmethod
+    def _stfmr_lockin_angle_part(rows):
+        """The series name's angle part for one row: '_ang_30' when the rows
+        hold several stage angles, so each angle's curve stays apart and is
+        named; '' with one or none (a sweep without the motor), so the
+        names are as before (user, 2026-10-17).  It goes first, before the
+        modulation and power parts and '_freq_', as the angle is the
+        outermost loop."""
+        angles = set()
+        for value in {row.get("stage_angle_deg") for row in rows}:
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                angles.add(value)
+        if len(angles) <= 1:
+            return lambda _row: ""
+
+        def part(row) -> str:
+            try:
+                value = float(row.get("stage_angle_deg", math.nan))
+            except (TypeError, ValueError):
+                value = math.nan
+            return f"_ang_{value + 0.0:.12g}" if math.isfinite(value) else ""
+
+        return part
 
     @staticmethod
     def _stfmr_lockin_modulation_part(rows):
@@ -19956,6 +21335,7 @@ class CombinedControlApp:
         group_frequency: bool = False,
     ) -> dict[str, list[tuple[float, float]]]:
         """Plot a lock-in component against field without joining scan loops."""
+        angle_part = CombinedControlApp._stfmr_lockin_angle_part(rows)
         modulation_part = CombinedControlApp._stfmr_lockin_modulation_part(rows)
         power_part = CombinedControlApp._stfmr_lockin_power_part(rows)
         series: dict[str, list[tuple[float, float]]] = {}
@@ -19979,7 +21359,7 @@ class CombinedControlApp:
                 if not math.isfinite(frequency_ghz):
                     continue
                 series_key = (
-                    f"{key}{modulation_part(row)}{power_part(row)}"
+                    f"{key}{angle_part(row)}{modulation_part(row)}{power_part(row)}"
                     f"_freq_{frequency_ghz:.12g}_loop_{loop}"
                 )
             else:
@@ -20021,8 +21401,13 @@ class CombinedControlApp:
         # ('..._mod_307_pow_12_freq_5_loop_1' or '..._pow_12_freq_5_loop_1'),
         # and each carrier, modulation and power gets its own shade and
         # legend entry (user, 2026-10-14).
+        # A sweep over several stage angles names its angle first
+        # ('..._ang_30_mod_307_pow_12_freq_5_loop_1' or '..._ang_30_freq_5_
+        # loop_1'), and each angle with its carrier, modulation and power
+        # gets its own shade and legend entry (user, 2026-10-17).
         modulation_of: dict[str, float | None] = {}
         power_of: dict[str, float | None] = {}
+        angle_of: dict[str, float | None] = {}
         for key in series:
             match = re.search(
                 r"_freq_([-+0-9.eE]+)_loop_(\d+)$", str(key)
@@ -20035,12 +21420,15 @@ class CombinedControlApp:
                 )
                 power = re.search(r"_pow_([-+0-9.eE]+)_freq_", str(key))
                 power_of[key] = float(power.group(1)) if power is not None else None
+                angle = re.search(r"_ang_([-+0-9.eE]+)_(?:mod|pow|freq)_", str(key))
+                angle_of[key] = float(angle.group(1)) if angle is not None else None
         pairs = sorted(
-            {(item[0], modulation_of[key], power_of[key]) for key, item in parsed.items()},
+            {(item[0], modulation_of[key], power_of[key], angle_of[key]) for key, item in parsed.items()},
             key=lambda pair: (
                 pair[0],
                 -1.0 if pair[1] is None else pair[1],
                 -math.inf if pair[2] is None else pair[2],
+                -math.inf if pair[3] is None else pair[3],
             ),
         )
         light, dark = STFMR_LOCKIN_COMPONENT_COLOR_RANGES.get(
@@ -20078,15 +21466,20 @@ class CombinedControlApp:
         for key, (frequency, loop) in parsed.items():
             modulation = modulation_of[key]
             power = power_of[key]
-            colors[key] = frequency_colors[(frequency, modulation, power)]
+            angle = angle_of[key]
+            colors[key] = frequency_colors[(frequency, modulation, power, angle)]
             group = (str(key).split("_freq_", 1)[0], frequency)
             parts = []
-            if len(carriers) > 1 or (modulation is None and power is None):
+            if len(carriers) > 1 or (modulation is None and power is None and angle is None):
                 parts.append(f"{frequency:g} GHz")
             if modulation is not None:
                 parts.append(f"{modulation:g} Hz")
             if power is not None:
                 parts.append(f"{power:g} dBm")
+            # The angle last, as in the status line's pass label (user,
+            # 2026-10-17): "5 GHz, 30°" or "30°" with one carrier.
+            if angle is not None:
+                parts.append(f"{angle:g}°")
             name = ", ".join(parts)
             labels[key] = name if loop == first_loop[group] else ""
         dual = any(k.startswith("mfli_") for k in parsed) and any(k.startswith("8_") for k in parsed)
@@ -41062,6 +42455,11 @@ class CombinedControlApp:
         self.stfmr_lockin_closed = True
         self.stfmr_lockin_running = False
         self.stfmr_lockin_stop_event.set()
+        # A hand move of the stage watches this one too (and the sweep's);
+        # it sends STOP itself (user, 2026-10-17).
+        stage_stop = self.__dict__.get("stfmr_lockin_stage_stop_event")
+        if stage_stop is not None:
+            stage_stop.set()
         if self.stfmr_lockin_after_id is not None:
             try:
                 self.root.after_cancel(self.stfmr_lockin_after_id)
@@ -41098,7 +42496,41 @@ class CombinedControlApp:
                 controller.disconnect()
             except BaseException as error:
                 errors.append(str(error))
-        self.stfmr_lockin_executor.shutdown(wait=False, cancel_futures=True)
+        # The Newmark stage (user, 2026-10-17): disconnected on the page's
+        # worker, the thread that holds its USB handles (a move running now
+        # sees the stop event set above and sends STOP itself first;
+        # disconnect() also sends STOP if the stage still turns).  So the
+        # worker is shut down without cancelling what is queued: the queue's
+        # other jobs (a live read, a sweep job, which returns at once on the
+        # stop event) are cancelled by hand, and the disconnect runs after
+        # the job in progress.  Without the stage connected (or connecting)
+        # here, as before.
+        motor = self.__dict__.get("stfmr_lockin_motor")
+        if motor is not None and (motor.connected or self.__dict__.get("stfmr_lockin_motor_busy", False)):
+            ownership = self._newmark_stage_ownership()
+
+            def close_motor() -> None:
+                try:
+                    motor.disconnect()
+                except BaseException as error:
+                    self.thread_log(f"STFMR safe-close warning: {error}")
+                finally:
+                    if not motor.connected:
+                        ownership.release("STFMR")
+
+            for name in ("stfmr_lockin_live_future", "stfmr_lockin_future"):
+                future = self.__dict__.get(name)
+                if future is not None:
+                    future.cancel()
+            try:
+                self.stfmr_lockin_executor.submit(close_motor)
+            except RuntimeError as error:
+                errors.append(f"Newmark NSC-A1: {error}")
+            self.stfmr_lockin_executor.shutdown(wait=False)
+        else:
+            if motor is not None:
+                self._newmark_stage_ownership().release("STFMR")
+            self.stfmr_lockin_executor.shutdown(wait=False, cancel_futures=True)
         for error in errors:
             try:
                 self.append_log(f"STFMR safe-close warning: {error}")
@@ -43530,28 +44962,96 @@ class NewmarkRefused(NewmarkStageError):
 
 class NewmarkLimitErrorLatched(NewmarkRefused):
     """A limit error is latched (MST bit 6 or 7): the move was not sent.  The
-    RT-E page offers to clear it, CLR after an explicit Yes (user, 2026-10-17)."""
+    RT-E page offers to clear it, CLR after an explicit Yes (user, 2026-10-17),
+    and so does the STFMR page at the Start of a sweep with angles (user,
+    2026-10-17), whose sweeps can meet it mid-sweep too: the text names both."""
 
     def __init__(self, mst):
         self.mst = mst
         super().__init__(f"a limit error is latched (MST {mst}: {newmark_describe_status(mst)}): the move was not "
-                         "sent. To clear it, press Move stage or Start an Angle scan on the RT-E page and answer "
-                         "Yes (CLR)")
+                         "sent. To clear it, press Move stage or Start an Angle scan on the RT-E page, or Start a "
+                         "sweep with the motor on the STFMR page, and answer Yes (CLR)")
 
 
 class NewmarkDriverOff(NewmarkRefused):
     """The motor driver is off (EO != 1): the move was not sent.  The RT-E page
-    offers to switch it on, EO=1 after an explicit Yes (user, 2026-10-17)."""
+    offers to switch it on, EO=1 after an explicit Yes (user, 2026-10-17), and
+    so does the STFMR page at the Start of a sweep with angles (user,
+    2026-10-17)."""
 
     def __init__(self, eo):
         self.eo = eo
         super().__init__(f"the motor driver is off (EO={eo}): the position counter would advance without motion, so "
                          "the move was not sent. To switch it on, press Move stage or Start an Angle scan on the RT-E "
-                         "page and answer Yes (EO=1)")
+                         "page, or Start a sweep with the motor on the STFMR page, and answer Yes (EO=1)")
 
 
-# The two refusals the RT-E page can fix itself, after a Yes (user, 2026-10-17).
+# The two refusals the RT-E and STFMR pages can fix themselves, after a Yes
+# (user, 2026-10-17).
 NEWMARK_FIXABLE_REFUSALS = (NewmarkLimitErrorLatched, NewmarkDriverOff)
+
+
+def newmark_fix_prompt(error, page):
+    """The Yes/No for a refusal the page can fix, the same on the RT-E and
+    STFMR pages (user, 2026-10-17: the STFMR page "offers the same Yes/No as
+    RT-E"): (kind, command, title, question) for a NewmarkLimitErrorLatched
+    (CLR) or a NewmarkDriverOff (EO=1).  ``page`` ("RT-E" or "STFMR") starts
+    the title only.  The EO=1 question warns about the angle before its Yes,
+    which goes on at once (review, 2026-10-17); Set stage 0° is on the RT-E
+    page."""
+    if isinstance(error, NewmarkLimitErrorLatched):
+        return (NewmarkLimitErrorLatched, "CLR", f"{page} stage limit error",
+                f"A limit error is latched on the stage (MST {error.mst}: {newmark_describe_status(error.mst)}). "
+                "Clear it now (CLR)?")
+    return (NewmarkDriverOff, "EO=1", f"{page} stage motor driver",
+            f"The stage's motor driver is off (EO={error.eo}). Switch it on now (EO=1) and go on? "
+            "The motor then holds the stage with its current.\n\n"
+            "If the driver went off during a move, the angle shown may not be the stage's: "
+            "answer No and check it first (Set stage 0° if needed).")
+
+
+def newmark_fix_again_text(kind, error, command):
+    """The error for a problem back right after its own fix was read back:
+    never a second question, so never a loop of CLRs or EO=1s (review,
+    2026-10-17; shared by the RT-E and STFMR pages)."""
+    again = (f"The limit error is latched again (MST {error.mst}: {newmark_describe_status(error.mst)})"
+             if kind is NewmarkLimitErrorLatched else f"The motor driver is off again (EO={error.eo})")
+    return f"{again} right after {command} was read back, so nothing moved: check the stage"
+
+
+def newmark_set_zero_question():
+    """The Yes/No before PX=0, the same on the RT-E page (Set stage 0°) and
+    the STFMR page (Set motor 0°; user, 2026-10-17: "also add Set 0° button
+    for the motor in ST-FMR")."""
+    return ("Call the stage's present position 0°?\n\n"
+            f"The ±{NEWMARK_CABLE_LIMIT_DEG:g}° limit for the sample wires counts from the stage zero, so it "
+            "moves with it: the wires must hang free here.\n\n"
+            "The zero is kept across a USB reconnect but lost when the NSC-A1 is powered off.")
+
+
+class NewmarkStageOwnership:
+    """Which page has the Newmark stage's USB device open: "RT-E", "STFMR" or
+    None (user, 2026-10-17: a Motor connection on both pages).  One per
+    program (CombinedControlApp.newmark_stage_ownership).  The device opens
+    once, so a page claims it on the Tk thread before its Connect job is
+    queued and releases it once its handle is closed (a Disconnect, a
+    failed Connect, the page closing); a Connect on the other page meanwhile
+    is refused before anything is sent.  Each page keeps its own
+    NewmarkNSCA1Controller on its own worker thread.  The stage zero (PX=0)
+    lives in the NSC-A1 and survives a USB reconnect, so a zero set on the
+    RT-E page holds after a Connect on the STFMR page."""
+
+    def __init__(self):
+        self.owner = None
+
+    def claim(self, page):
+        if self.owner not in (None, page):
+            raise RuntimeError(f"The motor is connected on the {self.owner} page: disconnect it there first.")
+        self.owner = page
+
+    def release(self, page):
+        if self.owner == page:
+            self.owner = None
 
 
 class NewmarkMotionError(NewmarkStageError):
@@ -43812,16 +45312,23 @@ class NewmarkNSCA1Controller:
 
     One thread only: SiUSBXp.dll keeps its USB handles per thread, so every
     DLL call of a session must come from the thread that connected (on the
-    RT-E page, its single-worker executor 'rte-control').  A call from any
-    other thread is refused before it reaches the DLL.  A failed command is
-    never repeated (a move may already have started); replies are brought
-    back in step (flush, ID, VER) before the next one is trusted."""
+    RT-E page, its single-worker executor 'rte-control'; on the STFMR page,
+    'stfmr-lockin').  A call from any other thread is refused before it
+    reaches the DLL.  A failed command is never repeated (a move may already
+    have started); replies are brought back in step (flush, ID, VER) before
+    the next one is trusted.
+
+    Each page has its own controller; the USB device is opened by one page
+    at a time (NewmarkStageOwnership).  ``owner_scope`` ("RT-E" or "STFMR")
+    starts every log line, so the log says which page sent what (user,
+    2026-10-17: "add the connection button for Motor in RT-E and ST-FMR
+    modules"; the lines read "RT-E ..." whichever page it was before)."""
 
     label = "Newmark NSC-A1"
 
     def __init__(self, logger, owner_scope="RT-E", loader=None):
         self.logger = logger
-        self.owner_scope = str(owner_scope)
+        self.owner_scope = str(owner_scope)     # the log lines' prefix: "RT-E" or "STFMR"
         self._loader = loader           # None: newmark_load_performax, looked up when connecting
         self._now, self._sleep = time.monotonic, time.sleep
         self.dll = None
@@ -43913,7 +45420,8 @@ class NewmarkNSCA1Controller:
         flush = self._function(NEWMARK_FLUSH, optional=True)
         if flush is None:
             if not self._no_flush_said:
-                self.logger(f"RT-E {self.label}: this {NEWMARK_DLL_NAME} has no {NEWMARK_FLUSH} (an older DLL)")
+                self.logger(f"{self.owner_scope} {self.label}: this {NEWMARK_DLL_NAME} has no {NEWMARK_FLUSH} "
+                            "(an older DLL)")
                 self._no_flush_said = True
             return False
         try:
@@ -44035,7 +45543,7 @@ class NewmarkNSCA1Controller:
             self._reset_session()
             raise
         self.resource_name, self.identity, self.version = chosen, identity, version
-        self.logger(f"RT-E {self.label} connected ({identity}, {version}): {self.scale_text()}")
+        self.logger(f"{self.owner_scope} {self.label} connected ({identity}, {version}): {self.scale_text()}")
         return identity
 
     def scale_text(self):
@@ -44064,14 +45572,15 @@ class NewmarkNSCA1Controller:
             self._close_handle()
             spd = self.steps_per_degree
             self._reset_session()
-        self.logger(f"RT-E {self.label} disconnected")
+        self.logger(f"{self.owner_scope} {self.label} disconnected")
         if outcome is not None and not outcome[0]:
             raise NewmarkStageError(f"{self.label} closed, but the stage could not be confirmed stopped "
                                     "(STOP, then ABORT): CHECK THE STAGE")
         if failure is not None:
             raise failure
         if outcome is not None:
-            self.logger(f"RT-E {self.label}: stopped before closing, at {newmark_angle_text(outcome[1], spd)}")
+            self.logger(f"{self.owner_scope} {self.label}: stopped before closing, at "
+                        f"{newmark_angle_text(outcome[1], spd)}")
 
     # ---- reads ---------------------------------------------------------------
     def read_state(self):
@@ -44138,7 +45647,7 @@ class NewmarkNSCA1Controller:
                                  "RM-5-110 has no limit switches: a polarity problem; fix the limit polarity in "
                                  "Newmark's QuickMotion. CLR was not sent")
         if not mst & NEWMARK_LIMIT_ERRORS:
-            self.logger(f"RT-E {self.label}: no limit error is latched now (MST {mst}); CLR not sent")
+            self.logger(f"{self.owner_scope} {self.label}: no limit error is latched now (MST {mst}); CLR not sent")
             return mst
         self.set_ok("CLR")
         after = self.status()
@@ -44146,7 +45655,7 @@ class NewmarkNSCA1Controller:
             raise NewmarkStageError(f"CLR was sent, but MST read back still shows a limit error latched (MST {after}: "
                                     f"{newmark_describe_status(after)}); nothing moved. Check the stage (and its "
                                     "limit settings in QuickMotion)")
-        self.logger(f"RT-E {self.label}: limit error cleared (CLR; MST {mst} -> {after}, read back)")
+        self.logger(f"{self.owner_scope} {self.label}: limit error cleared (CLR; MST {mst} -> {after}, read back)")
         return after
 
     def enable_driver(self):
@@ -44163,14 +45672,14 @@ class NewmarkNSCA1Controller:
                                  "EO=1 was not sent")
         eo = self.number("EO")
         if eo == 1:
-            self.logger(f"RT-E {self.label}: the motor driver is on now (EO=1); EO=1 not sent")
+            self.logger(f"{self.owner_scope} {self.label}: the motor driver is on now (EO=1); EO=1 not sent")
             return eo
         self.set_ok("EO=1")
         after = self.number("EO")
         if after != 1:
             raise NewmarkStageError(f"EO=1 was sent, but EO read back {after}, not 1: the motor driver is not on; "
                                     "nothing moved. Check the NSC-A1 (and QuickMotion)")
-        self.logger(f"RT-E {self.label}: motor driver switched on (EO=1; EO {eo} -> {after}, read back)")
+        self.logger(f"{self.owner_scope} {self.label}: motor driver switched on (EO=1; EO {eo} -> {after}, read back)")
         return after
 
     def _set_speeds(self, hspd, lspd, acc):
@@ -44351,7 +45860,7 @@ class NewmarkNSCA1Controller:
         self._send_stop("STOP", notes)
         stopped, px = self._wait_until_still(wait_s, notes)
         if not stopped:
-            self.logger(f"RT-E {self.label}: not stopped after STOP; ABORT")
+            self.logger(f"{self.owner_scope} {self.label}: not stopped after STOP; ABORT")
             self._send_stop("ABORT", notes)
             stopped, px = self._wait_until_still(NEWMARK_ABORT_WAIT_S, notes)
         self.stop_finished = True
@@ -44380,7 +45889,8 @@ class NewmarkNSCA1Controller:
         now = self.number("PX")
         if now != 0:
             raise NewmarkStageError(f"PX read back {now} after PX=0")
-        self.logger(f"RT-E {self.label}: zero set here (was {newmark_angle_text(before, self.steps_per_degree)}, "
+        self.logger(f"{self.owner_scope} {self.label}: zero set here (was "
+                    f"{newmark_angle_text(before, self.steps_per_degree)}, "
                     f"PX {before})")
         return before
 
@@ -44624,8 +46134,28 @@ class RTEPanel(PPMSPanel):
             self._create_connection_indicator(group, 'ppms_' + key).grid(row=device_row, column=4, padx=3)
             status = self._ppms_compact_status(self.ppms_xy_vars[key]) if key in PPMS_SR830_KEYS else self.ppms_device_connection_vars[key]
             ttk.Label(group, textvariable=status, width=13).grid(row=device_row, column=5, sticky='w')
-        # The Newmark stage has no rack row: its controls are in the scan box
-        # (user/CI, 2026-10-14; see the stage block there).
+        # The Newmark NSC-A1 rotation stage's connection, a fifth rack row
+        # laid out as the four above (user, 2026-10-17: "add the connection
+        # button for Motor in RT-E and ST-FMR modules"; it was the "Stage"
+        # row of the scan box's stage block since user/CI, 2026-10-14).  The
+        # user accepted that it costs the plots about one row of height in
+        # the 1101 px window.  "auto" takes the only Performax USB device;
+        # with several, its USB serial goes in the box (a longer serial
+        # scrolls inside it).  Move stage, Stop stage, Set stage 0° and the
+        # stage's live line stay in the scan box.
+        self.rte_resources['newmark'] = tk.StringVar(value='auto')
+        self.rte_connections['newmark'] = tk.StringVar(value='Not connected')
+        ttk.Label(rack, text='Motor', width=13).grid(row=4, column=0, sticky='w')
+        entry = ttk.Entry(rack, textvariable=self.rte_resources['newmark'], width=18)
+        entry.grid(row=4, column=1)
+        connect = ttk.Button(rack, text='Connect', width=8, command=lambda: self._rte_connect('newmark'))
+        connect.grid(row=4, column=2)
+        disconnect = ttk.Button(rack, text='Disconnect', width=10, command=lambda: self._rte_disconnect('newmark'))
+        disconnect.grid(row=4, column=3)
+        self._create_connection_indicator(rack, 'rte_newmark').grid(row=4, column=4, padx=3)
+        ttk.Label(rack, textvariable=self.rte_connections['newmark'], width=13).grid(row=4, column=5, sticky='w')
+        # Locked and released like the other rack rows' connection widgets.
+        self.rte_connection_widgets['newmark'] = (entry, connect, disconnect)
         if laid_out:
             # Side by side in the widened lab window; stacked in the 1101 px
             # window the program opens with, where the two did not fit.
@@ -44746,61 +46276,50 @@ class RTEPanel(PPMSPanel):
         # The Newmark NSC-A1 rotation stage (user, 2026-10-13).  Its rack row
         # and its row under the settings took about 84 px of height in the
         # 1101 px window the program opens with, and every plot fell below
-        # its 55 px minimum ("Increase the window height").  Here it has
-        # three rows level with the scan rows and no taller than them: the
-        # first two are as tall as an entry (Inline buttons), the third holds
-        # one line of text (user/CI, 2026-10-14).
+        # its 55 px minimum ("Increase the window height").  Here it had
+        # three rows level with the scan rows and no taller than them (user/
+        # CI, 2026-10-14); its connection is the rack's "Motor" row again
+        # since 2026-10-17 (user), so two are left: the first as tall as an
+        # entry (Inline buttons), the second holding one line of text.
         stage_box = ttk.Frame(scan_body)
         stage_box.grid(row=0, column=1, sticky='nw')
-        # The live line spans the button columns and the lamp's; what it
-        # needs beyond them goes to the lamp's column, not into the buttons.
+        # The live line spans the button columns and an empty column 4 (the
+        # lamp's, before the lamp went to the rack): what it needs beyond the
+        # buttons goes there, not into the buttons.
         stage_box.columnconfigure(4, weight=1)
-        # "auto" takes the only Performax USB device; with several, its USB
-        # serial goes in the box (a longer serial scrolls inside it).
-        self.rte_resources['newmark'] = tk.StringVar(value='auto')
         self.rte_stage_target = tk.StringVar(value='0')
-        ttk.Label(stage_box, text='Stage').grid(row=0, column=0, sticky='e', padx=(0, 3))
-        entry = ttk.Entry(stage_box, textvariable=self.rte_resources['newmark'], width=9)
-        entry.grid(row=0, column=1, sticky='ew')
-        connect = ttk.Button(stage_box, text='Connect', width=11, style='Inline.TButton',
-                             command=lambda: self._rte_connect('newmark'))
-        connect.grid(row=0, column=2, padx=2, sticky='ew')
-        disconnect = ttk.Button(stage_box, text='Disconnect', width=11, style='Inline.TButton',
-                                command=lambda: self._rte_disconnect('newmark'))
-        disconnect.grid(row=0, column=3, padx=2, sticky='ew')
-        self._create_connection_indicator(stage_box, 'rte_newmark').grid(row=0, column=4, padx=3, sticky='w')
-        # Locked and released like the rack rows' connection widgets.
-        self.rte_connection_widgets['newmark'] = (entry, connect, disconnect)
-        ttk.Label(stage_box, text='Stage °').grid(row=1, column=0, sticky='e', padx=(0, 3))
+        ttk.Label(stage_box, text='Stage °').grid(row=0, column=0, sticky='e', padx=(0, 3))
         stage_entry = ttk.Entry(stage_box, textvariable=self.rte_stage_target, width=9)
-        stage_entry.grid(row=1, column=1, sticky='ew')
+        stage_entry.grid(row=0, column=1, sticky='ew')
         move = ttk.Button(stage_box, text='Move stage', width=11, style='Inline.TButton', command=self._rte_stage_move)
-        move.grid(row=1, column=2, padx=2, sticky='ew')
+        move.grid(row=0, column=2, padx=2, sticky='ew')
         self.rte_stage_stop_button = ttk.Button(stage_box, text='Stop stage', width=11, style='Inline.TButton',
                                                 command=self._rte_stage_stop)
-        self.rte_stage_stop_button.grid(row=1, column=3, padx=2, sticky='ew')
+        self.rte_stage_stop_button.grid(row=0, column=3, padx=2, sticky='ew')
         zero = ttk.Button(stage_box, text='Set stage 0°', width=11, style='Inline.TButton',
                           command=self._rte_stage_set_zero)
-        zero.grid(row=2, column=0, columnspan=2, sticky='ew')
+        zero.grid(row=1, column=0, columnspan=2, sticky='ew')
         # Move stage and Set stage 0° are edit widgets (locked while busy);
         # Stop stage stays usable whenever the stage is connected, even
         # during a move or scan (_update_ppms_control_ui).
         for widget in (stage_entry, move, zero):
             self.rte_edit_widgets.append((widget, 'normal'))
         # One live line for the connection and the reading, the former status
-        # label and live line merged (the lamp shows the connection): "Stage:
-        # not connected", "Stage: +12.345° (10000 steps/°)", "Stage read
-        # failed: …", "Stage: stopping…".  A fixed box like the rack's field
-        # and KEPCO lines, so a new reading never shifts the block; a longer
-        # message, such as a failure or an unconfirmed STOP, wraps inside it.
-        # Wrapped rather than cut, so a warning is read whole: while such a
-        # message shows (up to three lines; a failure's text is cut to 60
-        # characters), the block, and the scan box with it, is up to about
-        # 22 px taller than the scan rows, until the next one-line message
-        # (user/CI, 2026-10-14).
+        # label and live line merged: "Stage: not connected", "Stage:
+        # +12.345° (10000 steps/°)", "Stage read failed: …", "Stage:
+        # stopping…" (the rack's Motor row, its lamp and its "Connected"
+        # show the connection too since 2026-10-17).  A fixed box like the
+        # rack's field and KEPCO lines, so a new reading never shifts the
+        # block; a longer message, such as a failure or an unconfirmed STOP,
+        # wraps inside it.  Wrapped rather than cut, so a warning is read
+        # whole: while such a message shows (up to three lines; a failure's
+        # text is cut to 60 characters), the block was up to about 22 px
+        # taller than the scan rows with its three rows, until the next
+        # one-line message (user/CI, 2026-10-14); with two rows it is about
+        # one row shorter (2026-10-17).
         self.rte_stage_live = tk.StringVar(value='Stage: not connected')
         live = ttk.Label(stage_box, textvariable=self.rte_stage_live, width=32)
-        live.grid(row=2, column=2, columnspan=3, sticky='w', padx=(2, 0))
+        live.grid(row=1, column=2, columnspan=3, sticky='w', padx=(2, 0))
         if laid_out:
             live.configure(wraplength=32 * tkfont.nametofont('TkDefaultFont', root=live).measure('0'))
         # Status messages run to about a hundred characters and wrapped into
@@ -44984,7 +46503,19 @@ class RTEPanel(PPMSPanel):
     def _rte_connect(self, key):
         resource = self.rte_resources[key].get().strip()
         if key == 'newmark':
+            if self.rte_closed or self.closing or self.ppms_environment_busy or self.ppms_field_scan_running:
+                return      # as _rte_submit, before the device is claimed
             stage = self.rte_controllers[key]
+            # The USB device opens on one page at a time (user, 2026-10-17):
+            # claimed here, on the Tk thread, before the job is queued, and
+            # released once the handle is closed.  A Connect while the STFMR
+            # page has it is refused before anything is sent.
+            ownership = self._newmark_stage_ownership()
+            try:
+                ownership.claim('RT-E')
+            except RuntimeError as error:
+                messagebox.showerror('RT-E motor', str(error), parent=self.root)
+                return
             # Connect and the first read on the RT-E worker; the Tk thread
             # only shows the result (it never calls the stage's DLL).
             def connect_stage():
@@ -44994,12 +46525,24 @@ class RTEPanel(PPMSPanel):
                 except Exception as error:
                     # Connected all the same (the handle is open, so the lamp,
                     # Stop stage and Disconnect say so), and the stage line
-                    # says that the read failed (user, 2026-10-13).  The stage
-                    # has no separate "Connected" label since its controls
-                    # moved to the scan box (user/CI, 2026-10-14).
+                    # says that the read failed (user, 2026-10-13).
                     self.thread_log(f'RT-E {stage.label}: the first read after Connect failed: {error}')
                     return f'Stage read failed: {short_status_error(error, 60)}'
-            self._rte_submit(connect_stage, self.rte_stage_live.set)
+
+            def connected(text):
+                # The rack's Motor row says "Connected", as the other rows do
+                # (user, 2026-10-17); the scan box's line shows the reading.
+                self.rte_connections['newmark'].set('Connected')
+                self.rte_stage_live.set(text)
+
+            def failed(_error):
+                if not stage.connected:
+                    ownership.release('RT-E')
+            try:
+                self._rte_submit(connect_stage, connected, failed=failed)
+            except BaseException:
+                ownership.release('RT-E')
+                raise
             return
         self._rte_submit(lambda: self.rte_controllers[key].connect(resource),
                          lambda identity: self.rte_connections[key].set('Connected'))
@@ -45019,7 +46562,12 @@ class RTEPanel(PPMSPanel):
                 # From the closed handle, not only on success: a disconnect that
                 # closed the handle and then raised (stop not confirmed) left the
                 # row "Connected" with the lamp off (user, 2026-10-13).  The
-                # stage line is now the only text for it (user/CI, 2026-10-14).
+                # handle is closed here, so the device is released for the
+                # STFMR page and the Motor row says "Not connected" (user,
+                # 2026-10-17); the stage line says whether its stop was seen.
+                if not stage.connected:
+                    self._newmark_stage_ownership().release('RT-E')
+                    self.rte_connections['newmark'].set('Not connected')
                 self.rte_stage_live.set('Stage: not connected' if failure is None
                                         else 'Stage: closed, STOP not confirmed')
                 if failure is not None:
@@ -45164,21 +46712,13 @@ class RTEPanel(PPMSPanel):
             if self.rte_closed or self.closing:
                 # Closed before the question could open: nothing asked or sent.
                 return
-            if isinstance(error, NewmarkLimitErrorLatched):
-                kind, command, fix = NewmarkLimitErrorLatched, 'CLR', stage.clear_limit_error
-                title = 'RT-E stage limit error'
-                question = (f'A limit error is latched on the stage (MST {error.mst}: '
-                            f'{newmark_describe_status(error.mst)}). Clear it now (CLR)?')
-            else:
-                kind, command, fix = NewmarkDriverOff, 'EO=1', stage.enable_driver
-                title = 'RT-E stage motor driver'
-                # Yes goes on at once with the move or the scan: the warning
-                # comes before it, so the angle can be checked first, with
-                # the driver still off (review, 2026-10-17).
-                question = (f"The stage's motor driver is off (EO={error.eo}). Switch it on now (EO=1) and go on? "
-                            'The motor then holds the stage with its current.\n\n'
-                            'If the driver went off during a move, the angle shown may not be the stage\'s: '
-                            'answer No and check it first (Set stage 0° if needed).')
+            # The question's texts are shared with the STFMR page
+            # (newmark_fix_prompt; user, 2026-10-17).  Yes goes on at once
+            # with the move or the scan: the EO=1 question's warning comes
+            # before it, so the angle can be checked first, with the driver
+            # still off (review, 2026-10-17).
+            kind, command, title, question = newmark_fix_prompt(error, 'RT-E')
+            fix = stage.clear_limit_error if kind is NewmarkLimitErrorLatched else stage.enable_driver
             if self.rte_stage_stop_event.is_set() or self.ppms_field_scan_stop_event.is_set():
                 # Stop stage, KEPCO Zero / OFF or 6221 / 2400 OFF was pressed while
                 # the stage was read: no question, nothing sent, no move.
@@ -45193,11 +46733,7 @@ class RTEPanel(PPMSPanel):
                 if kind in fixed:
                     # Back right after its own fix was read back: an error, not a
                     # second question (never a loop of CLRs or EO=1s).
-                    again = (f'The limit error is latched again (MST {error.mst}: '
-                             f'{newmark_describe_status(error.mst)})' if kind is NewmarkLimitErrorLatched
-                             else f'The motor driver is off again (EO={error.eo})')
-                    raise RuntimeError(f'{again} right after {command} was read back, so nothing moved: check the '
-                                       'stage')
+                    raise RuntimeError(newmark_fix_again_text(kind, error, command))
                 self._rte_require_stage_fix_ready(stage)
             except Exception as problem:
                 self.thread_log(f'RT-E {stage.label}: {command} not offered: {problem}')
@@ -45284,13 +46820,9 @@ class RTEPanel(PPMSPanel):
         if not stage.connected:
             messagebox.showerror('RT-E stage', f'Connect the {stage.label} first', parent=self.root)
             return
-        if not messagebox.askyesno(
-                'RT-E stage zero',
-                'Call the stage\'s present position 0°?\n\n'
-                f'The ±{NEWMARK_CABLE_LIMIT_DEG:g}° limit for the sample wires counts from the stage zero, so it '
-                'moves with it: the wires must hang free here.\n\n'
-                'The zero is kept across a USB reconnect but lost when the NSC-A1 is powered off.',
-                parent=self.root):
+        # The question is shared with the STFMR page's Set motor 0° (user,
+        # 2026-10-17).
+        if not messagebox.askyesno('RT-E stage zero', newmark_set_zero_question(), parent=self.root):
             return
 
         def zero():
@@ -45490,8 +47022,14 @@ class RTEPanel(PPMSPanel):
                 # fixed field (user, 2026-10-13).
                 stage = self.rte_controllers['newmark']
                 if not stage.connected:
-                    # Where its Connect is (the scan box since user/CI, 2026-10-14).
-                    raise ValueError(f'Connect the {stage.label} (the "Stage" row of the RT-E scan box) '
+                    # Where its Connect is: the rack's "Motor" row since
+                    # 2026-10-17 (user), and whether the STFMR page has it.
+                    owner = self._newmark_stage_ownership().owner
+                    if owner not in (None, 'RT-E'):
+                        raise ValueError(f'The motor is connected on the {owner} page: disconnect it there and '
+                                         'connect it here (the "Motor" row of the measurement instruments) for an '
+                                         'angle scan')
+                    raise ValueError(f'Connect the {stage.label} (the "Motor" row of the measurement instruments) '
                                      'for an angle scan')
                 if not stage.steps_per_degree:
                     # Fixed at 40 x NEWMARK_MICROSTEP since the driver is no
@@ -46015,6 +47553,7 @@ class RTEPanel(PPMSPanel):
             if timer is not None:
                 self.root.after_cancel(timer)
                 setattr(self, name, None)
+        ownership = self._newmark_stage_ownership()
         # Queued after the scan on the one-worker executor: no write can follow OFF.
         def cleanup():
             # The stage first (STOP if it is moving, then Close), on this
@@ -46026,6 +47565,10 @@ class RTEPanel(PPMSPanel):
                     controller.disconnect()
                 except Exception as error:
                     self.thread_log(f'RT-E shutdown warning: {error}')
+            # The device is free for the other page once its handle is closed
+            # (user, 2026-10-17).
+            if stage is not None and not stage.connected:
+                ownership.release('RT-E')
             self.zurich_executor.submit(self.zurich_controller.disconnect_mfli)
             self.zurich_executor.shutdown(wait=False)
         self.ppms_executor.submit(cleanup)

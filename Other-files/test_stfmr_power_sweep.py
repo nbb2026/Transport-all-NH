@@ -459,7 +459,7 @@ class PowerSweepTests(PowerSweepCase):
         with recorder.csv_path.open(encoding="utf-8-sig") as handle:
             header = handle.readline().strip().split(",")
         self.assertEqual(header, list(app.STFMRScanRecorder.FIELDNAMES))
-        self.assertEqual(len(header), 34)
+        self.assertEqual(len(header), 35)      # stage_angle_deg last since 2026-10-17 (user)
         self.assertEqual(header.index("microwave_power_dbm"), 15)
 
     def test_the_confirmation_lists_the_powers_and_the_estimate_counts_them(self):
@@ -1015,10 +1015,11 @@ class TableTests(NoWindows):
             self.assertEqual((field.kind, field.options["width"], field.grid_options["sticky"]), ("Entry", 8, "ew"))
             self.assertIs(field.options["textvariable"], variable)
             self.assertIs(field, entry, "kept, so a sweep can lock it")
-        everything = [str(w.options.get("text", "")) for row in range(7) for w in page.in_row(table, row)]
+        everything = [str(w.options.get("text", "")) for row in range(8) for w in page.in_row(table, row)]
         self.assertNotIn("Power dBm:", everything, "the single box is gone")
-        self.assertEqual(page.in_row(table, 6), [], "six rows")
-        for row in range(6):
+        # Seven since the angle row (user, 2026-10-17).
+        self.assertEqual(page.in_row(table, 7), [], "seven rows")
+        for row in range(7):
             self.assertLessEqual(max(w.grid_options["column"] for w in page.in_row(table, row)), 9,
                                  "at most five pairs a row")
 
