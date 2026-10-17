@@ -570,7 +570,7 @@ class TableTests(NoWindows):
         self.assertIs(page.cell(table, 6, 3), a.stfmr_lockin_mfli_timeconstant_entry)
         self.assertEqual(page.cell(table, 2, 7).kind, "Spinbox", "Loop")
         self.assertEqual([w.options.get("text", "") for w in page.in_row(table, 4)[0::2]],
-                         ["Angle start °:", "Angle stop °:", "Angle step °:"])
+                         ["Ang. start °:", "Ang. stop °:", "Ang. step °:"])
         self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 5)], [0, 1, 2, 3, 4, 5, 6])
         self.assertEqual([w.grid_options["column"] for w in page.in_row(table, 6)], [0, 1, 2, 3, 4])
         everything = [str(w.options.get("text", "")) for row in range(8) for w in page.in_row(table, row)]

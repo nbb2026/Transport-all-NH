@@ -199,7 +199,7 @@ class FieldOutputTests(unittest.TestCase):
         expected = {self.LAB_DEFAULT: (False, True), LAB_WIDE: (True, False)}
         try:
             for history in ((self.LAB_DEFAULT,), (LAB_WIDE,), (LAB_WIDE, self.LAB_DEFAULT),
-                            (self.LAB_DEFAULT, LAB_WIDE), (826, LAB_WIDE, self.LAB_DEFAULT)):
+                            (self.LAB_DEFAULT, LAB_WIDE), (self.NARROWEST, LAB_WIDE, self.LAB_DEFAULT)):
                 for width in history:
                     self.arranged(width, "STFMR", a.stfmr_lockin_resource_widgets)
                 width = history[-1]
@@ -346,8 +346,11 @@ class FieldOutputTests(unittest.TestCase):
         self.assertTrue(getattr(table.master, "_pair_side_by_side", False))
         self.assertGreater(column.winfo_rootx(), table.winfo_rootx() + table.winfo_width() - 1)
         for button in (self.a.stfmr_lockin_start_button, self.a.stfmr_lockin_stop_button,
-                       self.a.stfmr_lockin_save_button, self.a.stfmr_lockin_read_gauss_button):
+                       self.a.stfmr_lockin_save_button):
             self.assertIs(button.master.master, column)
+        # Read LS475 is one level deeper since its line also holds the stage
+        # controls (user, 2026-10-17).
+        self.assertIs(self.a.stfmr_lockin_read_gauss_button.master.master.master, column)
 
     def test_the_duplicate_safety_line_is_gone(self):
         boxes = [w.cget("text") for w in descendants(self.a.stfmr_lockin_tab)
@@ -544,7 +547,7 @@ class FieldOutputTests(unittest.TestCase):
         dropdown fills its column, as wide as f step, P step, Step A and
         Settle s above it, and "300 ms" is not cut.  The SR830 row is row 4
         since the power row (user, 2026-10-14), and row 5 since the angle row
-        (user, 2026-10-17), which puts Angle step ° above it too."""
+        (user, 2026-10-17), which puts Ang. step ° above it too."""
         font = tkinter.font.nametofont("TkTextFont")
         choice = self.a.stfmr_lockin_sr830_time_constant_combo
         table = self.a.stfmr_lockin_meter_combo.master
@@ -590,7 +593,7 @@ class FieldOutputTests(unittest.TestCase):
             2: ("Start A:", "Stop A:", "Step A:", "Loop:", "Comp. V:"),
             3: ("Mod. start Hz:", "Mod. end Hz:", "Settle s:", "Acquire s:"),
             # The stage angles, below the Mod. row (user, 2026-10-17).
-            4: ("Angle start °:", "Angle stop °:", "Angle step °:"),
+            4: ("Ang. start °:", "Ang. stop °:", "Ang. step °:"),
             5: ("Meter:", "SR830 REF IN:", "SR830 TC:"),
             6: ("MFLI reference:", "MFLI TC s:"),
         }

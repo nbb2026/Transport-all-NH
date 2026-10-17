@@ -212,11 +212,11 @@ class AngleListTests(unittest.TestCase):
         for start, stop, step in (("", "0", "10"), ("x", "0", "10"), ("0", "nan", "10"), ("0", "inf", "10"),
                                   ("0", "90", ""), (None, "0", "10")):
             with self.subTest(start=start, stop=stop, step=step):
-                with self.assertRaisesRegex(ValueError, "^Angle start °, Angle stop ° and Angle step ° must be "
+                with self.assertRaisesRegex(ValueError, "^Ang. start °, Ang. stop ° and Ang. step ° must be "
                                                         "finite numbers$"):
                     self.angles(start, stop, step)
         for start, stop in (("0", "0"), ("0", "90")):
-            with self.assertRaisesRegex(ValueError, r"^Angle step ° must be greater than 0°$"):
+            with self.assertRaisesRegex(ValueError, r"^Ang. step ° must be greater than 0°$"):
                 self.angles(start, stop, "0")
         for start, stop in (("0", "360.5"), ("-361", "0"), ("350", "370")):
             with self.subTest(start=start, stop=stop):
@@ -250,7 +250,7 @@ class AnglePlanTests(MotorBase):
     def test_angles_without_the_motor_are_refused(self):
         run = self.make(angles=("0", "90", "10"), connect=False)
         with self.assertRaisesRegex(RuntimeError, "connect it on the Motor row of the STFMR instrument "
-                                                  "connections, or set Angle start and Angle stop to 0"):
+                                                  "connections, or set Ang. start and Ang. stop to 0"):
             run.h._stfmr_lockin_angle_plan()
         run.h.newmark_stage_ownership.claim("RT-E")
         with self.assertRaisesRegex(RuntimeError, "the motor is connected on the RT-E page: disconnect it there "
@@ -1227,7 +1227,7 @@ class PageWidgetTests(unittest.TestCase):
         table = a.stfmr_lockin_meter_combo.master
         cells = page.in_row(table, 4)
         self.assertEqual([w.options.get("text", "") for w in cells[0::2]],
-                         ["Angle start °:", "Angle stop °:", "Angle step °:"])
+                         ["Ang. start °:", "Ang. stop °:", "Ang. step °:"])
         self.assertEqual([w.grid_options["column"] for w in cells], [0, 1, 2, 3, 4, 5])
         for field, variable, kept in zip(cells[1:6:2], (a.stfmr_lockin_angle_start_var, a.stfmr_lockin_angle_stop_var,
                                                        a.stfmr_lockin_angle_step_var),
@@ -1253,13 +1253,15 @@ class PageWidgetTests(unittest.TestCase):
         self.assertFalse([w for w in page.in_row(table, 4) if w.kind == "Button"], "no button in the table")
         self.assertEqual([w.options.get("text", "") for w in page.in_row(table, 3)[0::2]],
                          ["Mod. start Hz:", "Mod. end Hz:", "Settle s:", "Acquire s:"])
-        # "Angle start °:" and "Angle stop °:" are no longer than the
-        # longest label of their columns ("MFLI reference:", "SR830 REF
-        # IN:"); "Angle step °:" is longer than "f step GHz:", and CI's GUI
-        # test checks that the table still fits the 1101 px window.
-        for column, label in ((0, "Angle start °:"), (2, "Angle stop °:")):
+        # The labels widen no column: "Ang. start °:" and "Ang. stop °:"
+        # are narrower than "MFLI reference:" and "SR830 REF IN:", and "Ang.
+        # step °:" is as wide as "f step GHz:" (Arial; "Angle step °:" was
+        # 8 to 12 px wider, and on Windows CI the table no longer fitted the
+        # 1101 px window; 2026-10-17).
+        for column, label in ((0, "Ang. start °:"), (2, "Ang. stop °:"), (4, "Ang. step °:")):
             others = [page.cell(table, r, column).options["text"] for r in (0, 1, 2, 3, 5, 6)]
-            self.assertLessEqual(len(label), max(len(t) for t in others), (label, others))
+            self.assertLessEqual(width_in_zeros(label), max(width_in_zeros(t) for t in others) + 0.2,
+                                 (label, others))
 
     def test_the_locks(self):
         class Widget:

@@ -54,9 +54,11 @@
   locked unless the motor is connected here and nothing else runs; a sweep
   cannot start while a hand move, its question or a Motor row job is
   pending.
-- **STFMR, the angles:** "Angle start °", "Angle stop °", "Angle step °"
+- **STFMR, the angles:** "Ang. start °", "Ang. stop °", "Ang. step °"
   (0, 0, 10) in a new table row right below the Mod. row (the SR830 and MFLI
-  rows are now rows 5 and 6). The list is RT-E's rule (`stfmr_angle_list`:
+  rows are now rows 5 and 6); "Ang." as "Mod.": "Angle step °:" was wider
+  than "f step GHz:", and on Windows CI the table then asked 1069 px of the
+  1057 px it has in the 1101 px window. The list is RT-E's rule (`stfmr_angle_list`:
   `ppms_scan_axis`, every angle within ±360° of the stage zero). With the
   motor connected on this page the list is used, even 0 to 0 (one move to
   0°). Without it, 0 to 0 runs the sweep exactly as before, with no motor
