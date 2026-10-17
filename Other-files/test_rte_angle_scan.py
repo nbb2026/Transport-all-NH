@@ -11,6 +11,7 @@ dialog the page can reach fail the test unless a test answers them itself.
 Time is a virtual clock, so a 36 s turn takes no real time; past its limit a
 sleep fails the test, so a lost time-out fails instead of hanging.
 """
+import ast
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import ExitStack
 import ctypes
@@ -20,6 +21,8 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+import time
+import tokenize
 import types
 import unittest
 from unittest.mock import Mock, patch
@@ -426,19 +429,40 @@ class NewmarkDriverTests(StageBase):
         self.assertFalse(h.stage.motion_may_run)
 
     def test_refusals_before_a_move(self):
-        cases = (("moving", lambda sim: sim._start(sim.px + 10 ** 6, script._now()), "is moving"),
-                 ("latched", lambda sim: setattr(sim, "latched", 1 << 6), "limit error is latched"),
-                 ("input", lambda sim: setattr(sim, "inputs", 1 << 5), "polarity problem"),
-                 ("EO=0", lambda sim: setattr(sim, "eo", 0), "driver is off"))
-        for name, arrange, message in cases:
+        # The latched limit error and the driver off are their own refusals,
+        # which the RT-E page offers to fix; their texts say how, on the page,
+        # and name no test script (user, 2026-10-17).
+        refused, latched, off = app.NewmarkRefused, app.NewmarkLimitErrorLatched, app.NewmarkDriverOff
+        cases = (("moving", lambda sim: sim._start(sim.px + 10 ** 6, script._now()), "is moving", refused),
+                 ("latched", lambda sim: setattr(sim, "latched", 1 << 6),
+                  r"limit error is latched \(MST 64: not moving, -limit ERROR \(latched\)\): the move was not sent\. "
+                  r"To clear it, press Move stage or Start an Angle scan on the RT-E page and answer Yes \(CLR\)$",
+                  latched),
+                 ("input", lambda sim: setattr(sim, "inputs", 1 << 5), "polarity problem.*QuickMotion", refused),
+                 # A limit input is checked before the latched error: CLR is
+                 # never offered while the cause is still there.
+                 ("input and latched", lambda sim: (setattr(sim, "inputs", 1 << 4), setattr(sim, "latched", 1 << 6)),
+                  "limit input is on at rest.*polarity problem", refused),
+                 ("EO=0", lambda sim: setattr(sim, "eo", 0),
+                  r"^the motor driver is off \(EO=0\): the position counter would advance without motion, so the "
+                  r"move was not sent\. To switch it on, press Move stage or Start an Angle scan on the RT-E page "
+                  r"and answer Yes \(EO=1\)$", off))
+        for name, arrange, message, kind in cases:
             with self.subTest(name):
                 h = self.make()
                 h.stage.connect("auto")
                 arrange(h.sim)
-                with self.assertRaisesRegex(app.NewmarkRefused, message):
+                with self.assertRaisesRegex(app.NewmarkRefused, message) as caught:
                     h.stage.move_to_deg(5, threading.Event())
+                self.assertIs(type(caught.exception), kind)
+                self.assertNotIn("motor_test", str(caught.exception))
                 self.assertEqual([m for m in h.sim.moves if m != "X1000000"], [])
                 self.assertNotIn("X50000", h.sim.received)
+                self.assertFalse({"CLR", "EO=1"} & set(h.sim.received), "nothing is fixed by itself")
+                if kind is latched:
+                    self.assertEqual(caught.exception.mst, 64)
+                if kind is off:
+                    self.assertEqual(caught.exception.eo, 0)
 
     def test_the_wire_limit(self):
         h = self.make()
@@ -869,18 +893,27 @@ class AngleScanWorkerTests(StageBase):
         panel._stop_ppms_transport_source.assert_not_called()
 
     def test_a_stage_error_stops_the_6221_and_keeps_the_field(self):
-        sim = Sim()
-        h = self.make(sim)
-        h.stage.connect("auto")
-        sim.eo = 0      # the driver switched off: the first move is refused
-        with self.assertRaisesRegex(app.NewmarkRefused, "driver is off"):
-            self.run_scan(h=h, plan=app.rte_scan_plan("Angle", 5, 10, 5, 1, False))
-        panel = h.panel
-        panel._stop_ppms_transport_source.assert_called_once()
-        panel.rte_controllers["kepco"].safe_output_off.assert_not_called()
-        self.assertIn("STOP", h.sim.received, "a stage failure sends STOP")
-        self.assertEqual(h.sim.moves, [])
-        self.assertEqual(panel.ppms_field_scan_rows, [])
+        # The driver off or a latched limit error that appears once the scan
+        # runs fails the scan through the stage-failure path: no question
+        # mid-scan with the outputs on (every dialog fails this module's
+        # tests), nothing fixed (user, 2026-10-17).
+        for name, arrange, kind in (("EO=0", lambda sim: setattr(sim, "eo", 0), app.NewmarkDriverOff),
+                                    ("latched", lambda sim: setattr(sim, "latched", 1 << 7),
+                                     app.NewmarkLimitErrorLatched)):
+            with self.subTest(name):
+                sim = Sim()
+                h = self.make(sim)
+                h.stage.connect("auto")
+                arrange(sim)        # the first move is refused
+                with self.assertRaises(kind):
+                    self.run_scan(h=h, plan=app.rte_scan_plan("Angle", 5, 10, 5, 1, False))
+                panel = h.panel
+                panel._stop_ppms_transport_source.assert_called_once()
+                panel.rte_controllers["kepco"].safe_output_off.assert_not_called()
+                self.assertIn("STOP", h.sim.received, "a stage failure sends STOP")
+                self.assertFalse({"CLR", "EO=1"} & set(h.sim.received))
+                self.assertEqual(h.sim.moves, [])
+                self.assertEqual(panel.ppms_field_scan_rows, [])
 
     def test_px_off_the_target_stops_the_6221_sends_stop_and_keeps_the_field(self):
         h = self.make(EndsShort())
@@ -1282,7 +1315,10 @@ class AngleStartTests(unittest.TestCase):
         panel._update_ppms_control_ui = Mock()
         panel._redraw_ppms_transport_plot = Mock()
         panel.thread_log = Mock()
-        panel.ppms_executor = Mock() if executor is None else executor
+        # The stage check at an Angle Start runs at once; the scan is only
+        # recorded (user, 2026-10-17).
+        panel.ppms_executor = rte_tests.StartExecutor() if executor is None else executor
+        panel.ppms_environment_busy = panel.ppms_field_scan_running = False
         panel.post_ui = lambda callback: callback()
         panel.root = None
         with tempfile.TemporaryDirectory() as folder, \
@@ -1324,7 +1360,13 @@ class AngleStartTests(unittest.TestCase):
             self.assertIn(text, question)
         run.askdirectory.assert_not_called()
         run.panel.ppms_executor.submit.assert_not_called()
+        run.panel.rte_controllers["newmark"].check_ready.assert_not_called()
         run = self.start(yes=True)
+        # The stage check (MST, EO) on the worker first, then the scan (user,
+        # 2026-10-17).
+        run.panel.rte_controllers["newmark"].check_ready.assert_called_once_with()
+        self.assertEqual(run.panel.ppms_executor.submit.call_count, 2)
+        self.assertEqual(len(run.panel.ppms_executor.scans()), 1)
         args = run.panel.ppms_executor.submit.call_args.args
         self.assertEqual(args[1], "Angle")
         self.assertEqual([p[2] for p in args[2]], [0., 5., 10., 5., 0.])
@@ -1382,7 +1424,7 @@ class AngleStartTests(unittest.TestCase):
                  "Failed: X50000: the USB transaction failed (it is not repeated)")):
             with self.subTest(expected=expected):
                 future = Future()
-                run = self.start(executor=Mock(**{"submit.return_value": future}))
+                run = self.start(executor=rte_tests.StartExecutor(future))
                 self.assertEqual(run.panel.rte_stage_where, "stage not moved")
                 run.panel.rte_stage_where = where       # as the worker leaves it
                 with patch.object(app.messagebox, "showerror") as showerror:
@@ -1548,6 +1590,633 @@ class AnglePageTests(unittest.TestCase):
             stage.handle = None
         panel.safe_close_ppms()
         self.assertTrue(panel.rte_stage_stop_event.is_set(), "closing stops a move by hand")
+
+
+# ---- a latched limit error or the driver off, fixed on the page (user, 2026-10-17) ----
+# The user asked that the program not depend on Newmark_motor_test.py, whose
+# "clear" and "enable" the old refusals named.  Move stage and an Angle scan's
+# Start now ask Yes/No themselves; Yes sends CLR or EO=1 on the RT-E worker,
+# reads it back, and then goes on; No sends nothing.
+LATCHED = "RT-E stage limit error"
+DRIVER = "RT-E stage motor driver"
+SCAN = "RT-E Angle scan"
+LATCHED_QUESTION = ("A limit error is latched on the stage (MST 64: not moving, -limit ERROR (latched)). Clear it now "
+                    "(CLR)?")
+DRIVER_QUESTION = ("The stage's motor driver is off (EO=0). Switch it on now (EO=1)? The motor then holds the stage "
+                   "with its current.")
+TICK = "Tick the RT-E rack safety confirmation first"
+ACTIONS = ("CLR", "EO=0", "EO=1", "STOP", "ABORT", "PX=0")
+
+
+def actions(received):
+    """The commands that change something (fixes, stops, the zero, moves), in order."""
+    return [command for command in received if command in ACTIONS or command.startswith(("X", "HL", "J"))]
+
+
+def latch(sim):
+    sim.latched = 1 << 6
+
+
+def driver_off(sim):
+    sim.eo = 0
+
+
+class Watched(Sim):
+    """``watch(command)`` is called as each command arrives (from the thread that sent it)."""
+
+    watch = None
+
+    def reply(self, command):
+        if self.watch is not None:
+            self.watch(command)
+        return super().reply(command)
+
+
+class ClrDoesNotClear(Watched):
+    """CLR is answered OK, but the limit error stays latched."""
+
+    def reply(self, command):
+        return "OK" if command == "CLR" else super().reply(command)
+
+
+class EoStaysOff(Watched):
+    """EO=1 is answered OK, but EO still reads 0."""
+
+    def reply(self, command):
+        return "OK" if command == "EO=1" else super().reply(command)
+
+
+class Relatches(Watched):
+    """CLR clears the limit error, but it is latched again at the next ABS,
+    as if its cause were still there."""
+
+    cleared = False
+
+    def reply(self, command):
+        if command == "ABS" and self.cleared:
+            self.latched = 1 << 6
+        text = super().reply(command)
+        self.cleared = self.cleared or command == "CLR"
+        return text
+
+
+class OpenFails(Sim):
+    """fnPerformaxComOpen fails (another program has the device)."""
+
+    def open(self, index):
+        return None
+
+
+class Questions:
+    """messagebox.askyesno, answered by title.  Each question is recorded with
+    how many commands had been sent by then, whether the rack was busy, and
+    ``snapshot()``.  ``before(title, h)`` runs first (e.g. to untick the safety)."""
+
+    def __init__(self, h, answers, before=None, snapshot=None):
+        self.h, self.answers, self.before, self.snapshot = h, dict(answers), before, snapshot
+        self.asked = []
+
+    def __call__(self, title, message, parent=None, **_options):
+        self.asked.append(types.SimpleNamespace(
+            title=title, message=message, sent=len(self.h.sim.received), busy=self.h.panel.ppms_environment_busy,
+            snapshot=self.snapshot() if self.snapshot else None))
+        if self.before is not None:
+            self.before(title, self.h)
+        return self.answers[title]
+
+    def titles(self):
+        return [question.title for question in self.asked]
+
+    def after(self, title):
+        """What was sent after the (first) question with this title."""
+        return self.h.sim.received[next(q.sent for q in self.asked if q.title == title):]
+
+
+class StageFixDriverTests(StageBase):
+    def test_clear_limit_error_sends_clr_then_reads_mst_back(self):
+        h = self.make()
+        h.stage.connect("auto")
+        h.sim.latched = 1 << 7
+        start = len(h.sim.received)
+        self.assertEqual(h.stage.clear_limit_error(), 0)
+        self.assertEqual(h.sim.received[start:], ["MST", "CLR", "MST"])
+        self.assertEqual(h.sim.latched, 0)
+        self.assertIn("RT-E Newmark NSC-A1: limit error cleared (CLR; MST 128 -> 0, read back)", h.log)
+        # Nothing latched any more: MST read, CLR not sent.
+        start = len(h.sim.received)
+        h.stage.clear_limit_error()
+        self.assertEqual(h.sim.received[start:], ["MST"])
+        self.assertIn("RT-E Newmark NSC-A1: no limit error is latched now (MST 0); CLR not sent", h.log)
+
+    def test_enable_driver_sends_eo1_then_reads_eo_back(self):
+        h = self.make()
+        h.stage.connect("auto")
+        h.sim.eo = 0
+        start = len(h.sim.received)
+        self.assertEqual(h.stage.enable_driver(), 1)
+        self.assertEqual(h.sim.received[start:], ["MST", "EO", "EO=1", "EO"])
+        self.assertEqual(h.sim.eo, 1)
+        self.assertIn("RT-E Newmark NSC-A1: motor driver switched on (EO=1; EO 0 -> 1, read back)", h.log)
+        start = len(h.sim.received)
+        h.stage.enable_driver()
+        self.assertEqual(h.sim.received[start:], ["MST", "EO"], "already on: EO=1 not sent")
+        self.assertEqual(h.sim.moves, [])
+
+    def test_both_are_refused_while_the_stage_moves(self):
+        for name, arrange, fix, command in (("CLR", latch, "clear_limit_error", "CLR"),
+                                            ("EO=1", driver_off, "enable_driver", "EO=1")):
+            with self.subTest(name):
+                h = self.make()
+                h.stage.connect("auto")
+                arrange(h.sim)
+                h.sim._start(h.sim.px + 10 ** 6, script._now())     # turning (as after a lost stop)
+                with self.assertRaisesRegex(app.NewmarkRefused, rf"the stage is moving.*{command} was not sent"):
+                    getattr(h.stage, fix)()
+                self.assertNotIn(command, h.sim.received)
+
+    def test_not_confirmed_raises_and_is_never_repeated(self):
+        for sim, arrange, fix, command, message in (
+                (ClrDoesNotClear(), latch, "clear_limit_error", "CLR",
+                 r"CLR was sent, but MST read back still shows a limit error latched \(MST 64: .*\); nothing moved"),
+                (EoStaysOff(), driver_off, "enable_driver", "EO=1",
+                 r"EO=1 was sent, but EO read back 0, not 1: the motor driver is not on; nothing moved")):
+            with self.subTest(command):
+                h = self.make(sim)
+                h.stage.connect("auto")
+                arrange(h.sim)
+                with self.assertRaisesRegex(app.NewmarkStageError, message) as caught:
+                    getattr(h.stage, fix)()
+                self.assertNotIsInstance(caught.exception, app.NEWMARK_FIXABLE_REFUSALS, "an error, not a question")
+                self.assertEqual(h.sim.received.count(command), 1)
+                self.assertEqual(h.sim.moves, [])
+
+    def test_check_ready_reads_mst_and_eo_only(self):
+        h = self.make()
+        h.stage.connect("auto")
+        start = len(h.sim.received)
+        self.assertEqual(h.stage.check_ready(), 0)
+        self.assertEqual(h.sim.received[start:], ["MST", "EO"])
+        latch(h.sim)
+        with self.assertRaises(app.NewmarkLimitErrorLatched) as caught:
+            h.stage.check_ready()
+        self.assertEqual(caught.exception.mst, 64)
+        h.sim.latched = 0
+        driver_off(h.sim)
+        with self.assertRaises(app.NewmarkDriverOff) as caught:
+            h.stage.check_ready()
+        self.assertEqual(caught.exception.eo, 0)
+        self.assertEqual(actions(h.sim.received), [])
+
+    def test_the_connect_error_names_no_test_script(self):
+        h = self.make(OpenFails())
+        with self.assertRaises(app.NewmarkStageError) as caught:
+            h.stage.connect("auto")
+        self.assertEqual(str(caught.exception), "Could not open Performax device 0 (is QuickMotion or another program "
+                                                "using it?)")
+        self.assertFalse(h.stage.connected)
+
+
+class StageFixMoveTests(StageBase):
+    """Move stage with a latched limit error or the driver off (user, 2026-10-17)."""
+
+    def move(self, sim=None, answers=(), arrange=(), before=None, target="10", safety=True, prepare=None):
+        h = self.make(Watched() if sim is None else sim)
+        h.stage.connect("auto")
+        for step in arrange:
+            step(h.sim)
+        if prepare is not None:
+            prepare(h)
+        h.panel.rte_stage_target.set(target)
+        h.panel.ppms_control_safety_var = Var(safety)
+        questions = Questions(h, answers, before)
+        h.start = len(h.sim.received)
+        with patch.object(app.messagebox, "askyesno", questions), \
+                patch.object(app.messagebox, "showerror") as showerror:
+            h.panel._rte_stage_move()
+            self.drain(h)
+        h.questions, h.showerror = questions, showerror
+        return h
+
+    def test_a_latched_limit_error_no_sends_nothing(self):
+        h = self.move(answers={LATCHED: False}, arrange=[latch])
+        self.assertEqual([(q.title, q.message) for q in h.questions.asked], [(LATCHED, LATCHED_QUESTION)])
+        self.assertEqual(h.questions.after(LATCHED), [], "No: nothing sent")
+        self.assertEqual(actions(h.sim.received), [])
+        self.assertEqual(h.sim.latched, 64)
+        h.showerror.assert_not_called()
+        self.assertFalse(h.questions.asked[0].busy, "asked with the rack idle again")
+        self.assertFalse(h.panel.ppms_environment_busy)
+        h.panel.thread_log.assert_any_call("RT-E Newmark NSC-A1: No: CLR not sent; nothing moved")
+
+    def test_a_latched_limit_error_yes_clears_reads_back_then_moves(self):
+        busy = []
+
+        def watch_busy(h):
+            h.sim.watch = lambda command: busy.append(h.panel.ppms_environment_busy) if command == "CLR" else None
+        h = self.move(answers={LATCHED: True}, arrange=[latch], prepare=watch_busy)
+        after = h.questions.after(LATCHED)
+        self.assertEqual(after[:5], ["MST", "CLR", "MST", "ABS", "MM"], "CLR, MST read back, then the move")
+        self.assertEqual(actions(after), ["CLR", "X100000"], "exactly the one command, then the move")
+        self.assertEqual(busy, [True], "the rack is busy while CLR runs")
+        self.assertEqual(h.sim.px, 100000)
+        self.assertEqual(h.panel.rte_stage_live.get(), "Stage: +10.000° (10000 steps/°)")
+        h.showerror.assert_not_called()
+        self.assertEqual(h.questions.titles(), [LATCHED])
+        self.assertIn("RT-E Newmark NSC-A1: limit error cleared (CLR; MST 64 -> 0, read back)", h.log)
+        self.assertFalse(h.panel.ppms_environment_busy)
+
+    def test_the_driver_off_no_sends_nothing(self):
+        h = self.move(answers={DRIVER: False}, arrange=[driver_off])
+        self.assertEqual([(q.title, q.message) for q in h.questions.asked], [(DRIVER, DRIVER_QUESTION)])
+        self.assertEqual(h.questions.after(DRIVER), [])
+        self.assertEqual(actions(h.sim.received), [])
+        self.assertEqual(h.sim.eo, 0)
+        h.showerror.assert_not_called()
+        h.panel.thread_log.assert_any_call("RT-E Newmark NSC-A1: No: EO=1 not sent; nothing moved")
+
+    def test_the_driver_off_yes_switches_it_on_reads_back_then_moves(self):
+        h = self.move(answers={DRIVER: True}, arrange=[driver_off])
+        after = h.questions.after(DRIVER)
+        self.assertEqual(after[:6], ["MST", "EO", "EO=1", "EO", "ABS", "MM"], "EO=1, EO read back, then the move")
+        self.assertEqual(actions(after), ["EO=1", "X100000"])
+        self.assertEqual((h.sim.eo, h.sim.px), (1, 100000))
+        h.showerror.assert_not_called()
+        self.assertIn("RT-E Newmark NSC-A1: motor driver switched on (EO=1; EO 0 -> 1, read back)", h.log)
+
+    def test_both_are_asked_in_turn_each_once(self):
+        h = self.move(answers={LATCHED: True, DRIVER: True}, arrange=[latch, driver_off])
+        self.assertEqual(h.questions.titles(), [LATCHED, DRIVER])
+        self.assertEqual(actions(h.questions.after(LATCHED)), ["CLR", "EO=1", "X100000"])
+        h.showerror.assert_not_called()
+        # No to the second: the CLR stays done, nothing more is sent.
+        h = self.move(answers={LATCHED: True, DRIVER: False}, arrange=[latch, driver_off])
+        self.assertEqual(actions(h.sim.received), ["CLR"])
+        self.assertEqual(h.questions.after(DRIVER), [])
+        self.assertEqual(h.sim.moves, [])
+
+    def test_never_asked_or_sent_without_the_safety_tick(self):
+        # Not ticked at Move stage: refused before anything is sent.
+        h = self.move(answers={}, arrange=[latch], safety=False)
+        self.assertEqual(h.questions.asked, [])
+        self.assertIn("safety confirmation", h.showerror.call_args.args[1])
+        self.assertEqual(h.sim.received[h.start:], [])
+        # Unticked while the stage was read (the refusal comes back): no
+        # question, nothing more sent.
+        h = self.make()
+        h.stage.connect("auto")
+        latch(h.sim)
+        h.panel.rte_stage_target.set("10")
+        questions = Questions(h, {})
+        with patch.object(app.messagebox, "askyesno", questions), \
+                patch.object(app.messagebox, "showerror") as showerror:
+            h.panel._rte_stage_move()           # the job has run; its result waits for the Tk thread
+            sent = len(h.sim.received)
+            h.panel.ppms_control_safety_var.set(False)
+            self.drain(h)
+        self.assertEqual(questions.asked, [])
+        self.assertEqual(showerror.call_args.args, ("RT-E stage", TICK))
+        self.assertEqual(h.sim.received[sent:], [])
+        self.assertNotIn("CLR", h.sim.received)
+        # Unticked while the question is open, then Yes: refused, nothing sent.
+        untick = lambda _title, h: h.panel.ppms_control_safety_var.set(False)
+        for answers, arrange in (({LATCHED: True}, [latch]), ({DRIVER: True}, [driver_off])):
+            with self.subTest(answers=answers):
+                h = self.move(answers=answers, arrange=arrange, before=untick)
+                self.assertEqual(h.showerror.call_args.args, ("RT-E stage", TICK))
+                self.assertEqual(h.questions.after(next(iter(answers))), [])
+                self.assertEqual(actions(h.sim.received), [])
+
+    def test_a_fix_that_is_not_read_back_is_an_error_and_nothing_moves(self):
+        for sim, arrange, answers, command, message in (
+                (ClrDoesNotClear(), latch, {LATCHED: True}, "CLR",
+                 "CLR was sent, but MST read back still shows a limit error latched (MST 64: "),
+                (EoStaysOff(), driver_off, {DRIVER: True}, "EO=1",
+                 "EO=1 was sent, but EO read back 0, not 1: the motor driver is not on; nothing moved")):
+            with self.subTest(command):
+                h = self.move(sim, answers=answers, arrange=[arrange])
+                h.showerror.assert_called_once()
+                self.assertIn(message, h.showerror.call_args.args[1])
+                self.assertEqual(actions(h.sim.received), [command], "sent once, never repeated, no move")
+                self.assertEqual(len(h.questions.asked), 1)
+                self.assertFalse(h.panel.ppms_environment_busy)
+
+    def test_a_problem_back_right_after_its_fix_is_an_error_not_a_second_question(self):
+        h = self.move(Relatches(), answers={LATCHED: True}, arrange=[latch])
+        self.assertEqual(h.questions.titles(), [LATCHED])
+        h.showerror.assert_called_once()
+        self.assertEqual(h.showerror.call_args.args,
+                         ("RT-E stage", "The limit error is latched again (MST 64: not moving, -limit ERROR "
+                                        "(latched)) right after CLR was read back, so nothing moved: check the stage"))
+        self.assertEqual(actions(h.sim.received), ["CLR"])
+
+    def test_refused_while_the_stage_moves_when_the_fix_runs(self):
+        def turning(_title, h):     # the stage starts turning while the question is open
+            h.sim._start(h.sim.px + 10 ** 6, script._now())
+        h = self.move(answers={LATCHED: True}, arrange=[latch], before=turning)
+        h.showerror.assert_called_once()
+        self.assertIn("the stage is moving", h.showerror.call_args.args[1])
+        self.assertIn("CLR was not sent", h.showerror.call_args.args[1])
+        self.assertNotIn("CLR", h.sim.received)
+
+    def test_a_limit_input_stays_a_plain_refusal(self):
+        for arrange in ([lambda sim: setattr(sim, "inputs", 1 << 4)],
+                        [lambda sim: setattr(sim, "inputs", 1 << 5), latch]):
+            with self.subTest(len(arrange)):
+                h = self.move(answers={}, arrange=arrange)
+                self.assertEqual(h.questions.asked, [])
+                h.showerror.assert_called_once()
+                title, message = h.showerror.call_args.args
+                self.assertEqual(title, "RT-E")
+                self.assertIn("polarity problem; fix the limit polarity in Newmark's QuickMotion", message)
+                self.assertEqual(actions(h.sim.received), [])
+
+    def test_stop_pressed_while_the_stage_was_read_asks_nothing(self):
+        h = self.make()
+        h.stage.connect("auto")
+        latch(h.sim)
+        h.panel.rte_stage_target.set("10")
+        questions = Questions(h, {})
+        with patch.object(app.messagebox, "askyesno", questions), \
+                patch.object(app.messagebox, "showerror") as showerror:
+            h.panel._rte_stage_move()
+            h.panel.rte_stage_stop_event.set()     # Stop stage, before the refusal reached the Tk thread
+            self.drain(h)
+        self.assertEqual(questions.asked, [])
+        showerror.assert_not_called()
+        self.assertEqual(h.panel.rte_stage_live.get(), "Stage: not moved (Stop)")
+        self.assertEqual(actions(h.sim.received), [])
+
+
+class StageFixAngleStartTests(StageBase):
+    """An Angle scan's Start with a latched limit error or the driver off: the
+    stage check runs before any instrument is set up (user, 2026-10-17)."""
+
+    def equip(self, h):
+        """The real start_ppms_field_scan on the stage harness, its scan only recorded."""
+        panel = h.panel
+        panel._rte_capture_zurich = Mock()
+        panel.zurich_scan_enabled = False
+        panel.ppms_simple_mode = Var("Angle")
+        panel.ppms_simple_range = [Var(v) for v in ("0", "10", "5")]
+        panel.ppms_field_scan_loop_var = Var("1")
+        panel.rte_round_trip = Var(True)
+        panel.rte_controllers["gauss"].connected = True
+        panel.rte_controllers["kepco"].connected = True
+        panel.rte_drive_target, panel.rte_voltage_limit = Var("1.5"), Var("5")
+        settings = app.validate_ppms_transport_scan_settings(.1, 17.3, 50., 1, 2, ("830_a",))
+        panel._ppms_direct_transport_settings = Mock(return_value=settings)
+        panel._rte_harmonic_passes = Mock(return_value=[settings])
+        panel.ppms_field_scan_stable_var = Var("0")
+        panel.ppms_acquisition_time_var = Var("1")
+        panel.ppms_field_scan_progress = Mock()
+        panel.ppms_field_scan_status_var = Var("")
+        panel._redraw_ppms_transport_plot = Mock()
+        panel._rte_show_point = Mock()
+
+    def start(self, sim=None, answers=(), arrange=(), before=None, safety=True, executor=None, settle=None,
+              prepare=None):
+        executor = rte_tests.StartExecutor() if executor is None else executor
+        h = self.make(Watched() if sim is None else sim, executor=executor)
+        if isinstance(executor, ThreadPoolExecutor):
+            executor.submit(h.stage.connect, "auto").result(timeout=30)
+        else:
+            h.stage.connect("auto")
+        self.equip(h)
+        for step in arrange:
+            step(h.sim)
+        if prepare is not None:
+            prepare(h)
+        h.panel.ppms_control_safety_var = Var(safety)
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        h.folder = folder.name
+        kepco = h.panel.rte_controllers["kepco"]
+        snapshot = lambda: dict(csv=os.listdir(folder.name), kepco=kepco.set_output.call_count,
+                                source=h.panel._configure_ppms_transport_scan.call_count,
+                                scans=len(executor.scans()) if hasattr(executor, "scans") else None)
+        questions = Questions(h, {SCAN: True, **dict(answers)}, before, snapshot)
+        h.start = len(h.sim.received)
+        with patch.object(app.filedialog, "askdirectory", return_value=folder.name), \
+                patch.object(app.simpledialog, "askstring", return_value=""), \
+                patch.object(app.messagebox, "askyesno", questions), \
+                patch.object(app.messagebox, "showerror") as showerror:
+            h.panel.start_ppms_field_scan()
+            if settle is None:
+                self.drain(h)
+            else:
+                settle(h)
+        h.questions, h.showerror, h.executor = questions, showerror, executor
+        return h
+
+    def assert_not_started(self, h):
+        self.assertEqual(h.executor.scans(), [])
+        self.assertFalse(h.panel.ppms_field_scan_running)
+        self.assertEqual(os.listdir(h.folder), [], "no CSV made")
+        h.panel.rte_controllers["kepco"].set_output.assert_not_called()
+
+    def assert_started(self, h):
+        scans = h.executor.scans()
+        self.assertEqual(len(scans), 1)
+        self.assertEqual(scans[0][1], "Angle")
+        self.assertTrue(h.panel.ppms_field_scan_running)
+        self.assertEqual(len(os.listdir(h.folder)), 1)
+
+    def test_a_ready_stage_reads_mst_and_eo_then_starts(self):
+        h = self.start()
+        self.assertEqual(h.questions.titles(), [SCAN])
+        self.assertEqual(h.sim.received[h.start:], ["MST", "EO"], "the check, and nothing else, before the scan")
+        self.assertEqual(h.questions.asked[0].snapshot["csv"], [])
+        self.assert_started(h)
+        h.showerror.assert_not_called()
+
+    def test_a_latched_limit_error_asked_before_any_instrument_is_set_up(self):
+        h = self.start(answers={LATCHED: False}, arrange=[latch])
+        self.assertEqual(h.questions.titles(), [SCAN, LATCHED], "the scan's Yes/No first, then the stage's")
+        question = h.questions.asked[1]
+        self.assertEqual(question.message, LATCHED_QUESTION)
+        self.assertEqual(question.snapshot, dict(csv=[], kepco=0, source=0, scans=0), "no instrument set up yet")
+        self.assertFalse(question.busy)
+        self.assertEqual(h.sim.received[h.start:question.sent], ["MST"])
+        # No: nothing sent, nothing started.
+        self.assertEqual(h.questions.after(LATCHED), [])
+        self.assert_not_started(h)
+        h.showerror.assert_not_called()
+        h.panel.thread_log.assert_any_call("RT-E Newmark NSC-A1: No: CLR not sent; nothing moved")
+
+    def test_a_latched_limit_error_yes_clears_then_the_scan_starts(self):
+        h = self.start(answers={LATCHED: True}, arrange=[latch])
+        self.assertEqual(h.questions.after(LATCHED), ["MST", "CLR", "MST", "MST", "EO"],
+                         "CLR read back, then the check again; no move before the scan")
+        self.assertEqual(actions(h.sim.received), ["CLR"])
+        self.assert_started(h)
+        h.showerror.assert_not_called()
+        self.assertEqual(h.panel.ppms_field_scan_status_var.get(),
+                         "RT-E Angle 0° to 10°, KEPCO +1.5 A held; 5 points")
+
+    def test_the_driver_off_no_and_yes(self):
+        h = self.start(answers={DRIVER: False}, arrange=[driver_off])
+        self.assertEqual(h.questions.titles(), [SCAN, DRIVER])
+        self.assertEqual(h.questions.asked[1].message, DRIVER_QUESTION)
+        self.assertEqual(h.sim.received[h.start:h.questions.asked[1].sent], ["MST", "EO"])
+        self.assertEqual(h.questions.asked[1].snapshot, dict(csv=[], kepco=0, source=0, scans=0))
+        self.assertEqual(h.questions.after(DRIVER), [])
+        self.assert_not_started(h)
+        h = self.start(answers={DRIVER: True}, arrange=[driver_off])
+        self.assertEqual(h.questions.after(DRIVER), ["MST", "EO", "EO=1", "EO", "MST", "EO"])
+        self.assertEqual(actions(h.sim.received), ["EO=1"])
+        self.assert_started(h)
+        h.showerror.assert_not_called()
+
+    def test_never_asked_or_sent_without_the_safety_tick(self):
+        h = self.start(answers={}, arrange=[latch], safety=False)
+        self.assertEqual(h.questions.asked, [])
+        self.assertEqual(h.showerror.call_args.args, ("RT-E scan parameters", TICK))
+        self.assertEqual(h.sim.received[h.start:], [], "nothing sent")
+        self.assert_not_started(h)
+        untick = lambda title, h: h.panel.ppms_control_safety_var.set(False) if title != SCAN else None
+        for answers, arrange in (({LATCHED: True}, [latch]), ({DRIVER: True}, [driver_off])):
+            with self.subTest(answers=answers):
+                h = self.start(answers=answers, arrange=arrange, before=untick)
+                self.assertEqual(h.showerror.call_args.args, ("RT-E stage", TICK))
+                self.assertEqual(h.questions.after(next(iter(answers))), [])
+                self.assertEqual(actions(h.sim.received), [])
+                self.assert_not_started(h)
+
+    def test_a_clr_that_does_not_clear_starts_nothing(self):
+        h = self.start(ClrDoesNotClear(), answers={LATCHED: True}, arrange=[latch])
+        h.showerror.assert_called_once()
+        self.assertIn("CLR was sent, but MST read back still shows a limit error latched",
+                      h.showerror.call_args.args[1])
+        self.assertEqual(actions(h.sim.received), ["CLR"])
+        self.assert_not_started(h)
+
+    def test_a_limit_input_stays_a_plain_refusal(self):
+        h = self.start(answers={}, arrange=[lambda sim: setattr(sim, "inputs", 1 << 5), latch])
+        self.assertEqual(h.questions.titles(), [SCAN])
+        h.showerror.assert_called_once()
+        self.assertIn("polarity problem", h.showerror.call_args.args[1])
+        self.assertEqual(actions(h.sim.received), [])
+        self.assert_not_started(h)
+
+    def test_stop_stage_during_the_check_keeps_the_scan_from_starting(self):
+        def stop_during_the_check(h):
+            # Stop stage pressed while the check reads MST.
+            h.sim.watch = lambda command: h.panel.rte_stage_stop_event.set() if command == "MST" else None
+        h = self.start(prepare=stop_during_the_check)
+        h.showerror.assert_not_called()
+        self.assertEqual(h.questions.titles(), [SCAN])
+        self.assert_not_started(h)
+        self.assertEqual(h.panel.ppms_field_scan_status_var.get(), "Angle scan not started: Stop stage was pressed")
+        h.panel.thread_log.assert_any_call("RT-E Angle scan not started: Stop stage was pressed during the stage check")
+        self.assertEqual(actions(h.sim.received), [])
+
+    def test_angle_start_with_a_fix_runs_the_scan_on_the_worker(self):
+        # A real single-worker executor, as the program's: the check, CLR,
+        # EO=1 and the whole scan on it, none on the Tk (test) thread.
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rte-control")
+        self.addCleanup(executor.shutdown, wait=True)
+        worker = executor.submit(threading.get_ident).result(30)
+
+        def settle_all(h):
+            for _ in range(20):
+                self.settle(h, executor)
+                if len(h.panel.ppms_field_scan_rows) == 5 and not h.panel.ppms_field_scan_running:
+                    return
+            self.fail("the scan did not end")
+        h = self.start(answers={LATCHED: True, DRIVER: True}, arrange=[latch, driver_off],
+                       executor=executor, settle=settle_all)
+        h.showerror.assert_not_called()
+        self.assertEqual(h.questions.titles(), [SCAN, LATCHED, DRIVER])
+        self.assertEqual(actions(h.sim.received), ["CLR", "EO=1", "X50000", "X100000", "X50000", "X0"])
+        self.assertEqual([row["stage_target_deg"] for row in h.panel.ppms_field_scan_rows], [0., 5., 10., 5., 0.])
+        self.assertEqual({thread for _name, thread in h.dll.calls}, {worker})
+        self.assertNotIn(threading.get_ident(), {thread for _name, thread in h.dll.calls})
+
+
+class StageFixThreadTests(StageBase):
+    """With a real single-worker executor, as the program's: every DLL call of
+    the fixes and the move after them runs on the worker, and Stop stage
+    still stops a move that follows a fix (user, 2026-10-17)."""
+
+    def test_move_stage_fixes_and_stop_stage_on_the_worker(self):
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rte-control")
+        self.addCleanup(executor.shutdown, wait=True)
+        h = self.make(Watched(), executor=executor)
+        worker = executor.submit(lambda: (threading.get_ident(), threading.current_thread().name)).result(30)
+        executor.submit(h.stage.connect, "auto").result(timeout=30)
+        latch(h.sim)
+        driver_off(h.sim)
+        threads = []
+        h.sim.watch = lambda command: threads.append((command, threading.get_ident())) \
+            if command in ("CLR", "EO=1") else None
+        reached, proceed, busy = threading.Event(), threading.Event(), []
+
+        def hold():
+            busy.append(h.panel.ppms_environment_busy)
+            reached.set()
+            proceed.wait(10)
+        h.clock.hooks.append((h.clock.t + 1.0, hold))   # 1 s into the move after the fixes
+        questions = Questions(h, {LATCHED: True, DRIVER: True})
+        with patch.object(app.messagebox, "askyesno", questions), \
+                patch.object(app.messagebox, "showerror") as showerror:
+            h.panel.rte_stage_target.set("90")
+            h.panel._rte_stage_move()
+            # The Tk thread's turn: each refusal's question as it arrives (the
+            # CLR one, then after CLR the EO=1 one), until the move runs.
+            deadline = time.monotonic() + 20
+            while not reached.wait(0.01):
+                self.drain(h)
+                self.assertLess(time.monotonic(), deadline, "the move after EO=1 did not start")
+            self.assertEqual(busy, [True], "a move keeps the rack busy")
+            calls = len(h.dll.calls)
+            h.panel._rte_stage_stop()                   # the Tk thread only sets the event
+            self.assertEqual(len(h.dll.calls), calls)
+            proceed.set()
+            self.settle(h, executor)
+        showerror.assert_not_called()
+        self.assertEqual(questions.titles(), [LATCHED, DRIVER])
+        self.assertEqual([command for command, _thread in threads], ["CLR", "EO=1"])
+        self.assertEqual({thread for _command, thread in threads}, {worker[0]})
+        self.assertEqual(actions(h.sim.received), ["CLR", "EO=1", "X900000", "STOP"])
+        self.assertTrue(h.panel.rte_stage_live.get().endswith("(Stop)"), h.panel.rte_stage_live.get())
+        self.assertFalse(h.panel.ppms_environment_busy)
+        self.assertEqual({thread for _name, thread in h.dll.calls}, {worker[0]})
+        self.assertTrue(worker[1].startswith("rte-control"))
+
+
+class ProgramIndependenceTests(unittest.TestCase):
+    """The program needs no Newmark test script (user, 2026-10-17): it never
+    imports it, and no text it shows or raises names it.  A comment may name
+    it once, as the separate, optional test tool the driver came from."""
+
+    def test_no_import_and_no_string_names_the_test_script(self):
+        path = Path(app.__file__)
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            names = ([alias.name for alias in node.names] if isinstance(node, ast.Import) else
+                     [node.module or ""] if isinstance(node, ast.ImportFrom) else [])
+            for name in names:
+                self.assertNotIn("motor_test", name.lower(), f"line {node.lineno}")
+        # Every string constant: messages, f-string parts, docstrings.
+        strings = [node for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+        self.assertGreater(len(strings), 1000)
+        named = [(node.lineno, node.value) for node in strings if "motor_test" in node.value.lower()]
+        self.assertEqual(named, [])
+        with open(path, "rb") as handle:
+            comments = [token for token in tokenize.tokenize(handle.readline) if token.type == tokenize.COMMENT]
+        mentions = [token for token in comments if "motor_test" in token.string.lower()]
+        self.assertEqual(len(mentions), 1, [token.string for token in mentions])
+        lines = source.splitlines()
+        row = mentions[0].start[0] - 1
+        block = []
+        for index in range(row - 5, row + 6):
+            if lines[index].lstrip().startswith("#"):
+                block.append(lines[index].lstrip("# ").strip())
+        block = " ".join(block)
+        for text in ("needs no other script or module", "separate, optional test tool",
+                     "never imports or calls it", "user, 2026-10-17"):
+            self.assertIn(text, block)
 
 
 class CloseTests(StageBase):

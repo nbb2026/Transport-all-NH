@@ -43421,16 +43421,22 @@ class PPMSPanel(CombinedControlApp):
 
 
 # ---- Newmark NSC-A1 rotation stage, for the RT-E Angle scan (user, 2026-10-13) ----
-# The reviewed driver core of Newmark_motor_test.py (999c1e2 + 164812f, with
-# 15b88a1's stop confirmed by three still reads and its error-126 text), copied
-# here so the program stays one file.  The stage (Newmark RM-5-110: 72:1 worm
-# gear, 1.8 deg stepper, home switch, no encoder, no limit switches) turns the
-# SAMPLE HOLDER, wires attached, inside the RT-E magnet; the NSC-A1 is a
-# rebadged Arcus ACE-SDE, reached through the vendor's PerformaxCom.dll over USB
-# (never a COM port).  Homing (HL+/HL-) is left out on purpose: the program
-# never moves the zero, and with it the +/-360 deg wire limit, by itself.
-# Nothing here has been tried on the hardware yet: Newmark_motor_test.py is the
-# place for the first tests.
+# The program's own driver for the stage, complete in this file: the program
+# needs no other script or module for it (user, 2026-10-17).  Provenance only:
+# it began as the reviewed driver core of the standalone Newmark_motor_test.py
+# (999c1e2 + 164812f, with 15b88a1's stop confirmed by three still reads and
+# its error-126 text); that script is a separate, optional test tool sharing
+# the same reviewed command rules, and the program never imports or calls it.
+# The stage (Newmark RM-5-110: 72:1 worm gear, 1.8 deg stepper, home switch,
+# no encoder, no limit switches) turns the SAMPLE HOLDER, wires attached,
+# inside the RT-E magnet; the NSC-A1 is a rebadged Arcus ACE-SDE, reached
+# through the vendor's PerformaxCom.dll over USB (never a COM port).  Homing
+# (HL+/HL-) is left out on purpose: the program never moves the zero, and with
+# it the +/-360 deg wire limit, by itself.  A latched limit error or the motor
+# driver off is handled on the RT-E page itself: Move stage and an Angle
+# scan's Start ask Yes/No to clear it (CLR) or to switch the driver on (EO=1),
+# with the safety tick, and read the result back (user, 2026-10-17).
+# Nothing here has been tried on the hardware yet.
 NEWMARK_DLL_NAME = "PerformaxCom.dll"
 NEWMARK_SIUSB_NAME = "SiUSBXp.dll"
 NEWMARK_BUFFER_SIZE = 64        # fnPerformaxComSendRecv writes and reads exactly 64 bytes (manual, ch. 7)
@@ -43462,9 +43468,9 @@ NEWMARK_FULL_STEPS_PER_DEG = NEWMARK_FULL_STEPS_PER_TURN * NEWMARK_GEAR_RATIO //
 # 2100 mA, Idle Current 100 mA, Idle Time 1 cs and DIO Control Enable ticked
 # (recorded here only; not used).  On the first runs on the lab PC the
 # driver could not be read (RR), as DIO control is on (EDIO=1); the user
-# chose this fixed number instead, the same as Newmark_motor_test.py's
-# MICROSTEP.  If the microstep is changed in QuickMotion, change this
-# constant (and the script's) to match.
+# chose this fixed number instead (the optional standalone test script has
+# the same number).  If the microstep is changed in QuickMotion, change this
+# constant (and the test script's, which a test compares) to match.
 NEWMARK_MICROSTEP = 250
 NEWMARK_STEPS_PER_DEGREE = NEWMARK_FULL_STEPS_PER_DEG * NEWMARK_MICROSTEP    # 10000; always 40 x the microstep
 NEWMARK_SPEED_DEG_S = 5.0           # every move of the program (the reviewed default)
@@ -43489,7 +43495,9 @@ NEWMARK_STATUS_BITS = ((0, "constant speed"), (1, "accelerating"), (2, "decelera
                        (4, "-limit input on"), (5, "+limit input on"), (6, "-limit ERROR (latched)"),
                        (7, "+limit ERROR (latched)"), (8, "latch input on"), (9, "Z index on"),
                        (10, "TOC watchdog time-out"))
-# The commands the program may send: the reviewed script's list without HL+/HL-.
+# The commands the program may send: the reviewed list (the same rules as the
+# standalone test script's) without HL+/HL-.  CLR and EO=1 are sent only after
+# the user's Yes on the RT-E page (user, 2026-10-17).
 # Anything else (STORE, RW, J+, POL=, DRVMS=, ...) is refused before it is sent.
 # RR (the driver read), R2 and the driver reads DRVMS/DRVRC/DRVIC/DRVIT are
 # left out too, so they can never be sent: the scale is NEWMARK_MICROSTEP,
@@ -43518,6 +43526,32 @@ class NewmarkControllerError(NewmarkStageError):
 
 class NewmarkRefused(NewmarkStageError):
     """A precondition was not met; nothing moved."""
+
+
+class NewmarkLimitErrorLatched(NewmarkRefused):
+    """A limit error is latched (MST bit 6 or 7): the move was not sent.  The
+    RT-E page offers to clear it, CLR after an explicit Yes (user, 2026-10-17)."""
+
+    def __init__(self, mst):
+        self.mst = mst
+        super().__init__(f"a limit error is latched (MST {mst}: {newmark_describe_status(mst)}): the move was not "
+                         "sent. To clear it, press Move stage or Start an Angle scan on the RT-E page and answer "
+                         "Yes (CLR)")
+
+
+class NewmarkDriverOff(NewmarkRefused):
+    """The motor driver is off (EO != 1): the move was not sent.  The RT-E page
+    offers to switch it on, EO=1 after an explicit Yes (user, 2026-10-17)."""
+
+    def __init__(self, eo):
+        self.eo = eo
+        super().__init__(f"the motor driver is off (EO={eo}): the position counter would advance without motion, so "
+                         "the move was not sent. To switch it on, press Move stage or Start an Angle scan on the RT-E "
+                         "page and answer Yes (EO=1)")
+
+
+# The two refusals the RT-E page can fix itself, after a Yes (user, 2026-10-17).
+NEWMARK_FIXABLE_REFUSALS = (NewmarkLimitErrorLatched, NewmarkDriverOff)
 
 
 class NewmarkMotionError(NewmarkStageError):
@@ -43662,8 +43696,8 @@ NEWMARK_DLL_SOURCE = ('Arcus Technology\'s "USB 64-bit DLL v2.06" (arcus-technol
 
 def newmark_dll_bits(path):
     """32 or 64 from a DLL's PE header (its machine field), or None if the
-    file is not a Windows DLL this can read, as in Newmark_motor_test.py
-    (user, 2026-10-17)."""
+    file is not a Windows DLL this can read, as the standalone test script
+    reads it (user, 2026-10-17)."""
     try:
         with open(path, "rb") as file:
             header = file.read(4096)
@@ -43867,8 +43901,10 @@ class NewmarkNSCA1Controller:
             raise NewmarkStageError("fnPerformaxComSetTimeouts failed")
         handle = ctypes.c_void_p()
         if not self._function("fnPerformaxComOpen")(index, ctypes.pointer(handle)) or not handle.value:
-            raise NewmarkStageError(f"Could not open Performax device {index} (is QuickMotion, "
-                                    "Newmark_motor_test.py or another program using it?)")
+            # No other program is named but QuickMotion: the program needs no
+            # test script (user, 2026-10-17).
+            raise NewmarkStageError(f"Could not open Performax device {index} (is QuickMotion or another "
+                                    "program using it?)")
         self.handle = handle
         self._flush()
 
@@ -44050,22 +44086,83 @@ class NewmarkNSCA1Controller:
 
     # ---- motion --------------------------------------------------------------
     def _check_ready(self):
-        """Before every move: not moving, no latched limit error, no limit input, EO = 1."""
+        """Before every move: not moving, no limit input, no latched limit error, EO = 1.
+
+        A latched limit error raises NewmarkLimitErrorLatched and the driver
+        off NewmarkDriverOff, which the RT-E page offers to fix (user,
+        2026-10-17).  A limit input on at rest is checked before the latched
+        error: it is a polarity problem (the RM-5-110 has no limit switches),
+        CLR cannot fix it, so it stays a plain refusal and CLR is never
+        offered while it is on."""
         mst = self.status()
         if mst & NEWMARK_MOVING:
             raise NewmarkRefused(f"the stage is moving (MST {mst}: {newmark_describe_status(mst)}); stop it first")
-        if mst & NEWMARK_LIMIT_ERRORS:
-            raise NewmarkRefused(f"a limit error is latched (MST {mst}: {newmark_describe_status(mst)}); clear it "
-                                 "on purpose first (Newmark_motor_test.py clear)")
         if mst & NEWMARK_LIMIT_INPUTS:
             raise NewmarkRefused(f"a limit input is on at rest (MST {mst}: {newmark_describe_status(mst)}), but the "
                                  "RM-5-110 has no limit switches: a polarity problem; fix the limit polarity in "
                                  "Newmark's QuickMotion")
+        if mst & NEWMARK_LIMIT_ERRORS:
+            raise NewmarkLimitErrorLatched(mst)
         eo = self.number("EO")
         if eo != 1:
-            raise NewmarkRefused(f"the motor driver is off (EO={eo}): the position counter would advance without "
-                                 "motion; switch it on with Newmark_motor_test.py enable")
+            raise NewmarkDriverOff(eo)
         return mst
+
+    def check_ready(self):
+        """The before-move checks alone (MST, then EO), nothing sent to move:
+        an Angle scan's Start runs them as a short job on the RT-E worker
+        before any instrument is set up, so that the page's Yes/No for a
+        latched limit error or the driver off never comes mid-scan with the
+        outputs on (user, 2026-10-17).  Returns MST."""
+        self._require_open()
+        return self._check_ready()
+
+    def clear_limit_error(self):
+        """CLR, sent only after the user's Yes on the RT-E page (user,
+        2026-10-17).  Refused while the stage moves (MST read first).  Not sent
+        when no limit error is latched any more.  MST is read back and must
+        show no latched limit error, else NewmarkStageError (nothing moves
+        after it).  Never repeated.  Returns MST read back."""
+        self._require_open()
+        mst = self.status()
+        if mst & NEWMARK_MOVING:
+            raise NewmarkRefused(f"the stage is moving (MST {mst}: {newmark_describe_status(mst)}); stop it first. "
+                                 "CLR was not sent")
+        if not mst & NEWMARK_LIMIT_ERRORS:
+            self.logger(f"RT-E {self.label}: no limit error is latched now (MST {mst}); CLR not sent")
+            return mst
+        self.set_ok("CLR")
+        after = self.status()
+        if after & NEWMARK_LIMIT_ERRORS:
+            raise NewmarkStageError(f"CLR was sent, but MST read back still shows a limit error latched (MST {after}: "
+                                    f"{newmark_describe_status(after)}); nothing moved. Check the stage (and its "
+                                    "limit settings in QuickMotion)")
+        self.logger(f"RT-E {self.label}: limit error cleared (CLR; MST {mst} -> {after}, read back)")
+        return after
+
+    def enable_driver(self):
+        """EO=1, sent only after the user's Yes on the RT-E page (user,
+        2026-10-17): the motor is energized and holds the stage with its
+        current.  Refused while the stage moves (MST read first).  Not sent
+        when EO already reads 1.  EO is read back and must be 1, else
+        NewmarkStageError (nothing moves after it).  Never repeated.
+        Returns EO read back."""
+        self._require_open()
+        mst = self.status()
+        if mst & NEWMARK_MOVING:
+            raise NewmarkRefused(f"the stage is moving (MST {mst}: {newmark_describe_status(mst)}); stop it first. "
+                                 "EO=1 was not sent")
+        eo = self.number("EO")
+        if eo == 1:
+            self.logger(f"RT-E {self.label}: the motor driver is on now (EO=1); EO=1 not sent")
+            return eo
+        self.set_ok("EO=1")
+        after = self.number("EO")
+        if after != 1:
+            raise NewmarkStageError(f"EO=1 was sent, but EO read back {after}, not 1: the motor driver is not on; "
+                                    "nothing moved. Check the NSC-A1 (and QuickMotion)")
+        self.logger(f"RT-E {self.label}: motor driver switched on (EO=1; EO {eo} -> {after}, read back)")
+        return after
 
     def _set_speeds(self, hspd, lspd, acc):
         """Runtime registers (not stored): set, then read back."""
@@ -44803,24 +44900,42 @@ class RTEPanel(PPMSPanel):
         if self.ppms_field_scan_running or self.ppms_environment_busy:
             raise RuntimeError('RT-E is busy; wait or stop the scan first')
 
-    def _rte_submit(self, operation, done=None):
+    def _rte_submit(self, operation, done=None, then=None, stage_fix=None):
+        """``operation`` on the RT-E worker, with the rack busy meanwhile;
+        ``done(result)`` on the Tk thread, and a failure logged and shown.
+        Since 2026-10-17 (user): ``then(result)`` runs after a success once
+        the rack is idle again (an Angle scan starts from there), and with
+        ``stage_fix``, a latched limit error or the stage's driver off is not
+        shown as a failure: ``stage_fix(error)`` is called, also once the rack
+        is idle again, so that it can ask and queue the fix."""
         if self.rte_closed or self.closing or self.ppms_environment_busy or self.ppms_field_scan_running:
             return
         self.ppms_environment_busy = True
         self._update_ppms_control_ui()
         def finished(future):
+            offer, succeeded, result = None, False, None
             try:
                 result = future.result()
                 if not self.rte_closed and not self.closing and done:
                     done(result)
+                succeeded = True
             except Exception as error:
-                self.thread_log(f'RT-E operation failed: {error}')
-                if not self.rte_closed and not self.closing:
-                    messagebox.showerror('RT-E', str(error), parent=self.root)
+                if stage_fix is not None and isinstance(error, NEWMARK_FIXABLE_REFUSALS):
+                    offer = error
+                else:
+                    self.thread_log(f'RT-E operation failed: {error}')
+                    if not self.rte_closed and not self.closing:
+                        messagebox.showerror('RT-E', str(error), parent=self.root)
             finally:
                 self.ppms_environment_busy = False
                 if not self.rte_closed and not self.closing:
                     self._update_ppms_control_ui()
+            if self.rte_closed or self.closing:
+                return
+            if offer is not None:
+                stage_fix(offer)
+            elif succeeded and then is not None:
+                then(result)
         try:
             future = self.ppms_executor.submit(operation)
         except Exception:
@@ -44916,7 +45031,88 @@ class RTEPanel(PPMSPanel):
                          f'stopped at {newmark_angle_text(stopped.px, stage.steps_per_degree)}')
                 return f"Stage: {where} ({'Stop' if self.rte_stage_stop_event.is_set() else 'OFF'})"
             return newmark_stage_text(state)
-        self._rte_submit(move, self.rte_stage_live.set)
+        # A latched limit error or the driver off: asked Yes/No, and on Yes
+        # fixed (CLR / EO=1, read back) and moved, on the worker (user, 2026-10-17).
+        self._rte_stage_job(move, self.rte_stage_live.set)
+
+    # ---- a latched limit error or the driver off, fixed on the page (user, 2026-10-17) ----
+    def _rte_stage_job(self, operation, done=None, then=None, fix=None, fixed=()):
+        """``operation`` on the RT-E worker, as _rte_submit, for Move stage and
+        an Angle scan's stage check at Start (user, 2026-10-17).  When the
+        stage refuses it with a latched limit error or its motor driver off,
+        _rte_offer_stage_fix asks Yes/No; on Yes, ``fix`` (CLR or EO=1, read
+        back) and then ``operation`` run again as one job on the worker, so
+        nothing comes between them.  ``fixed``: the problems already fixed in
+        this chain, never offered again (so it cannot loop: a driver off found
+        after a CLR is still offered, once)."""
+        def job():
+            if fix is not None:
+                fix()
+            return operation()
+        self._rte_submit(job, done, then=then,
+                         stage_fix=lambda error: self._rte_offer_stage_fix(error, operation, done, then, fixed))
+
+    def _rte_require_stage_fix_ready(self, stage):
+        """The checks before a CLR or an EO=1, as for Move stage: the safety
+        tick, an idle rack, the stage connected and not left turning by an
+        unconfirmed stop (the controller also refuses while MST says moving)."""
+        self._require_ppms_control_ready()
+        if not stage.connected:
+            raise RuntimeError(f'Connect the {stage.label} first')
+        if stage.in_move or stage.motion_may_run:
+            raise RuntimeError(f'The {stage.label}\'s last stop was not confirmed, so it may still be turning: '
+                               'press Stop stage first (check the stage)')
+
+    def _rte_offer_stage_fix(self, error, operation, done, then, fixed):
+        """On the Tk thread, with the rack idle again (user, 2026-10-17): ask
+        whether to clear a latched limit error (CLR) or to switch the motor
+        driver on (EO=1).  No: nothing is sent.  Yes: the checks again, then
+        the fix and ``operation`` on the RT-E worker.  Never asked without the
+        safety tick, with the rack busy, after a Stop or OFF pressed meanwhile,
+        or again for a problem this chain already fixed."""
+        stage = self.rte_controllers['newmark']
+        self.thread_log(f'RT-E {stage.label}: {error}')
+        if isinstance(error, NewmarkLimitErrorLatched):
+            kind, command, fix = NewmarkLimitErrorLatched, 'CLR', stage.clear_limit_error
+            title = 'RT-E stage limit error'
+            question = (f'A limit error is latched on the stage (MST {error.mst}: '
+                        f'{newmark_describe_status(error.mst)}). Clear it now (CLR)?')
+        else:
+            kind, command, fix = NewmarkDriverOff, 'EO=1', stage.enable_driver
+            title = 'RT-E stage motor driver'
+            question = (f"The stage's motor driver is off (EO={error.eo}). Switch it on now (EO=1)? "
+                        'The motor then holds the stage with its current.')
+        if self.rte_stage_stop_event.is_set() or self.ppms_field_scan_stop_event.is_set():
+            # Stop stage, KEPCO Zero / OFF or 6221 / 2400 OFF was pressed while
+            # the stage was read: no question, nothing sent, no move.
+            pressed = 'Stop' if self.rte_stage_stop_event.is_set() else 'OFF'
+            self.thread_log(f'RT-E {stage.label}: {pressed} was pressed meanwhile: {command} not offered; nothing sent')
+            self.rte_stage_live.set(f'Stage: not moved ({pressed})')
+            return
+        try:
+            if kind in fixed:
+                # Back right after its own fix was read back: an error, not a
+                # second question (never a loop of CLRs or EO=1s).
+                again = (f'The limit error is latched again (MST {error.mst}: {newmark_describe_status(error.mst)})'
+                         if kind is NewmarkLimitErrorLatched else f'The motor driver is off again (EO={error.eo})')
+                raise RuntimeError(f'{again} right after {command} was read back, so nothing moved: check the stage')
+            self._rte_require_stage_fix_ready(stage)
+        except Exception as problem:
+            self.thread_log(f'RT-E {stage.label}: {command} not offered: {problem}')
+            messagebox.showerror('RT-E stage', str(problem), parent=self.root)
+            return
+        if not messagebox.askyesno(title, question, parent=self.root):
+            self.thread_log(f'RT-E {stage.label}: No: {command} not sent; nothing moved')
+            return
+        try:
+            self._rte_require_stage_fix_ready(stage)
+        except Exception as problem:
+            self.thread_log(f'RT-E {stage.label}: {command} not sent: {problem}')
+            messagebox.showerror('RT-E stage', str(problem), parent=self.root)
+            return
+        self.thread_log(f'RT-E {stage.label}: Yes: {command} queued on the RT-E worker; it is read back before '
+                        'anything moves')
+        self._rte_stage_job(operation, done, then, fix=fix, fixed=fixed + (kind,))
 
     def _rte_stage_stop(self):
         """Stop stage: always sets the stop event.  A move of this program (by
@@ -45251,103 +45447,141 @@ class RTEPanel(PPMSPanel):
         if not stem or stem.endswith(('.', ' ')) or re.search(r'[<>:"/\\|?*\x00-\x1f]', stem) or stem.split('.')[0].upper() in {'CON', 'PRN', 'AUX', 'NUL', *(f'COM{i}' for i in range(1, 10)), *(f'LPT{i}' for i in range(1, 10))}:
             messagebox.showerror('RT-E file name', 'Use a valid Windows file name without a path.', parent=self.root)
             return
-        try:
-            suffix = 0
-            while True:
-                path = Path(folder) / (f'{stem}_{suffix:02d}.csv' if suffix else f'{stem}.csv')
-                try:
-                    with path.open('x', encoding='utf-8-sig', newline=''):
-                        pass
-                    break
-                except FileExistsError:
-                    suffix += 1
-        except OSError as error:
-            messagebox.showerror('RT-E CSV', str(error), parent=self.root)
-            return
-        self.ppms_live_csv_path, self.ppms_live_csv_fields = path, None
+        # The scan's stop event (and for Angle the stage's) is cleared here,
+        # before an Angle scan's stage check, so that an old Stop does not stop
+        # the new scan, while a Stop stage, KEPCO Zero / OFF or 6221 / 2400 OFF
+        # pressed during the check (or its CLR / EO=1) keeps the scan from
+        # starting (user, 2026-10-17).
         self.ppms_field_scan_stop_event.clear()
-        self.ppms_field_scan_running = True
-        self.ppms_active_scan_mode = mode
-        self.ppms_plot_axis = 'field' if mode == 'Field' else 'angle' if mode == 'Angle' else 'current'
-        self.ppms_plot_addresses = {key: self._ppms_sr830_address(self.ppms_instrument_controllers[key].resource_name) for key in settings['active_lockins']}
-        self.ppms_field_scan_rows = []
-        self.ppms_field_scan_total = len(plan) * len(passes)
-        self.ppms_field_scan_started_at = time.monotonic()
-        self.ppms_field_scan_progress.configure(maximum=self.ppms_field_scan_total, value=0)
-        # Field and Current have no Yes/No, so the status line shows the
-        # wait before each reading and the shortest duration (user,
-        # 2026-10-14).  The harmonic passes are counted in the points and
-        # named in the log: with them the longest line measures about 532 px
-        # in Arial 15 px, more than the 505 px of the longest status line
-        # already shown in the label, which CI's RTEStatusRowTests checks.
-        # The wait shows at most five digits (ppms_settle_status_text): with
-        # {:g} a Settle s of 12345.7 or a 0.0864199 s wait made the line 505
-        # or 521 px wide and it was cut with an ellipsis.  At 100000 points
-        # and Acquire s 86400 s the longest lines are "settle 86400 s" (493 px
-        # in Arial, 590 px in Linux CI's DejaVu Sans) and "settle 0.0864 s"
-        # (497 px, 595 px), both under that 505 px (598 px) line.  Only a
-        # wait under 10 ms with Acquire s of 10 h or more could be wider (a
-        # wait of 100000 s or more, once 7 x a 30 ks SR830 time constant,
-        # cannot occur at the user's 1 x TC: Settle s is at most 86400 s);
-        # the log has the line in full (user, 2026-10-14).
-        self.ppms_field_scan_status_var.set(
-            f'RT-E {mode}: {self.ppms_field_scan_total} points, settle {ppms_settle_status_text(settle_s)} s; '
-            f'at least {least_text}')
         if mode == 'Angle':
             self.rte_stage_stop_event.clear()
-            self.rte_stage_where = 'stage not moved'
-            # Short enough for the status label at its narrowest (Windows CI, about
-            # 593 px): the Yes/No before the scan already said the stage turns
-            # the sample and its wires (user, 2026-10-13).  The wait before each
-            # reading and the shortest duration are in that Yes/No and the log,
-            # not here: "; settle 86400 s" made the longest line about 586 px in
-            # Arial 15 px (user, 2026-10-14).
-            self.ppms_field_scan_status_var.set(
-                f'RT-E Angle {first:g}° to {last:g}°, KEPCO {field_current:+g} A held; '
-                f'{self.ppms_field_scan_total} points')
-        self._update_ppms_control_ui()
-        self._redraw_ppms_transport_plot()
-        self.thread_log(f'RT-E {mode} scan; CSV: {path}; {len(plan)} points x {len(passes)} harmonic pass(es)'
-                        + (f'; stage {first:g}° to {last:g}°, KEPCO {field_current:+g} A held' if mode == 'Angle' else '')
-                        + f'; each reading waits {settle_text}; at least {least_text}')
-        # The wait announced here; the worker logs only a different one (a
-        # harmonic pass with fewer lock-ins).
-        self.ppms_scan_settle_logged = settle_s
-        def finished(future):
+
+        def begin():
+            # The live CSV and the scan itself: at once for Field and Current,
+            # after the stage check for Angle (user, 2026-10-17).
             try:
-                future.result()
-                status = ('Completed; 6221 current set to 0 (output OFF, read back)' if mode == 'Current'
-                          else 'Completed; outputs held')
-            except PPMSScanCancelled:
-                status = 'Stopped; outputs held unless OFF was requested'
-            except Exception as error:
-                status = f'Failed: {short_status_error(error, 100)}'
-                detail = str(error)
-                where = ''
-                if mode == 'Angle':
-                    # Where the stage is after a failure, "NOT confirmed stopped"
-                    # included, goes to the log and the dialog; the status line
-                    # keeps only the failure, to stay on one line (user, 2026-10-13).
-                    where = self.rte_stage_where or 'stage not moved'
-                    detail += f'\n\n{where[:1].upper()}{where[1:]}'
-                self.thread_log('RT-E scan ' + status + (f'; {where}' if where else ''))
-                if not self.closing and not self.rte_closed:
-                    messagebox.showerror('RT-E scan', detail, parent=self.root)
-            if mode == 'Angle' and not status.startswith('Failed'):
-                status += f'; {self.rte_stage_where}'     # where the stage is (user, 2026-10-13)
-            self.ppms_field_scan_running = False
-            if not self.closing and not self.rte_closed:
-                self.ppms_field_scan_status_var.set(status)
-                self._update_ppms_control_ui()
-        try:
-            future = self.ppms_executor.submit(self._rte_harmonic_scan_worker, mode, plan, passes, limit, stable, duration,
-                                               *((field_current,) if mode == 'Angle' else ()))
-        except Exception as error:
-            self.ppms_field_scan_running = False
+                suffix = 0
+                while True:
+                    path = Path(folder) / (f'{stem}_{suffix:02d}.csv' if suffix else f'{stem}.csv')
+                    try:
+                        with path.open('x', encoding='utf-8-sig', newline=''):
+                            pass
+                        break
+                    except FileExistsError:
+                        suffix += 1
+            except OSError as error:
+                messagebox.showerror('RT-E CSV', str(error), parent=self.root)
+                return
+            self.ppms_live_csv_path, self.ppms_live_csv_fields = path, None
+            self.ppms_field_scan_running = True
+            self.ppms_active_scan_mode = mode
+            self.ppms_plot_axis = 'field' if mode == 'Field' else 'angle' if mode == 'Angle' else 'current'
+            self.ppms_plot_addresses = {key: self._ppms_sr830_address(self.ppms_instrument_controllers[key].resource_name) for key in settings['active_lockins']}
+            self.ppms_field_scan_rows = []
+            self.ppms_field_scan_total = len(plan) * len(passes)
+            self.ppms_field_scan_started_at = time.monotonic()
+            self.ppms_field_scan_progress.configure(maximum=self.ppms_field_scan_total, value=0)
+            # Field and Current have no Yes/No, so the status line shows the
+            # wait before each reading and the shortest duration (user,
+            # 2026-10-14).  The harmonic passes are counted in the points and
+            # named in the log: with them the longest line measures about 532 px
+            # in Arial 15 px, more than the 505 px of the longest status line
+            # already shown in the label, which CI's RTEStatusRowTests checks.
+            # The wait shows at most five digits (ppms_settle_status_text): with
+            # {:g} a Settle s of 12345.7 or a 0.0864199 s wait made the line 505
+            # or 521 px wide and it was cut with an ellipsis.  At 100000 points
+            # and Acquire s 86400 s the longest lines are "settle 86400 s" (493 px
+            # in Arial, 590 px in Linux CI's DejaVu Sans) and "settle 0.0864 s"
+            # (497 px, 595 px), both under that 505 px (598 px) line.  Only a
+            # wait under 10 ms with Acquire s of 10 h or more could be wider (a
+            # wait of 100000 s or more, once 7 x a 30 ks SR830 time constant,
+            # cannot occur at the user's 1 x TC: Settle s is at most 86400 s);
+            # the log has the line in full (user, 2026-10-14).
+            self.ppms_field_scan_status_var.set(
+                f'RT-E {mode}: {self.ppms_field_scan_total} points, settle {ppms_settle_status_text(settle_s)} s; '
+                f'at least {least_text}')
+            if mode == 'Angle':
+                self.rte_stage_where = 'stage not moved'
+                # Short enough for the status label at its narrowest (Windows CI, about
+                # 593 px): the Yes/No before the scan already said the stage turns
+                # the sample and its wires (user, 2026-10-13).  The wait before each
+                # reading and the shortest duration are in that Yes/No and the log,
+                # not here: "; settle 86400 s" made the longest line about 586 px in
+                # Arial 15 px (user, 2026-10-14).
+                self.ppms_field_scan_status_var.set(
+                    f'RT-E Angle {first:g}° to {last:g}°, KEPCO {field_current:+g} A held; '
+                    f'{self.ppms_field_scan_total} points')
             self._update_ppms_control_ui()
-            messagebox.showerror('RT-E scan not started', str(error), parent=self.root)
+            self._redraw_ppms_transport_plot()
+            self.thread_log(f'RT-E {mode} scan; CSV: {path}; {len(plan)} points x {len(passes)} harmonic pass(es)'
+                            + (f'; stage {first:g}° to {last:g}°, KEPCO {field_current:+g} A held' if mode == 'Angle' else '')
+                            + f'; each reading waits {settle_text}; at least {least_text}')
+            # The wait announced here; the worker logs only a different one (a
+            # harmonic pass with fewer lock-ins).
+            self.ppms_scan_settle_logged = settle_s
+            def finished(future):
+                try:
+                    future.result()
+                    status = ('Completed; 6221 current set to 0 (output OFF, read back)' if mode == 'Current'
+                              else 'Completed; outputs held')
+                except PPMSScanCancelled:
+                    status = 'Stopped; outputs held unless OFF was requested'
+                except Exception as error:
+                    status = f'Failed: {short_status_error(error, 100)}'
+                    detail = str(error)
+                    where = ''
+                    if mode == 'Angle':
+                        # Where the stage is after a failure, "NOT confirmed stopped"
+                        # included, goes to the log and the dialog; the status line
+                        # keeps only the failure, to stay on one line (user, 2026-10-13).
+                        where = self.rte_stage_where or 'stage not moved'
+                        detail += f'\n\n{where[:1].upper()}{where[1:]}'
+                    self.thread_log('RT-E scan ' + status + (f'; {where}' if where else ''))
+                    if not self.closing and not self.rte_closed:
+                        messagebox.showerror('RT-E scan', detail, parent=self.root)
+                if mode == 'Angle' and not status.startswith('Failed'):
+                    status += f'; {self.rte_stage_where}'     # where the stage is (user, 2026-10-13)
+                self.ppms_field_scan_running = False
+                if not self.closing and not self.rte_closed:
+                    self.ppms_field_scan_status_var.set(status)
+                    self._update_ppms_control_ui()
+            try:
+                future = self.ppms_executor.submit(self._rte_harmonic_scan_worker, mode, plan, passes, limit, stable, duration,
+                                                   *((field_current,) if mode == 'Angle' else ()))
+            except Exception as error:
+                self.ppms_field_scan_running = False
+                self._update_ppms_control_ui()
+                messagebox.showerror('RT-E scan not started', str(error), parent=self.root)
+                return
+            future.add_done_callback(lambda f: self.post_ui(lambda: finished(f)))
+        if mode != 'Angle':
+            begin()
             return
-        future.add_done_callback(lambda f: self.post_ui(lambda: finished(f)))
+        # Angle: the stage's before-move checks (MST, then EO) as a short job
+        # on the RT-E worker, before any instrument (KEPCO, 6221) is set up,
+        # so that the Yes/No for a latched limit error or the driver off
+        # never comes mid-scan with the outputs on.  On Yes the fix (CLR /
+        # EO=1, read back) and the check run again, then the scan starts.  A
+        # latched error or the driver off that appears later, during the
+        # scan, still fails the scan through the stage-failure path (user,
+        # 2026-10-17).
+        stage = self.rte_controllers['newmark']
+
+        def checked(_mst):
+            try:
+                self._require_ppms_control_ready()
+                if not stage.connected:
+                    raise RuntimeError(f'Connect the {stage.label} first')
+            except Exception as error:
+                messagebox.showerror('RT-E scan not started', str(error), parent=self.root)
+                return
+            if self.ppms_field_scan_stop_event.is_set() or self.rte_stage_stop_event.is_set():
+                pressed = 'Stop stage' if self.rte_stage_stop_event.is_set() else 'an OFF button'
+                self.thread_log(f'RT-E Angle scan not started: {pressed} was pressed during the stage check')
+                self.ppms_field_scan_status_var.set(f'Angle scan not started: {pressed} was pressed')
+                return
+            begin()
+        self._rte_stage_job(stage.check_ready, then=checked)
 
     def _rte_harmonic_scan_worker(self, mode, plan, passes, limit, stable, duration, field_current=None):
         for index, settings in enumerate(passes):

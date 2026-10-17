@@ -1,5 +1,77 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## RT-E: the program needs no Newmark test script (2026-10-17)
+
+- **The request:** "can you make the transport_all_NH_dev code not
+  dependent on the Newmark_motor_test code?" The program never imported
+  `Newmark_motor_test.py`, but two of its stage refusals sent the user to
+  it: a latched limit error ("clear it on purpose first
+  (Newmark_motor_test.py clear)") and the motor driver off ("switch it on
+  with Newmark_motor_test.py enable"); the connect error named it too.
+- **Now the RT-E page handles both itself, with no new buttons:**
+  - **A latched limit error** (MST bit 6 or 7): **Move stage**, or **Start
+    scan** in Angle mode, asks Yes/No "A limit error is latched on the stage
+    (MST 64: not moving, -limit ERROR (latched)). Clear it now (CLR)?". Yes
+    sends `CLR` on the RT-E worker, reads `MST` back and requires the
+    latched bits cleared (else an error dialog, and nothing moves), then
+    goes on with the move or the scan start. No sends nothing.
+  - **The motor driver off** (EO not 1): "The stage's motor driver is off
+    (EO=0). Switch it on now (EO=1)? The motor then holds the stage with its
+    current." Yes sends `EO=1`, reads `EO` back (it must be 1, else an
+    error, and nothing moves), then goes on. No sends nothing.
+  - **Safety:** asked only with the RT-E safety tick, an idle rack and the
+    stage connected (and not left turning by an unconfirmed stop), and
+    checked again after the Yes; the controller also refuses either fix
+    while MST says the stage moves. With both problems the two are asked in
+    turn, each once. A problem back right after its own fix was read back is
+    an error, not a second question. Every command is sent once and never
+    repeated. If Stop stage, KEPCO Zero / OFF or 6221 / 2400 OFF was pressed
+    while the stage was read, nothing is asked or sent.
+  - **A limit input on at rest** (MST bit 4 or 5; the RM-5-110 has no limit
+    switches, so a polarity problem) stays a plain refusal pointing to
+    QuickMotion's limit polarity. It is now checked before the latched
+    error, so CLR is never offered while it is on.
+- **Angle scan:** at Start, after the scan's own Yes/No and the CSV folder
+  and name, the stage check (`MST`, then `EO`, nothing else) runs as a short
+  job on the RT-E worker before any instrument is set up: no CSV yet, the
+  KEPCO and the 6221 untouched. Its question, if any, comes then; after a
+  Yes the fix and the check run again, and then the CSV is made and the scan
+  starts. A latched error or the driver off that appears later, during a
+  scan, still fails the scan through the stage-failure path (STOP, the 6221
+  off, the KEPCO's field held), with no question mid-scan.
+- **Busy and buttons:** each job (the move, the check, the fix with the
+  move or the check after it, as one job) marks the rack busy as before:
+  Move stage, Set stage 0° and Start scan are locked, and Stop stage stays
+  usable. The question comes with the rack idle again.
+- **Texts:** no message of the program names `Newmark_motor_test.py` any
+  more. The connect error reads "(is QuickMotion or another program using
+  it?)", and the refusals say how to fix it on the page, e.g. "... the move
+  was not sent. To clear it, press Move stage or Start an Angle scan on the
+  RT-E page and answer Yes (CLR)". One comment keeps the provenance: the
+  program's driver began as the script's reviewed core; the script is a
+  separate, optional test tool with the same reviewed command rules, and the
+  program never imports or calls it.
+- **Driver:** `NewmarkLimitErrorLatched` (with `mst`) and `NewmarkDriverOff`
+  (with `eo`), both `NewmarkRefused`, from the before-move checks;
+  `check_ready()` (the checks alone), `clear_limit_error()` (`MST`, `CLR`,
+  `MST`; not sent when nothing is latched) and `enable_driver()` (`MST`,
+  `EO`, `EO=1`, `EO`; not sent when already on), each logged. `CLR` and
+  `EO=1` were already on the allowlist.
+- **Tests:** `test_rte_angle_scan` (`StageFixDriverTests`,
+  `StageFixMoveTests`, `StageFixAngleStartTests`, `StageFixThreadTests`,
+  `ProgramIndependenceTests`): the controller methods (the command order,
+  refused while moving, not confirmed raises, never repeated); Move stage
+  and an Angle Start with Yes and with No for both cases (No sends nothing;
+  Yes sends exactly the one command, then moves or starts), without the
+  safety tick (nothing sent), a fix not read back (an error, no move, no
+  scan), the question before any instrument or CSV, a limit input still a
+  plain refusal, a Stop during the check; every DLL call on a real
+  single-worker executor, and Stop stage during the move after the fixes;
+  no import of the script and no string in the program naming it. The
+  Start tests here and in `test_lockin_settle_rte_ppms` run the check at
+  once (`test_rte_panel.StartExecutor`); the refusal tests match the new
+  texts. **Not yet tried on the hardware.**
+
 ## Newmark stage: fixed microstep 250 from QuickMotion (2026-10-17)
 
 - **What happened:** on its first runs on the lab PC, `Newmark_motor_test.py`
@@ -1105,7 +1177,9 @@
   during the scan; the lock-ins ticked to Measure (SR830s and/or the
   Zurich) are read at each angle, as in the other RT-E scans.
 - **Driver:** `NewmarkNSCA1Controller` in `Transport_all_NH_dev.py` (the
-  program stays one file) is the reviewed core of `Newmark_motor_test.py`
+  program stays one file, and needs no test script: see the top section,
+  2026-10-17) began as the reviewed core of the standalone, optional
+  `Newmark_motor_test.py`
   (999c1e2 + 164812f; this branch is cut from 164812f, with main's 15b88a1
   stop check and error-126 text ported by hand, 2026-10-13):
   `PerformaxCom.dll` over USB (never a COM port);
@@ -1120,7 +1194,10 @@
   every move sets and reads back HSPD/LSPD/ACC (5 °/s), is absolute (`ABS`,
   `MM` read back, `X<steps>`), is refused while moving, with a latched limit
   error, a limit input on (the RM-5-110 has no limit switches) or the
-  driver off (EO=0), ends after three "not moving" reads in a row and must
+  driver off (EO=0) (since 2026-10-17 the page itself offers, Yes/No, to
+  clear a latched limit error with `CLR` or to switch the driver on with
+  `EO=1`, at Move stage and at an Angle scan's Start; a limit input stays a
+  plain refusal: see the top section), ends after three "not moving" reads in a row and must
   read back PX exactly at the target; a time-out (3 × the expected time +
   5 s), a lost reply during the move, or a failed reply to `X` itself (the
   move may have started) sends STOP (ABORT if STOP does not stop it), for a
@@ -1213,18 +1290,22 @@
   disconnects the stage first (STOP if it is moving, then Close, on the
   worker), then the other instruments as before (the KEPCO and 6221 close
   as they did).
-- **DLL setup on the lab PC (64-bit Python 3.11):** as for
-  `Newmark_motor_test.py`: the Performax USB driver, and the 64-bit
+- **DLL setup on the lab PC (64-bit Python 3.11):** the same as for the
+  optional `Newmark_motor_test.py`: the Performax USB driver, and the 64-bit
   `PerformaxCom.dll` and `SiUSBXp.dll` (Arcus "USB 64-bit DLL v2.06")
   together in the program's folder, beside `Transport_all_NH_dev.py` (else
   the normal Windows DLL search, which in Python 3.8+ does not include
   PATH). A 32-bit DLL (WinError 193), a missing DLL or SiUSBXp.dll (error
   126, which Python 3.8+ raises as FileNotFoundError "Could not find module
   …") and a 32-bit Python are reported in plain words. Close QuickMotion
-  and `Newmark_motor_test.py` first: one program at a time on the USB
-  device. Try the stage with `Newmark_motor_test.py`
-  first (direction of +, the scale), set the zero where the wires hang free,
-  and only then scan.
+  (and the test script, if it runs) first: one program at a time on the USB
+  device. The program needs no test script (2026-10-17): a latched limit
+  error or the driver off is cleared or switched on from the RT-E page
+  (Move stage or an Angle Start, Yes/No; see the top section), not with the
+  script's `clear` or `enable`. Try the stage with small moves first
+  (direction of +, the scale; `Newmark_motor_test.py` remains an optional
+  way to do that), set the zero where the wires hang free, and only then
+  scan.
 - **Window height (user/CI, 2026-10-14):** the window's height is fixed.
   The first layout (a rack row "Newmark stage" and a row "Stage °" under
   the RT-E settings) took about 84 px of height in the 1101 px window the

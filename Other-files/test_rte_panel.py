@@ -1,4 +1,5 @@
 """Offline RT-E regression tests. Never open a VISA or LabOne session."""
+from concurrent.futures import Future
 from contextlib import ExitStack
 import csv
 from pathlib import Path
@@ -11,6 +12,39 @@ from unittest.mock import Mock, patch
 
 from test_ppms_motor_debug import app
 from test_ppms_two_panels import Var, ImmediateExecutor
+
+
+class StartExecutor:
+    """The RT-E worker at Start (user, 2026-10-17).  Short jobs, such as an
+    Angle scan's stage check before any instrument is set up, run at once,
+    as ImmediateExecutor runs them; the scan's own job is only recorded and
+    gets ``scan_future`` (a Future the test settles, else a Mock that never
+    calls back), so the scan never runs here.  ``submit`` is a Mock, so its
+    calls can be asserted as before."""
+
+    SCAN = '_rte_harmonic_scan_worker'
+
+    def __init__(self, scan_future=None):
+        self.scan_future = Mock() if scan_future is None else scan_future
+        self.submit = Mock(side_effect=self._submit)
+
+    def _submit(self, fn, *args):
+        if getattr(fn, '__name__', '') == self.SCAN:
+            return self.scan_future
+        future = Future()
+        try:
+            future.set_result(fn(*args))
+        except BaseException as error:
+            future.set_exception(error)
+        return future
+
+    def scans(self):
+        """The scan submits: (fn, mode, plan, passes, limit, stable, duration[, field current])."""
+        return [call.args for call in self.submit.call_args_list
+                if getattr(call.args[0], '__name__', '') == self.SCAN]
+
+    def shutdown(self, **kwargs):
+        pass
 
 
 class Widget:

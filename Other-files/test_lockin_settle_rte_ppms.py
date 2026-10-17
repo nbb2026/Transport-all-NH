@@ -361,7 +361,11 @@ class RTEStartTests(NoWindows):
         panel._update_ppms_control_ui = mock.Mock()
         panel._redraw_ppms_transport_plot = mock.Mock()
         panel.thread_log = mock.Mock()
-        panel.ppms_executor = mock.Mock()
+        # An Angle Start reads the stage (MST, EO) as a short job on the
+        # worker before the scan (user, 2026-10-17): it runs at once here,
+        # the scan itself is only recorded.
+        panel.ppms_executor = rte_tests.StartExecutor()
+        panel.ppms_environment_busy = panel.ppms_field_scan_running = False
         panel.post_ui = lambda callback: callback()
         panel.root = None
         ask = mock.Mock(return_value=yes)
@@ -418,6 +422,9 @@ class RTEStartTests(NoWindows):
                       question)
         panel.ppms_executor.submit.assert_not_called()
         panel, ask = self.start("Angle")
+        # The stage check at Start, then the scan (user, 2026-10-17).
+        panel.rte_controllers["newmark"].check_ready.assert_called_once_with()
+        self.assertEqual(len(panel.ppms_executor.scans()), 1)
         # The Angle status line keeps its format (it has no room for the wait).
         self.assertEqual(panel.ppms_field_scan_status_var.get(), "RT-E Angle 0° to 10°, KEPCO +1.5 A held; 5 points")
         self.assertIn("each reading waits 1 s", panel.thread_log.call_args_list[0].args[0])
