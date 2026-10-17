@@ -232,6 +232,58 @@ class Recorder(rte_tests.Widget):
         self.grid_options = dict(kwargs)
 
 
+class AfterRoot:
+    """The page's root for the stage harness: ``after(0, fn)`` queues ``fn``
+    for StageBase.drain to run from the "Tk event loop", outside the post_ui
+    queue (review, 2026-10-17); no window."""
+
+    def __init__(self, afters):
+        self.afters = afters
+        self.delays = []
+
+    def after(self, delay, callback):
+        self.delays.append(delay)
+        self.afters.append(callback)
+        return f"after#{len(self.delays)}"
+
+    def after_cancel(self, _timer):
+        pass
+
+
+class DeferredExecutor:
+    """The RT-E worker, run by the test: jobs wait in order until ``run()``,
+    as behind an idle-poll read on the program's one worker (review,
+    2026-10-17).  The scan's own job is only recorded, as StartExecutor's."""
+
+    SCAN = rte_tests.StartExecutor.SCAN
+
+    def __init__(self):
+        self.jobs = []
+        self.submit = Mock(side_effect=self._submit)
+
+    def _submit(self, fn, *args):
+        future = Future()
+        if getattr(fn, "__name__", "") != self.SCAN:
+            self.jobs.append((future, fn, args))
+        return future
+
+    def run(self):
+        """Run every job queued so far, and those they queue, in order."""
+        while self.jobs:
+            future, fn, args = self.jobs.pop(0)
+            try:
+                future.set_result(fn(*args))
+            except BaseException as error:
+                future.set_exception(error)
+
+    def scans(self):
+        return [call.args for call in self.submit.call_args_list
+                if getattr(call.args[0], "__name__", "") == self.SCAN]
+
+    def shutdown(self, **_kwargs):
+        pass
+
+
 class StageBase(unittest.TestCase):
     def make(self, sim=None, executor=None, missing=()):
         """An RT-E page stand-in (test_rte_panel's) with the real stage controller
@@ -264,16 +316,28 @@ class StageBase(unittest.TestCase):
         panel.ppms_control_safety_var = Var(True)
         panel._update_ppms_control_ui = Mock()
         panel.thread_log = Mock()
-        panel.root = None
+        afters = []
+        panel.root = AfterRoot(afters)
         ui = []
         panel.post_ui = ui.append
         panel.ppms_executor = ImmediateExecutor() if executor is None else executor
-        return types.SimpleNamespace(panel=panel, stage=stage, sim=sim, dll=dll, clock=clock, ui=ui, log=log)
+        return types.SimpleNamespace(panel=panel, stage=stage, sim=sim, dll=dll, clock=clock, ui=ui, log=log,
+                                     afters=afters, in_drain=False)
 
     @staticmethod
     def drain(h):
-        while h.ui:
-            h.ui.pop(0)()
+        """As the program's Tk thread: drain_ui_queue runs the post_ui
+        callbacks (``in_drain`` meanwhile), then the Tk event loop runs what
+        root.after(0, ...) scheduled, one at a time (review, 2026-10-17)."""
+        while h.ui or h.afters:
+            h.in_drain = True
+            try:
+                while h.ui:
+                    h.ui.pop(0)()
+            finally:
+                h.in_drain = False
+            if h.afters:
+                h.afters.pop(0)()
 
     def settle(self, h, executor):
         """Wait until the one worker has run everything queued, then run the
@@ -1591,6 +1655,36 @@ class AnglePageTests(unittest.TestCase):
         panel.safe_close_ppms()
         self.assertTrue(panel.rte_stage_stop_event.is_set(), "closing stops a move by hand")
 
+    def test_the_stage_question_keeps_the_buttons_locked(self):
+        """While the Yes/No for a CLR or an EO=1 is open (it opens from the
+        Tk event loop after its job, with the rack idle), the page's
+        buttons stay locked as while busy; Stop stage stays usable (review,
+        2026-10-17)."""
+        panel = self.build_page()
+        self.assertIs(panel.rte_stage_prompt_open, False)
+        entry, connect, disconnect = panel.rte_connection_widgets["newmark"]
+        buttons = {w.options.get("text"): w for w in Recorder.made if "command" in w.options}
+        move, zero, stop = buttons["Move stage"], buttons["Set stage 0°"], buttons["Stop stage"]
+        target = next(w for w in Recorder.made if w.options.get("textvariable") is panel.rte_stage_target)
+        states = lambda: tuple(w.options["state"] for w in (entry, connect, disconnect, target, move, stop, zero,
+                                                            panel.rte_start_button))
+        stage = panel.rte_controllers["newmark"]
+        stage.handle = object()         # connected, as far as the page can tell
+        try:
+            panel.ppms_control_safety_var.set(True)
+            panel.rte_stage_prompt_open = True
+            panel._update_ppms_control_ui()
+            self.assertEqual(states(), ("disabled",) * 5 + ("normal", "disabled", "disabled"))
+            self.assertEqual(buttons["KEPCO Zero / OFF"].options.get("state", "normal"), "normal")
+            self.assertEqual(buttons["6221 / 2400 OFF"].options.get("state", "normal"), "normal")
+            panel.rte_stage_prompt_open = False
+            panel._update_ppms_control_ui()
+            self.assertEqual(states(), ("disabled", "disabled", "normal", "normal", "normal", "normal", "normal",
+                                        "normal"))
+        finally:
+            stage.handle = None
+        panel.safe_close_ppms()
+
 
 # ---- a latched limit error or the driver off, fixed on the page (user, 2026-10-17) ----
 # The user asked that the program not depend on Newmark_motor_test.py, whose
@@ -1602,8 +1696,11 @@ DRIVER = "RT-E stage motor driver"
 SCAN = "RT-E Angle scan"
 LATCHED_QUESTION = ("A limit error is latched on the stage (MST 64: not moving, -limit ERROR (latched)). Clear it now "
                     "(CLR)?")
-DRIVER_QUESTION = ("The stage's motor driver is off (EO=0). Switch it on now (EO=1)? The motor then holds the stage "
-                   "with its current.")
+# Yes goes on at once, so the warning about the angle comes in the question,
+# before it (review, 2026-10-17).
+DRIVER_QUESTION = ("The stage's motor driver is off (EO=0). Switch it on now (EO=1) and go on? The motor then holds "
+                   "the stage with its current.\n\nIf the driver went off during a move, the angle shown may not be "
+                   "the stage's: answer No and check it first (Set stage 0° if needed).")
 TICK = "Tick the RT-E rack safety confirmation first"
 ACTIONS = ("CLR", "EO=0", "EO=1", "STOP", "ABORT", "PX=0")
 
@@ -1677,9 +1774,12 @@ class Questions:
         self.asked = []
 
     def __call__(self, title, message, parent=None, **_options):
+        # in_drain: asked from inside drain_ui_queue (it must not be);
+        # prompt_open: the buttons locked while it is open (review, 2026-10-17).
         self.asked.append(types.SimpleNamespace(
             title=title, message=message, sent=len(self.h.sim.received), busy=self.h.panel.ppms_environment_busy,
-            snapshot=self.snapshot() if self.snapshot else None))
+            snapshot=self.snapshot() if self.snapshot else None, in_drain=self.h.in_drain,
+            prompt_open=self.h.panel.__dict__.get("rte_stage_prompt_open")))
         if self.before is not None:
             self.before(title, self.h)
         return self.answers[title]
@@ -1690,6 +1790,47 @@ class Questions:
     def after(self, title):
         """What was sent after the (first) question with this title."""
         return self.h.sim.received[next(q.sent for q in self.asked if q.title == title):]
+
+
+NOT_CONFIRMED = ("The Newmark NSC-A1's last stop was not confirmed, so it may still be turning: press Stop stage first "
+                 "(check the stage)")
+BUSY = "RT-E is busy; wait or stop the scan first"
+# What the checks before the question and after its Yes refuse (review,
+# 2026-10-17): (name, change(h), the error dialog's text or None for none).
+RECHECKS = (("an unconfirmed stop", lambda h: setattr(h.stage, "motion_may_run", True), NOT_CONFIRMED),
+            ("a move running", lambda h: setattr(h.stage, "in_move", True), NOT_CONFIRMED),
+            # The page's view: the handle gone, as after a Disconnect.
+            ("the stage disconnected", lambda h: setattr(h.stage, "handle", None), "Connect the Newmark NSC-A1 first"),
+            ("the rack busy", lambda h: setattr(h.panel, "ppms_environment_busy", True), BUSY),
+            ("a scan running", lambda h: setattr(h.panel, "ppms_field_scan_running", True), BUSY),
+            # A closing page shows no dialog.
+            ("the program closing", lambda h: setattr(h.panel, "closing", True), None),
+            ("the page closed", lambda h: setattr(h.panel, "rte_closed", True), None))
+FIXES = ((latch, LATCHED, "CLR"), (driver_off, DRIVER, "EO=1"))
+PRESSES = ("Stop stage", "KEPCO Zero / OFF", "6221 / 2400 OFF", "close")
+
+
+def press(h, name):
+    """A button that stays usable while a fix job waits on the worker (review, 2026-10-17)."""
+    panel = h.panel
+    if name == "Stop stage":
+        panel._rte_stage_stop()
+    elif name == "KEPCO Zero / OFF":
+        panel._rte_zero()
+    elif name == "6221 / 2400 OFF":
+        # ppms_sources_off sets the scan's stop event first, then queues its
+        # OFF (with the 6221 and 2400 controllers this harness has not).
+        panel.ppms_field_scan_stop_event.set()
+    else:
+        panel.zurich_executor, panel.zurich_controller = Mock(), Mock()
+        panel.safe_close_ppms()
+
+
+def drain_ui_only(h):
+    """The post_ui callbacks alone (one drain_ui_queue), not what they
+    scheduled with root.after."""
+    while h.ui:
+        h.ui.pop(0)()
 
 
 class StageFixDriverTests(StageBase):
@@ -1733,6 +1874,24 @@ class StageFixDriverTests(StageBase):
                 with self.assertRaisesRegex(app.NewmarkRefused, rf"the stage is moving.*{command} was not sent"):
                     getattr(h.stage, fix)()
                 self.assertNotIn(command, h.sim.received)
+
+    def test_clr_is_refused_while_a_limit_input_is_on(self):
+        # CLR cannot fix a limit input's cause (a polarity problem): MST is
+        # read, nothing is sent, and the refusal is a plain one, never offered
+        # again (review, 2026-10-17).
+        for name, inputs, latched in (("with a latched error", 1 << 4, 1 << 6), ("alone", 1 << 5, 0)):
+            with self.subTest(name):
+                h = self.make()
+                h.stage.connect("auto")
+                h.sim.inputs, h.sim.latched = inputs, latched
+                start = len(h.sim.received)
+                with self.assertRaisesRegex(app.NewmarkRefused, r"^a limit input is on at rest \(MST \d+: .*\), but the "
+                                            r"RM-5-110 has no limit switches: a polarity problem; fix the limit "
+                                            r"polarity in Newmark's QuickMotion\. CLR was not sent$") as caught:
+                    h.stage.clear_limit_error()
+                self.assertIs(type(caught.exception), app.NewmarkRefused, "a plain refusal, not offered")
+                self.assertEqual(h.sim.received[start:], ["MST"])
+                self.assertEqual(h.sim.latched, latched)
 
     def test_not_confirmed_raises_and_is_never_repeated(self):
         for sim, arrange, fix, command, message in (
@@ -1946,6 +2105,168 @@ class StageFixMoveTests(StageBase):
         self.assertEqual(h.panel.rte_stage_live.get(), "Stage: not moved (Stop)")
         self.assertEqual(actions(h.sim.received), [])
 
+    # ---- review, 2026-10-17 ------------------------------------------------------
+    def start_move(self, arrange, answers=(), executor=None):
+        """Move stage to 10° up to its first job; returns (h, questions, showerror patch)."""
+        h = self.make(Watched(), executor=executor)
+        h.stage.connect("auto")
+        arrange(h.sim)
+        h.panel.rte_stage_target.set("10")
+        return h, Questions(h, answers)
+
+    def test_off_pressed_while_the_stage_was_read_asks_nothing(self):
+        # KEPCO Zero / OFF and 6221 / 2400 OFF set the scan's stop event,
+        # which the move watches too.
+        for arrange, _title, command in FIXES:
+            with self.subTest(command):
+                h, questions = self.start_move(arrange)
+                with patch.object(app.messagebox, "askyesno", questions), \
+                        patch.object(app.messagebox, "showerror") as showerror:
+                    h.panel._rte_stage_move()
+                    h.panel.ppms_field_scan_stop_event.set()    # before the refusal reached the Tk thread
+                    self.drain(h)
+                self.assertEqual(questions.asked, [])
+                showerror.assert_not_called()
+                self.assertEqual(h.panel.rte_stage_live.get(), "Stage: not moved (OFF)")
+                h.panel.thread_log.assert_any_call(
+                    f"RT-E Newmark NSC-A1: OFF was pressed meanwhile: {command} not offered; nothing sent")
+                self.assertEqual(actions(h.sim.received), [])
+
+    def test_the_question_opens_outside_the_drain_with_the_buttons_locked(self):
+        # The refusal comes back in a post_ui callback (inside drain_ui_queue):
+        # the question opens from the Tk event loop instead, through
+        # root.after(0, ...), with the buttons locked from the refusal until
+        # the answer (review, 2026-10-17).
+        for arrange, title, command in FIXES:
+            for yes in (False, True):
+                with self.subTest(command=command, yes=yes):
+                    h, questions = self.start_move(arrange, {title: yes})
+                    locked = []
+                    h.panel._update_ppms_control_ui = Mock(
+                        side_effect=lambda: locked.append(h.panel.__dict__.get("rte_stage_prompt_open")))
+                    with patch.object(app.messagebox, "askyesno", questions), \
+                            patch.object(app.messagebox, "showerror") as showerror:
+                        h.panel._rte_stage_move()
+                        drain_ui_only(h)
+                        self.assertEqual(questions.asked, [], "not asked inside the drain")
+                        self.assertTrue(h.panel.rte_stage_prompt_open)
+                        self.assertEqual((len(h.afters), h.panel.root.delays), (1, [0]))
+                        self.assertIs(locked[-1], True, "the buttons were locked as it was scheduled")
+                        self.drain(h)
+                    question = questions.asked[0]
+                    self.assertEqual(questions.titles(), [title])
+                    self.assertFalse(question.in_drain)
+                    self.assertTrue(question.prompt_open, "locked while it is open")
+                    self.assertFalse(question.busy)
+                    self.assertFalse(h.panel.rte_stage_prompt_open, "unlocked once answered")
+                    self.assertIn(False, locked[locked.index(True):], "the buttons were updated after the answer")
+                    showerror.assert_not_called()
+                    self.assertEqual(actions(h.sim.received), [command, "X100000"] if yes else [])
+
+    def test_no_question_while_the_window_is_destroyed(self):
+        h, questions = self.start_move(latch)
+        h.panel.root.after = Mock(side_effect=app.tk.TclError("can't invoke \"after\" command"))
+        with patch.object(app.messagebox, "askyesno", questions), \
+                patch.object(app.messagebox, "showerror") as showerror:
+            h.panel._rte_stage_move()
+            self.drain(h)
+        self.assertEqual(questions.asked, [])
+        showerror.assert_not_called()
+        self.assertFalse(h.panel.rte_stage_prompt_open)
+        self.assertEqual(actions(h.sim.received), [])
+
+    def test_the_checks_before_the_question_refuse(self):
+        # Something changed between the refusal and the question (both on the
+        # Tk thread): no question, nothing sent; an error dialog unless the
+        # page is closing.
+        for arrange, _title, command in FIXES:
+            for name, change, message in RECHECKS:
+                with self.subTest(command=command, check=name):
+                    h, questions = self.start_move(arrange)
+                    with patch.object(app.messagebox, "askyesno", questions), \
+                            patch.object(app.messagebox, "showerror") as showerror:
+                        h.panel._rte_stage_move()
+                        drain_ui_only(h)            # the refusal is back; the question is scheduled
+                        sent = len(h.sim.received)
+                        change(h)
+                        self.drain(h)
+                    self.assertEqual(questions.asked, [])
+                    self.assertEqual(h.sim.received[sent:], [])
+                    self.assertEqual(actions(h.sim.received), [])
+                    self.assertFalse(h.panel.rte_stage_prompt_open)
+                    if message is None:
+                        showerror.assert_not_called()
+                    else:
+                        self.assertEqual(showerror.call_args.args, ("RT-E stage", message))
+                        h.panel.thread_log.assert_any_call(f"RT-E Newmark NSC-A1: {command} not offered: {message}")
+
+    def test_the_checks_after_the_yes_refuse(self):
+        for arrange, title, command in FIXES:
+            for name, change, message in RECHECKS:
+                with self.subTest(command=command, check=name):
+                    h = self.move(answers={title: True}, arrange=[arrange],
+                                  before=lambda _title, h, change=change: change(h))
+                    self.assertEqual(h.questions.titles(), [title])
+                    self.assertEqual(h.questions.after(title), [], "nothing sent after the Yes")
+                    self.assertEqual(actions(h.sim.received), [])
+                    self.assertFalse(h.panel.rte_stage_prompt_open)
+                    if message is None:
+                        h.showerror.assert_not_called()
+                        h.panel.thread_log.assert_any_call(f"RT-E Newmark NSC-A1: {command} not sent: RT-E is closing")
+                    else:
+                        self.assertEqual(h.showerror.call_args.args, ("RT-E stage", message))
+                        h.panel.thread_log.assert_any_call(f"RT-E Newmark NSC-A1: {command} not sent: {message}")
+
+    def test_a_limit_input_on_when_clr_runs_refuses_it(self):
+        def input_on(_title, h):        # a limit input comes on while the question is open
+            h.sim.inputs = 1 << 4
+        h = self.move(answers={LATCHED: True}, arrange=[latch], before=input_on)
+        h.showerror.assert_called_once()
+        title, message = h.showerror.call_args.args
+        self.assertEqual(title, "RT-E")
+        self.assertRegex(message, r"^a limit input is on at rest \(MST 80: not moving, -limit input on, -limit ERROR "
+                                  r"\(latched\)\), but .*polarity problem.*QuickMotion\. CLR was not sent$")
+        self.assertEqual(h.questions.after(LATCHED), ["MST"], "MST read, CLR not sent, no move")
+        self.assertEqual(actions(h.sim.received), [])
+        self.assertEqual(h.questions.titles(), [LATCHED])
+
+    def test_stop_off_or_close_after_the_yes_sends_no_fix(self):
+        # After the Yes, the fix job can wait on the one worker behind a read
+        # (the idle poll).  A Stop stage, KEPCO Zero / OFF, 6221 / 2400 OFF
+        # or closing pressed meanwhile: no CLR or EO=1, no move; the move
+        # reports the Stop (review, 2026-10-17).
+        for arrange, title, command in FIXES:
+            for name in PRESSES:
+                with self.subTest(command=command, pressed=name):
+                    executor = DeferredExecutor()
+                    h, questions = self.start_move(arrange, {title: True}, executor=executor)
+                    shown, show = [], h.panel.rte_stage_live.set
+                    h.panel.rte_stage_live.set = lambda text: (shown.append(text), show(text))
+                    with patch.object(app.messagebox, "askyesno", questions), \
+                            patch.object(app.messagebox, "showerror") as showerror:
+                        h.panel._rte_stage_move()
+                        executor.run()
+                        self.drain(h)               # the refusal, then the question: Yes
+                        self.assertEqual(questions.titles(), [title])
+                        self.assertEqual(len(executor.jobs), 1, "the fix job waits on the worker")
+                        press(h, name)
+                        executor.run()
+                        self.drain(h)
+                    self.assertNotIn(command, h.sim.received)
+                    self.assertFalse({"CLR", "EO=1"} & set(h.sim.received))
+                    self.assertEqual(h.sim.moves, [])
+                    self.assertEqual(questions.titles(), [title], "not asked again")
+                    showerror.assert_not_called()
+                    if name == "close":
+                        h.panel.thread_log.assert_any_call(
+                            f"RT-E Newmark NSC-A1: {command} not sent: RT-E is closing after the Yes")
+                        self.assertFalse(h.stage.connected, "closed by the clean-up queued after it")
+                    else:
+                        reason = "Stop stage was pressed" if name == "Stop stage" else "an OFF button was pressed"
+                        h.panel.thread_log.assert_any_call(
+                            f"RT-E Newmark NSC-A1: {command} not sent: {reason} after the Yes")
+                        self.assertIn(f"Stage: not moved ({'Stop' if name == 'Stop stage' else 'OFF'})", shown)
+
 
 class StageFixAngleStartTests(StageBase):
     """An Angle scan's Start with a latched limit error or the driver off: the
@@ -2042,6 +2363,11 @@ class StageFixAngleStartTests(StageBase):
         self.assert_not_started(h)
         h.showerror.assert_not_called()
         h.panel.thread_log.assert_any_call("RT-E Newmark NSC-A1: No: CLR not sent; nothing moved")
+        # From the Tk event loop, not inside the drain; the status line says
+        # why the scan did not start (review, 2026-10-17).
+        self.assertFalse(question.in_drain)
+        self.assertTrue(question.prompt_open)
+        self.assertEqual(h.panel.ppms_field_scan_status_var.get(), "Angle scan not started: CLR not sent (No)")
 
     def test_a_latched_limit_error_yes_clears_then_the_scan_starts(self):
         h = self.start(answers={LATCHED: True}, arrange=[latch])
@@ -2061,6 +2387,7 @@ class StageFixAngleStartTests(StageBase):
         self.assertEqual(h.questions.asked[1].snapshot, dict(csv=[], kepco=0, source=0, scans=0))
         self.assertEqual(h.questions.after(DRIVER), [])
         self.assert_not_started(h)
+        self.assertEqual(h.panel.ppms_field_scan_status_var.get(), "Angle scan not started: EO=1 not sent (No)")
         h = self.start(answers={DRIVER: True}, arrange=[driver_off])
         self.assertEqual(h.questions.after(DRIVER), ["MST", "EO", "EO=1", "EO", "MST", "EO"])
         self.assertEqual(actions(h.sim.received), ["EO=1"])
@@ -2081,6 +2408,7 @@ class StageFixAngleStartTests(StageBase):
                 self.assertEqual(h.questions.after(next(iter(answers))), [])
                 self.assertEqual(actions(h.sim.received), [])
                 self.assert_not_started(h)
+                self.assertEqual(h.panel.ppms_field_scan_status_var.get(), f"Angle scan not started: {TICK}")
 
     def test_a_clr_that_does_not_clear_starts_nothing(self):
         h = self.start(ClrDoesNotClear(), answers={LATCHED: True}, arrange=[latch])
@@ -2089,6 +2417,9 @@ class StageFixAngleStartTests(StageBase):
                       h.showerror.call_args.args[1])
         self.assertEqual(actions(h.sim.received), ["CLR"])
         self.assert_not_started(h)
+        # Cut to 44 characters for the status line; the dialog has it all.
+        self.assertEqual(h.panel.ppms_field_scan_status_var.get(),
+                         "Angle scan not started: CLR was sent, but MST read back still shows…")
 
     def test_a_limit_input_stays_a_plain_refusal(self):
         h = self.start(answers={}, arrange=[lambda sim: setattr(sim, "inputs", 1 << 5), latch])
@@ -2097,6 +2428,8 @@ class StageFixAngleStartTests(StageBase):
         self.assertIn("polarity problem", h.showerror.call_args.args[1])
         self.assertEqual(actions(h.sim.received), [])
         self.assert_not_started(h)
+        self.assertEqual(h.panel.ppms_field_scan_status_var.get(),
+                         "Angle scan not started: a limit input is on at rest (MST 96: not mo…")
 
     def test_stop_stage_during_the_check_keeps_the_scan_from_starting(self):
         def stop_during_the_check(h):
@@ -2109,6 +2442,116 @@ class StageFixAngleStartTests(StageBase):
         self.assertEqual(h.panel.ppms_field_scan_status_var.get(), "Angle scan not started: Stop stage was pressed")
         h.panel.thread_log.assert_any_call("RT-E Angle scan not started: Stop stage was pressed during the stage check")
         self.assertEqual(actions(h.sim.received), [])
+
+    # ---- review, 2026-10-17 ------------------------------------------------------
+    @staticmethod
+    def during_the_check(event_name):
+        """prepare: KEPCO Zero / OFF (the scan's stop event) or Stop stage
+        pressed while the check reads MST."""
+        def prepare(h):
+            event = getattr(h.panel, event_name)
+            h.sim.watch = lambda command: event.set() if command == "MST" else None
+        return prepare
+
+    def test_off_during_the_check_keeps_the_scan_from_starting(self):
+        h = self.start(prepare=self.during_the_check("ppms_field_scan_stop_event"))
+        h.showerror.assert_not_called()
+        self.assertEqual(h.questions.titles(), [SCAN])
+        self.assert_not_started(h)
+        self.assertEqual(h.panel.ppms_field_scan_status_var.get(), "Angle scan not started: an OFF button was pressed")
+        h.panel.thread_log.assert_any_call("RT-E Angle scan not started: an OFF button was pressed during the stage "
+                                           "check")
+        self.assertEqual(actions(h.sim.received), [])
+
+    def test_stop_or_off_during_a_check_that_ends_in_a_fixable_refusal(self):
+        # The check's refusal comes back after the Stop or OFF: no question,
+        # nothing sent, and the status line says the scan did not start.
+        for arrange, _title, command in FIXES:
+            for event, pressed, reason in (("rte_stage_stop_event", "Stop", "Stop stage was pressed"),
+                                           ("ppms_field_scan_stop_event", "OFF", "an OFF button was pressed")):
+                with self.subTest(command=command, pressed=pressed):
+                    h = self.start(arrange=[arrange], prepare=self.during_the_check(event))
+                    self.assertEqual(h.questions.titles(), [SCAN])
+                    h.showerror.assert_not_called()
+                    self.assert_not_started(h)
+                    self.assertEqual(h.panel.ppms_field_scan_status_var.get(), f"Angle scan not started: {reason}")
+                    self.assertEqual(h.panel.rte_stage_live.get(), f"Stage: not moved ({pressed})")
+                    h.panel.thread_log.assert_any_call(f"RT-E Newmark NSC-A1: {pressed} was pressed meanwhile: "
+                                                       f"{command} not offered; nothing sent")
+                    self.assertEqual(actions(h.sim.received), [])
+
+    def test_a_refusal_before_the_question_or_after_the_check_shows_on_the_status_line(self):
+        def unconfirmed_meanwhile(h):
+            drain_ui_only(h)            # the check's refusal is back; the question is scheduled
+            h.stage.motion_may_run = True
+            self.drain(h)
+        h = self.start(arrange=[latch], settle=unconfirmed_meanwhile)
+        self.assertEqual(h.questions.titles(), [SCAN])
+        self.assertEqual(h.showerror.call_args.args, ("RT-E stage", NOT_CONFIRMED))
+        self.assert_not_started(h)
+        self.assertEqual(h.panel.ppms_field_scan_status_var.get(),
+                         "Angle scan not started: The Newmark NSC-A1's last stop was not conf…")
+        # A ready stage, the safety unticked during its check: `checked` refuses.
+        def untick_during_the_check(h):
+            h.sim.watch = lambda command: h.panel.ppms_control_safety_var.set(False) if command == "EO" else None
+        h = self.start(prepare=untick_during_the_check)
+        self.assertEqual(h.showerror.call_args.args, ("RT-E scan not started", TICK))
+        self.assert_not_started(h)
+        self.assertEqual(h.panel.ppms_field_scan_status_var.get(), f"Angle scan not started: {TICK}")
+
+    def test_stop_off_or_close_after_the_yes_starts_nothing(self):
+        # After the Yes, the fix job can wait on the one worker behind a read
+        # (the idle poll): a Stop stage, KEPCO Zero / OFF, 6221 / 2400 OFF or
+        # closing meanwhile sends no CLR or EO=1, and the scan does not start
+        # (review, 2026-10-17).
+        for arrange, title, command in FIXES:
+            for name in PRESSES:
+                with self.subTest(command=command, pressed=name):
+                    executor = DeferredExecutor()
+
+                    def settle(h, executor=executor, name=name):
+                        executor.run()
+                        self.drain(h)           # the check's refusal, then the stage's question: Yes
+                        self.assertEqual(len(executor.jobs), 1, "the fix job waits on the worker")
+                        press(h, name)
+                        executor.run()
+                        self.drain(h)
+                    h = self.start(answers={title: True}, arrange=[arrange], executor=executor, settle=settle)
+                    self.assertEqual(h.questions.titles(), [SCAN, title])
+                    self.assertFalse({"CLR", "EO=1"} & set(h.sim.received))
+                    self.assertEqual(h.sim.moves, [])
+                    self.assert_not_started(h)
+                    h.showerror.assert_not_called()
+                    status = h.panel.ppms_field_scan_status_var.get()
+                    if name == "close":
+                        self.assertEqual(status, "", "a closing page shows nothing")
+                        h.panel.thread_log.assert_any_call(
+                            f"RT-E Newmark NSC-A1: {command} not sent: RT-E is closing after the Yes")
+                    else:
+                        reason = "Stop stage was pressed" if name == "Stop stage" else "an OFF button was pressed"
+                        self.assertEqual(status, f"Angle scan not started: {reason}")
+                        h.panel.thread_log.assert_any_call(
+                            f"RT-E Newmark NSC-A1: {command} not sent: {reason} after the Yes")
+
+    def test_field_and_current_starts_never_check_the_stage(self):
+        # Only an Angle Start reads the stage; Field and Current start at
+        # once, with no stage command and no stage question, whatever the
+        # stage's state (review, 2026-10-17).
+        for mode, span in (("Field", ("0", "1", "0.5")), ("Current", ("0.01", "0.03", "0.01"))):
+            with self.subTest(mode):
+                def prepare(h, mode=mode, span=span):
+                    h.panel.ppms_simple_mode = Var(mode)
+                    h.panel.ppms_simple_range = [Var(v) for v in span]
+                    h.stage.check_ready = Mock(wraps=h.stage.check_ready)
+                h = self.start(arrange=[latch, driver_off], prepare=prepare)
+                h.stage.check_ready.assert_not_called()
+                self.assertEqual(h.sim.received[h.start:], [], "no stage command")
+                self.assertEqual(h.questions.asked, [])
+                h.showerror.assert_not_called()
+                scans = h.executor.scans()
+                self.assertEqual([scan[1] for scan in scans], [mode])
+                self.assertEqual(h.executor.submit.call_count, 1, "the scan alone")
+                self.assertTrue(h.panel.ppms_field_scan_running)
 
     def test_angle_start_with_a_fix_runs_the_scan_on_the_worker(self):
         # A real single-worker executor, as the program's: the check, CLR,

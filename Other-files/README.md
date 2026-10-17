@@ -16,8 +16,11 @@
     latched bits cleared (else an error dialog, and nothing moves), then
     goes on with the move or the scan start. No sends nothing.
   - **The motor driver off** (EO not 1): "The stage's motor driver is off
-    (EO=0). Switch it on now (EO=1)? The motor then holds the stage with its
-    current." Yes sends `EO=1`, reads `EO` back (it must be 1, else an
+    (EO=0). Switch it on now (EO=1) and go on? The motor then holds the
+    stage with its current." and, since Yes goes on at once (review,
+    2026-10-17): "If the driver went off during a move, the angle shown may
+    not be the stage's: answer No and check it first (Set stage 0° if
+    needed)." Yes sends `EO=1`, reads `EO` back (it must be 1, else an
     error, and nothing moves), then goes on. No sends nothing.
   - **Safety:** asked only with the RT-E safety tick, an idle rack and the
     stage connected (and not left turning by an unconfirmed stop), and
@@ -26,11 +29,26 @@
     turn, each once. A problem back right after its own fix was read back is
     an error, not a second question. Every command is sent once and never
     repeated. If Stop stage, KEPCO Zero / OFF or 6221 / 2400 OFF was pressed
-    while the stage was read, nothing is asked or sent.
+    while the stage was read, nothing is asked or sent. The same after a
+    Yes (review, 2026-10-17): the fix job can wait on the one worker behind
+    a read (the idle poll), and if one of those buttons was pressed, or the
+    page is closing, by the time it runs, it sends no `CLR` or `EO=1`; the
+    move then reports "Stage: not moved (Stop)" (or "(OFF)"), an Angle Start
+    does not start, and a closing page runs nothing more.
+  - **The question opens from the Tk event loop** (`root.after(0, ...)`),
+    not inside `drain_ui_queue`, where a dialog would hold every page's
+    `post_ui` callbacks until it closed (the rule of the 2026-10-14 review).
+    The page's buttons stay locked from the refusal until the answer
+    (`rte_stage_prompt_open`, counted as busy in `_update_ppms_control_ui`
+    only); Stop stage and the OFF buttons stay usable, and the checks before
+    and after the answer still refuse if anything changed (review,
+    2026-10-17).
   - **A limit input on at rest** (MST bit 4 or 5; the RM-5-110 has no limit
     switches, so a polarity problem) stays a plain refusal pointing to
     QuickMotion's limit polarity. It is now checked before the latched
-    error, so CLR is never offered while it is on.
+    error, so CLR is never offered while it is on, and `clear_limit_error()`
+    also refuses ("CLR was not sent") if one comes on after the question
+    (review, 2026-10-17).
 - **Angle scan:** at Start, after the scan's own Yes/No and the CSV folder
   and name, the stage check (`MST`, then `EO`, nothing else) runs as a short
   job on the RT-E worker before any instrument is set up: no CSV yet, the
@@ -38,7 +56,14 @@
   Yes the fix and the check run again, and then the CSV is made and the scan
   starts. A latched error or the driver off that appears later, during a
   scan, still fails the scan through the stage-failure path (STOP, the 6221
-  off, the KEPCO's field held), with no question mid-scan.
+  off, the KEPCO's field held), with no question mid-scan. An Angle Start
+  that does not start says so on the scan status line (review, 2026-10-17):
+  "Angle scan not started: CLR not sent (No)" (or "EO=1 ..."), "...: Stop
+  stage was pressed", "...: an OFF button was pressed", or a refusal or
+  failure of the check or the fix cut to 44 characters
+  (`rte_angle_not_started_text`; the widest, about 478 px in Arial 15 px,
+  is in CI's `RTEStatusRowTests`). Field and Current Starts never read the
+  stage.
 - **Busy and buttons:** each job (the move, the check, the fix with the
   move or the check after it, as one job) marks the rack busy as before:
   Move stage, Set stage 0° and Start scan are locked, and Stop stage stays
@@ -70,7 +95,15 @@
   no import of the script and no string in the program naming it. The
   Start tests here and in `test_lockin_settle_rte_ppms` run the check at
   once (`test_rte_panel.StartExecutor`); the refusal tests match the new
-  texts. **Not yet tried on the hardware.**
+  texts. Since the review of 2026-10-17 also: the checks before the question
+  and after its Yes (an unconfirmed stop, a move running, the stage
+  disconnected, the rack busy, a scan running, the program or page
+  closing); the OFF branch at the question and after the check; Stop stage,
+  KEPCO Zero / OFF, 6221 / 2400 OFF or close between the Yes and the fix job
+  (a `DeferredExecutor`: no `CLR`, no `EO=1`); the question opened outside
+  the drain (`AfterRoot`) with the buttons locked; `CLR` refused while a
+  limit input is on; the status line texts; Field and Current Starts never
+  calling `check_ready`. **Not yet tried on the hardware.**
 
 ## Newmark stage: fixed microstep 250 from QuickMotion (2026-10-17)
 

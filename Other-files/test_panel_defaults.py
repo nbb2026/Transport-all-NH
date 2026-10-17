@@ -631,6 +631,13 @@ class RTEStatusRowTests(unittest.TestCase):
         "RT-E Angle -359.995° to 359.995°, KEPCO -9.87654 A held; 100000 points",
         "Stopped; outputs held unless OFF was requested; stage stopped at -359.999°",
         "Completed; outputs held; stage at +360.000°",
+        # An Angle Start that did not start (review, 2026-10-17): the longest
+        # fixed reason, and the widest refusal the stage check or a fix can
+        # give, cut to 44 characters (about 478 px in Arial 15 px).
+        app.rte_angle_not_started_text("an OFF button was pressed"),
+        app.rte_angle_not_started_text(RuntimeError(
+            "The Newmark NSC-A1's last stop was not confirmed, so it may still be turning: press Stop stage "
+            "first (check the stage)")),
     )
 
     @classmethod

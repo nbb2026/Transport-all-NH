@@ -44119,15 +44119,24 @@ class NewmarkNSCA1Controller:
 
     def clear_limit_error(self):
         """CLR, sent only after the user's Yes on the RT-E page (user,
-        2026-10-17).  Refused while the stage moves (MST read first).  Not sent
-        when no limit error is latched any more.  MST is read back and must
-        show no latched limit error, else NewmarkStageError (nothing moves
-        after it).  Never repeated.  Returns MST read back."""
+        2026-10-17).  Refused while the stage moves or a limit input is on
+        (MST read first).  Not sent when no limit error is latched any more.
+        MST is read back and must show no latched limit error, else
+        NewmarkStageError (nothing moves after it).  Never repeated.  Returns
+        MST read back."""
         self._require_open()
         mst = self.status()
         if mst & NEWMARK_MOVING:
             raise NewmarkRefused(f"the stage is moving (MST {mst}: {newmark_describe_status(mst)}); stop it first. "
                                  "CLR was not sent")
+        if mst & NEWMARK_LIMIT_INPUTS:
+            # A limit input that came on after the question: CLR cannot fix
+            # its cause (a polarity problem, as _check_ready says), so it is
+            # not sent, a plain refusal, never offered again (review,
+            # 2026-10-17).
+            raise NewmarkRefused(f"a limit input is on at rest (MST {mst}: {newmark_describe_status(mst)}), but the "
+                                 "RM-5-110 has no limit switches: a polarity problem; fix the limit polarity in "
+                                 "Newmark's QuickMotion. CLR was not sent")
         if not mst & NEWMARK_LIMIT_ERRORS:
             self.logger(f"RT-E {self.label}: no limit error is latched now (MST {mst}); CLR not sent")
             return mst
@@ -44402,6 +44411,19 @@ def rte_scan_plan(mode, start, end, step, loops=1, round_trip=True):
                  for point, value in enumerate(nodes, 1))
 
 
+def rte_angle_not_started_text(reason):
+    """The RT-E status line for an Angle Start that did not start (review,
+    2026-10-17): "Angle scan not started: <reason>".  ``reason`` is a short
+    text, or an error cut to 44 characters (short_status_error, without a
+    trailing "; "): the dialog and the log have it in full.  So cut, the
+    longest refusal the stage check or a fix can give ("The Newmark NSC-A1's
+    last stop was not conf…") measures about 478 px in Arial 15 px, under the
+    505 px of the longest line CI's RTEStatusRowTests checks; 48 characters
+    made it 507 px."""
+    text = short_status_error(reason, 44).rstrip('; ') if isinstance(reason, BaseException) else reason
+    return f'Angle scan not started: {text}'
+
+
 class RTEPanel(PPMSPanel):
     """Room-temperature electrical transport, using the proven 4886/475 rack.
 
@@ -44468,6 +44490,11 @@ class RTEPanel(PPMSPanel):
         # moves watch it beside the scan's own stop event.
         self.rte_stage_stop_event = threading.Event()
         self.rte_stage_where = ''
+        # True from a refusal the page can fix (a latched limit error, the
+        # driver off) until its Yes/No is answered: the page's buttons stay
+        # locked meanwhile, as while busy; Stop stage and the OFF buttons stay
+        # usable (review, 2026-10-17).
+        self.rte_stage_prompt_open = False
         super().__init__(parent, tab)
         # This rack uses DEV4414, not the other modules' DEV4435 server.
         self.zurich_controller.mfli_server_candidates = SUPER_ZURICH_MFLI_SERVERS
@@ -44864,7 +44891,13 @@ class RTEPanel(PPMSPanel):
     def _update_ppms_control_ui(self):
         if 'rte_edit_widgets' not in self.__dict__:
             return
-        busy = self.ppms_environment_busy or self.ppms_field_scan_running or self.rte_closed
+        # The stage's Yes/No for a CLR or an EO=1 counts as busy for the
+        # buttons alone (review, 2026-10-17): it opens from the Tk event loop
+        # a moment after its job has ended, and nothing may start between
+        # the two or while it is open; the checks before and after its
+        # answer do not count it.
+        busy = (self.ppms_environment_busy or self.ppms_field_scan_running or self.rte_closed
+                or self.__dict__.get('rte_stage_prompt_open', False))
         for widget, state in self.rte_edit_widgets + self.ppms_lockin_choice_widgets:
             widget.configure(state='disabled' if busy else state)
         self.rte_start_button.configure(state='normal' if not busy and self.ppms_control_safety_var.get() else 'disabled')
@@ -44900,14 +44933,16 @@ class RTEPanel(PPMSPanel):
         if self.ppms_field_scan_running or self.ppms_environment_busy:
             raise RuntimeError('RT-E is busy; wait or stop the scan first')
 
-    def _rte_submit(self, operation, done=None, then=None, stage_fix=None):
+    def _rte_submit(self, operation, done=None, then=None, stage_fix=None, failed=None):
         """``operation`` on the RT-E worker, with the rack busy meanwhile;
         ``done(result)`` on the Tk thread, and a failure logged and shown.
         Since 2026-10-17 (user): ``then(result)`` runs after a success once
         the rack is idle again (an Angle scan starts from there), and with
         ``stage_fix``, a latched limit error or the stage's driver off is not
         shown as a failure: ``stage_fix(error)`` is called, also once the rack
-        is idle again, so that it can ask and queue the fix."""
+        is idle again, so that it can ask and queue the fix.  ``failed(error)``
+        runs just before a failure's dialog, so that an Angle Start's status
+        line says it did not start (review, 2026-10-17)."""
         if self.rte_closed or self.closing or self.ppms_environment_busy or self.ppms_field_scan_running:
             return
         self.ppms_environment_busy = True
@@ -44925,6 +44960,8 @@ class RTEPanel(PPMSPanel):
                 else:
                     self.thread_log(f'RT-E operation failed: {error}')
                     if not self.rte_closed and not self.closing:
+                        if failed is not None:
+                            failed(error)
                         messagebox.showerror('RT-E', str(error), parent=self.root)
             finally:
                 self.ppms_environment_busy = False
@@ -45036,21 +45073,51 @@ class RTEPanel(PPMSPanel):
         self._rte_stage_job(move, self.rte_stage_live.set)
 
     # ---- a latched limit error or the driver off, fixed on the page (user, 2026-10-17) ----
-    def _rte_stage_job(self, operation, done=None, then=None, fix=None, fixed=()):
+    def _rte_stage_job(self, operation, done=None, then=None, fix=None, fixed=(), failed=None):
         """``operation`` on the RT-E worker, as _rte_submit, for Move stage and
         an Angle scan's stage check at Start (user, 2026-10-17).  When the
         stage refuses it with a latched limit error or its motor driver off,
-        _rte_offer_stage_fix asks Yes/No; on Yes, ``fix`` (CLR or EO=1, read
-        back) and then ``operation`` run again as one job on the worker, so
-        nothing comes between them.  ``fixed``: the problems already fixed in
-        this chain, never offered again (so it cannot loop: a driver off found
-        after a CLR is still offered, once)."""
+        _rte_offer_stage_fix asks Yes/No; on Yes, ``fix`` ((command,
+        function): CLR or EO=1, read back) and then ``operation`` run again as
+        one job on the worker, so nothing comes between them.  ``fixed``: the
+        problems already fixed in this chain, never offered again (so it
+        cannot loop: a driver off found after a CLR is still offered, once).
+        ``failed(reason)``: an Angle Start that does not start says so on its
+        status line (review, 2026-10-17)."""
         def job():
             if fix is not None:
-                fix()
+                command, function = fix
+                # The job can wait on the worker behind a read (the idle poll)
+                # after the Yes: a Stop stage, KEPCO Zero / OFF, 6221 / 2400
+                # OFF or the page closing meanwhile sends no CLR or EO=1.  The
+                # move or the check after it then reports the Stop (the move
+                # watches both events: "not moved (Stop)"; the Angle check's
+                # refusal comes back and the scan does not start); on a
+                # closing page nothing more runs (review, 2026-10-17).
+                held = self._rte_stage_fix_held()
+                if held is not None:
+                    self.thread_log(f"RT-E {self.rte_controllers['newmark'].label}: {command} not sent: {held} "
+                                    'after the Yes')
+                    if self.rte_closed or self.closing:
+                        return None
+                else:
+                    function()
             return operation()
-        self._rte_submit(job, done, then=then,
-                         stage_fix=lambda error: self._rte_offer_stage_fix(error, operation, done, then, fixed))
+        self._rte_submit(job, done, then=then, failed=failed,
+                         stage_fix=lambda error: self._rte_schedule_stage_fix(error, operation, done, then, fixed,
+                                                                              failed))
+
+    def _rte_stage_fix_held(self):
+        """Why a CLR or an EO=1 queued after a Yes must not be sent now, or
+        None; read on the RT-E worker as the fix job starts (review,
+        2026-10-17)."""
+        if self.rte_closed or self.closing:
+            return 'RT-E is closing'
+        if self.rte_stage_stop_event.is_set():
+            return 'Stop stage was pressed'
+        if self.ppms_field_scan_stop_event.is_set():
+            return 'an OFF button was pressed'
+        return None
 
     def _rte_require_stage_fix_ready(self, stage):
         """The checks before a CLR or an EO=1, as for Move stage: the safety
@@ -45063,56 +45130,107 @@ class RTEPanel(PPMSPanel):
             raise RuntimeError(f'The {stage.label}\'s last stop was not confirmed, so it may still be turning: '
                                'press Stop stage first (check the stage)')
 
-    def _rte_offer_stage_fix(self, error, operation, done, then, fixed):
-        """On the Tk thread, with the rack idle again (user, 2026-10-17): ask
-        whether to clear a latched limit error (CLR) or to switch the motor
-        driver on (EO=1).  No: nothing is sent.  Yes: the checks again, then
-        the fix and ``operation`` on the RT-E worker.  Never asked without the
-        safety tick, with the rack busy, after a Stop or OFF pressed meanwhile,
-        or again for a problem this chain already fixed."""
-        stage = self.rte_controllers['newmark']
-        self.thread_log(f'RT-E {stage.label}: {error}')
-        if isinstance(error, NewmarkLimitErrorLatched):
-            kind, command, fix = NewmarkLimitErrorLatched, 'CLR', stage.clear_limit_error
-            title = 'RT-E stage limit error'
-            question = (f'A limit error is latched on the stage (MST {error.mst}: '
-                        f'{newmark_describe_status(error.mst)}). Clear it now (CLR)?')
-        else:
-            kind, command, fix = NewmarkDriverOff, 'EO=1', stage.enable_driver
-            title = 'RT-E stage motor driver'
-            question = (f"The stage's motor driver is off (EO={error.eo}). Switch it on now (EO=1)? "
-                        'The motor then holds the stage with its current.')
-        if self.rte_stage_stop_event.is_set() or self.ppms_field_scan_stop_event.is_set():
-            # Stop stage, KEPCO Zero / OFF or 6221 / 2400 OFF was pressed while
-            # the stage was read: no question, nothing sent, no move.
-            pressed = 'Stop' if self.rte_stage_stop_event.is_set() else 'OFF'
-            self.thread_log(f'RT-E {stage.label}: {pressed} was pressed meanwhile: {command} not offered; nothing sent')
-            self.rte_stage_live.set(f'Stage: not moved ({pressed})')
-            return
+    def _rte_schedule_stage_fix(self, error, operation, done, then, fixed, failed):
+        """Inside drain_ui_queue (_rte_submit's ``finished`` is a post_ui
+        callback): leave it before the Yes/No.  The drain schedules its next
+        run only when it ends, so a question opened from here would hold
+        every post_ui callback of the program (live lines, plots, logs and
+        finish handlers on every page) until it was answered, as the review
+        of 2026-10-14 found for the 6221-IV Start.  From the Tk event loop
+        the queue keeps draining while it is open.  The buttons stay locked
+        from here until the answer (rte_stage_prompt_open), Stop stage and
+        the OFF buttons excepted; the checks before and after the answer
+        still refuse if anything changed meanwhile (review, 2026-10-17)."""
+        self.thread_log(f"RT-E {self.rte_controllers['newmark'].label}: {error}")
+        self.rte_stage_prompt_open = True
+        self._update_ppms_control_ui()
         try:
-            if kind in fixed:
-                # Back right after its own fix was read back: an error, not a
-                # second question (never a loop of CLRs or EO=1s).
-                again = (f'The limit error is latched again (MST {error.mst}: {newmark_describe_status(error.mst)})'
-                         if kind is NewmarkLimitErrorLatched else f'The motor driver is off again (EO={error.eo})')
-                raise RuntimeError(f'{again} right after {command} was read back, so nothing moved: check the stage')
-            self._rte_require_stage_fix_ready(stage)
-        except Exception as problem:
-            self.thread_log(f'RT-E {stage.label}: {command} not offered: {problem}')
-            messagebox.showerror('RT-E stage', str(problem), parent=self.root)
-            return
-        if not messagebox.askyesno(title, question, parent=self.root):
-            self.thread_log(f'RT-E {stage.label}: No: {command} not sent; nothing moved')
-            return
+            self.root.after(0, lambda: self._rte_offer_stage_fix(error, operation, done, then, fixed, failed))
+        except tk.TclError:
+            # The window is being destroyed: nothing is asked or sent.
+            self.rte_stage_prompt_open = False
+
+    def _rte_offer_stage_fix(self, error, operation, done, then, fixed, failed=None):
+        """From the Tk event loop, with the rack idle again (user,
+        2026-10-17): ask whether to clear a latched limit error (CLR) or to
+        switch the motor driver on (EO=1).  No: nothing is sent.  Yes: the
+        checks again, then the fix and ``operation`` on the RT-E worker.
+        Never asked without the safety tick, with the rack busy, after a Stop
+        or OFF pressed meanwhile, on a closing page, or again for a problem
+        this chain already fixed.  ``failed(reason)``: an Angle Start's status
+        line says why it did not start (review, 2026-10-17)."""
         try:
-            self._rte_require_stage_fix_ready(stage)
-        except Exception as problem:
-            self.thread_log(f'RT-E {stage.label}: {command} not sent: {problem}')
-            messagebox.showerror('RT-E stage', str(problem), parent=self.root)
-            return
-        self.thread_log(f'RT-E {stage.label}: Yes: {command} queued on the RT-E worker; it is read back before '
-                        'anything moves')
-        self._rte_stage_job(operation, done, then, fix=fix, fixed=fixed + (kind,))
+            stage = self.rte_controllers['newmark']
+            if self.rte_closed or self.closing:
+                # Closed before the question could open: nothing asked or sent.
+                return
+            if isinstance(error, NewmarkLimitErrorLatched):
+                kind, command, fix = NewmarkLimitErrorLatched, 'CLR', stage.clear_limit_error
+                title = 'RT-E stage limit error'
+                question = (f'A limit error is latched on the stage (MST {error.mst}: '
+                            f'{newmark_describe_status(error.mst)}). Clear it now (CLR)?')
+            else:
+                kind, command, fix = NewmarkDriverOff, 'EO=1', stage.enable_driver
+                title = 'RT-E stage motor driver'
+                # Yes goes on at once with the move or the scan: the warning
+                # comes before it, so the angle can be checked first, with
+                # the driver still off (review, 2026-10-17).
+                question = (f"The stage's motor driver is off (EO={error.eo}). Switch it on now (EO=1) and go on? "
+                            'The motor then holds the stage with its current.\n\n'
+                            'If the driver went off during a move, the angle shown may not be the stage\'s: '
+                            'answer No and check it first (Set stage 0° if needed).')
+            if self.rte_stage_stop_event.is_set() or self.ppms_field_scan_stop_event.is_set():
+                # Stop stage, KEPCO Zero / OFF or 6221 / 2400 OFF was pressed while
+                # the stage was read: no question, nothing sent, no move.
+                pressed = 'Stop' if self.rte_stage_stop_event.is_set() else 'OFF'
+                self.thread_log(f'RT-E {stage.label}: {pressed} was pressed meanwhile: {command} not offered; '
+                                'nothing sent')
+                self.rte_stage_live.set(f'Stage: not moved ({pressed})')
+                if failed is not None:
+                    failed('Stop stage was pressed' if pressed == 'Stop' else 'an OFF button was pressed')
+                return
+            try:
+                if kind in fixed:
+                    # Back right after its own fix was read back: an error, not a
+                    # second question (never a loop of CLRs or EO=1s).
+                    again = (f'The limit error is latched again (MST {error.mst}: '
+                             f'{newmark_describe_status(error.mst)})' if kind is NewmarkLimitErrorLatched
+                             else f'The motor driver is off again (EO={error.eo})')
+                    raise RuntimeError(f'{again} right after {command} was read back, so nothing moved: check the '
+                                       'stage')
+                self._rte_require_stage_fix_ready(stage)
+            except Exception as problem:
+                self.thread_log(f'RT-E {stage.label}: {command} not offered: {problem}')
+                if failed is not None:
+                    failed(problem)
+                messagebox.showerror('RT-E stage', str(problem), parent=self.root)
+                return
+            if not messagebox.askyesno(title, question, parent=self.root):
+                self.thread_log(f'RT-E {stage.label}: No: {command} not sent; nothing moved')
+                if failed is not None:
+                    failed(f'{command} not sent (No)')
+                return
+            if self.rte_closed or self.closing:
+                # Closed while the question was open: nothing sent, no dialog.
+                self.thread_log(f'RT-E {stage.label}: {command} not sent: RT-E is closing')
+                return
+            try:
+                self._rte_require_stage_fix_ready(stage)
+            except Exception as problem:
+                self.thread_log(f'RT-E {stage.label}: {command} not sent: {problem}')
+                if failed is not None:
+                    failed(problem)
+                messagebox.showerror('RT-E stage', str(problem), parent=self.root)
+                return
+            self.thread_log(f'RT-E {stage.label}: Yes: {command} queued on the RT-E worker; it is read back before '
+                            'anything moves')
+            self._rte_stage_job(operation, done, then, fix=(command, fix), fixed=fixed + (kind,), failed=failed)
+        finally:
+            # Answered (or not asked): the buttons follow the rack again,
+            # busy while the fix job queued on Yes runs.
+            self.rte_stage_prompt_open = False
+            if not self.rte_closed and not self.closing:
+                self._update_ppms_control_ui()
 
     def _rte_stage_stop(self):
         """Stop stage: always sets the stop event.  A move of this program (by
@@ -45567,21 +45685,30 @@ class RTEPanel(PPMSPanel):
         # 2026-10-17).
         stage = self.rte_controllers['newmark']
 
+        def not_started(reason):
+            # Every way an Angle Start ends without a scan shows on the scan
+            # status line, not only in a dialog or the log: No to the
+            # stage's Yes/No, a plain stage refusal or failure of the check or
+            # its fix, a refusal before or after the question, a Stop or OFF
+            # meanwhile (review, 2026-10-17).
+            self.ppms_field_scan_status_var.set(rte_angle_not_started_text(reason))
+
         def checked(_mst):
             try:
                 self._require_ppms_control_ready()
                 if not stage.connected:
                     raise RuntimeError(f'Connect the {stage.label} first')
             except Exception as error:
+                not_started(error)
                 messagebox.showerror('RT-E scan not started', str(error), parent=self.root)
                 return
             if self.ppms_field_scan_stop_event.is_set() or self.rte_stage_stop_event.is_set():
                 pressed = 'Stop stage' if self.rte_stage_stop_event.is_set() else 'an OFF button'
                 self.thread_log(f'RT-E Angle scan not started: {pressed} was pressed during the stage check')
-                self.ppms_field_scan_status_var.set(f'Angle scan not started: {pressed} was pressed')
+                not_started(f'{pressed} was pressed')
                 return
             begin()
-        self._rte_stage_job(stage.check_ready, then=checked)
+        self._rte_stage_job(stage.check_ready, then=checked, failed=not_started)
 
     def _rte_harmonic_scan_worker(self, mode, plan, passes, limit, stable, duration, field_current=None):
         for index, settings in enumerate(passes):

@@ -394,6 +394,8 @@ class RTEStartTests(NoWindows):
                     self.assertIn("each reading waits ", message)
                     self.assertEqual(panel.ppms_scan_settle_logged, float(expected.split("settle ")[1].split(" s")[0]))
                     panel.ppms_executor.submit.assert_called_once()
+                    # Only an Angle Start reads the stage (review, 2026-10-17).
+                    panel.rte_controllers["newmark"].check_ready.assert_not_called()
 
     def test_the_zurich_tc_box_read_at_start_sets_the_wait(self):
         """_rte_capture_zurich copies the "TC (s)" box into zurich_scan_tau
