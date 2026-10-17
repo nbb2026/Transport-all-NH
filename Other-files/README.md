@@ -1,5 +1,53 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Newmark stage: fixed microstep 250 from QuickMotion (2026-10-17)
+
+- **What happened:** on its first runs on the lab PC, `Newmark_motor_test.py`
+  connected and read the NSC-A1: ID, VER, DN SDE01, MST 0, EO 1, PX 0,
+  HSPD 20000, LSPD 300, ACC 300, MM 0, POL 512, IERR 1, RZ 1, HCA 1000,
+  RT 0, SL 0, EDIO 1, TOC 0. It could not read the driver, though: the
+  manual's driver read (`RR`) needs StepNLoop (SL) and DIO control (EDIO)
+  both off, and DIO control is on (EDIO=1). Without the driver's microstep
+  there was no scale, so it could not move.
+- **The user's choice:** the user gives the microstep, as a fixed setting:
+  the script and the RT-E Angle scan use 40 x that number, and the
+  controller is never touched (nor read) for it.
+- **The numbers:** the user's QuickMotion screenshot (Setup Parameters >
+  Controller > Driver Setup) shows Microstepping 250, Idle Current 100 mA,
+  Run Current 2100 mA, Idle Time 1 cs and DIO Control Enable ticked. The
+  RM-5-110 has 72:1 x 200 full steps / 360 = 40 full steps per degree, so
+  40 x 250 = 10000 steps/deg (0.0001 deg per step, the datasheet's 0.36
+  arcsec resolution). The currents and the idle time are recorded in the
+  constant's comment only; they are not used.
+- **Now (script and program):** `MICROSTEP = 250` in
+  `Newmark_motor_test.py` and `NEWMARK_MICROSTEP = 250` in
+  `Transport_all_NH_dev.py`, each with its source in a comment; steps/deg is
+  always 40 x that constant. `RR` is no longer sent, nor `R2`, `DRVMS`,
+  `DRVRC`, `DRVIC` or `DRVIT`: they are off both allowlists, so they cannot
+  be sent (the list of stored settings that are never written, STORE,
+  DRVMS=, POL= and the rest, is unchanged), and there is no 2.5 s wait any
+  more. SL and EDIO block nothing: `info` still reads and shows them. Its
+  summary now says "driver: microstep 250 (fixed, from QuickMotion
+  2026-10-17); not read from the controller" and "scale: 10000 steps/deg
+  (72:1 x 200 full steps x microstep 250 / 360; microstep 250 from
+  QuickMotion, fixed in this script)"; `move` and `home` print the same
+  "Scale: ..." line. The program's Connect sends only `ID` and `VER` and
+  logs "connected (...): 10000 steps/° (72:1 x 200 full steps x microstep
+  250 / 360; microstep 250 from QuickMotion, fixed in the program)"; the
+  stage line stays "Stage: +x.xxx° (10000 steps/°)". The dry-run
+  simulator still has DRVMS 250 (and still answers `RR`, which nothing
+  sends), so it turns at the same 10000 steps/deg.
+- **If the microstep is changed in QuickMotion:** change both constants to
+  match (a test checks that they agree). Otherwise every angle, and the
+  ±360° limit for the sample wires, is off by the ratio of the two.
+- **Tests:** `test_newmark_motor_test_script` (`FixedMicrostepTests`; the
+  allowlist refuses `RR`, `R2` and the DRV* reads; no mode sends them; the
+  lab PC's readings with EDIO=1; SL=1 and EDIO=1 block neither info nor a
+  move) and `test_rte_angle_scan` (the program's allowlist and constant;
+  Connect sends only `ID` and `VER`; SL=1 and EDIO=1 still connect and
+  move). These supersede the driver-read (`RR` → `R2` → `DRVMS`) text in
+  the 2026-10-13 sections below, which is updated where it described it.
+
 ## Newmark stage: plain DLL messages (2026-10-17)
 
 - **What happened:** the first run of `Newmark_motor_test.py` on the lab PC
@@ -1066,7 +1114,9 @@
   `VER`; the same allowlist without HL+/HL− (no homing in the program),
   number ranges included; a failed command is never repeated, and replies
   are brought back in step (flush, `ID`, `VER`) before the next one is
-  trusted; the scale from `RR` → `R2` → `DRVMS` (steps/° = 40 × DRVMS);
+  trusted; the scale is fixed, 40 × the microstep 250 from QuickMotion
+  (`NEWMARK_MICROSTEP`, 10000 steps/°; until 2026-10-17 it was read with
+  `RR` → `R2` → `DRVMS`, see the top section);
   every move sets and reads back HSPD/LSPD/ACC (5 °/s), is absolute (`ABS`,
   `MM` read back, `X<steps>`), is refused while moving, with a latched limit
   error, a limit input on (the RM-5-110 has no limit switches) or the
@@ -1078,9 +1128,9 @@
   "not moving" reads in a row with PX unchanged: a STOP that lands just
   after `X` was answered, before the moving bits are set, does nothing, and
   one read would have called the stage stopped at its start while it went
-  on to its target unwatched. A scale
-  that cannot be read (SL/EDIO on, moving) leaves the stage connected, so
-  Stop works, with moves refused until it is read.
+  on to its target unwatched. (Until 2026-10-17 a scale that could not be
+  read, with SL/EDIO on or the stage moving, left the stage connected
+  without moves; the scale is now fixed, and SL/EDIO block nothing.)
 - **One thread:** SiUSBXp.dll keeps its handles per thread, so every DLL
   call (connect, the idle read, moves, STOP, Set 0, disconnect, the close
   clean-up) runs on the RT-E page's single worker `rte-control`, never on
@@ -1120,7 +1170,8 @@
   list offers Field, Current, Angle;
   Angle's defaults are Start 0, End 360, Step 5 (units "Stage °"), Round
   trip ticked (back toward the start, unwinding the wires).
-- **The Angle scan:** Start needs the stage (with its scale read), the
+- **The Angle scan:** Start needs the stage (with its scale, fixed since
+  2026-10-17), the
   KEPCO and the LS475 connected, every angle within ±360° of the stage zero,
   and the "KEPCO current A" and "Voltage limit V" boxes valid, and asks
   Yes/No first (the angle range, the points, the field current and that the
@@ -1209,8 +1260,9 @@
   calls, recording each call's thread; `ctypes.WinDLL`,
   `os.add_dll_directory`, the program's loader, `tkinter.Tk` and every
   dialog fail a test that reaches them; a virtual clock). The driver: the
-  device choice, the ID check, the allowlist, the scale (and one that cannot
-  be read), absolute moves with the speeds read back, the idle reads, the
+  device choice, the ID check, the allowlist (no `RR`, `R2` or DRV* reads
+  since 2026-10-17), the fixed scale (SL=1 and EDIO=1 still connect and
+  move), absolute moves with the speeds read back, the idle reads, the
   refusals, the wire limit, Stop during a move, a Stop in the gap right
   after `X` (main's StopLostInTheGap simulator: reported where it really
   stopped, after three still reads), a lost reply to `X` (STOP, also when
@@ -1505,15 +1557,18 @@
   the vendor's `PerformaxCom.dll` over USB, following the NSC-A1 manual
   rev 1.3, and prints every command and reply. Only a fixed list of commands
   can be sent: STORE, RW, J+, POL=, DRVMS= and the rest are refused before
-  they reach the controller, so nothing is ever stored to flash; the numbers
+  they reach the controller, so nothing is ever stored to flash (since
+  2026-10-17 `RR`, `R2` and the DRV* reads are refused too); the numbers
   are checked too (X and PX= far inside the 28-bit counter, and X within
-  ±360° once the scale is known; HSPD at most 20 deg/s; 10 ≤ LSPD < HSPD;
+  ±360° at the fixed scale; HSPD at most 20 deg/s; 10 ≤ LSPD < HSPD;
   1 ≤ ACC ≤ 5000 ms). Modes: no argument = read only (devices, ID/VER/DN,
-  MST decoded, EO, PX, speeds, POL/IERR/RZ/HCA/RT/SL/EDIO/TOC, driver
-  parameters via RR, steps/deg = 40 x DRVMS); `move --degrees D [--speed
-  S]` (relative, |D| ≤ 360, default 5 deg/s, at most 20; sent as an
-  absolute target, which must lie within ±360° of the zero for the sample
-  wires, so 350 → 0 goes back −350; asks "yes"; it counts as ended after
+  MST decoded, EO, PX, speeds, POL/IERR/RZ/HCA/RT/SL/EDIO/TOC, the fixed
+  microstep 250 from QuickMotion and steps/deg = 40 x 250 = 10000; the
+  driver is not read since 2026-10-17, see the top section);
+  `move --degrees D [--speed S]` (relative, |D| ≤ 360, default 5 deg/s, at
+  most 20; sent as an absolute target, which must lie within ±360° of the
+  zero for the sample wires, so 350 → 0 goes back −350; asks "yes"; it
+  counts as ended after
   three status reads in a row say not moving, and PX must read back the
   target exactly); `stop`; `zero` (PX=0, asks, since every move's ±360°
   limit counts from it; runtime only: lost when the controller is powered
@@ -1569,8 +1624,10 @@
   1. `py Newmark_motor_test.py --dry-run` and
      `py Newmark_motor_test.py move --degrees 10 --dry-run` (no hardware).
   2. `py Newmark_motor_test.py` (read only): ID "Ace-Series-SDE", MST not
-     moving and no limit bits, EO 1, and the scale line (e.g. "10000 steps/deg
-     (72:1 x 200 full steps x DRVMS 250 / 360)") against QuickMotion.
+     moving and no limit bits, EO 1, and the scale line ("10000 steps/deg
+     (72:1 x 200 full steps x microstep 250 / 360; microstep 250 from
+     QuickMotion, fixed in this script)"): the microstep must match
+     QuickMotion's Microstepping (250 on 2026-10-17).
   3. With the sample wires hanging free: `py Newmark_motor_test.py zero`.
   4. `py Newmark_motor_test.py move --degrees 5 --speed 2`: watch the stage,
      note which way + turns (clockwise or counter-clockwise seen from above)
@@ -1585,9 +1642,12 @@
 - **Exit status:** 0 done; 1 refused, not confirmed, or failed with the
   motor confirmed stopped; 2 usage error (nothing sent); 3 motion state
   unknown (check the stage).
-- **Not yet tried on the hardware.** Things to check: whether the DLL has
+- **First runs on the lab PC (2026-10-17):** it connected and read the
+  controller, but could not read the driver (EDIO=1), so the microstep is
+  now fixed (see the top section). No move has been tried yet. Things to
+  check: whether the DLL has
   `fnPerformaxComFlush`, the reply framing (CR, a `#NN` prefix), the STOP
-  reply at rest, R2 = 1 after the 2.5 s wait following RR, DRVMS, the
+  reply at rest, that 10000 steps/deg turns the stage by the angle asked, the
   direction of +, and how HL behaves (the counter reset at the switch, PX 0
   at the end, the home polarity). Check in QuickMotion that EDEC = 0: the
   home bounds assume the slowing down takes ACC, but with EDEC = 1 (stored
@@ -1604,8 +1664,9 @@
   `main`) and the rest, numbers out of range, and commands of 64 bytes or
   more; 0, 1 and 2 devices, `--serial`; ID first (another device gets only
   `ID`, and a DN-like "SDE01" is not an ID), VER answering like ID is out
-  of step; info sends only read-only commands and RR (R2 at least 2 s after
-  it); a failed transaction is followed by flush, ID and VER and never
+  of step; info sends only read-only commands (no `RR`, `R2` or DRV* reads
+  since 2026-10-17: no mode sends them, and SL=1 or EDIO=1 blocks nothing);
+  a failed transaction is followed by flush, ID and VER and never
   repeated, and a stale reply is never used (also without flush, also a
   late DN reply); the refusals (moving, latched limit error, limit input,
   EO=0, beyond ±360°, speeds not read back, a position changed since the
@@ -1618,7 +1679,8 @@
   one turn + 10°, both ways), running on after the switch, a pause between
   HL stages, HL ending off 0, a time-out, the old zero given after a Ctrl+C,
   a time-out or HL ending off 0 after the counter reset, a switch near the
-  old zero (a range); Ctrl+C at the question, during RR, during and inside
+  old zero (a range); Ctrl+C at the question, during the settings before
+  the move (during RR until 2026-10-17), during and inside
   the move command, twice, before the identity, in info, home and stop,
   after a finished move, a second Ctrl+C while it reports or before ABORT
   (the report and exit 3 are kept), a second Ctrl+C before the handler or

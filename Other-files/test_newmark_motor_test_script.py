@@ -380,6 +380,24 @@ def after(sent, command):
     return sent[sent.index(command) + 1:]
 
 
+# The driver read and its reads: never sent since the microstep is fixed (user, 2026-10-17).
+DRIVER_READS = ("RR", "R2", "DRVMS", "DRVRC", "DRVIC", "DRVIT")
+SCALE = ("10000 steps/deg (72:1 x 200 full steps x microstep 250 / 360; microstep 250 from QuickMotion, fixed in "
+         "this script)")
+DRIVER = "driver: microstep 250 (fixed, from QuickMotion 2026-10-17); not read from the controller"
+
+
+def comment_above(path, assignment):
+    """The comment lines right above the line that starts with ``assignment``, as one line of text."""
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    index = next(i for i, line in enumerate(lines) if line.startswith(assignment))
+    comment = []
+    while index > 0 and lines[index - 1].startswith("#"):
+        index -= 1
+        comment.insert(0, lines[index].lstrip("#").strip())
+    return " ".join(comment)
+
+
 OLD_ZERO = re.compile(r"the old zero is now about ([-+][0-9.]+) deg: to turn back there, move --degrees ([-+][0-9.]+), "
                       r"then run 'zero'")
 STOPPED_AT = re.compile(r"the motor is stopped \(MST read back\) at [-+][0-9.]+ deg \(PX (-?[0-9]+)\)")
@@ -427,7 +445,7 @@ class AllowlistTests(unittest.TestCase):
                  "EOBOOT=1", "IERR=1", "HCA=0", "RZ=1", "EDEC=0", "TOC=0", "SL=0", "SLR=1", "L+", "L-", "Z+",
                  "ZH-", "H+", "T100", "SA0=1", "SR0=1", "GS0", "DO=1", "EDIO=0", "SSPD100", "EX=0", "R4",
                  "X1.5", "x100", "X", "X 100", "HSPD=-1", "X100\r", "@01ID", "ID ", "px", "X100;STORE",
-                 "X\u0661\u0662", "PX=1234567890", "HL+", "HL-", "")
+                 "X\u0661\u0662", "PX=1234567890", "HL+", "HL-", "") + DRIVER_READS
 
     def test_forbidden_commands_never_reach_the_controller(self):
         controller = Sim()
@@ -446,6 +464,22 @@ class AllowlistTests(unittest.TestCase):
                 script.check_allowed(command)
         script.check_allowed("HL+", homing=True)
         script.check_allowed("HL-", homing=True)
+
+    def test_the_driver_read_is_refused(self):
+        # RR, R2 and the DRV* reads are off the list since the microstep is
+        # fixed (user, 2026-10-17): refused in every mode, with or without a scale.
+        for command in DRIVER_READS:
+            with self.subTest(command=command):
+                self.assertNotIn(command, script.READ_ONLY | script.ACTIONS)
+                for homing in (False, True):
+                    with self.assertRaises(script.CommandNotAllowed):
+                        script.check_allowed(command, homing=homing)
+                    with self.assertRaises(script.CommandNotAllowed):
+                        script.check_allowed(command, homing=homing, steps_per_degree=10000)
+        for command in ("SL", "EDIO"):      # still read (and shown by info)
+            script.check_allowed(command)
+        self.assertFalse(hasattr(script, "RR_WAIT_S"))
+        self.assertFalse(hasattr(script.NSC, "read_driver"))
 
     def test_numbers_out_of_range_are_refused(self):
         for command in ("X999999999", "X-999999999", "PX=-999999999", "PX=33554432", "HSPD=9999999",
@@ -604,15 +638,17 @@ class IdentityTests(unittest.TestCase):
 
 
 class InfoTests(unittest.TestCase):
-    def test_info_is_read_only_plus_rr(self):
+    def test_info_is_read_only_and_does_not_read_the_driver(self):
         controller = Sim()
         code, out = run([], controller)
         self.assertEqual(code, 0, out)
         for command in controller.received:
-            self.assertTrue(command in script.READ_ONLY or command == "RR", command)
-        self.assertIn("10000 steps/deg (72:1 x 200 full steps x DRVMS 250 / 360)", out)
-        self.assertEqual(controller.received.count("RR"), 1)
-        self.assertEqual(after(controller.received, "RR")[0], "R2")
+            self.assertIn(command, script.READ_ONLY)
+        self.assertFalse([c for c in controller.received if c in DRIVER_READS], controller.received)
+        summary = out[out.index("Summary"):]
+        self.assertIn("SL 0, EDIO 0, TOC 0", summary)
+        self.assertIn(f"  {DRIVER}\n  scale: {SCALE}\n", summary)
+        self.assertNotIn("driver parameters not read", out)
 
     def test_status_is_decoded_and_problems_are_named(self):
         controller = Sim()
@@ -631,13 +667,36 @@ class InfoTests(unittest.TestCase):
         code, out = run([], controller)
         self.assertIn("MST 8 = not moving, home switch on", out)
 
-    def test_stepnloop_on_skips_rr(self):
+    def test_the_lab_pcs_readings_with_dio_control_on(self):
+        # The first run on the lab PC (user, 2026-10-17): EDIO=1, so the driver
+        # could not be read.  Now SL and EDIO are only shown, and the scale is
+        # the fixed microstep.
         controller = Sim()
-        controller.registers["SL"] = 1
+        controller.hspd, controller.lspd, controller.acc = 20000, 300, 300
+        controller.registers.update({"POL": 512, "IERR": 1, "RZ": 1, "HCA": 1000, "RT": 0, "SL": 0, "EDIO": 1,
+                                     "TOC": 0})
         code, out = run([], controller)
         self.assertEqual(code, 0, out)
-        self.assertNotIn("RR", controller.received)
-        self.assertIn("driver parameters not read", out)
+        self.assertIn("device name (DN): SDE01", out)
+        self.assertIn("speeds: HSPD 20000 pps (2.000 deg/s), LSPD 300 pps, ACC 300 ms", out)
+        self.assertIn("IERR 1, RZ 1, HCA 1000, RT 0, SL 0, EDIO 1, TOC 0", out)
+        self.assertIn(f"  {DRIVER}\n  scale: {SCALE}\n", out)
+        self.assertFalse([c for c in controller.received if c in DRIVER_READS], controller.received)
+
+    def test_stepnloop_and_dio_control_on_block_nothing(self):
+        for sl, edio in ((1, 1), (0, 1), (1, 0)):
+            with self.subTest(SL=sl, EDIO=edio):
+                controller = Sim()
+                controller.registers.update({"SL": sl, "EDIO": edio})
+                code, out = run([], controller)
+                self.assertEqual(code, 0, out)
+                self.assertIn(f"SL {sl}, EDIO {edio}", out)
+                self.assertIn(SCALE, out)
+                code, out = run(["move", "--degrees", "10", "--yes"], controller)
+                self.assertEqual(code, 0, out)
+                self.assertEqual((controller.moves, controller.px), (["X100000"], 100000))
+                self.assertIn("the target exactly", out)
+                self.assertFalse([c for c in controller.received if c in DRIVER_READS], controller.received)
 
     def test_rt_1_prefix_is_removed(self):
         controller = Sim()
@@ -667,6 +726,33 @@ class MoveTests(unittest.TestCase):
         self.assertIn("the target exactly", out)
         self.assertIn("which way the stage turned for this + move", out)
 
+    def test_the_scale_is_the_fixed_microstep_and_the_driver_is_not_read(self):
+        controller = Sim()
+        code, out = run(["move", "--degrees", "10", "--yes"], controller)
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"Scale: {SCALE}", out)
+        # Straight from VER to the before-move checks: no RR and no 2 s wait.
+        self.assertEqual(controller.received[:5], ["ID", "VER", "MST", "EO", "PX"])
+        self.assertEqual(controller.moves, ["X100000"])     # 10 deg at 10000 steps/deg
+        self.assertFalse([c for c in controller.received if c in DRIVER_READS], controller.received)
+
+    def test_no_mode_reads_the_driver(self):
+        for argv in ([], ["move", "--degrees", "-20", "--yes"], ["stop"], ["zero", "--yes"], ["clear"],
+                     ["enable", "--yes"], ["disable"], ["home", "--direction", "+", "--yes"]):
+            with self.subTest(argv=argv):
+                controller = Sim(px=-200000)
+                code, out = run(argv, controller)
+                self.assertEqual(code, 0, out)
+                self.assertFalse([c for c in controller.received if c in DRIVER_READS], controller.received)
+                if argv[:1] in ([], ["move"], ["home"]):
+                    self.assertIn(SCALE, out)
+        # stop and zero give the angle at the fixed scale.
+        controller = Sim(px=123450)
+        code, out = run(["stop"], controller)
+        self.assertIn("Stopped (MST read back): PX 123450 (+12.3450 deg).", out)
+        code, out = run(["zero", "--yes"], Sim(px=123450))
+        self.assertIn("The stage is at +12.3450 deg (PX 123450)", out)
+
     def test_negative_move_and_speed(self):
         controller = Sim()
         code, out = run(["move", "--degrees", "-2.5", "--speed", "2", "--yes"], controller)
@@ -681,7 +767,7 @@ class MoveTests(unittest.TestCase):
         code, out = run(["move", "--degrees", "10"], controller, answer="no")
         self.assertEqual(code, 1)
         self.assertIn("Not moved", out)
-        self.assertTrue(all(c in script.READ_ONLY or c == "RR" for c in controller.received), controller.received)
+        self.assertTrue(all(c in script.READ_ONLY for c in controller.received), controller.received)
 
     def test_cable_limit_and_absolute_way_back(self):
         controller = Sim()
@@ -1068,8 +1154,9 @@ class HomeTests(unittest.TestCase):
     def test_a_ctrl_c_after_the_counter_reset_says_where_the_old_zero_is(self):
         controller = Sim()
         controller.px = -200000
-        # The switch, 57.5 deg on at 5 deg/s, resets the counter at about 14.4 s.
-        code, out = run(["home", "--direction", "+", "--yes"], controller, clock=Clock(interrupts=(14.5,)))
+        # The switch, 57.5 deg on at 5 deg/s, resets the counter at about 11.9 s
+        # (14.4 s with the 2.5 s driver read before the microstep was fixed, user, 2026-10-17).
+        code, out = run(["home", "--direction", "+", "--yes"], controller, clock=Clock(interrupts=(12.0,)))
         self.assertEqual(code, 1, out)
         self.assertIsNone(controller.motion)
         self.assertEqual(int(STOPPED_AT.search(out).group(1)), controller.px)
@@ -1117,7 +1204,8 @@ class HomeTests(unittest.TestCase):
         # a Ctrl+C in the last approach, after the turn back, gives the range too.
         controller = Sim()
         controller.px, controller.home_px = -200000, 1000
-        code, out = run(["home", "--direction", "+", "--yes"], controller, clock=Clock(interrupts=(7.8,)))
+        # 5.3 s: in the last approach (7.8 s with the 2.5 s driver read, before 2026-10-17).
+        code, out = run(["home", "--direction", "+", "--yes"], controller, clock=Clock(interrupts=(5.3,)))
         self.assertEqual(code, 1, out)
         self.assertTrue(0 < controller.px < 8250, controller.px)
         self.assertIn("The counter was reset at the home switch", out)
@@ -1221,12 +1309,17 @@ class CtrlCTests(unittest.TestCase):
         self.assertEqual(controller.moves, [])
         self.assertNotIn("STOP", controller.received)
 
-    def test_during_the_driver_read(self):
+    def test_during_the_settings_before_the_move(self):
+        # Formerly during the driver read (RR), gone since the microstep is
+        # fixed (user, 2026-10-17): a Ctrl+C before the move command sends nothing else.
         controller = Sim()
-        code, out = run(["move", "--degrees", "10", "--yes"], controller, clock=Clock(interrupts=(0,)))
+        dll = InterruptingDll(controller, "HSPD=50000", delivered=False)
+        code, out = run(["move", "--degrees", "10", "--yes"], controller, dll=dll)
         self.assertEqual(code, 1)
         self.assertEqual(controller.moves, [])
-        self.assertEqual(controller.received[-1], "RR")
+        self.assertEqual(controller.received[-2:], ["ABS", "MM"])     # HSPD=50000 never arrived
+        self.assertNotIn("STOP", controller.received)
+        self.assertIn("this run had not started a move", out)
 
     def test_during_the_move(self):
         controller = Sim()
@@ -1325,7 +1418,6 @@ class CtrlCTests(unittest.TestCase):
         # A mode that returned while its move may still run: close() stops it,
         # and its outcome is printed and sets the exit status.
         def leaves_it_running(nsc, _args):
-            nsc.read_driver()
             nsc.set_ok("ABS")
             nsc.start_motion("X300000")
             return 0
@@ -1402,8 +1494,9 @@ class CtrlCTests(unittest.TestCase):
 
     def test_after_a_confirmed_stop_in_stop_mode(self):
         controller = OtherModeTests.moving(None, Sim())
-        dll = InterruptingDll(controller, "RR", delivered=False)   # Ctrl+C while it reads the scale afterwards
-        code, out = run(["stop"], controller, dll=dll)
+        # Ctrl+C as it says where it stopped (it read the scale there until the
+        # microstep was fixed, user, 2026-10-17).
+        code, out = run(["stop"], controller, press_at="Stopped (MST read back)")
         self.assertEqual(code, 1, out)
         self.assertIsNone(controller.motion)
         self.assertIn("no move is running", out)
@@ -1466,7 +1559,6 @@ class CtrlCTests(unittest.TestCase):
     def test_a_second_ctrl_c_after_a_stop_that_ended_unconfirmed_is_exit_3(self):
         # close() does not repeat a stop that ran to its end, so the status says so.
         def stops_then_ctrl_c(nsc, _args):
-            nsc.read_driver()
             nsc.set_ok("ABS")
             nsc.start_motion("X300000")
             nsc.stop_motion()           # Runaway: ends without confirming the stop
@@ -1481,7 +1573,6 @@ class CtrlCTests(unittest.TestCase):
 
     def test_a_ctrl_c_before_close_holds_it_runs_close_again(self):
         def leaves_it_running(nsc, _args):
-            nsc.read_driver()
             nsc.set_ok("ABS")
             nsc.start_motion("X300000")
             return 0
@@ -1562,16 +1653,14 @@ class StaleReplyTests(unittest.TestCase):
         self.assertIn("STOP", after(controller.received, "X100000"))
         self.assertIsNone(controller.motion)
 
-    def test_rr_silence_answers_after_the_wait(self):
+    def test_no_rr_and_no_wait_before_a_move(self):
+        # Formerly RR, 2.5 s of silence, then R2; now the move follows the
+        # checks at once (user, 2026-10-17).
         controller = Timed()
         code, out = run(["move", "--degrees", "1", "--yes"], controller)
         self.assertEqual(code, 0, out)
-        self.assertGreaterEqual(controller.time_of("R2") - controller.time_of("RR"), 2.0)
-        controller = Sim()
-        with mock.patch.object(script, "RR_WAIT_S", 1.0):
-            code, out = run(["move", "--degrees", "1", "--yes"], controller)
-        self.assertEqual(code, 1)
-        self.assertEqual(controller.moves, [])
+        self.assertLess(controller.time_of("X10000") - controller.time_of("VER"), 0.5)
+        self.assertFalse([c for c in controller.received if c in DRIVER_READS], controller.received)
 
 
 class CtypesPathTests(unittest.TestCase):
@@ -1773,9 +1862,42 @@ class DryRunTests(unittest.TestCase):
                 self.assertEqual(code, 0, out)
                 self.assertIn("dry run", out)
                 self.assertIn("> ID\n< Ace-Series-SDE", out)
+                if argv[:1] in ([], ["move"], ["home"]):
+                    self.assertIn(SCALE, out)
+                self.assertNotIn("> RR", out)
+        code, out = self.dry(["move", "--degrees", "10"])
+        self.assertIn("-20.0000 deg -> -10.0000 deg (absolute target, PX -200000 -> -100000)", out)
         code, out = self.dry(["home", "--direction", "-"])     # from -20 deg it could pass -360
         self.assertEqual(code, 1, out)
         self.assertIn("move --degrees +33", out)
+
+
+class FixedMicrostepTests(unittest.TestCase):
+    """The scale is 40 x a fixed microstep, 250, from the user's QuickMotion
+    screenshot (user, 2026-10-17)."""
+
+    def test_the_microstep_is_250_with_its_source(self):
+        self.assertEqual(script.MICROSTEP, 250)
+        self.assertEqual(script.FULL_STEPS_PER_DEG, 40)
+        self.assertEqual(script.STEPS_PER_DEGREE, 40 * script.MICROSTEP)
+        self.assertEqual(script.STEPS_PER_DEGREE, 10000)
+        self.assertTrue(2 <= script.MICROSTEP <= script.MAX_DRVMS)
+        comment = comment_above(SCRIPT, "MICROSTEP = ")
+        for text in ("user, 2026-10-17", "QuickMotion screenshot", "Microstepping 250",
+                     "72:1 x 200 full steps / 360 = 40 full steps per degree", "10000 steps/deg",
+                     "0.36 arcsec", "Run Current 2100 mA", "Idle Current 100 mA", "not used",
+                     "EDIO=1", "If the microstep is changed in QuickMotion, change this constant to match"):
+            self.assertIn(text, comment)
+
+    def test_every_session_has_the_fixed_scale_from_the_start(self):
+        self.assertEqual(script.NSC(None).steps_per_degree, 10000)
+        self.assertEqual(script.scale_text(), SCALE)
+        self.assertEqual(script.DRIVER_TEXT, DRIVER.split("driver: ", 1)[1])
+
+    def test_the_simulator_turns_at_the_same_scale(self):
+        controller = Sim()
+        self.assertEqual(controller.driver["DRVMS"], script.MICROSTEP)
+        self.assertEqual(controller.turn(), 360 * script.STEPS_PER_DEGREE)
 
 
 class StandaloneTests(unittest.TestCase):
@@ -1790,7 +1912,8 @@ class StandaloneTests(unittest.TestCase):
         self.assertLessEqual(names, {"argparse", "ctypes", "math", "os", "re", "signal", "sys", "time"})
 
     def test_docstring_has_usage_safety_and_exit_codes(self):
-        for text in ("Usage", "SAFETY", "Exit status", "--dry-run", "PerformaxCom.dll", "SiUSBXp.dll"):
+        for text in ("Usage", "SAFETY", "Exit status", "--dry-run", "PerformaxCom.dll", "SiUSBXp.dll",
+                     "microstep 250", "QuickMotion", "MICROSTEP", "never read"):
             self.assertIn(text, script.__doc__)
 
 

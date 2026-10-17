@@ -43452,7 +43452,21 @@ NEWMARK_SIGNATURES = (
 )
 NEWMARK_FULL_STEPS_PER_TURN = 200   # 1.8 deg motor (Lin 5718M-05P)
 NEWMARK_GEAR_RATIO = 72             # RM-5-110 worm gear
-NEWMARK_FULL_STEPS_PER_DEG = NEWMARK_FULL_STEPS_PER_TURN * NEWMARK_GEAR_RATIO // 360    # 40; x DRVMS
+NEWMARK_FULL_STEPS_PER_DEG = NEWMARK_FULL_STEPS_PER_TURN * NEWMARK_GEAR_RATIO // 360    # 40; x the microstep
+# The driver's microstep, fixed here and never read from the controller
+# (user, 2026-10-17).  Source: the user's QuickMotion screenshot of the lab
+# PC's NSC-A1, 2026-10-17 (Setup Parameters > Controller > Driver Setup):
+# Microstepping 250.  RM-5-110: 72:1 x 200 full steps / 360 = 40 full steps
+# per degree, so 40 x 250 = 10000 steps/deg, which matches the datasheet's
+# 0.36 arcsec resolution (1/10000 deg).  The same screen shows Run Current
+# 2100 mA, Idle Current 100 mA, Idle Time 1 cs and DIO Control Enable ticked
+# (recorded here only; not used).  On the first runs on the lab PC the
+# driver could not be read (RR), as DIO control is on (EDIO=1); the user
+# chose this fixed number instead, the same as Newmark_motor_test.py's
+# MICROSTEP.  If the microstep is changed in QuickMotion, change this
+# constant (and the script's) to match.
+NEWMARK_MICROSTEP = 250
+NEWMARK_STEPS_PER_DEGREE = NEWMARK_FULL_STEPS_PER_DEG * NEWMARK_MICROSTEP    # 10000; always 40 x the microstep
 NEWMARK_SPEED_DEG_S = 5.0           # every move of the program (the reviewed default)
 NEWMARK_MAX_SPEED_DEG_S = 20.0      # the allowlist's ceiling for HSPD (the stage allows 25 deg/s)
 NEWMARK_ACC_MS = 300
@@ -43464,7 +43478,6 @@ NEWMARK_PX_SAFE = (2 ** 27 - 1) // 4    # PX is a 28-bit signed number; targets 
 NEWMARK_POLL_S = 0.05
 NEWMARK_IDLE_READS = 3              # "not moving" this many polls in a row before a move counts as ended
 NEWMARK_SETTLE_S = 1.0              # not moving but PX not yet at the target: wait this long before believing it
-NEWMARK_RR_WAIT_S = 2.5             # the manual: no communication for 2 s after RR; half a second of margin
 NEWMARK_STOP_WAIT_S = 10.0
 NEWMARK_ABORT_WAIT_S = 3.0
 NEWMARK_PROGRESS_S = 0.25           # how often a move reports its angle to the page
@@ -43478,9 +43491,11 @@ NEWMARK_STATUS_BITS = ((0, "constant speed"), (1, "accelerating"), (2, "decelera
                        (10, "TOC watchdog time-out"))
 # The commands the program may send: the reviewed script's list without HL+/HL-.
 # Anything else (STORE, RW, J+, POL=, DRVMS=, ...) is refused before it is sent.
-NEWMARK_READ_ONLY = frozenset("ID VER DN MST PX EO HSPD LSPD ACC MM PS POL IERR RZ HCA RT SL EDIO TOC "
-                              "DRVMS DRVRC DRVIC DRVIT R2".split())
-NEWMARK_ACTIONS = frozenset("ABS INC EO=0 EO=1 STOP ABORT CLR RR".split())
+# RR (the driver read), R2 and the driver reads DRVMS/DRVRC/DRVIC/DRVIT are
+# left out too, so they can never be sent: the scale is NEWMARK_MICROSTEP,
+# fixed above (user, 2026-10-17).
+NEWMARK_READ_ONLY = frozenset("ID VER DN MST PX EO HSPD LSPD ACC MM PS POL IERR RZ HCA RT SL EDIO TOC".split())
+NEWMARK_ACTIONS = frozenset("ABS INC EO=0 EO=1 STOP ABORT CLR".split())
 NEWMARK_NUMERIC = re.compile(r"(X|PX=)(-?[0-9]{1,9})|(HSPD=|LSPD=|ACC=)([0-9]{1,7})")
 NEWMARK_INTEGER = re.compile(r"-?[0-9]{1,10}")
 NEWMARK_NO_DEVICE_HELP = ("No Performax USB device found. Check the USB cable, that the NSC-A1 has its 24 V "
@@ -43604,7 +43619,7 @@ def newmark_looks_like_id(reply):
 def newmark_stage_text(state):
     """The RT-E stage line (in the scan box), e.g. "Stage: +12.345° (10000 steps/°)"."""
     spd, px, mst = state.get("steps_per_degree"), state.get("px"), state.get("mst")
-    text = f"Stage: {px / spd:+.3f}° ({spd} steps/°)" if spd else f"Stage: PX {px} (scale not read)"
+    text = f"Stage: {px / spd:+.3f}° ({spd} steps/°)" if spd else f"Stage: PX {px} (no steps/° scale)"
     if mst is not None:
         if mst & NEWMARK_MOVING:
             text += ", moving"
@@ -43788,9 +43803,7 @@ class NewmarkNSCA1Controller:
         self.resource_name = ""
         self.identity = ""
         self.version = ""
-        self.steps_per_degree = None
-        self.microsteps = None
-        self.scale_error = ""
+        self.steps_per_degree = NEWMARK_STEPS_PER_DEGREE  # fixed: 40 x the microstep, never read (user, 2026-10-17)
         self.need_resync = False
         self.motion_may_run = False     # a move command was sent and it has not been seen stopped since
         self.stop_finished = False      # a stop sequence ran to its end (stopped or not)
@@ -43966,9 +43979,9 @@ class NewmarkNSCA1Controller:
 
     def connect(self, resource="auto"):
         """Open the NSC-A1 ("auto" = the only Performax device, else its USB
-        serial), confirm it is one (ID), and read its scale (RR -> DRVMS).
-        A scale that cannot be read (moving, StepNLoop on, ...) leaves it
-        connected, so Stop works, with moves refused until it is read."""
+        serial) and confirm it is one (ID, VER).  The scale is the fixed
+        NEWMARK_MICROSTEP: the driver is not read (no RR), and StepNLoop or
+        DIO control on (SL, EDIO) blocks nothing (user, 2026-10-17)."""
         if self.handle is not None:
             return self.identity
         requested = str(resource or "").strip()
@@ -43986,21 +43999,14 @@ class NewmarkNSCA1Controller:
             self._reset_session()
             raise
         self.resource_name, self.identity, self.version = chosen, identity, version
-        try:
-            self._read_scale()
-        except Exception as error:
-            self.steps_per_degree = self.microsteps = None
-            self.scale_error = str(error)
-            self.logger(f"RT-E {self.label} connected ({identity}, {version}); scale not read: {error}")
-        else:
-            self.logger(f"RT-E {self.label} connected ({identity}, {version}): {self.scale_text()}")
+        self.logger(f"RT-E {self.label} connected ({identity}, {version}): {self.scale_text()}")
         return identity
 
     def scale_text(self):
-        if not self.steps_per_degree:
-            return f"scale not read: {self.scale_error}"
-        return (f"{self.steps_per_degree} steps/° ({NEWMARK_GEAR_RATIO}:1 x {NEWMARK_FULL_STEPS_PER_TURN} "
-                f"x DRVMS {self.microsteps} / 360)")
+        """The scale and where it comes from (user, 2026-10-17)."""
+        return (f"{NEWMARK_STEPS_PER_DEGREE} steps/° ({NEWMARK_GEAR_RATIO}:1 x {NEWMARK_FULL_STEPS_PER_TURN} "
+                f"full steps x microstep {NEWMARK_MICROSTEP} / 360; microstep {NEWMARK_MICROSTEP} from QuickMotion, "
+                "fixed in the program)")
 
     def disconnect(self):
         """STOP first if the stage is moving (bounded), then close the handle."""
@@ -44033,43 +44039,14 @@ class NewmarkNSCA1Controller:
 
     # ---- reads ---------------------------------------------------------------
     def read_state(self):
-        """MST and PX (two reads); the scale is the one read when connecting."""
+        """MST and PX (two reads); the scale is the fixed NEWMARK_STEPS_PER_DEGREE."""
         self._require_open()
         mst = self.status()
         px = self.number("PX")
         spd = self.steps_per_degree
         return {"px": px, "mst": mst, "moving": bool(mst & NEWMARK_MOVING),
                 "status_text": newmark_describe_status(mst), "steps_per_degree": spd,
-                "angle_deg": px / spd if spd else None, "scale_error": self.scale_error}
-
-    def _read_scale(self):
-        """DRVMS (and DRVRC/DRVIC/DRVIT for the log) via RR; nothing is written.
-        steps/deg = 72:1 x 200 full steps x DRVMS / 360 = 40 x DRVMS."""
-        mst = self.status()
-        if mst & NEWMARK_MOVING:
-            raise NewmarkRefused("the stage is moving, and reading its scale (RR) cuts communication for 2 s")
-        sl, edio = self.number("SL"), self.number("EDIO")
-        if sl or edio:
-            raise NewmarkRefused(f"StepNLoop (SL={sl}) or DIO control (EDIO={edio}) is on; the manual wants both off "
-                                 "while the driver is read: switch them off in Newmark's QuickMotion")
-        self.set_ok("RR")
-        self._sleep(NEWMARK_RR_WAIT_S)
-        r2 = self.number("R2")
-        if r2 != 1:
-            raise NewmarkRefused(f"the driver read failed (R2 = {r2}; 1 means success)")
-        microsteps = self.number("DRVMS")
-        if not 2 <= microsteps <= NEWMARK_MAX_DRVMS:
-            raise NewmarkRefused(f"DRVMS = {microsteps}, outside 2 - {NEWMARK_MAX_DRVMS}")
-        others = []
-        for name in ("DRVRC", "DRVIC", "DRVIT"):
-            try:
-                others.append(f"{name} {self.number(name)}")
-            except NewmarkStageError as error:
-                others.append(f"{name} not read ({error})")
-        self.microsteps = microsteps
-        self.steps_per_degree = NEWMARK_FULL_STEPS_PER_DEG * microsteps
-        self.scale_error = ""
-        self.logger(f"RT-E {self.label} driver: DRVMS {microsteps}, " + ", ".join(others))
+                "angle_deg": px / spd if spd else None}
 
     # ---- motion --------------------------------------------------------------
     def _check_ready(self):
@@ -44121,8 +44098,6 @@ class NewmarkNSCA1Controller:
         try:
             if stop_event is not None and stop_event.is_set():
                 raise NewmarkStopRequested(True, before=True)
-            if self.steps_per_degree is None:
-                self._read_scale()
             spd = self.steps_per_degree
             target = round(target_deg * spd)
             if abs(target) > round(NEWMARK_CABLE_LIMIT_DEG * spd) or abs(target) > NEWMARK_PX_SAFE:
@@ -45205,8 +45180,10 @@ class RTEPanel(PPMSPanel):
                     raise ValueError(f'Connect the {stage.label} (the "Stage" row of the RT-E scan box) '
                                      'for an angle scan')
                 if not stage.steps_per_degree:
-                    raise ValueError(f'The stage scale was not read ({stage.scale_error}); fix that, then '
-                                     'Disconnect and Connect the stage again')
+                    # Fixed at 40 x NEWMARK_MICROSTEP since the driver is no
+                    # longer read (user, 2026-10-17); kept as a guard.
+                    raise ValueError(f'The {stage.label} has no steps/° scale; Disconnect and Connect the '
+                                     'stage again')
                 if not self.rte_controllers['kepco'].connected:
                     raise ValueError('Connect KEPCO for an angle scan: it holds the field')
             # A Field scan takes its KEPCO currents from the scan range and

@@ -88,8 +88,15 @@ class Clock:
                 hook[1]()
 
 
+# The driver read and its reads: never sent since the microstep is fixed (user, 2026-10-17).
+DRIVER_READS = ("RR", "R2", "DRVMS", "DRVRC", "DRVIC", "DRVIT")
+SCALE = ("10000 steps/° (72:1 x 200 full steps x microstep 250 / 360; microstep 250 from QuickMotion, fixed in "
+         "the program)")
+
+
 class Sim(script.SimulatedNSC):
-    """The script's simulated NSC-A1 (DRVMS 250: 10000 steps/deg)."""
+    """The script's simulated NSC-A1 (DRVMS 250, the lab PC's QuickMotion
+    microstep: 10000 steps/deg; the program never asks it for the driver)."""
 
     @property
     def moves(self):
@@ -278,19 +285,20 @@ class StageBase(unittest.TestCase):
 
 # ---- the driver ----------------------------------------------------------------
 class NewmarkDriverTests(StageBase):
-    def test_connect_confirms_the_nsc_and_reads_the_scale(self):
+    def test_connect_confirms_the_nsc_with_the_fixed_scale(self):
         h = self.make()
         self.assertEqual(h.stage.connect("auto"), "Ace-Series-SDE")
         self.assertTrue(h.stage.connected)
         names = h.dll.names()
         self.assertLess(names.index("fnPerformaxComSetTimeouts"), names.index("fnPerformaxComOpen"))
         self.assertEqual(names[names.index("fnPerformaxComOpen") + 1], "fnPerformaxComFlush")
-        self.assertEqual(h.sim.received[:2], ["ID", "VER"], "ID before anything else, then VER")
-        self.assertEqual(h.sim.received[2:6], ["MST", "SL", "EDIO", "RR"])
-        self.assertGreaterEqual(h.clock.t - 1000.0, app.NEWMARK_RR_WAIT_S, "no reads while RR runs")
-        self.assertEqual(h.sim.received[6:8], ["R2", "DRVMS"])
-        self.assertEqual(h.stage.steps_per_degree, 10000, "40 x DRVMS 250")
-        self.assertEqual(h.stage.scale_text(), "10000 steps/° (72:1 x 200 x DRVMS 250 / 360)")
+        # ID, then VER, and nothing else: the driver is not read (no RR, no
+        # 2 s wait), since the microstep is fixed (user, 2026-10-17).
+        self.assertEqual(h.sim.received, ["ID", "VER"], "ID before anything else, then VER")
+        self.assertLess(h.clock.t - 1000.0, 0.5, "no wait for a driver read")
+        self.assertEqual(h.stage.steps_per_degree, 10000, "40 x microstep 250 (fixed)")
+        self.assertEqual(h.stage.scale_text(), SCALE)
+        self.assertIn(f"RT-E Newmark NSC-A1 connected (Ace-Series-SDE, V231BL): {SCALE}", h.log)
         self.assertEqual(h.stage.resource_name, "SIM-NSC-A1")
         self.assertEqual(h.sim.moves, [])
         self.assertEqual(app.newmark_stage_text(h.stage.read_state()), "Stage: +0.000° (10000 steps/°)")
@@ -324,11 +332,20 @@ class NewmarkDriverTests(StageBase):
         check = app.newmark_check_allowed
         # Homing is the test script's alone: the program never moves the zero.
         for command in ("STORE", "RW", "J+", "J-", "HL+", "HL-", "POL=0", "DRVMS=250", "DN=SDE02", "RT=1",
-                        "SL=1", "ZH+", "T1", "@01ID", "X1.5", "HSPD=-5"):
+                        "SL=1", "ZH+", "T1", "@01ID", "X1.5", "HSPD=-5") + DRIVER_READS:
             with self.subTest(command=command), self.assertRaises(app.NewmarkCommandNotAllowed):
                 check(command)
-        for command in ("ID", "MST", "PX", "EO", "DRVMS", "ABS", "STOP", "ABORT", "RR", "PX=0"):
+        for command in ("ID", "MST", "PX", "EO", "SL", "EDIO", "ABS", "STOP", "ABORT", "PX=0"):
             check(command)
+        # The driver read is off the list since the microstep is fixed (user,
+        # 2026-10-17), with or without a scale.
+        for command in DRIVER_READS:
+            with self.subTest(command=command):
+                self.assertNotIn(command, app.NEWMARK_READ_ONLY | app.NEWMARK_ACTIONS)
+                with self.assertRaises(app.NewmarkCommandNotAllowed):
+                    check(command, 10000)
+        self.assertFalse(hasattr(app, "NEWMARK_RR_WAIT_S"))
+        self.assertFalse(hasattr(app.NewmarkNSCA1Controller, "_read_scale"))
         check("X3600000", 10000)    # +360 deg
         check("X-3600000", 10000)
         for command in ("X3600001", "HSPD=200001", "LSPD=9", "ACC=0", "ACC=5001"):
@@ -339,27 +356,45 @@ class NewmarkDriverTests(StageBase):
         h = self.make()
         h.stage.connect("auto")
         before = list(h.sim.received)
-        for command in ("STORE", "HL+", "X3600001"):
+        for command in ("STORE", "HL+", "X3600001") + DRIVER_READS:
             with self.assertRaises(app.NewmarkCommandNotAllowed):
                 h.stage.query(command)
         self.assertEqual(h.sim.received, before, "refused before it was sent")
 
-    def test_a_scale_that_cannot_be_read_keeps_the_stage_connected_without_moves(self):
+    def test_stepnloop_and_dio_control_on_still_connect_and_move(self):
+        # The lab PC's NSC-A1 has DIO control on (EDIO=1), which stopped the
+        # driver read (user, 2026-10-17).  With the fixed microstep, SL and EDIO
+        # block nothing: it connects with its scale and moves.
         sim = Sim()
-        sim.registers["SL"] = 1
+        sim.registers.update({"SL": 1, "EDIO": 1})
         h = self.make(sim)
         h.stage.connect("auto")
-        self.assertTrue(h.stage.connected, "connected, so Stop works")
-        self.assertIsNone(h.stage.steps_per_degree)
-        self.assertIn("StepNLoop (SL=1)", h.stage.scale_error)
-        self.assertNotIn("RR", h.sim.received)
-        self.assertEqual(app.newmark_stage_text(h.stage.read_state()), "Stage: PX 0 (scale not read)")
-        with self.assertRaisesRegex(app.NewmarkRefused, "StepNLoop"):
-            h.stage.move_to_deg(5, threading.Event())
-        self.assertEqual(h.sim.moves, [])
-        sim.registers["SL"] = 0         # fixed in QuickMotion: the next move reads the scale
-        h.stage.move_to_deg(5, threading.Event())
+        self.assertTrue(h.stage.connected)
+        self.assertEqual(h.stage.steps_per_degree, 10000)
+        self.assertEqual(app.newmark_stage_text(h.stage.read_state()), "Stage: +0.000° (10000 steps/°)")
+        state = h.stage.move_to_deg(5, threading.Event())
         self.assertEqual(h.sim.moves, ["X50000"])
+        self.assertEqual((state["px"], state["angle_deg"]), (50000, 5.0))
+        self.assertFalse([c for c in h.sim.received if c in DRIVER_READS + ("SL", "EDIO")], h.sim.received)
+
+    def test_the_microstep_is_250_with_its_source(self):
+        self.assertEqual(app.NEWMARK_MICROSTEP, 250)
+        self.assertEqual(app.NEWMARK_MICROSTEP, script.MICROSTEP, "the program and the script agree")
+        self.assertEqual(app.NEWMARK_STEPS_PER_DEGREE, 40 * app.NEWMARK_MICROSTEP)
+        self.assertEqual(app.NEWMARK_STEPS_PER_DEGREE, 10000)
+        self.assertEqual(app.NewmarkNSCA1Controller(lambda _text: None).steps_per_degree, 10000)
+        program = Path(app.__file__).read_text(encoding="utf-8").splitlines()
+        index = next(i for i, line in enumerate(program) if line.startswith("NEWMARK_MICROSTEP = "))
+        comment = []
+        while program[index - 1].startswith("#"):
+            index -= 1
+            comment.insert(0, program[index].lstrip("#").strip())
+        comment = " ".join(comment)
+        for text in ("user, 2026-10-17", "QuickMotion screenshot", "Microstepping 250",
+                     "72:1 x 200 full steps / 360 = 40 full steps per degree", "10000 steps/deg",
+                     "0.36 arcsec", "Run Current 2100 mA", "Idle Current 100 mA", "not used", "EDIO=1",
+                     "If the microstep is changed in QuickMotion, change this constant"):
+            self.assertIn(text, comment)
 
     def test_absolute_moves_with_speeds_set_and_read_back(self):
         h = self.make()
@@ -531,7 +566,8 @@ class NewmarkDriverTests(StageBase):
         names = h.dll.names()
         self.assertEqual(names[-1], "fnPerformaxComClose")
         self.assertFalse(h.stage.connected)
-        self.assertIsNone(h.stage.steps_per_degree)
+        # The session is reset; the scale is the fixed one (user, 2026-10-17).
+        self.assertEqual((h.stage.identity, h.stage.steps_per_degree), ("", 10000))
         h = self.make()
         h.stage.connect("auto")
         h.stage.disconnect()
@@ -1054,17 +1090,17 @@ class ManualStageControlTests(StageBase):
                 self.assertFalse(panel.ppms_environment_busy)
 
     def test_connect_with_a_failed_first_read_still_says_connected(self):
-        # RR's reply is lost after it ran: the scale is not read, and the first
-        # read falls in RR's 2 s blackout.  The handle is open, so the lamp,
+        # The first read's MST is lost (until 2026-10-17 it was RR's reply,
+        # but the driver is no longer read).  The handle is open, so the lamp,
         # which follows it, says connected (user, 2026-10-13), and the stage
         # line that the read failed.
-        h = self.make(ReplyLost("RR"))
+        h = self.make(LosesOne("MST"))
         with patch.object(app.messagebox, "showerror") as showerror:
             h.panel._rte_connect("newmark")
             self.drain(h)
         showerror.assert_not_called()
         self.assertTrue(h.stage.connected)
-        self.assertTrue(h.panel.rte_stage_live.get().startswith("Stage read failed: ID: the USB transaction failed"),
+        self.assertTrue(h.panel.rte_stage_live.get().startswith("Stage read failed: MST: the USB transaction failed"),
                         h.panel.rte_stage_live.get())
         self.assertTrue(any("the first read after Connect failed" in str(call.args[0])
                             for call in h.panel.thread_log.call_args_list))
@@ -1232,7 +1268,7 @@ class AngleStartTests(unittest.TestCase):
         panel.rte_controllers["gauss"].connected = gauss
         panel.rte_controllers["kepco"].connected = kepco
         panel.rte_controllers["newmark"] = Mock(connected=stage, steps_per_degree=scale, motion_may_run=may_run,
-                                                scale_error="SL=1", label="Newmark NSC-A1")
+                                                label="Newmark NSC-A1")
         panel.rte_stage_stop_event = threading.Event()
         panel.rte_stage_stop_event.set()
         panel.rte_drive_target, panel.rte_voltage_limit = Var(drive), Var(limit)
@@ -1262,7 +1298,7 @@ class AngleStartTests(unittest.TestCase):
         for options, message in ((dict(stage=False), "Connect the Newmark NSC-A1"),
                                  (dict(kepco=False), "Connect KEPCO for an angle scan"),
                                  (dict(gauss=False), "Connect LS475"),
-                                 (dict(scale=None), r"stage scale was not read \(SL=1\)"),
+                                 (dict(scale=None), "Newmark NSC-A1 has no steps/° scale"),
                                  (dict(span=("0", "365", "5")), "within"),
                                  (dict(drive="12"), "10 A"),
                                  (dict(limit="25"), "20 V")):

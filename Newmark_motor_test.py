@@ -4,7 +4,8 @@ The stage is a Newmark RM-5-110 (72:1 worm gear, 1.8 deg stepper, home
 switch, no encoder, no limit switches, continuous 360 deg, at most 25 deg/s)
 on an NSC-A1 controller (a rebadged Arcus ACE-SDE).  It turns the sample
 holder, wires attached, inside the RT-E electromagnet.  Commands follow the
-NSC-A1 manual rev 1.3; nothing here has been tried on the hardware yet.
+NSC-A1 manual rev 1.3.  On the lab PC (2026-10-17) it connected and read
+the controller; no move has been tried on the hardware yet.
 
 Needs only 64-bit Python 3.11 on Windows (standard library) and the vendor's
 USB layer: the Performax USB driver (Performax USB Setup 4.01.3) and the
@@ -14,7 +15,8 @@ by side in this folder or in --dll-dir.  No COM port is ever opened.
 Usage (from a terminal in this folder):
 
     py Newmark_motor_test.py                       read only: devices, identity, status, position,
-                                                   speeds, settings, driver (RR), steps/deg
+                                                   speeds, settings (SL and EDIO shown), steps/deg
+                                                   (the fixed microstep below; the driver is not read)
     py Newmark_motor_test.py move --degrees 10     turn +10 deg at 5 deg/s (asks first)
     py Newmark_motor_test.py move --degrees -10 --speed 2
     py Newmark_motor_test.py stop                  STOP (decelerated), wait, say where it stopped
@@ -39,6 +41,14 @@ while the stage turns, the status and position polls are summarized once a
 second.  Only the commands this script needs can be sent (see ALLOWED
 below): anything else (STORE, RW, J+, POL=, ...) is refused before it
 reaches the controller, and nothing is ever stored to flash.
+
+The scale is fixed: 10000 steps/deg = 72:1 x 200 full steps x microstep 250
+/ 360, with the microstep 250 read off QuickMotion on the lab PC (user,
+2026-10-17; see MICROSTEP below).  The driver is never read from the
+controller: RR, R2 and the DRV* reads are not on the list (the manual reads
+the driver only with StepNLoop and DIO control off, and on the lab PC DIO
+control is on, EDIO=1).  SL and EDIO are shown by "info" but block nothing.
+If the microstep is changed in QuickMotion, change MICROSTEP to match.
 
 Exit status: 0 done; 1 refused, not confirmed, or failed with the motor
 confirmed stopped; 2 a usage error, such as a --dll-dir without
@@ -72,7 +82,8 @@ SAFETY
     limit input on (the RM-5-110 has no limit switches: that is a polarity
     problem, fix it in Newmark's QuickMotion), or with the driver off (EO=0).
   - Driver parameters, polarity, the device name and anything stored to
-    flash are never written; QuickMotion is the place for those.
+    flash are never written; QuickMotion is the place for those.  The
+    driver is not read either (no RR): the microstep is the fixed MICROSTEP.
 """
 import argparse
 import ctypes
@@ -110,7 +121,20 @@ _DLL_DIRECTORIES = []       # os.add_dll_directory cookies, kept for the life of
 # ---- the stage ---------------------------------------------------------------
 FULL_STEPS_PER_TURN = 200   # 1.8 deg motor (Lin 5718M-05P)
 GEAR_RATIO = 72             # RM-5-110 worm gear
-FULL_STEPS_PER_DEG = FULL_STEPS_PER_TURN * GEAR_RATIO // 360    # 40; x DRVMS micro-steps
+FULL_STEPS_PER_DEG = FULL_STEPS_PER_TURN * GEAR_RATIO // 360    # 40; x the microstep
+# The driver's microstep, fixed here and never read from the controller
+# (user, 2026-10-17).  Source: the user's QuickMotion screenshot of the lab
+# PC's NSC-A1, 2026-10-17 (Setup Parameters > Controller > Driver Setup):
+# Microstepping 250.  RM-5-110: 72:1 x 200 full steps / 360 = 40 full steps
+# per degree, so 40 x 250 = 10000 steps/deg, which matches the datasheet's
+# 0.36 arcsec resolution (1/10000 deg).  The same screen shows Run Current
+# 2100 mA, Idle Current 100 mA, Idle Time 1 cs and DIO Control Enable ticked
+# (recorded here only; not used).  On the first runs on the lab PC the
+# driver could not be read (RR), as DIO control is on (EDIO=1); the user
+# chose this fixed number instead.  If the microstep is changed in
+# QuickMotion, change this constant to match.
+MICROSTEP = 250
+STEPS_PER_DEGREE = FULL_STEPS_PER_DEG * MICROSTEP   # 10000; always 40 x MICROSTEP
 DEFAULT_SPEED = 5.0         # deg/s
 MIN_SPEED, MAX_SPEED = 0.1, 20.0
 ACC_MS = 300
@@ -127,7 +151,6 @@ SETTLE_S = 1.0              # not moving but PX not yet where it should be: wait
 REPORT_EVERY_S = 1.0
 HOME_MARGIN_DEG = 10.0      # home search: slack for the poll interval and the switch (user, 2026-10-13)
 HOME_LATE_S = 0.2           # home search: time between the last poll and the STOP taking hold
-RR_WAIT_S = 2.5             # the manual: no communication for 2 s after RR; half a second of margin
 STOP_WAIT_S = 10.0
 ABORT_WAIT_S = 3.0
 
@@ -142,9 +165,11 @@ STATUS_BITS = ((0, "constant speed"), (1, "accelerating"), (2, "decelerating"), 
                (10, "TOC watchdog time-out"))
 
 # ---- the commands this script may send (spec, 2026-10-13) ----------------------
-READ_ONLY = frozenset("ID VER DN MST PX EO HSPD LSPD ACC MM PS POL IERR RZ HCA RT SL EDIO TOC "
-                      "DRVMS DRVRC DRVIC DRVIT R2".split())
-ACTIONS = frozenset("ABS INC EO=0 EO=1 STOP ABORT CLR RR".split())
+# RR (the driver read), R2 and the driver reads DRVMS/DRVRC/DRVIC/DRVIT are
+# left out, so they can never be sent: the scale is MICROSTEP, fixed above
+# (user, 2026-10-17).
+READ_ONLY = frozenset("ID VER DN MST PX EO HSPD LSPD ACC MM PS POL IERR RZ HCA RT SL EDIO TOC".split())
+ACTIONS = frozenset("ABS INC EO=0 EO=1 STOP ABORT CLR".split())
 HOMING = frozenset(("HL+", "HL-"))          # "home" mode only
 NUMERIC = re.compile(r"(X|PX=)(-?[0-9]{1,9})|(HSPD=|LSPD=|ACC=)([0-9]{1,7})")
 ALLOWED = (READ_ONLY, ACTIONS, HOMING, NUMERIC.pattern)
@@ -472,7 +497,7 @@ class NSC:
         self.motion_may_run = False     # a move command was sent and it has not been seen stopped since
         self.motion_sent = False        # this run sent a move command (X, HL)
         self.stop_finished = False      # a stop sequence ran to its end (stopped or not)
-        self.steps_per_degree = None
+        self.steps_per_degree = STEPS_PER_DEGREE    # fixed: 40 x MICROSTEP, never read (user, 2026-10-17)
         self.hold_depth = 0             # HoldCtrlC nesting
         self.abort_asked = False        # Ctrl+C pressed during a hold: go on to ABORT
         self.home_watch = None          # home mode: the search's HomeWatch, so every report can say what PX counts from
@@ -687,34 +712,6 @@ class NSC:
                           "motion; switch it on with 'enable'")
         return mst
 
-    def read_driver(self):
-        """DRVMS (and DRVRC/DRVIC/DRVIT for display) via RR; nothing is written."""
-        mst = self.status()
-        if mst & MOVING:
-            raise Refused("it is moving, and RR cuts communication for 2 s")
-        sl, edio = self.number("SL"), self.number("EDIO")
-        if sl or edio:
-            raise Refused(f"StepNLoop (SL={sl}) or DIO control (EDIO={edio}) is on; the manual wants both off "
-                          "while the driver is read: switch them off in QuickMotion")
-        self.set_ok("RR")
-        self.echo(f"  (waiting {RR_WAIT_S:g} s: no communication while the driver is read)")
-        _sleep(RR_WAIT_S)
-        r2 = self.number("R2")
-        if r2 != 1:
-            raise Refused(f"the driver read failed (R2 = {r2}; 1 means success)")
-        microsteps = self.number("DRVMS")
-        if not 2 <= microsteps <= 500:
-            raise Refused(f"DRVMS = {microsteps}, outside 2 - 500")
-        others = {}
-        for name in ("DRVRC", "DRVIC", "DRVIT"):
-            try:
-                others[name] = self.number(name)
-            except NscError as error:
-                self.echo(f"  ({name} could not be read: {error})")
-                others[name] = None
-        self.steps_per_degree = FULL_STEPS_PER_DEG * microsteps
-        return microsteps, others
-
     def set_speeds(self, hspd, lspd, acc):
         """Runtime registers (not stored): set, then read back."""
         if not MIN_LSPD <= lspd < hspd:
@@ -862,8 +859,10 @@ class NSC:
 # ---- --dry-run: a simulated controller --------------------------------------------
 class SimulatedNSC:
     """An NSC-A1 that answers as its manual describes, with a stage that turns in
-    (simulated) time: DRVMS 250, so 10000 steps/deg; the home switch is 37.5 deg
-    on (+) from where the stage starts (PX ``px``).
+    (simulated) time: DRVMS 250, the lab PC's QuickMotion microstep and the
+    script's MICROSTEP, so 10000 steps/deg; the home switch is 37.5 deg on (+)
+    from where the stage starts (PX ``px``).  It still answers RR, R2 and the
+    DRV* reads, but the script never sends them (user, 2026-10-17).
 
     A motion is one segment {from, to, t0, t1} at a time, and HL queues the
     rest of its stages (manual, Figure 6.6): at the switch the counter becomes
@@ -1123,9 +1122,13 @@ def confirm(assume_yes, action):
     return answer.strip().lower() == "yes"
 
 
-def scale_text(microsteps, steps_per_degree):
-    return (f"{steps_per_degree} steps/deg ({GEAR_RATIO}:1 x {FULL_STEPS_PER_TURN} full steps x DRVMS "
-            f"{microsteps} / 360)")
+def scale_text():
+    """The scale and where it comes from (user, 2026-10-17)."""
+    return (f"{STEPS_PER_DEGREE} steps/deg ({GEAR_RATIO}:1 x {FULL_STEPS_PER_TURN} full steps x microstep "
+            f"{MICROSTEP} / 360; microstep {MICROSTEP} from QuickMotion, fixed in this script)")
+
+
+DRIVER_TEXT = f"microstep {MICROSTEP} (fixed, from QuickMotion 2026-10-17); not read from the controller"
 
 
 def speed_registers(speed, steps_per_degree):
@@ -1316,7 +1319,8 @@ def home_note(nsc, px):
 
 
 def mode_info(nsc, args):
-    """Read only (and RR, which reads the driver's parameters)."""
+    """Read only.  The driver is not read (no RR): the scale is the fixed
+    MICROSTEP, and SL and EDIO are only shown (user, 2026-10-17)."""
     values, failed = {}, False
     for command in ("DN", "MST", "EO", "PX", "MM", "HSPD", "LSPD", "ACC", "PS", "POL", "IERR", "RZ", "HCA",
                     "RT", "SL", "EDIO", "TOC"):
@@ -1325,13 +1329,6 @@ def mode_info(nsc, args):
         except NscError as error:
             print(f"  ({command} could not be read: {error})")
             values[command], failed = None, True
-    driver, why_not = None, None
-    try:
-        driver = nsc.read_driver()
-    except Refused as error:
-        why_not = str(error)
-    except NscError as error:
-        why_not, failed = str(error), True
     spd = nsc.steps_per_degree
     get = values.get
 
@@ -1351,13 +1348,8 @@ def mode_info(nsc, args):
                                        f"home bit 5: {pol >> 5 & 1})")
     print(f"  POL {pol}{pol_bits}, IERR {get('IERR')}, RZ {get('RZ')}, HCA {get('HCA')}, RT {get('RT')}, "
           f"SL {get('SL')}, EDIO {get('EDIO')}, TOC {get('TOC')}")
-    if driver is not None:
-        microsteps, others = driver
-        print(f"  driver (RR): DRVMS {microsteps}, DRVRC {others['DRVRC']} mA, DRVIC {others['DRVIC']} mA, "
-              f"DRVIT {others['DRVIT']} cs")
-        print(f"  scale: {scale_text(microsteps, spd)}")
-    else:
-        print(f"  driver parameters not read: {why_not}")
+    print(f"  driver: {DRIVER_TEXT}")
+    print(f"  scale: {scale_text()}")
     if mst is not None:
         if mst & LIMIT_ERRORS:
             print("NOTE: a limit error is latched: moves are refused until 'clear'.")
@@ -1372,9 +1364,8 @@ def mode_info(nsc, args):
 
 
 def mode_move(nsc, args):
-    microsteps, _others = nsc.read_driver()
     spd = nsc.steps_per_degree
-    print(f"Scale: {scale_text(microsteps, spd)}")
+    print(f"Scale: {scale_text()}")
     nsc.check_ready()
     start = nsc.number("PX")
     steps = round(args.degrees * spd)
@@ -1420,9 +1411,8 @@ def mode_move(nsc, args):
 
 
 def mode_home(nsc, args):
-    microsteps, _others = nsc.read_driver()
     spd = nsc.steps_per_degree
-    print(f"Scale: {scale_text(microsteps, spd)}")
+    print(f"Scale: {scale_text()}")
     nsc.check_ready()
     start, hca, rz = nsc.number("PX"), nsc.number("HCA"), nsc.number("RZ")
     hspd, lspd, acc = speed_registers(args.speed, spd)
@@ -1478,10 +1468,6 @@ def mode_stop(nsc, args):
             print("\nMOTION STATE UNKNOWN: it could not be confirmed stopped. CHECK THE STAGE (switch the "
                   "controller's 24 V off if it is still turning).")
             return 3
-    try:
-        nsc.read_driver()
-    except NscError as error:
-        print(f"  (no angle: {error})")
     print(f"\nStopped (MST read back): PX {px} ({angle(px, nsc.steps_per_degree)}).")
     return 0
 
@@ -1490,10 +1476,6 @@ def mode_zero(nsc, args):
     mst = nsc.status()
     if mst & MOVING:
         raise Refused("it is moving; stop it first")
-    try:
-        nsc.read_driver()
-    except NscError as error:
-        print(f"  (no angle: {error})")
     start = nsc.number("PX")
     # Every move's wire check counts from this zero, so it is asked like enable (user, 2026-10-13).
     where = f"{angle(start, nsc.steps_per_degree)} (PX {start})" if nsc.steps_per_degree else f"PX {start}"
