@@ -867,7 +867,7 @@ class ScanStartTimeConstantTests(NoWindows):
         self.configure(panel, front_panel_code=12)
         self.assertEqual(panel.ppms_sr830_time_constant_codes["830_a"], 12, "10 s, as the SR830 reads")
         message = panel.thread_log.call_args.args[0]
-        self.assertTrue(message.startswith("RT-E SR830-1: the time constant reads 10 s (OFLT 12), "
+        self.assertTrue(message.startswith("SHV SR830-1: the time constant reads 10 s (OFLT 12), "
                                            "not the 1 s last set"), message)
         self.assertEqual(panel._ppms_lockin_settle(0.5, ("830_a",), False), (10.0, 10.0, "SR830-1"))
 
@@ -896,7 +896,7 @@ class StartSettleTests(NoWindows):
         self.assertEqual(self.settle(None, 0.5)[0], 1.0, "the 1 s default: 1 s, not 0.5 s")
         self.assertEqual(self.settle("3 s", 0.5)[0], 3.0, "a 3 s choice: 3 s")
         self.assertEqual(self.settle("10 s", 100.0)[0], 100.0, "a longer Settle s is kept")
-        self.assertEqual(self.settle(None, 0.5, build=build_rte_panel)[0], 1.0, "RT-E: OFLT 10 = 1 s")
+        self.assertEqual(self.settle(None, 0.5, build=build_rte_panel)[0], 1.0, "SHV: OFLT 10 = 1 s")
         self.assertEqual(self.settle("10 s", 0.5, lockins=())[0], 0.5, "no lock-in: Settle s alone")
 
     def test_the_wait_is_in_the_scan_time_estimate(self):

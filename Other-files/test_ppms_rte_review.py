@@ -408,7 +408,7 @@ class RTEStartIgnoresUnusedKepcoBoxes(unittest.TestCase):
             with self.subTest(limit=limit):
                 panel, showerror = self.start('Field', '0', limit)
                 showerror.assert_called_once()
-                self.assertEqual(showerror.call_args.args[0], 'RT-E scan parameters')
+                self.assertEqual(showerror.call_args.args[0], 'SHV scan parameters')
                 panel.ppms_executor.submit.assert_not_called()
 
     def test_apply_still_checks_both(self):

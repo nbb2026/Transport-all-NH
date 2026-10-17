@@ -81,7 +81,7 @@ class ZurichChoiceTests(unittest.TestCase):
             ("Non-local", vi, self.a.nonlocal_vi_mfli_device_var, "DEV4414 (Super)"),
             ("PPMS", self.a.ppms_panel.zurich_entries[0], self.a.ppms_panel.zurich_resource,
              "DEV4414 (Super)"),
-            ("RT-E", self.a.rte_panel.zurich_entries[0], self.a.rte_panel.zurich_resource,
+            ("SHV", self.a.rte_panel.zurich_entries[0], self.a.rte_panel.zurich_resource,
              "DEV4414 (Super)"),
         )
 
@@ -117,7 +117,7 @@ class ZurichChoiceTests(unittest.TestCase):
                          (sr830.winfo_rootx(), sr830.winfo_width()))
 
     def test_rte_list_is_as_wide_as_the_rack_address_fields(self):
-        self.show("RT-E")
+        self.show("SHV")
         chooser = self.a.rte_panel.zurich_entries[0]
         rack = self.a.rte_panel.ppms_device_resource_widgets["6221"]
         self.assertEqual(chooser.winfo_width(), rack.winfo_width())
@@ -160,7 +160,7 @@ class ZurichChoiceTests(unittest.TestCase):
 
     def test_ppms_and_rte_try_the_server_that_can_reach_the_chosen_lockin(self):
         """PPMS asked DEV4435's 192.168.69.78 server for DEV4414 (2026-09-18 log)."""
-        for page, panel in (("PPMS", self.a.ppms_panel), ("RT-E", self.a.rte_panel)):
+        for page, panel in (("PPMS", self.a.ppms_panel), ("SHV", self.a.rte_panel)):
             self.addCleanup(panel.zurich_resource.set, "DEV4414 (Super)")
             for label, servers in (("DEV4414 (Super)", SUPER), ("DEV4435 (Normal)", USB)):
                 with self.subTest(page=page, choice=label):

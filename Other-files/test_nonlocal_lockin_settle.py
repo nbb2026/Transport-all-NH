@@ -511,7 +511,7 @@ class RangeSettleTests(NoWindows):
         with mock.patch.object(app, "LOCKIN_SETTLE_TAUS", 12.0):
             self.assertEqual((self.settle("8", 1.0), self.settle("mfli", 1.0)), (12.0, 12.0))
         with mock.patch.object(app, "LOCKIN_SETTLE_TAUS", 0.0):
-            self.assertEqual(self.settle("8", 1.0), 5.0, "RT-E's figure without the rule")
+            self.assertEqual(self.settle("8", 1.0), 5.0, "SHV's figure without the rule")
 
     def test_a_6221_iv_sr830_range_step_waits_5_tc(self):
         source = FakeSource(sr830_tau=1.0, readings=[

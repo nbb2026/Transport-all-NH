@@ -291,7 +291,7 @@ class RTEWorkerTests(NoWindows):
         # The pass with fewer lock-ins is logged once, not at every point.
         logged = [c.args[0] for c in panel.thread_log.call_args_list if "each reading now waits" in c.args[0]]
         self.assertEqual(len(logged), 2)
-        self.assertTrue(logged[-1].startswith("RT-E scan: each reading now waits 1 s"), logged)
+        self.assertTrue(logged[-1].startswith("SHV scan: each reading now waits 1 s"), logged)
 
     def test_a_front_panel_time_constant_read_at_the_scan_start_is_waited_for_and_shown(self):
         """RT-E's scan start reads OFLT? (user, 2026-10-14): an SR830 set to
@@ -311,7 +311,7 @@ class RTEWorkerTests(NoWindows):
         self.assertEqual([self.log[i][1] for i in statuses], ["Each reading now waits 10 s: 1 x 10 s TC of SR830-1"])
         self.assertEqual(self.log[statuses[0] + 1], ("wait", 10.0), "shown while it waits")
         logged = [c.args[0] for c in panel.thread_log.call_args_list if "each reading now waits" in c.args[0]]
-        self.assertEqual(logged, ["RT-E scan: each reading now waits 10 s (1 x 10 s, the time constant of "
+        self.assertEqual(logged, ["SHV scan: each reading now waits 10 s (1 x 10 s, the time constant of "
                                   "SR830-1, the slowest lock-in measured; Settle s is 0.5 s)"])
 
     def test_rte_rows_end_with_the_new_columns(self):
@@ -385,10 +385,10 @@ class RTEStartTests(NoWindows):
         for mode in ("Field", "Current"):
             for kwargs, expected in (
                     # 5 x (1 + 1) + 1 s; 5 x (2 + 1) + 1 s with the Zurich at 2 s.
-                    ({}, f"RT-E {mode}: 5 points, settle 1 s; at least 11 s"),
-                    (dict(zurich_tau=2.0), f"RT-E {mode}: 5 points, settle 2 s; at least 16 s"),
-                    (dict(zurich_tau=2.0, codes={}), f"RT-E {mode}: 5 points, settle 2 s; at least 16 s"),
-                    (dict(stable="20"), f"RT-E {mode}: 5 points, settle 20 s; at least 1 min 46 s")):
+                    ({}, f"SHV {mode}: 5 points, settle 1 s; at least 11 s"),
+                    (dict(zurich_tau=2.0), f"SHV {mode}: 5 points, settle 2 s; at least 16 s"),
+                    (dict(zurich_tau=2.0, codes={}), f"SHV {mode}: 5 points, settle 2 s; at least 16 s"),
+                    (dict(stable="20"), f"SHV {mode}: 5 points, settle 20 s; at least 1 min 46 s")):
                 with self.subTest(mode=mode, **kwargs):
                     panel, ask = self.start(mode, **kwargs)
                     ask.assert_not_called()
@@ -404,8 +404,8 @@ class RTEStartTests(NoWindows):
     def test_the_zurich_tc_box_read_at_start_sets_the_wait(self):
         """_rte_capture_zurich copies the "TC (s)" box into zurich_scan_tau
         before the wait and the estimate are worked out (a stale 1 s here)."""
-        for codes, expected in (({}, "RT-E Field: 5 points, settle 2 s; at least 16 s"),
-                                (None, "RT-E Field: 5 points, settle 2 s; at least 16 s")):
+        for codes, expected in (({}, "SHV Field: 5 points, settle 2 s; at least 16 s"),
+                                (None, "SHV Field: 5 points, settle 2 s; at least 16 s")):
             with self.subTest(sr830=codes is None):
                 panel, _ask = self.start("Field", codes=codes, zurich_box="2")
                 self.assertEqual(panel.zurich_scan_tau, 2.0)
@@ -416,7 +416,7 @@ class RTEStartTests(NoWindows):
     def test_the_status_line_rounds_the_wait(self):
         panel, _ask = self.start("Current", stable="12345.7")
         status = panel.ppms_field_scan_status_var.get()
-        self.assertTrue(status.startswith("RT-E Current: 5 points, settle 12346 s; at least "), status)
+        self.assertTrue(status.startswith("SHV Current: 5 points, settle 12346 s; at least "), status)
         self.assertIn("each reading waits 12345.7 s (Settle s;", panel.thread_log.call_args_list[0].args[0],
                       "the log keeps the exact value")
 
@@ -432,7 +432,7 @@ class RTEStartTests(NoWindows):
         panel.rte_controllers["newmark"].check_ready.assert_called_once_with()
         self.assertEqual(len(panel.ppms_executor.scans()), 1)
         # The Angle status line keeps its format (it has no room for the wait).
-        self.assertEqual(panel.ppms_field_scan_status_var.get(), "RT-E Angle 0° to 10°, KEPCO +1.5 A held; 5 points")
+        self.assertEqual(panel.ppms_field_scan_status_var.get(), "SHV Angle 0° to 10°, KEPCO +1.5 A held; 5 points")
         self.assertIn("each reading waits 1 s", panel.thread_log.call_args_list[0].args[0])
 
 

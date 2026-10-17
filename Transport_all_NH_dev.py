@@ -1848,8 +1848,9 @@ NONLOCAL_IV_SWEEP_RESULTS_DIRECTORY = (
 NONLOCAL_IV6221_START_MA = 0.01
 NONLOCAL_IV6221_END_MA = 1.0
 NONLOCAL_IV6221_STEP_MA = 0.01
-NONLOCAL_IV6221_CURRENT_MA = 0.1      # as RT-E's RTE_TRANSPORT_CURRENT_RMS_MA (Set 6221)
-# RT-E's start-up frequency until 2026-10-18 (17.3 Hz); RT-E's own is now 317.3 Hz.
+# RT-E's (now SHV's) start-up excitation until 2026-10-18, 0.1 mA RMS at 17.3 Hz;
+# SHV's own is now 1 mA RMS at 317.3 Hz.
+NONLOCAL_IV6221_CURRENT_MA = 0.1
 NONLOCAL_IV6221_FREQUENCY_HZ = NONLOCAL_FREQUENCY_HZ
 NONLOCAL_IV6221_COMPLIANCE_V = 50.0
 # Settle s is the shortest wait after each current step.  Every point waits
@@ -1980,16 +1981,23 @@ PPMS_PERSISTENT_CONFIRM_S = 10.0
 PPMS_PERSISTENT_MARGIN_S = 1800.0
 PPMS_TRANSPORT_CURRENT_RMS_MA = 0.001
 PPMS_TRANSPORT_FREQUENCY_HZ = 317.3
-# RT-E start-up excitation: 0.1 mA RMS (user's figure, 2026-10-07) at 317.3 Hz
-# (user's figure, 2026-10-18; it was 17.3 Hz).
+# The SHV page (called RT-E until 2026-10-18; user: "rename RT-E as SHV").
+# Its start-up excitation: 1 mA RMS at 317.3 Hz (user's figures, 2026-10-18;
+# it was 0.1 mA RMS at 17.3 Hz).
 RTE_TRANSPORT_FREQUENCY_HZ = 317.3
-RTE_TRANSPORT_CURRENT_RMS_MA = 0.1
-# RT-E start-up scan, the user's figure (2026-10-18): an Angle scan from 0 to
-# -360 deg in 10 deg steps, round trip, Acquire s 2 (Settle s 0.5 and Loops 1
+RTE_TRANSPORT_CURRENT_RMS_MA = 1.0
+# SHV start-up scan, the user's figures (2026-10-18): an Angle scan from 0 to
+# -360 deg in 5 deg steps, round trip, Acquire s 2 (Settle s 0.5 and Loops 1
 # as before).  The Angle range is also what choosing Angle puts in the boxes.
 RTE_DEFAULT_SCAN_MODE = 'Angle'
-RTE_ANGLE_DEFAULT_RANGE = ('0', '-360', '10')
+RTE_ANGLE_DEFAULT_RANGE = ('0', '-360', '5')
 RTE_ACQUISITION_S = 2.0
+# The "KEPCO current A" box at start-up, the field an Angle scan holds (user's
+# figure, 2026-10-18; it was 0 A).  Only Apply KEPCO or an Angle scan's Start,
+# each after its Yes/No naming the current, sends it.
+RTE_KEPCO_DEFAULT_CURRENT_A = 8.0
+# The Zurich's harmonics at start-up (user's figure, 2026-10-18; was 1+2+3).
+RTE_ZURICH_DEFAULT_HARMONICS = '1+2'
 PPMS_TRANSPORT_COMPLIANCE_V = 50.0
 PPMS_TRANSPORT_HARMONIC = 1
 PPMS_TRANSPORT_REFERENCE_TIMEOUT_S = 8.0
@@ -15229,7 +15237,7 @@ class CombinedControlApp:
         self.ppms_panel_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.ppms_panel_tab, text="PPMS")
         self.rte_panel_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.rte_panel_tab, text="RT-E")
+        self.notebook.add(self.rte_panel_tab, text="SHV")
         self.notebook.add(self.stfmr_tab, text="FMR")
         self.notebook.add(self.stfmr_lockin_tab, text="STFMR")
         self.led_tab.rowconfigure(0, weight=1)
@@ -37657,7 +37665,7 @@ class CombinedControlApp:
                 bool(self.nonlocal_iv6221_round_trip_var.get()),
             )
         except ValueError as error:
-            raise ValueError(str(error).replace("RT-E", "6221-IV")) from error
+            raise ValueError(str(error).replace("SHV", "6221-IV")) from error
         currents = [value for _loop, _point, value in plan]
         if min(currents) <= 0.0:
             raise ValueError("6221-IV currents must be above 0 mA RMS (the sine amplitude)")
@@ -38147,7 +38155,7 @@ class CombinedControlApp:
         for key, config in settings["lockin_configs"].items():
             parameters[f"sr830_{key}"] = config
         parameters["zurich"] = settings["mfli_config"]
-        parameters["sr830_time_constant"] = "front panel (as RT-E)"
+        parameters["sr830_time_constant"] = "front panel (as SHV)"
         parameters["6221_resource"] = (
             getattr(self.nonlocal_vi_ac_controller, "source_resource", "")
             or self.nonlocal_vi_source_resource_var.get().strip()
@@ -45183,7 +45191,7 @@ class NewmarkLimitErrorLatched(NewmarkRefused):
     def __init__(self, mst):
         self.mst = mst
         super().__init__(f"a limit error is latched (MST {mst}: {newmark_describe_status(mst)}): the move was not "
-                         "sent. To clear it, press Move stage or Start an Angle scan on the RT-E page, or Start a "
+                         "sent. To clear it, press Move stage or Start an Angle scan on the SHV page, or Start a "
                          "sweep with the motor on the STFMR page, and answer Yes (CLR)")
 
 
@@ -45196,7 +45204,7 @@ class NewmarkDriverOff(NewmarkRefused):
     def __init__(self, eo):
         self.eo = eo
         super().__init__(f"the motor driver is off (EO={eo}): the position counter would advance without motion, so "
-                         "the move was not sent. To switch it on, press Move stage or Start an Angle scan on the RT-E "
+                         "the move was not sent. To switch it on, press Move stage or Start an Angle scan on the SHV "
                          "page, or Start a sweep with the motor on the STFMR page, and answer Yes (EO=1)")
 
 
@@ -45540,7 +45548,7 @@ class NewmarkNSCA1Controller:
 
     label = "Newmark NSC-A1"
 
-    def __init__(self, logger, owner_scope="RT-E", loader=None):
+    def __init__(self, logger, owner_scope="SHV", loader=None):
         self.logger = logger
         self.owner_scope = str(owner_scope)     # the log lines' prefix: "RT-E" or "STFMR"
         self._loader = loader           # None: newmark_load_performax, looked up when connecting
@@ -46112,7 +46120,7 @@ class NewmarkNSCA1Controller:
 def rte_scan_plan(mode, start, end, step, loops=1, round_trip=True):
     """KEPCO drive-current, 6221 excitation-current or stage-angle nodes; no field calibration."""
     if mode not in ('Field', 'Current', 'Angle'):
-        raise ValueError('RT-E supports only Field, Current and Angle scans')
+        raise ValueError('SHV supports only Field, Current and Angle scans')
     nodes = tuple(ppms_scan_axis(float(start), float(end), float(step)))
     if mode == 'Field' and any(abs(v) > STFMR_KEPCO_MAX_CURRENT_A for v in nodes):
         raise ValueError('KEPCO sweep current must stay within +/-10 A')
@@ -46130,7 +46138,7 @@ def rte_scan_plan(mode, start, end, step, loops=1, round_trip=True):
     if round_trip:
         nodes += nodes[-2::-1]
     if len(nodes) * int(loops_value) > 100000:
-        raise ValueError('RT-E scans are limited to 100000 points')
+        raise ValueError('SHV scans are limited to 100000 points')
     return tuple((loop, point, value) for loop in range(1, int(loops_value) + 1)
                  for point, value in enumerate(nodes, 1))
 
@@ -46171,7 +46179,7 @@ class RTEPanel(PPMSPanel):
     """
 
     # The page's name in the scan's log lines (user, 2026-10-14).
-    ppms_page_name = 'RT-E'
+    ppms_page_name = 'SHV'
 
     def _rte_harmonic_orders(self, key):
         """RT-E name for the shared harmonic-mode parser."""
@@ -46238,14 +46246,14 @@ class RTEPanel(PPMSPanel):
         self.zurich_controller.mfli_server_candidates = SUPER_ZURICH_MFLI_SERVERS
         self.zurich_resource.set(zurich_mfli_label(SUPER_ZURICH_MFLI_DEVICE))
         for controller in self.ppms_instrument_controllers.values():
-            controller.owner_scope = 'RT-E'
-        self.rte_controllers['gauss'].owner_scope = 'RT-E'
-        self.rte_controllers['kepco'].owner_scope = 'RT-E'
-        self.rte_controllers['newmark'].owner_scope = 'RT-E'
-        self.ppms_plot_frame.configure(text='RT-E: X, Y, phase vs measured field / excitation current / sample angle')
-        # RT-E start-up defaults (the user's figures, 2026-10-07 and
-        # 2026-10-18): 6221 0.1 mA RMS at 317.3 Hz, and the Zurich alone
-        # measures, reading 1+2+3 harmonics together.  The SR830s keep their
+            controller.owner_scope = 'SHV'
+        self.rte_controllers['gauss'].owner_scope = 'SHV'
+        self.rte_controllers['kepco'].owner_scope = 'SHV'
+        self.rte_controllers['newmark'].owner_scope = 'SHV'
+        self.ppms_plot_frame.configure(text='SHV: X, Y, phase vs measured field / excitation current / sample angle')
+        # SHV start-up defaults (the user's figures, 2026-10-07 and
+        # 2026-10-18): 6221 1 mA RMS at 317.3 Hz, and the Zurich alone
+        # measures, reading 1+2 harmonics together.  The SR830s keep their
         # harmonic settings so ticking Measure needs no further setup.
         self.ppms_transport_current_var.set(f'{RTE_TRANSPORT_CURRENT_RMS_MA:g}')
         self.ppms_transport_frequency_var.set(f'{RTE_TRANSPORT_FREQUENCY_HZ:g}')
@@ -46253,12 +46261,12 @@ class RTEPanel(PPMSPanel):
         self.ppms_transport_harmonic_a_var.set('1+2+3')
         self.ppms_transport_harmonic_b_var.set('2')
         self.ppms_transport_harmonic_c_var.set('3')
-        self.zurich_harmonic.set('1+2+3')
+        self.zurich_harmonic.set(RTE_ZURICH_DEFAULT_HARMONICS)
         for key, measured in (('830_a', False), ('830_b', False),
                               ('830_c', False), ('zurich', True)):
             self.ppms_lockin_selection[key].set(measured)
-        # The start-up scan (user's figure, 2026-10-18): Angle, 0 to -360 deg
-        # in 10 deg steps, round trip, Acquire s 2.  The mode change sets the
+        # The start-up scan (user's figures, 2026-10-18): Angle, 0 to -360
+        # deg in 5 deg steps, round trip, Acquire s 2.  The mode change sets the
         # range, round trip, units label, scan note and plot axis, as
         # choosing Angle does.
         self.ppms_acquisition_time_var.set(f'{RTE_ACQUISITION_S:g}')
@@ -46400,7 +46408,7 @@ class RTEPanel(PPMSPanel):
         controls = ttk.Frame(outer)
         controls.grid(row=2, column=0, sticky='ew')
         controls.columnconfigure(1, weight=1)
-        settings = ttk.LabelFrame(controls, text='RT-E settings', padding=4)
+        settings = ttk.LabelFrame(controls, text='SHV settings', padding=4)
         settings.grid(row=0, column=0, sticky='nsew')
         # The source settings on the left, the lock-in choices on the right,
         # stacked when the settings box is narrower than both.  The pair's
@@ -46432,7 +46440,7 @@ class RTEPanel(PPMSPanel):
             variable=self.ppms_control_safety_var, command=self._update_ppms_control_ui)
         safety.grid(row=0, column=0, columnspan=7, sticky='w')
         self.rte_edit_widgets.append((safety, 'normal'))
-        self.rte_drive_target = tk.StringVar(value='0')
+        self.rte_drive_target = tk.StringVar(value=f'{RTE_KEPCO_DEFAULT_CURRENT_A:g}')
         self.rte_voltage_limit = tk.StringVar(value='5')
         self.ppms_current_live_var = tk.StringVar(value='6221: not connected')
         def entry_at(row, col, label, variable):
@@ -46526,7 +46534,7 @@ class RTEPanel(PPMSPanel):
         if laid_out:
             live.configure(wraplength=32 * tkfont.nametofont('TkDefaultFont', root=live).measure('0'))
 
-        scan = ttk.LabelFrame(controls, text='RT-E scan', padding=4)
+        scan = ttk.LabelFrame(controls, text='SHV scan', padding=4)
         scan.grid(row=0, column=1, sticky='nsew', padx=(6, 0))
         scan.columnconfigure(0, weight=1)
         # The scan rows keep their own width; the spare width is right of
@@ -46695,7 +46703,7 @@ class RTEPanel(PPMSPanel):
             controls.bind('<Configure>', arrange_stage_block, add='+')
             body.bind('<Configure>', arrange_stage_block, add='+')
             arrange_stage_block()
-        self.ppms_plot_frame = ttk.LabelFrame(outer, text='RT-E measurement', padding=2)
+        self.ppms_plot_frame = ttk.LabelFrame(outer, text='SHV measurement', padding=2)
         self.ppms_plot_frame.grid(row=4, column=0, sticky='nsew')
         self.ppms_transport_plot_frames = {}
         self.ppms_transport_canvas = None
@@ -46707,7 +46715,7 @@ class RTEPanel(PPMSPanel):
         # Round trip by default for Field and Angle: an Angle scan then comes
         # back toward its start, unwinding the sample wires (user, 2026-10-13).
         self.rte_round_trip.set(not current)
-        # Angle: 0 to -360 deg in 10 deg steps (user's figure, 2026-10-18).
+        # Angle: 0 to -360 deg in 5 deg steps (user's figures, 2026-10-18).
         defaults = (('0.01', '1', '0.01') if current else RTE_ANGLE_DEFAULT_RANGE if mode == 'Angle'
                     else ('-3', '3', '0.05'))
         for variable, value in zip(self.ppms_simple_range, defaults):
@@ -46759,11 +46767,11 @@ class RTEPanel(PPMSPanel):
 
     def _require_ppms_control_ready(self):
         if self.rte_closed or self.closing:
-            raise RuntimeError('RT-E is closing')
+            raise RuntimeError('SHV is closing')
         if not self.ppms_control_safety_var.get():
-            raise RuntimeError('Tick the RT-E rack safety confirmation first')
+            raise RuntimeError('Tick the SHV rack safety confirmation first')
         if self.ppms_field_scan_running or self.ppms_environment_busy:
-            raise RuntimeError('RT-E is busy; wait or stop the scan first')
+            raise RuntimeError('SHV is busy; wait or stop the scan first')
 
     def _rte_submit(self, operation, done=None, then=None, stage_fix=None, failed=None):
         """``operation`` on the RT-E worker, with the rack busy meanwhile;
@@ -46790,11 +46798,11 @@ class RTEPanel(PPMSPanel):
                 if stage_fix is not None and isinstance(error, NEWMARK_FIXABLE_REFUSALS):
                     offer = error
                 else:
-                    self.thread_log(f'RT-E operation failed: {error}')
+                    self.thread_log(f'SHV operation failed: {error}')
                     if not self.rte_closed and not self.closing:
                         if failed is not None:
                             failed(error)
-                        messagebox.showerror('RT-E', str(error), parent=self.root)
+                        messagebox.showerror('SHV', str(error), parent=self.root)
             finally:
                 self.ppms_environment_busy = False
                 if not self.rte_closed and not self.closing:
@@ -46825,9 +46833,9 @@ class RTEPanel(PPMSPanel):
             # page has it is refused before anything is sent.
             ownership = self._newmark_stage_ownership()
             try:
-                ownership.claim('RT-E')
+                ownership.claim('SHV')
             except RuntimeError as error:
-                messagebox.showerror('RT-E motor', str(error), parent=self.root)
+                messagebox.showerror('SHV motor', str(error), parent=self.root)
                 return
             # Connect and the first read on the RT-E worker; the Tk thread
             # only shows the result (it never calls the stage's DLL).
@@ -46839,7 +46847,7 @@ class RTEPanel(PPMSPanel):
                     # Connected all the same (the handle is open, so the lamp,
                     # Stop stage and Disconnect say so), and the stage line
                     # says that the read failed (user, 2026-10-13).
-                    self.thread_log(f'RT-E {stage.label}: the first read after Connect failed: {error}')
+                    self.thread_log(f'SHV {stage.label}: the first read after Connect failed: {error}')
                     return f'Stage read failed: {short_status_error(error, 60)}'
 
             def connected(text):
@@ -46850,11 +46858,11 @@ class RTEPanel(PPMSPanel):
 
             def failed(_error):
                 if not stage.connected:
-                    ownership.release('RT-E')
+                    ownership.release('SHV')
             try:
                 self._rte_submit(connect_stage, connected, failed=failed)
             except BaseException:
-                ownership.release('RT-E')
+                ownership.release('SHV')
                 raise
             return
         self._rte_submit(lambda: self.rte_controllers[key].connect(resource),
@@ -46879,7 +46887,7 @@ class RTEPanel(PPMSPanel):
                 # STFMR page and the Motor row says "Not connected" (user,
                 # 2026-10-17); the stage line says whether its stop was seen.
                 if not stage.connected:
-                    self._newmark_stage_ownership().release('RT-E')
+                    self._newmark_stage_ownership().release('SHV')
                     self.rte_connections['newmark'].set('Not connected')
                 self.rte_stage_live.set('Stage: not connected' if failure is None
                                         else 'Stage: closed, STOP not confirmed')
@@ -46909,7 +46917,7 @@ class RTEPanel(PPMSPanel):
                 raise ValueError(f'The stage angle must be within ±{NEWMARK_CABLE_LIMIT_DEG:g}° of the stage zero '
                                  '(the sample wires)')
         except Exception as error:
-            messagebox.showerror('RT-E stage', str(error), parent=self.root)
+            messagebox.showerror('SHV stage', str(error), parent=self.root)
             return
         self.rte_stage_stop_event.clear()
         # KEPCO Zero / OFF and 6221 / 2400 OFF set the scan's stop event and
@@ -46957,7 +46965,7 @@ class RTEPanel(PPMSPanel):
                 # closing page nothing more runs (review, 2026-10-17).
                 held = self._rte_stage_fix_held()
                 if held is not None:
-                    self.thread_log(f"RT-E {self.rte_controllers['newmark'].label}: {command} not sent: {held} "
+                    self.thread_log(f"SHV {self.rte_controllers['newmark'].label}: {command} not sent: {held} "
                                     'after the Yes')
                     if self.rte_closed or self.closing:
                         return None
@@ -46973,7 +46981,7 @@ class RTEPanel(PPMSPanel):
         None; read on the RT-E worker as the fix job starts (review,
         2026-10-17)."""
         if self.rte_closed or self.closing:
-            return 'RT-E is closing'
+            return 'SHV is closing'
         if self.rte_stage_stop_event.is_set():
             return 'Stop stage was pressed'
         if self.ppms_field_scan_stop_event.is_set():
@@ -47002,7 +47010,7 @@ class RTEPanel(PPMSPanel):
         from here until the answer (rte_stage_prompt_open), Stop stage and
         the OFF buttons excepted; the checks before and after the answer
         still refuse if anything changed meanwhile (review, 2026-10-17)."""
-        self.thread_log(f"RT-E {self.rte_controllers['newmark'].label}: {error}")
+        self.thread_log(f"SHV {self.rte_controllers['newmark'].label}: {error}")
         self.rte_stage_prompt_open = True
         self._update_ppms_control_ui()
         try:
@@ -47030,13 +47038,13 @@ class RTEPanel(PPMSPanel):
             # with the move or the scan: the EO=1 question's warning comes
             # before it, so the angle can be checked first, with the driver
             # still off (review, 2026-10-17).
-            kind, command, title, question = newmark_fix_prompt(error, 'RT-E')
+            kind, command, title, question = newmark_fix_prompt(error, 'SHV')
             fix = stage.clear_limit_error if kind is NewmarkLimitErrorLatched else stage.enable_driver
             if self.rte_stage_stop_event.is_set() or self.ppms_field_scan_stop_event.is_set():
                 # Stop stage, KEPCO Zero / OFF or 6221 / 2400 OFF was pressed while
                 # the stage was read: no question, nothing sent, no move.
                 pressed = 'Stop' if self.rte_stage_stop_event.is_set() else 'OFF'
-                self.thread_log(f'RT-E {stage.label}: {pressed} was pressed meanwhile: {command} not offered; '
+                self.thread_log(f'SHV {stage.label}: {pressed} was pressed meanwhile: {command} not offered; '
                                 'nothing sent')
                 self.rte_stage_live.set(f'Stage: not moved ({pressed})')
                 if failed is not None:
@@ -47049,29 +47057,29 @@ class RTEPanel(PPMSPanel):
                     raise RuntimeError(newmark_fix_again_text(kind, error, command))
                 self._rte_require_stage_fix_ready(stage)
             except Exception as problem:
-                self.thread_log(f'RT-E {stage.label}: {command} not offered: {problem}')
+                self.thread_log(f'SHV {stage.label}: {command} not offered: {problem}')
                 if failed is not None:
                     failed(problem)
-                messagebox.showerror('RT-E stage', str(problem), parent=self.root)
+                messagebox.showerror('SHV stage', str(problem), parent=self.root)
                 return
             if not messagebox.askyesno(title, question, parent=self.root):
-                self.thread_log(f'RT-E {stage.label}: No: {command} not sent; nothing moved')
+                self.thread_log(f'SHV {stage.label}: No: {command} not sent; nothing moved')
                 if failed is not None:
                     failed(f'{command} not sent (No)')
                 return
             if self.rte_closed or self.closing:
                 # Closed while the question was open: nothing sent, no dialog.
-                self.thread_log(f'RT-E {stage.label}: {command} not sent: RT-E is closing')
+                self.thread_log(f'SHV {stage.label}: {command} not sent: SHV is closing')
                 return
             try:
                 self._rte_require_stage_fix_ready(stage)
             except Exception as problem:
-                self.thread_log(f'RT-E {stage.label}: {command} not sent: {problem}')
+                self.thread_log(f'SHV {stage.label}: {command} not sent: {problem}')
                 if failed is not None:
                     failed(problem)
-                messagebox.showerror('RT-E stage', str(problem), parent=self.root)
+                messagebox.showerror('SHV stage', str(problem), parent=self.root)
                 return
-            self.thread_log(f'RT-E {stage.label}: Yes: {command} queued on the RT-E worker; it is read back before '
+            self.thread_log(f'SHV {stage.label}: Yes: {command} queued on the SHV worker; it is read back before '
                             'anything moves')
             self._rte_stage_job(operation, done, then, fix=(command, fix), fixed=fixed + (kind,), failed=failed)
         finally:
@@ -47111,7 +47119,7 @@ class RTEPanel(PPMSPanel):
                 if result['stopped']:
                     where = newmark_angle_text(result['px'], result['steps_per_degree'])
                     self.rte_stage_live.set(f'Stage: stopped at {where}')
-                    self.thread_log(f'RT-E {stage.label}: Stop stage: stopped at {where}')
+                    self.thread_log(f'SHV {stage.label}: Stop stage: stopped at {where}')
                     return
                 self.rte_stage_live.set('Stage: STOP not confirmed: CHECK THE STAGE')
                 notes = result.get('notes') or []
@@ -47122,8 +47130,8 @@ class RTEPanel(PPMSPanel):
             # behind it replaces the live line at once: the log and a dialog
             # keep the warning, as for every other unconfirmed stop (review,
             # 2026-10-14).
-            self.thread_log(f'RT-E {stage.label}: {problem}')
-            messagebox.showerror('RT-E stage', problem, parent=self.root)
+            self.thread_log(f'SHV {stage.label}: {problem}')
+            messagebox.showerror('SHV stage', problem, parent=self.root)
         future.add_done_callback(lambda _: self.post_ui(finished))
 
     def _rte_stage_set_zero(self):
@@ -47131,11 +47139,11 @@ class RTEPanel(PPMSPanel):
             return
         stage = self.rte_controllers['newmark']
         if not stage.connected:
-            messagebox.showerror('RT-E stage', f'Connect the {stage.label} first', parent=self.root)
+            messagebox.showerror('SHV stage', f'Connect the {stage.label} first', parent=self.root)
             return
         # The question is shared with the STFMR page's Set motor 0° (user,
         # 2026-10-17).
-        if not messagebox.askyesno('RT-E stage zero', newmark_set_zero_question(), parent=self.root):
+        if not messagebox.askyesno('SHV stage zero', newmark_set_zero_question(), parent=self.root):
             return
 
         def zero():
@@ -47150,7 +47158,7 @@ class RTEPanel(PPMSPanel):
             try:
                 self._ppms_sr830_address(resource)
             except ValueError as error:
-                messagebox.showerror('RT-E SR830 address', str(error), parent=self.root)
+                messagebox.showerror('SHV SR830 address', str(error), parent=self.root)
                 return
         self._rte_submit(lambda: self._connect_and_initialize_ppms_device(key, resource, harmonic),
                          lambda _: self.ppms_device_connection_vars[key].set('Connected'))
@@ -47176,7 +47184,7 @@ class RTEPanel(PPMSPanel):
             self._require_ppms_control_ready()
             target, limit = self._rte_drive_parameters()
         except Exception as error:
-            messagebox.showerror('RT-E KEPCO', str(error), parent=self.root)
+            messagebox.showerror('SHV KEPCO', str(error), parent=self.root)
             return
         self._rte_submit(lambda: self.rte_controllers['kepco'].set_output('CURR', target, limit),
                          lambda _: self.rte_drive_live.set(f'KEPCO programmed: {target:+g} A / limit {limit:g} V'))
@@ -47217,7 +47225,7 @@ class RTEPanel(PPMSPanel):
             self._rte_capture_zurich()
             settings = self._ppms_direct_transport_settings()
         except Exception as error:
-            messagebox.showerror('RT-E excitation current', str(error), parent=self.root)
+            messagebox.showerror('SHV excitation current', str(error), parent=self.root)
             return
         self.ppms_field_scan_stop_event.clear()
         def operation():
@@ -47253,7 +47261,7 @@ class RTEPanel(PPMSPanel):
                         self.ppms_xy_vars[key].set(text)
                         self._set_connection_indicator('ppms_ref_' + key, valid, fault=overload)
                 except Exception as error:
-                    self.rte_field_live.set(f'RT-E read failed: {short_status_error(error, 60)}')
+                    self.rte_field_live.set(f'SHV read failed: {short_status_error(error, 60)}')
             future.add_done_callback(lambda _: self.post_ui(finished))
         self.ppms_poll_after_id = self.root.after(1000, self._ppms_poll_timer)
 
@@ -47294,7 +47302,7 @@ class RTEPanel(PPMSPanel):
 
     def _rte_wait(self, seconds):
         if self.closing or self.rte_closed or self.ppms_field_scan_stop_event.wait(seconds):
-            raise PPMSScanCancelled('RT-E stopped; partial point discarded')
+            raise PPMSScanCancelled('SHV stopped; partial point discarded')
 
     def _rte_settle_field(self):
         """Wait, at most STFMR_FIELD_SETTLE_TIMEOUT_S, for three LS475
@@ -47311,7 +47319,7 @@ class RTEPanel(PPMSPanel):
             tolerance = max(STFMR_FIELD_SETTLE_ABS_TOLERANCE_G, abs(field) * STFMR_FIELD_SETTLE_REL_TOLERANCE)
             if len(readings) == STFMR_FIELD_SETTLE_REQUIRED_SAMPLES and max(readings) - min(readings) <= tolerance:
                 return field
-        self.thread_log(f'RT-E: the LS475 field did not settle within {STFMR_FIELD_SETTLE_TIMEOUT_S:g} s (last '
+        self.thread_log(f'SHV: the LS475 field did not settle within {STFMR_FIELD_SETTLE_TIMEOUT_S:g} s (last '
                         f'readings {", ".join(f"{value:+.6g}" for value in readings)} G); the scan goes on')
         return field
 
@@ -47345,7 +47353,7 @@ class RTEPanel(PPMSPanel):
                     # Where its Connect is: the rack's "Motor" row since
                     # 2026-10-17 (user), and whether the STFMR page has it.
                     owner = self._newmark_stage_ownership().owner
-                    if owner not in (None, 'RT-E'):
+                    if owner not in (None, 'SHV'):
                         raise ValueError(f'The motor is connected on the {owner} page: disconnect it there and '
                                          'connect it here (the "Motor" row of the measurement instruments) for an '
                                          'angle scan')
@@ -47376,12 +47384,12 @@ class RTEPanel(PPMSPanel):
                         allow_no_lockins=self.zurich_scan_enabled, harmonic_c=settings['harmonic_c'])
             passes = self._rte_harmonic_passes(settings)
             if len(plan) * len(passes) > 100000:
-                raise ValueError('RT-E scans are limited to 100000 points including harmonic passes')
+                raise ValueError('SHV scans are limited to 100000 points including harmonic passes')
             stable, duration = float(self.ppms_field_scan_stable_var.get()), float(self.ppms_acquisition_time_var.get())
             if not math.isfinite(stable) or not 0 <= stable <= 86400 or not math.isfinite(duration) or not 0 < duration <= 86400:
                 raise ValueError('Settle time must be 0–86400 s; acquisition time must be >0 and <=86400 s')
         except Exception as error:
-            messagebox.showerror('RT-E scan parameters', str(error), parent=self.root)
+            messagebox.showerror('SHV scan parameters', str(error), parent=self.root)
             return
         # Every point waits Settle s, or LOCKIN_SETTLE_TAUS (1) time
         # constants of the slowest lock-in its pass measures if longer,
@@ -47399,7 +47407,7 @@ class RTEPanel(PPMSPanel):
             first, last = plan[0][2], max((p[2] for p in plan), key=lambda value: abs(value - plan[0][2]))
             trip = ', round trip' if self.rte_round_trip.get() else ''
             if not messagebox.askyesno(
-                    'RT-E Angle scan',
+                    'SHV Angle scan',
                     f'Angle scan from {first:g}° to {last:g}° (step {abs(float(self.ppms_simple_range[2].get())):g}°'
                     f'{trip}): {len(plan)} angles x {len(passes)} harmonic pass(es) = {len(plan) * len(passes)} '
                     'points.\n\n'
@@ -47411,17 +47419,17 @@ class RTEPanel(PPMSPanel):
                     f'within ±{NEWMARK_CABLE_LIMIT_DEG:g}° of it). Can the wires follow?\n\nStart the scan?',
                     parent=self.root):
                 return
-        folder = filedialog.askdirectory(parent=self.root, title='RT-E live CSV folder')
+        folder = filedialog.askdirectory(parent=self.root, title='SHV live CSV folder')
         if not folder:
             return
-        name = simpledialog.askstring('RT-E file name', 'Optional file name (leave blank for a timestamped default):', parent=self.root)
+        name = simpledialog.askstring('SHV file name', 'Optional file name (leave blank for a timestamped default):', parent=self.root)
         if name is None:
             return
-        stem = name.strip() or time.strftime('RT-E_%Y%m%d_%H%M%S')
+        stem = name.strip() or time.strftime('SHV_%Y%m%d_%H%M%S')
         if stem.lower().endswith('.csv'):
             stem = stem[:-4]
         if not stem or stem.endswith(('.', ' ')) or re.search(r'[<>:"/\\|?*\x00-\x1f]', stem) or stem.split('.')[0].upper() in {'CON', 'PRN', 'AUX', 'NUL', *(f'COM{i}' for i in range(1, 10)), *(f'LPT{i}' for i in range(1, 10))}:
-            messagebox.showerror('RT-E file name', 'Use a valid Windows file name without a path.', parent=self.root)
+            messagebox.showerror('SHV file name', 'Use a valid Windows file name without a path.', parent=self.root)
             return
         # The scan's stop event (and for Angle the stage's) is cleared here,
         # before an Angle scan's stage check, so that an old Stop does not stop
@@ -47446,7 +47454,7 @@ class RTEPanel(PPMSPanel):
                     except FileExistsError:
                         suffix += 1
             except OSError as error:
-                messagebox.showerror('RT-E CSV', str(error), parent=self.root)
+                messagebox.showerror('SHV CSV', str(error), parent=self.root)
                 return
             self.ppms_live_csv_path, self.ppms_live_csv_fields = path, None
             self.ppms_field_scan_running = True
@@ -47474,7 +47482,7 @@ class RTEPanel(PPMSPanel):
             # cannot occur at the user's 1 x TC: Settle s is at most 86400 s);
             # the log has the line in full (user, 2026-10-14).
             self.ppms_field_scan_status_var.set(
-                f'RT-E {mode}: {self.ppms_field_scan_total} points, settle {ppms_settle_status_text(settle_s)} s; '
+                f'SHV {mode}: {self.ppms_field_scan_total} points, settle {ppms_settle_status_text(settle_s)} s; '
                 f'at least {least_text}')
             if mode == 'Angle':
                 self.rte_stage_where = 'stage not moved'
@@ -47485,11 +47493,11 @@ class RTEPanel(PPMSPanel):
                 # not here: "; settle 86400 s" made the longest line about 586 px in
                 # Arial 15 px (user, 2026-10-14).
                 self.ppms_field_scan_status_var.set(
-                    f'RT-E Angle {first:g}° to {last:g}°, KEPCO {field_current:+g} A held; '
+                    f'SHV Angle {first:g}° to {last:g}°, KEPCO {field_current:+g} A held; '
                     f'{self.ppms_field_scan_total} points')
             self._update_ppms_control_ui()
             self._redraw_ppms_transport_plot()
-            self.thread_log(f'RT-E {mode} scan; CSV: {path}; {len(plan)} points x {len(passes)} harmonic pass(es)'
+            self.thread_log(f'SHV {mode} scan; CSV: {path}; {len(plan)} points x {len(passes)} harmonic pass(es)'
                             + (f'; stage {first:g}° to {last:g}°, KEPCO {field_current:+g} A held' if mode == 'Angle' else '')
                             + f'; each reading waits {settle_text}; at least {least_text}')
             # The wait announced here; the worker logs only a different one (a
@@ -47512,9 +47520,9 @@ class RTEPanel(PPMSPanel):
                         # keeps only the failure, to stay on one line (user, 2026-10-13).
                         where = self.rte_stage_where or 'stage not moved'
                         detail += f'\n\n{where[:1].upper()}{where[1:]}'
-                    self.thread_log('RT-E scan ' + status + (f'; {where}' if where else ''))
+                    self.thread_log('SHV scan ' + status + (f'; {where}' if where else ''))
                     if not self.closing and not self.rte_closed:
-                        messagebox.showerror('RT-E scan', detail, parent=self.root)
+                        messagebox.showerror('SHV scan', detail, parent=self.root)
                 if mode == 'Angle' and not status.startswith('Failed'):
                     status += f'; {self.rte_stage_where}'     # where the stage is (user, 2026-10-13)
                 self.ppms_field_scan_running = False
@@ -47527,7 +47535,7 @@ class RTEPanel(PPMSPanel):
             except Exception as error:
                 self.ppms_field_scan_running = False
                 self._update_ppms_control_ui()
-                messagebox.showerror('RT-E scan not started', str(error), parent=self.root)
+                messagebox.showerror('SHV scan not started', str(error), parent=self.root)
                 return
             future.add_done_callback(lambda f: self.post_ui(lambda: finished(f)))
         if mode != 'Angle':
@@ -47558,11 +47566,11 @@ class RTEPanel(PPMSPanel):
                     raise RuntimeError(f'Connect the {stage.label} first')
             except Exception as error:
                 not_started(error)
-                messagebox.showerror('RT-E scan not started', str(error), parent=self.root)
+                messagebox.showerror('SHV scan not started', str(error), parent=self.root)
                 return
             if self.ppms_field_scan_stop_event.is_set() or self.rte_stage_stop_event.is_set():
                 pressed = 'Stop stage' if self.rte_stage_stop_event.is_set() else 'an OFF button'
-                self.thread_log(f'RT-E Angle scan not started: {pressed} was pressed during the stage check')
+                self.thread_log(f'SHV Angle scan not started: {pressed} was pressed during the stage check')
                 not_started(f'{pressed} was pressed')
                 return
             begin()
@@ -47695,7 +47703,7 @@ class RTEPanel(PPMSPanel):
                         and abs(drift_g) > max(STFMR_FIELD_SETTLE_ABS_TOLERANCE_G,
                                                abs(before) * STFMR_FIELD_SETTLE_REL_TOLERANCE)):
                     drift_noted = True
-                    self.thread_log(f'RT-E {mode} point {index}: the LS475 field changed by {drift_g:+.6g} G during '
+                    self.thread_log(f'SHV {mode} point {index}: the LS475 field changed by {drift_g:+.6g} G during '
                                     f'the acquisition ({before:+.6g} -> {measured:+.6g} G); point saved, scan goes on '
                                     '(later drifts of this pass are in the field_drift_g column only)')
                 kepco = self.rte_controllers['kepco']
@@ -47706,7 +47714,7 @@ class RTEPanel(PPMSPanel):
                     stage_target_deg=target, stage_angle_deg=stage_state['angle_deg'],
                     stage_position_steps=stage_state['px'],
                     stage_steps_per_degree=stage_state['steps_per_degree'])
-                row = dict(module='RT-E', scan_mode=mode, loop=loop, point=point,
+                row = dict(module='SHV', scan_mode=mode, loop=loop, point=point,
                     harmonic_pass=settings.get('harmonic_pass', 1),
                     elapsed_s=time.monotonic() - self.ppms_field_scan_started_at,
                     kepco_programmed_current_a=kepco.cached_current_a if kepco.output_owned else '',
@@ -47764,7 +47772,7 @@ class RTEPanel(PPMSPanel):
                 raise       # STOP not confirmed: a failure, not a clean stop
             if not stopped.before:
                 self.rte_stage_where = f'stage stopped at {newmark_angle_text(stopped.px, stage.steps_per_degree)}'
-            raise PPMSScanCancelled(f"RT-E stopped at a stage move; {self.rte_stage_where or 'stage not moved'}") from stopped
+            raise PPMSScanCancelled(f"SHV stopped at a stage move; {self.rte_stage_where or 'stage not moved'}") from stopped
         self.rte_stage_where = f"stage at {state['angle_deg']:+.3f}°"
         # The last progress update may have come during the deceleration, and
         # it always ends ", moving"; nothing else updates the line until the
@@ -47790,10 +47798,10 @@ class RTEPanel(PPMSPanel):
                                     else 'stage NOT confirmed stopped: CHECK THE STAGE')
         except Exception as stop_error:
             self.rte_stage_where = 'stage NOT confirmed stopped: CHECK THE STAGE'
-            self.thread_log(f'RT-E stage STOP after the failure failed: {stop_error}')
+            self.thread_log(f'SHV stage STOP after the failure failed: {stop_error}')
         # Always logged, so an unconfirmed stop is never only worked out
         # (user, 2026-10-13); finished() also puts it in the error dialog.
-        self.thread_log(f'RT-E Angle scan, after the stage failure: {self.rte_stage_where}')
+        self.thread_log(f'SHV Angle scan, after the stage failure: {self.rte_stage_where}')
 
     def _rte_show_point(self, row, progress):
         if self.rte_closed or self.closing:
@@ -47866,8 +47874,8 @@ class RTEPanel(PPMSPanel):
     def save_ppms_field_scan_csv(self):
         if not self.ppms_field_scan_rows or self.ppms_field_scan_running:
             return
-        path = filedialog.asksaveasfilename(parent=self.root, title='Save RT-E CSV as',
-            defaultextension='.csv', filetypes=(('CSV', '*.csv'),), initialfile=time.strftime('RT-E_%Y%m%d_%H%M%S.csv'))
+        path = filedialog.asksaveasfilename(parent=self.root, title='Save SHV CSV as',
+            defaultextension='.csv', filetypes=(('CSV', '*.csv'),), initialfile=time.strftime('SHV_%Y%m%d_%H%M%S.csv'))
         if not path:
             return
         try:
@@ -47876,7 +47884,7 @@ class RTEPanel(PPMSPanel):
                 writer.writeheader()
                 writer.writerows(self.ppms_field_scan_rows)
         except OSError as error:
-            messagebox.showerror('RT-E CSV export', str(error), parent=self.root)
+            messagebox.showerror('SHV CSV export', str(error), parent=self.root)
 
     def safe_close_ppms(self):
         if self.rte_closed:
@@ -47901,11 +47909,11 @@ class RTEPanel(PPMSPanel):
                 try:
                     controller.disconnect()
                 except Exception as error:
-                    self.thread_log(f'RT-E shutdown warning: {error}')
+                    self.thread_log(f'SHV shutdown warning: {error}')
             # The device is free for the other page once its handle is closed
             # (user, 2026-10-17).
             if stage is not None and not stage.connected:
-                ownership.release('RT-E')
+                ownership.release('SHV')
             self.zurich_executor.submit(self.zurich_controller.disconnect_mfli)
             self.zurich_executor.shutdown(wait=False)
         self.ppms_executor.submit(cleanup)

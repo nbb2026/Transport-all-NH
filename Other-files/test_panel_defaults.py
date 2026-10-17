@@ -37,26 +37,28 @@ class PanelDefaultTests(unittest.TestCase):
         return state
 
     def test_rte_defaults_are_the_users_figure(self):
-        """2026-10-07: the Zurich alone measures, 1+2+3, at 0.1 mA RMS; 317.3 Hz
-        since 2026-10-18 (it was 17.3 Hz)."""
+        """The SHV page (RT-E until 2026-10-18): the Zurich alone measures
+        (2026-10-07), 1+2, at 1 mA RMS, 317.3 Hz, KEPCO current 8 A (the
+        user's figures, 2026-10-18; it was 1+2+3, 0.1 mA RMS, 17.3 Hz, 0 A)."""
         panel = self.app.rte_panel
         self.assertEqual(self.settings(panel), {
             "830_a": ("1+2+3", False),
             "830_b": ("2", False),
             "830_c": ("3", False),
-            "zurich": ("1+2+3", True),
+            "zurich": ("1+2", True),
         })
-        self.assertEqual(panel.ppms_transport_current_var.get(), "0.1")
+        self.assertEqual(self.app.notebook.tab(self.app.rte_panel_tab, "text"), "SHV")
+        self.assertEqual(panel.ppms_transport_current_var.get(), "1")
         self.assertEqual(panel.ppms_transport_frequency_var.get(), "317.3")
         self.assertEqual(panel.ppms_transport_compliance_var.get(), "50")
-        self.assertEqual((panel.rte_drive_target.get(), panel.rte_voltage_limit.get()), ("0", "5"))
+        self.assertEqual((panel.rte_drive_target.get(), panel.rte_voltage_limit.get()), ("8", "5"))
         self.assertEqual(panel.zurich_expected_frequency, 317.3)
         # The PPMS page keeps its own excitation.
         self.assertEqual(self.app.ppms_panel.ppms_transport_frequency_var.get(), "317.3")
         # The start-up scan (user's figure, 2026-10-18): Angle, 0 to -360 deg
-        # in 10 deg steps, round trip, Settle s 0.5, Acquire s 2, Loops 1.
+        # in 5 deg steps, round trip, Settle s 0.5, Acquire s 2, Loops 1.
         self.assertEqual(panel.ppms_simple_mode.get(), "Angle")
-        self.assertEqual([v.get() for v in panel.ppms_simple_range], ["0", "-360", "10"])
+        self.assertEqual([v.get() for v in panel.ppms_simple_range], ["0", "-360", "5"])
         self.assertIs(panel.rte_round_trip.get(), True)
         self.assertEqual((panel.ppms_field_scan_stable_var.get(), panel.ppms_acquisition_time_var.get(),
                           int(panel.ppms_field_scan_loop_var.get())), ("0.5", "2", 1))
@@ -572,7 +574,7 @@ class PanelDefaultTests(unittest.TestCase):
         STFMR's MFLI TC s and SR830 TC all start at 1 s (three were 0.1 s and
         the SR830's 100 ms)."""
         a = self.app
-        for name, panel in (("PPMS", a.ppms_panel), ("RT-E", a.rte_panel)):
+        for name, panel in (("PPMS", a.ppms_panel), ("SHV", a.rte_panel)):
             self.assertEqual(panel.zurich_timeconstant.get(), "1", name)
         self.assertEqual(a.nonlocal_mfli_tc_var.get(), "1")
         self.assertEqual(a.stfmr_lockin_mfli_timeconstant_var.get(), "1")
@@ -595,7 +597,7 @@ class NotebookTabTests(unittest.TestCase):
                       for index in range(notebook.index("end"))]
             self.assertEqual(titles, [
                 "MOKE light", "MOKE motor", "MOKE magnet", "CIDWM",
-                "MOKE-24", "Non-local", "PPMS", "RT-E", "FMR", "STFMR"])
+                "MOKE-24", "Non-local", "PPMS", "SHV", "FMR", "STFMR"])
         finally:
             built.closing = True
             built.safe_close_hardware()
@@ -627,11 +629,11 @@ class RTEStatusRowTests(unittest.TestCase):
         # could be wider; a wait of 100000 s or more (once 7 x a 30 ks SR830
         # time constant) cannot occur at the user's 1 x TC, as Settle s is
         # at most 86400 s (user, 2026-10-14).
-        "RT-E Current: 100000 points, settle 86400 s; at least 4800024 h 00 min 00 s",
-        "RT-E Current: 100000 points, settle 0.0864 s; at least 2400026 h 24 min 02 s",
+        "SHV Current: 100000 points, settle 86400 s; at least 4800024 h 00 min 00 s",
+        "SHV Current: 100000 points, settle 0.0864 s; at least 2400026 h 24 min 02 s",
         # The default Field scan at 1 x TC: 199 x (1 s + 1 s) + 1 s (user,
         # 2026-10-14; "settle 7 s; at least 26 min 33 s" at 7 x TC).
-        "RT-E Field: 199 points, settle 1 s; at least 6 min 39 s",
+        "SHV Field: 199 points, settle 1 s; at least 6 min 39 s",
         # A wait that differs from the one announced at Start, while it runs
         # (a time constant changed since Connect), at its widest: about 412
         # px in Arial, 485 px in DejaVu Sans (the same digits as the
@@ -641,7 +643,7 @@ class RTEStatusRowTests(unittest.TestCase):
         "Completed; 6221 current set to 0 (output OFF, read back)",
         # The Angle scan's (2026-10-13), at their longest: six significant
         # digits ({:g}) for the angles and the KEPCO current, 100000 points.
-        "RT-E Angle -359.995° to 359.995°, KEPCO -9.87654 A held; 100000 points",
+        "SHV Angle -359.995° to 359.995°, KEPCO -9.87654 A held; 100000 points",
         "Stopped; outputs held unless OFF was requested; stage stopped at -359.999°",
         "Completed; outputs held; stage at +360.000°",
         # An Angle Start that did not start (review, 2026-10-17): the longest
@@ -664,7 +666,7 @@ class RTEStatusRowTests(unittest.TestCase):
         notebook = next(w for w in cls.app.__dict__.values()
                         if isinstance(w, tk.ttk.Notebook))
         for index in range(notebook.index("end")):
-            if notebook.tab(index, "text") == "RT-E":
+            if notebook.tab(index, "text") == "SHV":
                 notebook.select(index)
         cls.root.update()
 

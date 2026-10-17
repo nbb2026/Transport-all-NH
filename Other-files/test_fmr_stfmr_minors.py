@@ -236,7 +236,7 @@ class LeaseLabelTests(unittest.TestCase):
             text = source.read()
         self.assertIn('"kepco": STFMRKepco4886Controller(self.thread_log, owner_scope="FMR")', text)
         self.assertIn('self.stfmr_controllers["gauss"].owner_scope = "FMR"', text)
-        self.assertIn("self.rte_controllers['kepco'].owner_scope = 'RT-E'", text)
+        self.assertIn("self.rte_controllers['kepco'].owner_scope = 'SHV'", text)
 
 
 def inputs_app(start="-1", stop="1", step="0.5", loop="1"):

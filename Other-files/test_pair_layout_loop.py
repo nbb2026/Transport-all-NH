@@ -115,7 +115,7 @@ class RTEStageBlockTests(Built, unittest.TestCase):
         cls.build()
         notebook = next(w for w in cls.a.__dict__.values() if isinstance(w, tk.ttk.Notebook))
         for index in range(notebook.index("end")):
-            if notebook.tab(index, "text") == "RT-E":
+            if notebook.tab(index, "text") == "SHV":
                 notebook.select(index)
 
     def layouts(self):
@@ -128,7 +128,7 @@ class RTEStageBlockTests(Built, unittest.TestCase):
         body, params, lockins, block = rte_stage_parts(self.a)
         settings, scan = body.master, self.a.rte_panel.rte_start_button.master.master
         canvases = self.a.rte_panel.ppms_harmonic_canvases
-        print(f"RT-E {label} {self.root.winfo_width()}x{self.root.winfo_height()} px: layouts {self.layouts()}; "
+        print(f"SHV {label} {self.root.winfo_width()}x{self.root.winfo_height()} px: layouts {self.layouts()}; "
               f"settings {settings.winfo_width()}x{settings.winfo_height()}, scan box "
               f"{scan.winfo_width()}x{scan.winfo_height()}, params {params.winfo_reqwidth()}x"
               f"{params.winfo_reqheight()}, lock-ins {lockins.winfo_reqwidth()}x{lockins.winfo_reqheight()}, "
@@ -153,7 +153,7 @@ class RTEStageBlockTests(Built, unittest.TestCase):
                     self.assertIn(final[2], ("beside lock-ins", "under params"))
                 body = rte_stage_parts(self.a)[0]
                 self.assertFalse(getattr(body, "_pair_flip_guard", {}).get("held"))
-        self.assertEqual(rte_stage_parts(self.a)[3].master.master.cget("text"), "RT-E settings")
+        self.assertEqual(rte_stage_parts(self.a)[3].master.master.cget("text"), "SHV settings")
 
     def test_the_block_costs_no_height_and_fits_at_1101_px(self):
         self.root.geometry(f"1101x{CI_SHOT_HEIGHT}+0+0")
@@ -170,7 +170,7 @@ class RTEStageBlockTests(Built, unittest.TestCase):
         self.assertLessEqual(block.winfo_rootx() + block.winfo_width(), settings.winfo_rootx() + settings.winfo_width())
         # The scan box keeps only the scan rows, its status and notes.
         rows = self.a.rte_panel.rte_start_button.master
-        self.assertEqual(rows.master.cget("text"), "RT-E scan")
+        self.assertEqual(rows.master.cget("text"), "SHV scan")
 
     def test_at_2000_px_the_block_is_beside_or_under_the_kepco_rows(self):
         self.show(LAB_WIDE)
@@ -249,7 +249,7 @@ class RTEStageBlockTests(Built, unittest.TestCase):
         canvases = self.a.rte_panel.ppms_harmonic_canvases
         self.assertEqual(len(canvases), 9, "the Zurich at 1+2+3: three rows of X, Y, theta")
         # The layout numbers, for the record (user, 2026-10-17).
-        print(f"RT-E plots at {self.root.winfo_width()}x{self.root.winfo_height()} px: "
+        print(f"SHV plots at {self.root.winfo_width()}x{self.root.winfo_height()} px: "
               f"{sorted({c.winfo_height() for c in canvases.values()})} px tall")
         for key, canvas in canvases.items():
             with self.subTest(plot=key):
@@ -259,7 +259,7 @@ class RTEStageBlockTests(Built, unittest.TestCase):
             # The lab's widened window at the lab screen's height.
             self.root.geometry(f"{width}x{self.height}+0+0")
             self.root.update()
-            print(f"RT-E plots at {self.root.winfo_width()}x{self.root.winfo_height()} px: "
+            print(f"SHV plots at {self.root.winfo_width()}x{self.root.winfo_height()} px: "
                   f"{sorted({c.winfo_height() for c in canvases.values()})} px tall")
             for key, canvas in canvases.items():
                 with self.subTest(width=width, plot=key):

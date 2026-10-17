@@ -137,9 +137,9 @@ class EndToEnd(unittest.TestCase):
              tc_zurich="0.001"):
         """The page, ready for an Angle scan: the safety tick, every
         instrument connected (the stage through its real Connect, on the
-        worker), Angle chosen and the range set; ``meter``: "zurich" (RT-E's
-        default, the Zurich alone at 1+2+3) or "sr830" (SR830-1 alone at
-        1+2+3, three harmonic passes)."""
+        worker), Angle chosen and the range set; ``meter``: "zurich" (SHV's
+        default, the Zurich alone at 1+2 since 2026-10-18) or "sr830" (SR830-1
+        alone at 1+2+3, three harmonic passes)."""
         panel = build_page()
         h = types.SimpleNamespace(panel=panel, log=[], logged=[], ui=[], in_drain=False,
                                   folder=tempfile.TemporaryDirectory())
@@ -175,7 +175,7 @@ class EndToEnd(unittest.TestCase):
         self.addCleanup(guard.stop)
         h.sim = Sim() if sim is None else sim
         h.dll = RecordingDLL(h.sim)
-        stage = app.NewmarkNSCA1Controller(h.logged.append, owner_scope="RT-E",
+        stage = app.NewmarkNSCA1Controller(h.logged.append, owner_scope="SHV",
                                            loader=lambda: (h.dll, "fake PerformaxCom.dll"))
         stage._now, stage._sleep = h.clock.now, h.clock.sleep
         real_move = stage.move_to_deg
@@ -221,8 +221,11 @@ class EndToEnd(unittest.TestCase):
 
         def sample(settings_lockins):
             h.points += 1
-            values = {"zurich_harmonic": "1+2+3"}
-            for demod in (1, 2, 3):
+            # The Zurich's harmonics as the page has them (1+2 by default,
+            # user's figure, 2026-10-18), one demodulator per order.
+            orders = str(panel.zurich_harmonic.get())
+            values = {"zurich_harmonic": orders}
+            for demod in range(1, len(orders.split("+")) + 1):
                 values.update({f"zurich_demod{demod}_x_v": demod * 1e-6 + h.points * 1e-9,
                                f"zurich_demod{demod}_y_v": -demod * 1e-6, f"zurich_demod{demod}_r_v": demod * 1.4e-6,
                                f"zurich_demod{demod}_theta_deg": -45.0, f"zurich_demod{demod}_harmonic": demod,
@@ -349,7 +352,7 @@ class AngleScanTests(EndToEnd):
         self.assertEqual([float(r["stage_angle_deg"]) for r in rows], [0.0, 10.0, 20.0, 10.0, 0.0])
         self.assertEqual([int(r["stage_position_steps"]) for r in rows], [0, 100000, 200000, 100000, 0])
         self.assertEqual({r["stage_steps_per_degree"] for r in rows}, {"10000"})
-        self.assertEqual({(r["module"], r["scan_mode"], r["loop"]) for r in rows}, {("RT-E", "Angle", "1")})
+        self.assertEqual({(r["module"], r["scan_mode"], r["loop"]) for r in rows}, {("SHV", "Angle", "1")})
         self.assertEqual([r["point"] for r in rows], ["1", "2", "3", "4", "5"])
         self.assertEqual({r["kepco_programmed_current_a"] for r in rows}, {"1.5"})
         self.assertEqual({r["measured_field_g"] for r in rows}, {"123.0"})
@@ -361,7 +364,10 @@ class AngleScanTests(EndToEnd):
         self.assertEqual(panel.rte_field_live.get(), "LS475 field: +123 G")
         self.assertEqual(panel.ppms_field_scan_total, 5)
         # The plots: against the angle read back, every point.
-        x_label, series = h.draw.call_args.args[2], h.draw.call_args.args[1]
+        # The last plot drawn with data: with the Zurich at 1+2 (user's
+        # figure, 2026-10-18) the hidden third-harmonic row is drawn empty.
+        drawn = next(c for c in reversed(h.draw.call_args_list) if c.args[1])
+        x_label, series = drawn.args[2], drawn.args[1]
         self.assertEqual(x_label, "Sample angle (°)")
         self.assertTrue(series)
         for name, points in series.items():
@@ -392,7 +398,7 @@ class AngleScanTests(EndToEnd):
                           ("2", "1", 30.0), ("2", "2", 15.0), ("2", "3", 0.0)])
         self.assertEqual([e[2] for e in h.log if e[:2] == ("stage", "move")], [30.0, 15.0, 0.0, 30.0, 15.0, 0.0])
         self.assertEqual(len([e for e in h.log if e[:2] == ("kepco", "set_output")]), 1)
-        series = h.draw.call_args.args[1]
+        series = next(c.args[1] for c in reversed(h.draw.call_args_list) if c.args[1])
         self.assertEqual(sorted({name.rsplit(" ", 1)[-1] for name in series}), ["L1", "L2"], "one series per loop")
 
     def test_harmonic_passes_with_an_sr830(self):
@@ -419,7 +425,9 @@ class AngleScanTests(EndToEnd):
         self.start(h)
         h.showerror.assert_not_called()
         self.assertEqual([e[2] for e in h.log if e[0] == "lockins"], [()], "no SR830 read, the Zurich in the sample")
-        self.assertEqual(self.rows(h)[0]["zurich_demod3_harmonic"], "3")
+        row = self.rows(h)[0]
+        self.assertEqual((row["zurich_harmonic"], row["zurich_demod2_harmonic"]), ("1+2", "2"))
+        self.assertNotIn("zurich_demod3_harmonic", row, "1+2 by default (user's figure, 2026-10-18)")
 
     def test_the_mode_change_sets_the_angle_boxes(self):
         panel = build_page()
@@ -433,8 +441,8 @@ class AngleScanTests(EndToEnd):
         with patch.object(app.CombinedControlApp, "_draw_nonlocal_series") as draw:
             panel.ppms_simple_mode.set("Angle")
             panel._rte_mode_changed()
-        # 0 to -360 deg in 10 deg steps (user's figure, 2026-10-18).
-        self.assertEqual([v.get() for v in panel.ppms_simple_range], ["0", "-360", "10"])
+        # 0 to -360 deg in 5 deg steps (user's figures, 2026-10-18).
+        self.assertEqual([v.get() for v in panel.ppms_simple_range], ["0", "-360", "5"])
         self.assertEqual(panel.rte_scan_units.get(), "Stage °")
         # The note says which box holds the field (user, 2026-10-17).
         self.assertEqual(panel.rte_scan_note.get(), "Angle: Stage °; field: KEPCO current A")
@@ -468,7 +476,7 @@ class AngleScanStopTests(EndToEnd):
         self.assertEqual(self.names(h, "kepco", "6221"), [("6221", "on"), ("kepco", "set_output")],
                          "outputs held: a Stop switches nothing off")
         self.assertFalse(panel.ppms_field_scan_running)
-        self.assertIn(f"RT-E Newmark NSC-A1 connected (Ace-Series-SDE, V231BL): {h.stage.scale_text()}", h.logged)
+        self.assertIn(f"SHV Newmark NSC-A1 connected (Ace-Series-SDE, V231BL): {h.stage.scale_text()}", h.logged)
 
     def test_stop_during_a_settle(self):
         # 1 s settle a point (the Zurich's 1 s time constant): Stop from the
@@ -500,7 +508,7 @@ class AngleScanStopTests(EndToEnd):
         self.assertTrue(panel.ppms_field_scan_status_var.get().startswith("Failed: "))
         self.assertEqual(self.names(h, "kepco", "6221"), [("6221", "on"), ("kepco", "set_output"), ("6221", "off")],
                          "a stage failure: the 6221 off, the KEPCO's field held")
-        self.assertIn("RT-E Angle scan, after the stage failure: stage stopped at +9.999°", h.logged)
+        self.assertIn("SHV Angle scan, after the stage failure: stage stopped at +9.999°", h.logged)
         self.assertEqual([float(r["stage_angle_deg"]) for r in self.rows(h)], [0.0])
 
     def test_closing_during_a_scan_stops_it_and_closes_the_stage_on_the_worker(self):

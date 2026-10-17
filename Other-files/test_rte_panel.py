@@ -402,7 +402,7 @@ class RTE(unittest.TestCase):
             # The start-up scan is the user's Angle scan (2026-10-18).
             self.assertEqual(panel.ppms_simple_mode.get(), 'Angle')
             self.assertTrue(panel.rte_round_trip.get())
-            self.assertEqual([v.get() for v in panel.ppms_simple_range], ['0', '-360', '10'])
+            self.assertEqual([v.get() for v in panel.ppms_simple_range], ['0', '-360', '5'])
             self.assertEqual(panel.ppms_acquisition_time_var.get(), '2')
             measurement = panel.ppms_instruments_frame.parent
             rack = panel.rte_connection_widgets['kepco'][0].parent
@@ -425,10 +425,10 @@ class RTE(unittest.TestCase):
             self.assertEqual(panel.rte_resources['newmark'].get(), 'auto')
             self.assertEqual(panel.rte_connections['newmark'].get(), 'Not connected')
             block = panel.rte_stage_stop_button.parent
-            self.assertEqual(block.parent.parent.options['text'], 'RT-E settings')
-            self.assertEqual(panel.rte_start_button.parent.parent.options['text'], 'RT-E scan')
+            self.assertEqual(block.parent.parent.options['text'], 'SHV settings')
+            self.assertEqual(panel.rte_start_button.parent.parent.options['text'], 'SHV scan')
             self.assertNotIn('text', panel.ppms_instruments_frame.options)
-            self.assertEqual(panel.zurich_harmonic.get(), '1+2+3')
+            self.assertEqual(panel.zurich_harmonic.get(), '1+2')     # user's figure, 2026-10-18
             self.assertEqual(panel.zurich_resource.get(), 'DEV4414 (Super)')
             self.assertEqual(panel.zurich_controller.mfli_server_candidates, (('192.168.68.250', 8004),))
             self.assertFalse(hasattr(app.NonLocalACController(lambda _: None), 'mfli_server_candidates'))

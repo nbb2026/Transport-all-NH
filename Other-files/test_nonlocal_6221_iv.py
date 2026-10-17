@@ -226,7 +226,7 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(options["output_mode"], "AC")
         self.assertFalse(options["use_nanovoltmeter"])
         self.assertTrue(options["sr830_front_panel_time_constant"],
-                        "the SR830 keeps its front-panel time constant, as on RT-E")
+                        "the SR830 keeps its front-panel time constant, as on SHV")
         self.assertEqual(calls[0][4]["8"]["harmonic"], 2)
         # As the RT-E Current scan: one fixed range for the largest current,
         # the sine started once, then only its amplitude changed, so the
@@ -737,7 +737,7 @@ class ZurichRowTests(unittest.TestCase):
         a.nonlocal_vi_mfli_device_var = Var("DEV4414 (Super)")
         a._on_nonlocal_mfli_device_changed()
         self.assertEqual(a.nonlocal_vi_mfli_reference_source_var.get(), "Trigger In 1",
-                         "as on PPMS and RT-E")
+                         "as on PPMS and SHV")
         a.nonlocal_vi_mfli_device_var.set("DEV4435 (Normal)")
         a._on_nonlocal_mfli_device_changed()
         self.assertEqual(a.nonlocal_vi_mfli_reference_source_var.get(), "Aux Input 1",

@@ -1,5 +1,25 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## RT-E renamed SHV; new SHV start-up defaults (2026-10-18)
+
+- **Rename (user: "rename RT-E as SHV"):** the tab, the box titles (SHV
+  settings, SHV scan, SHV measurement), dialog titles, status lines, log
+  lines, the default CSV name (`SHV_<date>_<time>.csv`), the CSV `module`
+  column (`SHV`) and the motor's page name (owner "SHV": "The motor is
+  connected on the SHV page") all read SHV. Only string literals changed:
+  code names (`RTEPanel`, `rte_*`, `RTE_*`), comments and docstrings keep
+  RT-E. The processing script finds these CSVs by their `module` column,
+  not its value. Non-local's 6221-IV rewrites "SHV" (was "RT-E") in the
+  shared validation messages.
+- **Defaults (the user's screenshot, "use default setting like the fig"):**
+  KEPCO current A **8** (was 0; only Apply KEPCO or an Angle scan's Start,
+  each after a Yes/No naming it, sends it), voltage limit 5 V; 6221 **1 mA
+  RMS** (was 0.1) at 317.3 Hz, compliance 50 V; the Zurich alone measuring
+  **1+2** (was 1+2+3); SR830 harmonics 1+2+3 / 2 / 3; Angle 0 to −360° in
+  **5°** steps (was 10°), round trip, Settle s 0.5, Acquire s 2, Loops 1.
+  `RTE_KEPCO_DEFAULT_CURRENT_A`, `RTE_ZURICH_DEFAULT_HARMONICS`,
+  `RTE_ANGLE_DEFAULT_RANGE`, `RTE_TRANSPORT_CURRENT_RMS_MA`.
+
 ## RT-E: the user's start-up scan; LS475 drift no longer stops a scan (2026-10-18)
 
 - **Start-up defaults (the user's screenshot, "using these params. as
