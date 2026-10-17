@@ -284,7 +284,9 @@ class RTEWorkerTests(NoWindows):
                          "the first point after the harmonic change waits too")
         rows = panel.ppms_field_scan_rows
         self.assertEqual([r["effective_settle_s"] for r in rows], [3.0, 3.0, 1.0, 1.0])
-        self.assertEqual(list(rows[0])[-2:], ["effective_settle_s", "slowest_lockin_tc_s"])
+        # The LS475 columns come last since 2026-10-18 (user).
+        self.assertEqual(list(rows[0])[-4:], ["effective_settle_s", "slowest_lockin_tc_s",
+                                             "field_before_g", "field_drift_g"])
         self.assertEqual(list(rows[2]), list(rows[0]), "the same columns in every pass")
         # The pass with fewer lock-ins is logged once, not at every point.
         logged = [c.args[0] for c in panel.thread_log.call_args_list if "each reading now waits" in c.args[0]]
@@ -316,7 +318,9 @@ class RTEWorkerTests(NoWindows):
         panel = self.worker(zurich_tau=2.0)
         rows = self.run_mode(panel, "Field", ((1, 1, -1.),))
         keys = list(rows[0])
-        self.assertEqual(keys[-3:], ["sr830_8_harmonic", "effective_settle_s", "slowest_lockin_tc_s"])
+        # The LS475 columns come last since 2026-10-18 (user).
+        self.assertEqual(keys[-5:], ["sr830_8_harmonic", "effective_settle_s", "slowest_lockin_tc_s",
+                                     "field_before_g", "field_drift_g"])
         self.assertEqual((rows[0]["effective_settle_s"], rows[0]["slowest_lockin_tc_s"]), (2.0, 2.0))
         # The older columns keep their order.
         self.assertLess(keys.index("stable_s"), keys.index("first_point_windows"))

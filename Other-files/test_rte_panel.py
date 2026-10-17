@@ -399,9 +399,11 @@ class RTE(unittest.TestCase):
             stack.enter_context(patch.object(app.CombinedControlApp, '_set_connection_indicator', Mock()))
             stack.enter_context(patch.object(app.CombinedControlApp, '_draw_nonlocal_series', Mock()))
             panel = app.RTEPanel(parent, Widget())
-            self.assertEqual(panel.ppms_simple_mode.get(), 'Current')
-            self.assertFalse(panel.rte_round_trip.get())
-            self.assertEqual([v.get() for v in panel.ppms_simple_range], ['0.01', '1', '0.01'])
+            # The start-up scan is the user's Angle scan (2026-10-18).
+            self.assertEqual(panel.ppms_simple_mode.get(), 'Angle')
+            self.assertTrue(panel.rte_round_trip.get())
+            self.assertEqual([v.get() for v in panel.ppms_simple_range], ['0', '-360', '10'])
+            self.assertEqual(panel.ppms_acquisition_time_var.get(), '2')
             measurement = panel.ppms_instruments_frame.parent
             rack = panel.rte_connection_widgets['kepco'][0].parent
             for key in ('6221', '2400'):

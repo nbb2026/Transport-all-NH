@@ -1,5 +1,30 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## RT-E: the user's start-up scan; LS475 drift no longer stops a scan (2026-10-18)
+
+- **Start-up defaults (the user's screenshot, "using these params. as
+  default settings"):** the RT-E page starts on an **Angle** scan from 0 to
+  **−360°** in **10°** steps, **Round trip** on, Settle s 0.5, **Acquire s
+  2**, Loops 1, and the 6221 at 0.1 mA RMS, **317.3 Hz** (was 17.3 Hz),
+  Compliance 50 V; KEPCO 0 A / 5 V; SR830 harmonics 1+2+3 / 2 / 3, the
+  Zurich alone measuring 1+2+3 (all as before). Choosing Angle puts 0 /
+  −360 / 10 in the boxes (`RTE_ANGLE_DEFAULT_RANGE`; was 0 / 360 / 5).
+  `RTE_DEFAULT_SCAN_MODE`, `RTE_ACQUISITION_S`; the PPMS page keeps its own
+  Acquire s (1 s) and the Non-local pages their 17.3 Hz.
+- **LS475 drift (user: "don't let the LS475 drift affect the scan!", after
+  an Angle scan at 0 A stopped at its first point on "LS475 field drifted
+  during acquisition; partial point not saved"):**
+  - The field read before and after each point's acquisition no longer
+    ends the scan or discards the point, in any RT-E mode. Each row gets
+    `field_before_g` and `field_drift_g` (after every older column); the
+    first drift of a pass beyond the old limit (2 G or 0.2 %) is noted in
+    the log. The KEPCO is no longer switched off for a drift.
+  - The LS475 settle wait (three agreeing readings, at most 15 s; before
+    the held field of an Angle scan and at each Field-scan current) no
+    longer fails the scan when it times out: the scan goes on with a note
+    in the log.
+  - A failed LS475 read still ends the scan (KEPCO off, 6221 off) as before.
+
 ## RT-E: the stage controls in the RT-E settings; the Angle scan end to end (2026-10-17)
 
 - **The request:** after the first runs on the lab PC ("Move stage" to

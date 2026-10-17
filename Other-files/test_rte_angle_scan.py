@@ -1112,20 +1112,55 @@ class AngleScanWorkerTests(StageBase):
         h.panel.thread_log.assert_any_call("RT-E Angle scan, after the stage failure: stage NOT confirmed stopped: "
                                            "CHECK THE STAGE")
 
-    def test_a_field_drift_switches_the_kepco_off(self):
+    def test_a_field_drift_neither_ends_the_scan_nor_discards_a_point(self):
+        # "don't let the LS475 drift affect the scan!" (user, 2026-10-18,
+        # after an Angle scan at 0 A stopped at its first point on "LS475
+        # field drifted during acquisition").  Each point reads the field
+        # before and after its acquisition; the drift is saved, the first of
+        # the pass noted in the log, and the KEPCO left on.
         h = self.make()
-        h.panel._rte_read_field.side_effect = [-2., -2., -2., 30.]
-        with self.assertRaisesRegex(app.PPMSFieldScanError, "drifted"):
-            self.run_scan(h=h)
-        h.panel.rte_controllers["kepco"].safe_output_off.assert_called_once()
-        h.panel._stop_ppms_transport_source.assert_called_once()
-        self.assertEqual(len(h.panel.ppms_field_scan_rows), 1)
-        self.assertNotIn("STOP", h.sim.received, "the stage was not moving")
+        h.panel._rte_read_field.side_effect = [-2., 30., 30., 31., 31., -5., -5., 40., 40., 40.]
+        self.run_scan(h=h)
+        panel = h.panel
+        rows = panel.ppms_field_scan_rows
+        self.assertEqual(len(rows), 5, "every point saved")
+        self.assertEqual([r["field_before_g"] for r in rows], [-2., 30., 31., -5., 40.])
+        self.assertEqual([r["measured_field_g"] for r in rows], [30., 31., -5., 40., 40.])
+        self.assertEqual([r["field_drift_g"] for r in rows], [32., 1., -36., 45., 0.])
+        keys = list(rows[0])
+        self.assertEqual(keys[-2:], ["field_before_g", "field_drift_g"], "after every older column")
+        panel.rte_controllers["kepco"].safe_output_off.assert_not_called()
+        panel._stop_ppms_transport_source.assert_not_called()
+        self.assertEqual(h.sim.moves, ["X50000", "X100000", "X50000", "X0"])
+        notes = [c.args[0] for c in panel.thread_log.call_args_list if "changed by" in c.args[0]]
+        self.assertEqual(notes, ["RT-E Angle point 1: the LS475 field changed by +32 G during the acquisition "
+                                 "(-2 -> +30 G); point saved, scan goes on (later drifts of this pass are in the "
+                                 "field_drift_g column only)"])
 
-    def test_a_field_that_does_not_settle_switches_the_kepco_off_before_any_move(self):
+    def test_a_field_that_does_not_settle_lets_the_scan_go_on(self):
+        # The settle wait before the first point: after its 15 s the scan
+        # goes on with a note, not a failure (user, 2026-10-18).
+        panel = types.SimpleNamespace(thread_log=Mock(), post_ui=lambda f: None, rte_field_live=Var(""),
+                                      _rte_wait=lambda seconds: None)
+        readings = iter([0., 10., 20., 30., 40., 50., 60., 70., 80., 90.])
+        panel._rte_read_field = lambda: next(readings)
+        clock = iter(range(0, 100, 2))
+        with patch.object(app.time, "monotonic", lambda: float(next(clock))):
+            field = app.RTEPanel._rte_settle_field(panel)
+        self.assertEqual(field, 70.)
+        panel.thread_log.assert_called_once_with("RT-E: the LS475 field did not settle within 15 s (last readings "
+                                                 "+50, +60, +70 G); the scan goes on")
+        # Three agreeing readings still end the wait at once.
+        readings = iter([5., 5.5, 5.2, 99.])
+        panel._rte_read_field = lambda: next(readings)
+        panel.thread_log.reset_mock()
+        self.assertEqual(app.RTEPanel._rte_settle_field(panel), 5.2)
+        panel.thread_log.assert_not_called()
+
+    def test_a_field_read_failure_while_settling_switches_the_kepco_off_before_any_move(self):
         h = self.make()
-        h.panel._rte_settle_field.side_effect = app.PPMSFieldScanError("LS475 field did not settle")
-        with self.assertRaisesRegex(app.PPMSFieldScanError, "did not settle"):
+        h.panel._rte_settle_field.side_effect = RuntimeError("LS475 unavailable")
+        with self.assertRaisesRegex(RuntimeError, "LS475 unavailable"):
             self.run_scan(h=h)
         self.assertEqual(h.sim.moves, [])
         h.panel.rte_controllers["kepco"].safe_output_off.assert_called_once()
@@ -1596,7 +1631,8 @@ class AnglePageTests(unittest.TestCase):
         panel.rte_round_trip = Var(False)
         panel._redraw_ppms_transport_plot = Mock()
         panel._rte_mode_changed()
-        self.assertEqual([v.get() for v in panel.ppms_simple_range], ["0", "360", "5"])
+        # 0 to -360 deg in 10 deg steps (user's figure, 2026-10-18).
+        self.assertEqual([v.get() for v in panel.ppms_simple_range], ["0", "-360", "10"])
         self.assertTrue(panel.rte_round_trip.get(), "round trip: back toward the start, unwinding the wires")
         self.assertEqual(panel.rte_scan_units.get(), "Stage °")
         self.assertEqual(panel.ppms_plot_axis, "angle")
@@ -1734,7 +1770,8 @@ class AnglePageTests(unittest.TestCase):
         # stay full width under the scan rows.
         self.assertIs(panel.ppms_field_scan_progress.parent.parent, scan)
         note = next(w for w in Recorder.made if w.options.get("textvariable") is panel.rte_scan_note)
-        self.assertEqual(panel.rte_scan_note.get(), "Field: KEPCO A; readback: signed LS475 G")
+        # The page starts on the user's Angle scan (2026-10-18).
+        self.assertEqual(panel.rte_scan_note.get(), "Angle: Stage °; field: KEPCO current A")
         self.assertIs(note.parent.parent, scan)
         self.assertEqual((rows.grid_options["row"], panel.ppms_field_scan_progress.parent.grid_options["row"],
                           note.parent.grid_options["row"]), (0, 1, 2))

@@ -1848,8 +1848,9 @@ NONLOCAL_IV_SWEEP_RESULTS_DIRECTORY = (
 NONLOCAL_IV6221_START_MA = 0.01
 NONLOCAL_IV6221_END_MA = 1.0
 NONLOCAL_IV6221_STEP_MA = 0.01
-NONLOCAL_IV6221_CURRENT_MA = 0.1      # RT-E's RTE_TRANSPORT_CURRENT_RMS_MA (Set 6221)
-NONLOCAL_IV6221_FREQUENCY_HZ = NONLOCAL_FREQUENCY_HZ   # RT-E's RTE_TRANSPORT_FREQUENCY_HZ
+NONLOCAL_IV6221_CURRENT_MA = 0.1      # as RT-E's RTE_TRANSPORT_CURRENT_RMS_MA (Set 6221)
+# RT-E's start-up frequency until 2026-10-18 (17.3 Hz); RT-E's own is now 317.3 Hz.
+NONLOCAL_IV6221_FREQUENCY_HZ = NONLOCAL_FREQUENCY_HZ
 NONLOCAL_IV6221_COMPLIANCE_V = 50.0
 # Settle s is the shortest wait after each current step.  Every point waits
 # at least LOCKIN_SETTLE_TAUS x the slowest time constant measured instead
@@ -1979,8 +1980,16 @@ PPMS_PERSISTENT_CONFIRM_S = 10.0
 PPMS_PERSISTENT_MARGIN_S = 1800.0
 PPMS_TRANSPORT_CURRENT_RMS_MA = 0.001
 PPMS_TRANSPORT_FREQUENCY_HZ = 317.3
-RTE_TRANSPORT_FREQUENCY_HZ = 17.3      # RT-E start-up excitation (user's figure, 2026-10-07)
+# RT-E start-up excitation: 0.1 mA RMS (user's figure, 2026-10-07) at 317.3 Hz
+# (user's figure, 2026-10-18; it was 17.3 Hz).
+RTE_TRANSPORT_FREQUENCY_HZ = 317.3
 RTE_TRANSPORT_CURRENT_RMS_MA = 0.1
+# RT-E start-up scan, the user's figure (2026-10-18): an Angle scan from 0 to
+# -360 deg in 10 deg steps, round trip, Acquire s 2 (Settle s 0.5 and Loops 1
+# as before).  The Angle range is also what choosing Angle puts in the boxes.
+RTE_DEFAULT_SCAN_MODE = 'Angle'
+RTE_ANGLE_DEFAULT_RANGE = ('0', '-360', '10')
+RTE_ACQUISITION_S = 2.0
 PPMS_TRANSPORT_COMPLIANCE_V = 50.0
 PPMS_TRANSPORT_HARMONIC = 1
 PPMS_TRANSPORT_REFERENCE_TIMEOUT_S = 8.0
@@ -46234,10 +46243,10 @@ class RTEPanel(PPMSPanel):
         self.rte_controllers['kepco'].owner_scope = 'RT-E'
         self.rte_controllers['newmark'].owner_scope = 'RT-E'
         self.ppms_plot_frame.configure(text='RT-E: X, Y, phase vs measured field / excitation current / sample angle')
-        # RT-E start-up defaults, which differ from the PPMS page (the user's
-        # figure, 2026-10-07): 6221 0.1 mA RMS at 17.3 Hz, and the Zurich
-        # alone measures, reading 1+2+3 harmonics together.  The SR830s keep
-        # their harmonic settings so ticking Measure needs no further setup.
+        # RT-E start-up defaults (the user's figures, 2026-10-07 and
+        # 2026-10-18): 6221 0.1 mA RMS at 317.3 Hz, and the Zurich alone
+        # measures, reading 1+2+3 harmonics together.  The SR830s keep their
+        # harmonic settings so ticking Measure needs no further setup.
         self.ppms_transport_current_var.set(f'{RTE_TRANSPORT_CURRENT_RMS_MA:g}')
         self.ppms_transport_frequency_var.set(f'{RTE_TRANSPORT_FREQUENCY_HZ:g}')
         self.zurich_expected_frequency = RTE_TRANSPORT_FREQUENCY_HZ
@@ -46248,6 +46257,13 @@ class RTEPanel(PPMSPanel):
         for key, measured in (('830_a', False), ('830_b', False),
                               ('830_c', False), ('zurich', True)):
             self.ppms_lockin_selection[key].set(measured)
+        # The start-up scan (user's figure, 2026-10-18): Angle, 0 to -360 deg
+        # in 10 deg steps, round trip, Acquire s 2.  The mode change sets the
+        # range, round trip, units label, scan note and plot axis, as
+        # choosing Angle does.
+        self.ppms_acquisition_time_var.set(f'{RTE_ACQUISITION_S:g}')
+        self.ppms_simple_mode.set(RTE_DEFAULT_SCAN_MODE)
+        self._rte_mode_changed()
         # Setting the variables does not fire the checkbutton commands, so the
         # harmonic plot rows have to be rebuilt for the new selection.
         self._refresh_ppms2_plot_layout()
@@ -46691,7 +46707,8 @@ class RTEPanel(PPMSPanel):
         # Round trip by default for Field and Angle: an Angle scan then comes
         # back toward its start, unwinding the sample wires (user, 2026-10-13).
         self.rte_round_trip.set(not current)
-        defaults = (('0.01', '1', '0.01') if current else ('0', '360', '5') if mode == 'Angle'
+        # Angle: 0 to -360 deg in 10 deg steps (user's figure, 2026-10-18).
+        defaults = (('0.01', '1', '0.01') if current else RTE_ANGLE_DEFAULT_RANGE if mode == 'Angle'
                     else ('-3', '3', '0.05'))
         for variable, value in zip(self.ppms_simple_range, defaults):
             variable.set(value)
@@ -47280,8 +47297,13 @@ class RTEPanel(PPMSPanel):
             raise PPMSScanCancelled('RT-E stopped; partial point discarded')
 
     def _rte_settle_field(self):
-        deadline, readings = time.monotonic() + STFMR_FIELD_SETTLE_TIMEOUT_S, []
-        while time.monotonic() < deadline:
+        """Wait, at most STFMR_FIELD_SETTLE_TIMEOUT_S, for three LS475
+        readings in a row to agree.  A field that has not settled by then no
+        longer ends the scan: the scan goes on with a note in the log, as the
+        LS475's drift must not affect an RT-E scan (user, 2026-10-18).  A
+        failed LS475 read still raises."""
+        deadline, readings, field = time.monotonic() + STFMR_FIELD_SETTLE_TIMEOUT_S, [], None
+        while field is None or time.monotonic() < deadline:
             self._rte_wait(.2)
             field = self._rte_read_field()
             readings = (readings + [field])[-STFMR_FIELD_SETTLE_REQUIRED_SAMPLES:]
@@ -47289,7 +47311,9 @@ class RTEPanel(PPMSPanel):
             tolerance = max(STFMR_FIELD_SETTLE_ABS_TOLERANCE_G, abs(field) * STFMR_FIELD_SETTLE_REL_TOLERANCE)
             if len(readings) == STFMR_FIELD_SETTLE_REQUIRED_SAMPLES and max(readings) - min(readings) <= tolerance:
                 return field
-        raise PPMSFieldScanError('LS475 field did not settle before the timeout')
+        self.thread_log(f'RT-E: the LS475 field did not settle within {STFMR_FIELD_SETTLE_TIMEOUT_S:g} s (last '
+                        f'readings {", ".join(f"{value:+.6g}" for value in readings)} G); the scan goes on')
+        return field
 
     def start_ppms_field_scan(self):
         try:
@@ -47578,6 +47602,7 @@ class RTEPanel(PPMSPanel):
     def _rte_scan_worker(self, mode, plan, settings, limit, stable, duration, field_current=None):
         field_failure = False
         stage_failure = False
+        drift_noted = False
         try:
             # Same expression, in the same order, as the validator's peak_a:
             # (I*1e-3)*sqrt2 could come out 1 ulp below sqrt2*I*1e-3, so a scan
@@ -47658,9 +47683,21 @@ class RTEPanel(PPMSPanel):
                 except Exception:
                     field_failure = mode in ('Field', 'Angle')
                     raise
-                if mode in ('Field', 'Angle') and abs(measured - before) > max(STFMR_FIELD_SETTLE_ABS_TOLERANCE_G, abs(before) * STFMR_FIELD_SETTLE_REL_TOLERANCE):
-                    field_failure = True
-                    raise PPMSFieldScanError('LS475 field drifted during acquisition; partial point not saved')
+                # The LS475's drift during the acquisition no longer ends the
+                # scan or discards the point: "don't let the LS475 drift affect
+                # the scan!" (user, 2026-10-18, after an Angle scan at 0 A
+                # stopped at its first point).  The point is saved with the
+                # field before and after it (field_before_g, field_drift_g),
+                # and the first drift beyond the old limit (2 G or 0.2 %) of a
+                # pass is noted in the log.
+                drift_g = measured - before
+                if (mode in ('Field', 'Angle') and not drift_noted
+                        and abs(drift_g) > max(STFMR_FIELD_SETTLE_ABS_TOLERANCE_G,
+                                               abs(before) * STFMR_FIELD_SETTLE_REL_TOLERANCE)):
+                    drift_noted = True
+                    self.thread_log(f'RT-E {mode} point {index}: the LS475 field changed by {drift_g:+.6g} G during '
+                                    f'the acquisition ({before:+.6g} -> {measured:+.6g} G); point saved, scan goes on '
+                                    '(later drifts of this pass are in the field_drift_g column only)')
                 kepco = self.rte_controllers['kepco']
                 # Angle rows add the stage's target and where it is (PX read
                 # back, equal to the target); Field and Current rows keep their
@@ -47687,6 +47724,10 @@ class RTEPanel(PPMSPanel):
                 # column (user, 2026-10-14).
                 row['effective_settle_s'] = settle_s
                 row['slowest_lockin_tc_s'] = slowest_tc_s
+                # The LS475 before the acquisition and the change during it,
+                # after every older column (user, 2026-10-18).
+                row['field_before_g'] = before
+                row['field_drift_g'] = drift_g
                 # Later passes may omit SR830s whose selected orders are done.
                 # Preserve the first pass CSV schema with empty cells.
                 if self.ppms_field_scan_rows:

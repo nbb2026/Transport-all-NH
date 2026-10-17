@@ -37,7 +37,8 @@ class PanelDefaultTests(unittest.TestCase):
         return state
 
     def test_rte_defaults_are_the_users_figure(self):
-        """2026-10-07: the Zurich alone measures, 1+2+3, at 0.1 mA RMS, 17.3 Hz."""
+        """2026-10-07: the Zurich alone measures, 1+2+3, at 0.1 mA RMS; 317.3 Hz
+        since 2026-10-18 (it was 17.3 Hz)."""
         panel = self.app.rte_panel
         self.assertEqual(self.settings(panel), {
             "830_a": ("1+2+3", False),
@@ -46,12 +47,23 @@ class PanelDefaultTests(unittest.TestCase):
             "zurich": ("1+2+3", True),
         })
         self.assertEqual(panel.ppms_transport_current_var.get(), "0.1")
-        self.assertEqual(panel.ppms_transport_frequency_var.get(), "17.3")
+        self.assertEqual(panel.ppms_transport_frequency_var.get(), "317.3")
         self.assertEqual(panel.ppms_transport_compliance_var.get(), "50")
         self.assertEqual((panel.rte_drive_target.get(), panel.rte_voltage_limit.get()), ("0", "5"))
-        self.assertEqual(panel.zurich_expected_frequency, 17.3)
+        self.assertEqual(panel.zurich_expected_frequency, 317.3)
         # The PPMS page keeps its own excitation.
         self.assertEqual(self.app.ppms_panel.ppms_transport_frequency_var.get(), "317.3")
+        # The start-up scan (user's figure, 2026-10-18): Angle, 0 to -360 deg
+        # in 10 deg steps, round trip, Settle s 0.5, Acquire s 2, Loops 1.
+        self.assertEqual(panel.ppms_simple_mode.get(), "Angle")
+        self.assertEqual([v.get() for v in panel.ppms_simple_range], ["0", "-360", "10"])
+        self.assertIs(panel.rte_round_trip.get(), True)
+        self.assertEqual((panel.ppms_field_scan_stable_var.get(), panel.ppms_acquisition_time_var.get(),
+                          int(panel.ppms_field_scan_loop_var.get())), ("0.5", "2", 1))
+        self.assertEqual(panel.rte_scan_units.get(), "Stage °")
+        self.assertEqual(panel.ppms_plot_axis, "angle")
+        # The PPMS page keeps its own Acquire s.
+        self.assertEqual(self.app.ppms_panel.ppms_acquisition_time_var.get(), "1")
 
     def test_rte_selection_gives_one_plot_row_per_harmonic(self):
         panel = self.app.rte_panel
@@ -119,7 +131,8 @@ class PanelDefaultTests(unittest.TestCase):
         tabs = a.nonlocal_measurements
         self.assertEqual([tabs.tab(i, "text") for i in range(tabs.index("end"))],
                          ["|R| vs time", "2400-IV", "6221-IV", "Gate-VI scan"])
-        # 6221-IV starts at RT-E's current range, excitation and timing.
+        # 6221-IV starts at the current range, excitation and timing RT-E had
+        # until 2026-10-18 (RT-E now starts on an Angle scan at 317.3 Hz).
         self.assertEqual(
             (a.nonlocal_iv6221_start_var.get(), a.nonlocal_iv6221_end_var.get(),
              a.nonlocal_iv6221_step_var.get(), a.nonlocal_iv6221_loops_var.get(),

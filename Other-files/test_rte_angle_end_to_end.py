@@ -423,11 +423,18 @@ class AngleScanTests(EndToEnd):
 
     def test_the_mode_change_sets_the_angle_boxes(self):
         panel = build_page()
+        # The page starts on the user's Angle scan (2026-10-18).
+        self.assertEqual(panel.ppms_simple_mode.get(), "Angle")
+        self.assertEqual(panel.rte_scan_note.get(), "Angle: Stage °; field: KEPCO current A")
+        with patch.object(app.CombinedControlApp, "_draw_nonlocal_series"):
+            panel.ppms_simple_mode.set("Field")
+            panel._rte_mode_changed()
         self.assertEqual(panel.rte_scan_note.get(), "Field: KEPCO A; readback: signed LS475 G")
         with patch.object(app.CombinedControlApp, "_draw_nonlocal_series") as draw:
             panel.ppms_simple_mode.set("Angle")
             panel._rte_mode_changed()
-        self.assertEqual([v.get() for v in panel.ppms_simple_range], ["0", "360", "5"])
+        # 0 to -360 deg in 10 deg steps (user's figure, 2026-10-18).
+        self.assertEqual([v.get() for v in panel.ppms_simple_range], ["0", "-360", "10"])
         self.assertEqual(panel.rte_scan_units.get(), "Stage °")
         # The note says which box holds the field (user, 2026-10-17).
         self.assertEqual(panel.rte_scan_note.get(), "Angle: Stage °; field: KEPCO current A")
