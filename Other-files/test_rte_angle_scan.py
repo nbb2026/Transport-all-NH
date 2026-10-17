@@ -1654,17 +1654,19 @@ class AnglePageTests(unittest.TestCase):
             stack.enter_context(patch.object(app.CombinedControlApp, "_draw_nonlocal_series", Mock()))
             return app.RTEPanel(parent, rte_tests.Widget())
 
-    def test_the_motor_row_is_in_the_rack_and_the_stage_block_in_the_scan_box(self):
+    def test_the_motor_row_is_in_the_rack_and_the_stage_block_in_the_settings(self):
         """User/CI, 2026-10-14: a rack row and a row under the settings for
         the stage took about 84 px of height in the 1101 px window, and every
         plot fell below its 55 px minimum; the stage's controls became one
-        block of three rows in the RT-E scan box.  User, 2026-10-17: "add the
-        connection button for Motor in RT-E and ST-FMR modules": the
-        connection is the rack's fifth row, "Motor", laid out as the four
-        above it (label, 18-character address, Connect, Disconnect, lamp,
-        13-character status), accepting about one row of plot height; Move
-        stage, Stop stage, Set stage 0° and the live line stay in the scan
-        box as a block of two rows paired with the scan rows."""
+        block in the RT-E scan box.  User, 2026-10-17: "add the connection
+        button for Motor in RT-E and ST-FMR modules": the connection is the
+        rack's fifth row, "Motor", laid out as the four above it (label,
+        18-character address, Connect, Disconnect, lamp, 13-character
+        status), accepting about one row of plot height.  User, 2026-10-17
+        again: "now move the stage controllers to the RT-E settings": Move
+        stage, Stop stage, Set stage 0° and the live line are a block of two
+        rows in the RT-E settings box, with the KEPCO current an Angle scan
+        holds; the scan box has only the scan rows, its status and notes."""
         panel = self.build_page()
         entry, connect, disconnect = panel.rte_connection_widgets["newmark"]
         rack = panel.rte_connection_widgets["kepco"][0].parent
@@ -1691,12 +1693,19 @@ class AnglePageTests(unittest.TestCase):
         self.assertNotIn("style", connect.options, "a plain button, as the other rows'")
         self.assertFalse([w for w in Recorder.made if w.options.get("text") == "Newmark stage"])
         self.assertFalse([w for w in Recorder.made if w.options.get("text") == "Stage"], "no Stage row left")
-        # The block: two rows in the scan box, paired with the scan rows.
+        # The block: two rows in the RT-E settings, a child of the box's
+        # body (params / lock-ins), first under the KEPCO rows (its place in
+        # the 2000 px window; arrange_stage_block moves it beside the
+        # lock-ins in the 1101 px window).
         block = panel.rte_stage_stop_button.parent
+        settings_box = next(w for w in Recorder.made if w.options.get("text") == "RT-E settings")
+        self.assertIs(block.parent.parent, settings_box)
+        self.assertEqual((block.grid_options["row"], block.grid_options["column"]), (1, 0))
         rows = panel.rte_start_button.parent
-        self.assertIs(block.parent, rows.parent, "the block and the scan rows are one pair")
-        scan = rows.parent.parent
+        scan = rows.parent
         self.assertEqual(scan.options.get("text"), "RT-E scan")
+        self.assertFalse([w for w in Recorder.made if w.parent is scan and w is not rows
+                          and "row" in w.grid_options and w.grid_options["row"] == 0], "only the scan rows on top")
         # Three scan rows (mode/Start/End/Step; units/Loops/Settle s/Acquire
         # s; Start scan/Stop/Save CSV as/Round trip).
         self.assertEqual({w.grid_options["row"] for w in Recorder.made
@@ -1714,7 +1723,7 @@ class AnglePageTests(unittest.TestCase):
             (1, 0): zero, (1, 2): live})
         self.assertEqual(target.options["width"], 9)
         for button in (move, stop, zero):
-            # No taller than the entries beside them: the block costs no height.
+            # No taller than the entries beside them.
             self.assertEqual(button.options["style"], "Inline.TButton", button.options["text"])
         # One live line, a fixed box, for the reading.
         self.assertEqual(live.options["width"], 32)
@@ -1722,11 +1731,11 @@ class AnglePageTests(unittest.TestCase):
         self.assertEqual([w for w in Recorder.made if w.parent is block and "textvariable" in w.options
                           and w.options["textvariable"] is not panel.rte_stage_target], [live])
         # The status/progress row, the acquisition state and the field note
-        # stay full width under the pair.
+        # stay full width under the scan rows.
         self.assertIs(panel.ppms_field_scan_progress.parent.parent, scan)
         note = next(w for w in Recorder.made if w.options.get("text") == "Field: KEPCO A; readback: signed LS475 G")
         self.assertIs(note.parent.parent, scan)
-        self.assertEqual((rows.parent.grid_options["row"], panel.ppms_field_scan_progress.parent.grid_options["row"],
+        self.assertEqual((rows.grid_options["row"], panel.ppms_field_scan_progress.parent.grid_options["row"],
                           note.parent.grid_options["row"]), (0, 1, 2))
         self.assertIsInstance(panel.rte_controllers["newmark"], app.NewmarkNSCA1Controller)
         self.assertEqual(panel.rte_controllers["newmark"].owner_scope, "RT-E")

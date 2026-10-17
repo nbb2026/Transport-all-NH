@@ -415,15 +415,16 @@ class RTE(unittest.TestCase):
                 self.assertNotIn('text', entry.parent.options)
             # The Newmark stage's connection is the rack's Motor row again,
             # laid out as the other rows (user, 2026-10-17); its Move stage,
-            # Stop stage and Set stage 0° stay in the RT-E scan box, beside
-            # or under the scan rows (user/CI, 2026-10-14).
+            # Stop stage, Set stage 0° and live line are in the RT-E settings
+            # since 2026-10-17 (user: "move the stage controllers to the RT-E
+            # settings"), no longer in the scan box.
             for widget in panel.rte_connection_widgets['newmark']:
                 self.assertIs(widget.parent, rack)
             self.assertEqual(panel.rte_resources['newmark'].get(), 'auto')
             self.assertEqual(panel.rte_connections['newmark'].get(), 'Not connected')
             block = panel.rte_stage_stop_button.parent
-            self.assertIs(block.parent, panel.rte_start_button.parent.parent)
-            self.assertEqual(block.parent.parent.options['text'], 'RT-E scan')
+            self.assertEqual(block.parent.parent.options['text'], 'RT-E settings')
+            self.assertEqual(panel.rte_start_button.parent.parent.options['text'], 'RT-E scan')
             self.assertNotIn('text', panel.ppms_instruments_frame.options)
             self.assertEqual(panel.zurich_harmonic.get(), '1+2+3')
             self.assertEqual(panel.zurich_resource.get(), 'DEV4414 (Super)')

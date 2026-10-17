@@ -30,10 +30,16 @@ def cidwm_mode_row(built):
     return next(w for w in box.winfo_children() if hasattr(w, "_pair_side_by_side"))
 
 
-def rte_stage_pair(built):
-    """RT-E's scan-box pair: (its frame, the scan rows, the stage block)."""
-    rows = built.rte_panel.rte_start_button.master
-    return rows.master, rows, built.rte_panel.rte_stage_stop_button.master
+def rte_stage_parts(built):
+    """RT-E's settings box since 2026-10-17 (user: "now move the stage
+    controllers to the RT-E settings"): (the params/lock-ins pair's frame,
+    the params, the lock-ins, the stage block)."""
+    panel = built.rte_panel
+    block = panel.rte_stage_stop_button.master
+    lockins = panel.ppms_settings_panel
+    body = block.master
+    params = next(w for w in body.winfo_children() if w is not block and w is not lockins.master)
+    return body, params, lockins, block
 
 
 class Built:
@@ -94,10 +100,15 @@ class EveryPageSettlesTests(Built, unittest.TestCase):
 
 
 class RTEStageBlockTests(Built, unittest.TestCase):
-    """User/CI, 2026-10-14: the Newmark stage's controls are a block in the
-    RT-E scan box.  As a rack row and a row under the settings they took
+    """User/CI, 2026-10-14: the Newmark stage's controls were a block in the
+    RT-E scan box; as a rack row and a row under the settings they had taken
     about 84 px of height in the 1101 px window the program opens with, and
-    every plot fell below its 55 px minimum ("Increase the window height")."""
+    every plot fell below its 55 px minimum ("Increase the window height").
+    User, 2026-10-17: the connection is the rack's Motor row, and the block
+    (Stage °, Move stage, Stop stage, Set stage 0°, the live line) is in the
+    RT-E settings box: beside the lock-in choices in the 1101 px window (no
+    height), beside or under the KEPCO rows at 2000 px (where the scan box,
+    two rows shorter without the block, sets the height or nearly)."""
 
     @classmethod
     def setUpClass(cls):
@@ -108,38 +119,77 @@ class RTEStageBlockTests(Built, unittest.TestCase):
                 notebook.select(index)
 
     def layouts(self):
-        """(settings beside the scan box, stage block beside the scan rows)."""
-        pair = rte_stage_pair(self.a)[0]
-        controls = pair.master.master
-        return controls._pair_side_by_side, pair._pair_side_by_side
+        """(settings beside the scan box, params beside the lock-ins, where the block is)."""
+        body, _params, _lockins, block = rte_stage_parts(self.a)
+        controls = body.master.master
+        return (controls._pair_side_by_side, body._pair_side_by_side, block._rte_stage_place)
 
-    def test_beside_the_scan_rows_at_1101_px_and_under_them_at_2000_px_whatever_the_history(self):
-        # The settings/scan pair decides by the scan box's stacked width, so
-        # the pair inside the scan box cannot change its decision.
-        expected = {1101: (False, True), LAB_WIDE: (True, False)}
+    def numbers(self, label):
+        body, params, lockins, block = rte_stage_parts(self.a)
+        settings, scan = body.master, self.a.rte_panel.rte_start_button.master.master
+        canvases = self.a.rte_panel.ppms_harmonic_canvases
+        print(f"RT-E {label} {self.root.winfo_width()}x{self.root.winfo_height()} px: layouts {self.layouts()}; "
+              f"settings {settings.winfo_width()}x{settings.winfo_height()}, scan box "
+              f"{scan.winfo_width()}x{scan.winfo_height()}, params {params.winfo_reqwidth()}x"
+              f"{params.winfo_reqheight()}, lock-ins {lockins.winfo_reqwidth()}x{lockins.winfo_reqheight()}, "
+              f"stage block {block.winfo_reqwidth()}x{block.winfo_reqheight()}; plots "
+              f"{sorted({c.winfo_height() for c in canvases.values()})} px tall")
+
+    def test_the_block_is_in_the_settings_whatever_the_history(self):
+        expected = {1101: (False, False, "beside lock-ins")}
+        fresh = {}
         for history in ((1101,), (LAB_WIDE,), (LAB_WIDE, 1101), (1101, LAB_WIDE),
                         (2560, 1101), (1101, 2560, LAB_WIDE), (826, LAB_WIDE, 1101)):
             for width in history:
                 self.show(width)
+            final = self.layouts()
+            fresh.setdefault(history[-1], final)
             with self.subTest(history=history):
-                self.assertEqual(self.layouts(), expected[history[-1]])
-                pair = rte_stage_pair(self.a)[0]
-                self.assertFalse(getattr(pair, "_pair_flip_guard", {}).get("held"))
+                self.assertEqual(final, fresh[history[-1]], "the same whatever the resize history")
+                if history[-1] in expected:
+                    self.assertEqual(final, expected[history[-1]])
+                else:
+                    self.assertEqual(final[:2], (True, True), "side by side at 2000 px")
+                    self.assertIn(final[2], ("beside lock-ins", "under params"))
+                body = rte_stage_parts(self.a)[0]
+                self.assertFalse(getattr(body, "_pair_flip_guard", {}).get("held"))
+        self.assertEqual(rte_stage_parts(self.a)[3].master.master.cget("text"), "RT-E settings")
 
     def test_the_block_costs_no_height_and_fits_at_1101_px(self):
-        self.show(1101)
-        pair, rows, block = rte_stage_pair(self.a)
-        # Two rows since its connection went to the rack (user, 2026-10-17).
-        self.assertEqual(block.grid_size()[1], 2)
-        self.assertLessEqual(block.winfo_reqheight(), rows.winfo_reqheight(),
-                             "the block is no taller than the three scan rows")
-        scan = pair.master
-        self.assertLessEqual(block.winfo_rootx() + block.winfo_width(), scan.winfo_rootx() + scan.winfo_width())
+        self.root.geometry(f"1101x{CI_SHOT_HEIGHT}+0+0")
+        self.root.update()
+        self.numbers("1101 px")
+        body, _params, lockins, block = rte_stage_parts(self.a)
+        self.assertEqual(block.grid_size()[1], 2, "two rows")
+        self.assertLessEqual(block.winfo_reqheight(), lockins.winfo_reqheight(),
+                             "no taller than the lock-in rows beside it")
+        self.assertGreaterEqual(block.winfo_rooty(), lockins.winfo_rooty())
+        self.assertLessEqual(block.winfo_rooty() + block.winfo_height(), lockins.winfo_rooty() + lockins.winfo_height())
+        self.assertGreater(block.winfo_rootx(), lockins.winfo_rootx() + lockins.winfo_width())
+        settings = body.master
+        self.assertLessEqual(block.winfo_rootx() + block.winfo_width(), settings.winfo_rootx() + settings.winfo_width())
+        # The scan box keeps only the scan rows, its status and notes.
+        rows = self.a.rte_panel.rte_start_button.master
+        self.assertEqual(rows.master.cget("text"), "RT-E scan")
+
+    def test_at_2000_px_the_block_is_beside_or_under_the_kepco_rows(self):
+        self.show(LAB_WIDE)
+        self.numbers("2000 px")
+        body, params, lockins, block = rte_stage_parts(self.a)
+        place = block._rte_stage_place
+        if place == "under params":
+            self.assertGreaterEqual(block.winfo_rooty(), params.winfo_rooty() + params.winfo_height())
+            self.assertLess(block.winfo_rootx() + block.winfo_width(), lockins.winfo_rootx() + 1)
+        else:
+            self.assertEqual(place, "beside lock-ins")
+            self.assertGreater(block.winfo_rootx(), lockins.winfo_rootx() + lockins.winfo_width())
+        scan = self.a.rte_panel.rte_start_button.master.master
+        self.assertGreaterEqual(scan.winfo_width(), scan.winfo_reqwidth(), "the scan box keeps its width")
 
     def test_a_reading_stays_on_one_line(self):
         self.show(1101)
         panel = self.a.rte_panel
-        block = rte_stage_pair(self.a)[2]
+        block = rte_stage_parts(self.a)[3]
         live = next(w for w in block.winfo_children() if w.winfo_class() == "TLabel"
                     and str(w.cget("textvariable")) == str(panel.rte_stage_live))
         try:
@@ -155,14 +205,14 @@ class RTEStageBlockTests(Built, unittest.TestCase):
     def test_a_long_message_wraps_inside_the_stage_line(self):
         # User/CI, 2026-10-14: a failure or an unconfirmed STOP is longer than
         # the stage line's fixed box.  It wraps rather than being cut (a
-        # warning is read whole), so the block keeps its width and neither
-        # pair changes; only the scan box is a line or two taller while it
-        # shows.  The plots' 55 px minimum is checked on Windows only: the
-        # README's estimate is from the lab PC's fonts (Microsoft YaHei UI).
+        # warning is read whole), so the block keeps its width and no pair
+        # changes; beside the four lock-in rows it costs no height.  The
+        # plots' 55 px minimum is checked on Windows only: the README's
+        # estimate is from the lab PC's fonts (Microsoft YaHei UI).
         self.root.geometry(f"1101x{CI_SHOT_HEIGHT}+0+0")
         self.root.update()
         panel = self.a.rte_panel
-        block = rte_stage_pair(self.a)[2]
+        block = rte_stage_parts(self.a)[3]
         live = next(w for w in block.winfo_children() if w.winfo_class() == "TLabel"
                     and str(w.cget("textvariable")) == str(panel.rte_stage_live))
         # The longest text a read failure shows: the error cut to 60 characters.
@@ -174,6 +224,7 @@ class RTEStageBlockTests(Built, unittest.TestCase):
             panel.rte_stage_live.set("Stage: not connected")
             self.root.update()
             one_line, width, layouts = live.winfo_height(), block.winfo_reqwidth(), self.layouts()
+            heights = {key: canvas.winfo_height() for key, canvas in panel.ppms_harmonic_canvases.items()}
             for message in ("Stage: STOP not confirmed: CHECK THE STAGE",
                             "Stage: -359.999° (10000 steps/°), moving, limit input on", failure):
                 panel.rte_stage_live.set(message)
@@ -181,6 +232,8 @@ class RTEStageBlockTests(Built, unittest.TestCase):
                 with self.subTest(message=message):
                     self.assertEqual(block.winfo_reqwidth(), width, "the message wraps: the block keeps its width")
                     self.assertEqual(self.layouts(), layouts)
+                    self.assertEqual({key: canvas.winfo_height() for key, canvas
+                                      in panel.ppms_harmonic_canvases.items()}, heights, "no height")
                     if on_windows:
                         for key, canvas in panel.ppms_harmonic_canvases.items():
                             self.assertGreaterEqual(canvas.winfo_height(), 55, f"{key}: Increase the window height")
@@ -195,8 +248,7 @@ class RTEStageBlockTests(Built, unittest.TestCase):
         self.root.update()
         canvases = self.a.rte_panel.ppms_harmonic_canvases
         self.assertEqual(len(canvases), 9, "the Zurich at 1+2+3: three rows of X, Y, theta")
-        # The layout numbers, for the record: the rack's Motor row costs
-        # about one row of plot height here (user, 2026-10-17).
+        # The layout numbers, for the record (user, 2026-10-17).
         print(f"RT-E plots at {self.root.winfo_width()}x{self.root.winfo_height()} px: "
               f"{sorted({c.winfo_height() for c in canvases.values()})} px tall")
         for key, canvas in canvases.items():

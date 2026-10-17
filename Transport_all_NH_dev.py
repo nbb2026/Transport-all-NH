@@ -46123,6 +46123,13 @@ def rte_scan_plan(mode, start, end, step, loops=1, round_trip=True):
                  for point, value in enumerate(nodes, 1))
 
 
+# The widest status line the RT-E scan box shows (an Angle scan stopped at
+# a stage move): the stage block goes beside the lock-in choices only when the
+# scan box keeps the room for it on one line (user, 2026-10-17; the messages
+# are in CI's RTEStatusRowTests).
+RTE_STATUS_WIDEST_EXAMPLE = "Stopped; outputs held unless OFF was requested; stage stopped at -359.999°"
+
+
 def rte_angle_not_started_text(reason):
     """The RT-E status line for an Angle Start that did not start (review,
     2026-10-17): "Angle scan not started: <reason>".  ``reason`` is a short
@@ -46374,13 +46381,21 @@ class RTEPanel(PPMSPanel):
         # frame fills the box, so it sees the width it has, not only the
         # width it uses.  Side by side, the rows of each share the height and
         # stay level.  PPMSPanel adds the Zurich row to ppms_settings_panel.
+        # The Newmark stage's block is in this box too (user, 2026-10-17:
+        # "move the stage controllers to the RT-E settings"), with the
+        # "KEPCO current A" box an Angle scan holds; see arrange_stage_block.
         body = ttk.Frame(settings)
         body.grid(row=0, column=0, sticky='new')
         settings.columnconfigure(0, weight=1)
         params = ttk.Frame(body)
         params.grid(row=0, column=0, sticky='nsw')
-        lockins = self.ppms_settings_panel = ttk.Frame(body)
-        lockins.grid(row=0, column=1, sticky='nsw')
+        # The lock-in choices, with the stage block beside them while the
+        # settings are stacked (the 1101 px window).
+        lockins_line = ttk.Frame(body)
+        lockins_line.grid(row=0, column=1, sticky='nsw')
+        lockins_line.rowconfigure(0, weight=1)
+        lockins = self.ppms_settings_panel = ttk.Frame(lockins_line)
+        lockins.grid(row=0, column=0, sticky='nsw')
         for section in (params, lockins):
             for section_row in range(4):
                 section.rowconfigure(section_row, weight=1)
@@ -46434,20 +46449,64 @@ class RTEPanel(PPMSPanel):
                 row=grid_row, column=18, sticky='w', padx=(6, 0))
             self.ppms_lockin_choice_widgets.extend(((combo, 'readonly'), (select, 'normal')))
 
+        # The Newmark NSC-A1 rotation stage (user, 2026-10-13).  Its rack row
+        # and its row under the settings took about 84 px of height in the
+        # 1101 px window the program opens with, and every plot fell below
+        # its 55 px minimum ("Increase the window height").  It was a block
+        # in the RT-E scan box (user/CI, 2026-10-14), its connection the
+        # rack's "Motor" row again since 2026-10-17 (user), and the block is
+        # in the RT-E settings since then too (user, 2026-10-17: "now move
+        # the stage controllers to the RT-E settings"), where the KEPCO
+        # current an Angle scan holds is set.  Two rows: the first as tall as
+        # an entry (Inline buttons), the second holding one line of text.
+        # Where it goes, beside the lock-in choices or under the KEPCO rows,
+        # follows the settings' own layout (arrange_stage_block below).
+        stage_box = ttk.Frame(body)
+        stage_box.grid(row=1, column=0, sticky='nw', pady=(4, 0))
+        # The live line spans the button columns and an empty column 4: what
+        # it needs beyond the buttons goes there, not into the buttons.
+        stage_box.columnconfigure(4, weight=1)
+        self.rte_stage_target = tk.StringVar(value='0')
+        ttk.Label(stage_box, text='Stage °').grid(row=0, column=0, sticky='e', padx=(0, 3))
+        stage_entry = ttk.Entry(stage_box, textvariable=self.rte_stage_target, width=9)
+        stage_entry.grid(row=0, column=1, sticky='ew')
+        move = ttk.Button(stage_box, text='Move stage', width=11, style='Inline.TButton', command=self._rte_stage_move)
+        move.grid(row=0, column=2, padx=2, sticky='ew')
+        self.rte_stage_stop_button = ttk.Button(stage_box, text='Stop stage', width=11, style='Inline.TButton',
+                                                command=self._rte_stage_stop)
+        self.rte_stage_stop_button.grid(row=0, column=3, padx=2, sticky='ew')
+        zero = ttk.Button(stage_box, text='Set stage 0°', width=11, style='Inline.TButton',
+                          command=self._rte_stage_set_zero)
+        zero.grid(row=1, column=0, columnspan=2, sticky='ew')
+        # Move stage and Set stage 0° are edit widgets (locked while busy);
+        # Stop stage stays usable whenever the stage is connected, even
+        # during a move or scan (_update_ppms_control_ui).
+        for widget in (stage_entry, move, zero):
+            self.rte_edit_widgets.append((widget, 'normal'))
+        # One live line for the connection and the reading, the former status
+        # label and live line merged: "Stage: not connected", "Stage:
+        # +12.345° (10000 steps/°)", "Stage read failed: …", "Stage:
+        # stopping…" (the rack's Motor row, its lamp and its "Connected"
+        # show the connection too since 2026-10-17).  A fixed box like the
+        # rack's field and KEPCO lines, so a new reading never shifts the
+        # block; a longer message, such as a failure or an unconfirmed STOP,
+        # wraps inside it.  Wrapped rather than cut, so a warning is read
+        # whole: up to three lines (a failure's text is cut to 60
+        # characters), which beside the four lock-in rows still costs no
+        # height (user/CI, 2026-10-14 and 2026-10-17).
+        self.rte_stage_live = tk.StringVar(value='Stage: not connected')
+        live = ttk.Label(stage_box, textvariable=self.rte_stage_live, width=32)
+        live.grid(row=1, column=2, columnspan=3, sticky='w', padx=(2, 0))
+        if laid_out:
+            live.configure(wraplength=32 * tkfont.nametofont('TkDefaultFont', root=live).measure('0'))
+
         scan = ttk.LabelFrame(controls, text='RT-E scan', padding=4)
         scan.grid(row=0, column=1, sticky='nsew', padx=(6, 0))
         scan.columnconfigure(0, weight=1)
-        # The scan rows and the Newmark stage's block are a pair (user/CI,
-        # 2026-10-14): side by side when the scan box is wide (the full-width
-        # box of the 1101 px window, where the block takes the empty width
-        # right of the rows and no height), the block under the rows when the
-        # box is beside the settings (the 2000 px window, where the plots have
-        # height to spare).  The pair's frame fills the box, so it sees the
-        # width it has; each section keeps its own width, so the fields stay
-        # together and the spare width is right of the pair.
-        scan_body = ttk.Frame(scan)
-        scan_body.grid(row=0, column=0, sticky='ew')
-        scan_rows = ttk.Frame(scan_body)
+        # The scan rows keep their own width; the spare width is right of
+        # them.  (They were a pair with the stage block, which is in the
+        # RT-E settings since 2026-10-17.)
+        scan_rows = ttk.Frame(scan)
         scan_rows.grid(row=0, column=0, sticky='nw')
         self.ppms_simple_mode = tk.StringVar(value='Current')
         self.ppms_simple_range = [tk.StringVar(value=v) for v in ('0.01', '1', '0.01')]
@@ -46475,55 +46534,6 @@ class RTEPanel(PPMSPanel):
         self.ppms_field_scan_stop_button.grid(row=2, column=1, columnspan=2, sticky='ew')
         self.ppms_field_scan_save_button = ttk.Button(scan_rows, text='Save CSV as', command=self.save_ppms_field_scan_csv)
         self.ppms_field_scan_save_button.grid(row=2, column=3, columnspan=2, sticky='ew')
-        # The Newmark NSC-A1 rotation stage (user, 2026-10-13).  Its rack row
-        # and its row under the settings took about 84 px of height in the
-        # 1101 px window the program opens with, and every plot fell below
-        # its 55 px minimum ("Increase the window height").  Here it had
-        # three rows level with the scan rows and no taller than them (user/
-        # CI, 2026-10-14); its connection is the rack's "Motor" row again
-        # since 2026-10-17 (user), so two are left: the first as tall as an
-        # entry (Inline buttons), the second holding one line of text.
-        stage_box = ttk.Frame(scan_body)
-        stage_box.grid(row=0, column=1, sticky='nw')
-        # The live line spans the button columns and an empty column 4 (the
-        # lamp's, before the lamp went to the rack): what it needs beyond the
-        # buttons goes there, not into the buttons.
-        stage_box.columnconfigure(4, weight=1)
-        self.rte_stage_target = tk.StringVar(value='0')
-        ttk.Label(stage_box, text='Stage °').grid(row=0, column=0, sticky='e', padx=(0, 3))
-        stage_entry = ttk.Entry(stage_box, textvariable=self.rte_stage_target, width=9)
-        stage_entry.grid(row=0, column=1, sticky='ew')
-        move = ttk.Button(stage_box, text='Move stage', width=11, style='Inline.TButton', command=self._rte_stage_move)
-        move.grid(row=0, column=2, padx=2, sticky='ew')
-        self.rte_stage_stop_button = ttk.Button(stage_box, text='Stop stage', width=11, style='Inline.TButton',
-                                                command=self._rte_stage_stop)
-        self.rte_stage_stop_button.grid(row=0, column=3, padx=2, sticky='ew')
-        zero = ttk.Button(stage_box, text='Set stage 0°', width=11, style='Inline.TButton',
-                          command=self._rte_stage_set_zero)
-        zero.grid(row=1, column=0, columnspan=2, sticky='ew')
-        # Move stage and Set stage 0° are edit widgets (locked while busy);
-        # Stop stage stays usable whenever the stage is connected, even
-        # during a move or scan (_update_ppms_control_ui).
-        for widget in (stage_entry, move, zero):
-            self.rte_edit_widgets.append((widget, 'normal'))
-        # One live line for the connection and the reading, the former status
-        # label and live line merged: "Stage: not connected", "Stage:
-        # +12.345° (10000 steps/°)", "Stage read failed: …", "Stage:
-        # stopping…" (the rack's Motor row, its lamp and its "Connected"
-        # show the connection too since 2026-10-17).  A fixed box like the
-        # rack's field and KEPCO lines, so a new reading never shifts the
-        # block; a longer message, such as a failure or an unconfirmed STOP,
-        # wraps inside it.  Wrapped rather than cut, so a warning is read
-        # whole: while such a message shows (up to three lines; a failure's
-        # text is cut to 60 characters), the block was up to about 22 px
-        # taller than the scan rows with its three rows, until the next
-        # one-line message (user/CI, 2026-10-14); with two rows it is about
-        # one row shorter (2026-10-17).
-        self.rte_stage_live = tk.StringVar(value='Stage: not connected')
-        live = ttk.Label(stage_box, textvariable=self.rte_stage_live, width=32)
-        live.grid(row=1, column=2, columnspan=3, sticky='w', padx=(2, 0))
-        if laid_out:
-            live.configure(wraplength=32 * tkfont.nametofont('TkDefaultFont', root=live).measure('0'))
         # Status messages run to about a hundred characters and wrapped into
         # two lines when the label was one grid cell beside the progress bar.
         # Spanning the panel gives the text every pixel the progress bar does
@@ -46550,26 +46560,76 @@ class RTEPanel(PPMSPanel):
         ttk.Label(scan_notes, text='Field: KEPCO A; readback: signed LS475 G').grid(row=1, column=0, sticky='w')
         if laid_out:
             controls_gap = 6
-            self._arrange_pair_by_width(body, params, lockins, gap=0, stack_gap=4)
-            self._arrange_pair_by_width(scan_body, scan_rows, stage_box, gap=16, stack_gap=4)
+            # The lock-ins' width alone, without the stage block that may sit
+            # beside them: the params/lock-ins pair decides by it, so where
+            # the block goes can never change that pair's decision, nor,
+            # through the settings' natural width, the settings/scan pair's
+            # (user, 2026-10-17; the shape that fed back on CIDWM on
+            # 2026-10-12).
+            self._arrange_pair_by_width(body, params, lockins_line, gap=0, stack_gap=4,
+                                        right_width=lambda: lockins.winfo_reqwidth())
 
             def scan_stacked_width():
-                # The scan box's width with the stage block under the scan
-                # rows, from the parts' own requests (user/CI, 2026-10-14).
-                # The settings/scan pair decides by this, so the pair inside
-                # the scan box can never change that decision: nested pairs
-                # once fed back into each other at start-up (PAIR_FLIP_LIMIT).
-                # Judged by _pair_natural_width (the rows and the block side
-                # by side) it would stack at 2000 px; judged by the box's
-                # current request, both "side by side, block under the rows"
-                # and "stacked, block beside the rows" would be stable at
-                # 2000 px, so the layout would depend on the resize history.
-                # Now the outer pair follows the window width alone, and the
-                # inner pair the scan box's width, which the outer one sets.
+                # The scan box's width from its parts' own requests.  The
+                # settings/scan pair decides by this (user/CI, 2026-10-14).
                 return self._pair_inset(scan) + max(
-                    part.winfo_reqwidth() for part in (scan_rows, stage_box, scan_status, scan_notes))
+                    part.winfo_reqwidth() for part in (scan_rows, scan_status, scan_notes))
             self._arrange_pair_by_width(controls, settings, scan, gap=controls_gap, stack_gap=4,
                                         right_width=scan_stacked_width)
+
+            def arrange_stage_block(_event=None):
+                # Where the stage block goes (user, 2026-10-17), so that it
+                # costs the plots no height where it can:
+                # - beside the lock-in choices, in the rows they already
+                #   take, when there is the width: in the 1101 px window
+                #   (the settings stacked, as wide as the page, the lock-ins
+                #   leaving its right part empty), and beside the scan box
+                #   when the row of the settings and the scan box has the
+                #   width for the block too (the lab's own wide window);
+                # - else under the KEPCO rows (the settings beside the
+                #   lock-ins), or under the lock-ins (a narrow window).
+                # Decided from the two pairs' decisions and the widths the
+                # parts ask for, never from where the block is: the
+                # params/lock-ins pair decides by the lock-ins alone, and the
+                # settings/scan pair by its own two parts, so the block can
+                # change neither (the shape that fed back on CIDWM on
+                # 2026-10-12).
+                try:
+                    side = getattr(body, '_pair_side_by_side', None)
+                    outer = getattr(controls, '_pair_side_by_side', None)
+                    if side is None or outer is None:
+                        return
+                    block = 16 + stage_box.winfo_reqwidth()
+                    if not side:
+                        beside = body.winfo_width() >= lockins.winfo_reqwidth() + block
+                    elif outer:
+                        # Beside the scan box the block may only widen the
+                        # settings while the scan box keeps the room for its
+                        # widest status line on one line (RTEStatusRowTests
+                        # checks the messages at 2000 px).
+                        status_room = (self._pair_inset(scan) + self.ppms_field_scan_progress.winfo_reqwidth()
+                                       + 12 + tkfont.nametofont('TkDefaultFont', root=scan).measure(
+                                           RTE_STATUS_WIDEST_EXAMPLE))
+                        room = (controls.winfo_width() - self._pair_inset(controls) - controls_gap
+                                - max(scan_stacked_width(), status_room) - self._pair_inset(settings))
+                        beside = room >= params.winfo_reqwidth() + lockins.winfo_reqwidth() + block
+                    else:
+                        beside = body.winfo_width() >= params.winfo_reqwidth() + lockins.winfo_reqwidth() + block
+                except (tk.TclError, ValueError):
+                    return
+                place = 'beside lock-ins' if beside else 'under params' if side else 'under lock-ins'
+                if getattr(stage_box, '_rte_stage_place', None) == place:
+                    return
+                stage_box._rte_stage_place = place
+                if place == 'beside lock-ins':
+                    stage_box.grid_configure(in_=lockins_line, row=0, column=1, columnspan=1, sticky='nw',
+                                             padx=(16, 0), pady=0)
+                elif place == 'under params':
+                    stage_box.grid_configure(in_=body, row=1, column=0, columnspan=1, sticky='nw',
+                                             padx=0, pady=(4, 0))
+                else:
+                    stage_box.grid_configure(in_=lockins_line, row=1, column=0, columnspan=1, sticky='nw',
+                                             padx=0, pady=(4, 0))
 
             def keep_settings_room(_event=None):
                 # Side by side, the settings column is at least as wide as the
@@ -46588,6 +46648,10 @@ class RTEPanel(PPMSPanel):
                     room = max(room, min(room + 4, controls.winfo_width() - scan_stacked_width()))
                 controls.columnconfigure(0, minsize=room)
             controls.bind('<Configure>', keep_settings_room, add='+')
+            # After both pairs, on both their <Configure> events.
+            controls.bind('<Configure>', arrange_stage_block, add='+')
+            body.bind('<Configure>', arrange_stage_block, add='+')
+            arrange_stage_block()
         self.ppms_plot_frame = ttk.LabelFrame(outer, text='RT-E measurement', padding=2)
         self.ppms_plot_frame.grid(row=4, column=0, sticky='nsew')
         self.ppms_transport_plot_frames = {}
