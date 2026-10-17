@@ -547,7 +547,7 @@ class FieldOutputTests(unittest.TestCase):
         dropdown fills its column, as wide as f step, P step, Step A and
         Settle s above it, and "300 ms" is not cut.  The SR830 row is row 4
         since the power row (user, 2026-10-14), and row 5 since the angle row
-        (user, 2026-10-17), which puts Ang. step ° above it too."""
+        (user, 2026-10-17), which puts the angle Step ° above it too."""
         font = tkinter.font.nametofont("TkTextFont")
         choice = self.a.stfmr_lockin_sr830_time_constant_combo
         table = self.a.stfmr_lockin_meter_combo.master
@@ -593,7 +593,7 @@ class FieldOutputTests(unittest.TestCase):
             2: ("Start A:", "Stop A:", "Step A:", "Loop:", "Comp. V:"),
             3: ("Mod. start Hz:", "Mod. end Hz:", "Settle s:", "Acquire s:"),
             # The stage angles, below the Mod. row (user, 2026-10-17).
-            4: ("Ang. start °:", "Ang. stop °:", "Ang. step °:"),
+            4: ("Angle start °:", "Angle stop °:", "Step °:"),
             5: ("Meter:", "SR830 REF IN:", "SR830 TC:"),
             6: ("MFLI reference:", "MFLI TC s:"),
         }
@@ -621,6 +621,14 @@ class FieldOutputTests(unittest.TestCase):
         # Kept so a sweep can lock it (review, 2026-10-14).
         self.assertIs(table.grid_slaves(row=6, column=3)[0], self.a.stfmr_lockin_mfli_timeconstant_entry)
         self.assertEqual(table.grid_slaves(row=7), [], "seven rows")
+        # The angle labels widen no column of the table (2026-10-17: "Angle
+        # step °:" did, and the table no longer fitted the 1101 px window).
+        for column in (0, 2, 4):
+            (angle,) = table.grid_slaves(row=4, column=column)
+            others = [w for w in table.grid_slaves(column=column) if w.winfo_class() == "TLabel" and w is not angle]
+            self.assertLessEqual(label_font.measure(str(angle.cget("text"))),
+                                 max(label_font.measure(str(w.cget("text"))) for w in others),
+                                 str(angle.cget("text")))
         # And at the lab's 2000 px window, the plots' heights for the record.
         self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
         print(f"STFMR plots at {self.root.winfo_width()}x{self.root.winfo_height()} px: "
@@ -632,7 +640,9 @@ class FieldOutputTests(unittest.TestCase):
                 right = tab.winfo_rootx() + tab.winfo_width()
                 print(f"STFMR table at {self.root.winfo_width()} px: {table.winfo_width()} px wide "
                       f"(asks {table.winfo_reqwidth()}), its right edge {table.winfo_rootx() + table.winfo_width()}"
-                      f" px, the page's {right} px")
+                      f" px, the page's {right} px; column 4's labels "
+                      + ", ".join(f"{t!r} {label_font.measure(t)} px" for t in
+                                  ("f step GHz:", "P step dB:", "Step A:", "Settle s:", "Step °:", "SR830 TC:", "Angle step °:", "Ang. step °:")))
                 for row, labels in rows.items():
                     with self.subTest(width=width, row=row):
                         cells = []

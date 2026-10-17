@@ -2104,7 +2104,7 @@ STFMR_LOCKIN_MAX_MODULATION_FREQUENCIES = 10_000
 # there has no exact list; it also keeps the prime search well under a
 # second (user, 2026-10-13).
 STFMR_LOCKIN_MAX_PRIME_MODULATION_HZ = float(2 ** 53)
-# Ang. start / Ang. stop / Ang. step, the Newmark stage's angles, the
+# Angle start / Angle stop / Step °, the Newmark stage's angles, the
 # outermost loop of the sweep (user, 2026-10-17: "add a Start Angle, Stop
 # Angle, Step Angle below mod. Hz in ST-FMR module").  0, 0 and 10 by
 # default: with the motor not connected and both angles 0 the sweep runs as
@@ -6045,12 +6045,12 @@ def stfmr_power_summary(values, start_dbm, stop_dbm, step_db) -> str:
 
 def stfmr_angle_list(start_deg, stop_deg, step_deg) -> tuple[float, ...]:
     """The STFMR sweep's stage angles, in degrees from the stage zero, from
-    Ang. start °, Ang. stop ° and Ang. step ° (user, 2026-10-17: "add a
+    Angle start °, Angle stop ° and Step ° (user, 2026-10-17: "add a
     Start Angle, Stop Angle, Step Angle below mod. Hz in ST-FMR module").
 
     The RT-E Angle scan's rule (ppms_scan_axis, as rte_scan_plan uses it):
     the step's sign is ignored and it must be above 0, also for one angle
-    (as f step and P step); the list runs from Ang. start towards Ang.
+    (as f step and P step); the list runs from Angle start towards Angle
     stop and ends exactly on it, so the last step may be shorter; at most
     10001 angles.  Every angle must lie within ±NEWMARK_CABLE_LIMIT_DEG of
     the stage zero: the stage turns the sample holder with its wires
@@ -6060,15 +6060,15 @@ def stfmr_angle_list(start_deg, stop_deg, step_deg) -> tuple[float, ...]:
     try:
         start, stop, step = (float(str(value).strip()) for value in (start_deg, stop_deg, step_deg))
     except (TypeError, ValueError) as error:
-        raise ValueError("Ang. start °, Ang. stop ° and Ang. step ° must be finite numbers") from error
+        raise ValueError("Angle start °, Angle stop ° and the angle Step ° must be finite numbers") from error
     if not all(math.isfinite(value) for value in (start, stop, step)):
-        raise ValueError("Ang. start °, Ang. stop ° and Ang. step ° must be finite numbers")
+        raise ValueError("Angle start °, Angle stop ° and the angle Step ° must be finite numbers")
     if step == 0.0:
-        raise ValueError("Ang. step ° must be greater than 0°")
+        raise ValueError("The angle Step ° must be greater than 0°")
     try:
         angles = ppms_scan_axis(start, stop, step)
     except ValueError as error:
-        raise ValueError(f"Ang. start {start:g}° to Ang. stop {stop:g}° in {abs(step):g}° steps: "
+        raise ValueError(f"Angle start {start:g}° to Angle stop {stop:g}° in {abs(step):g}° steps: "
                          f"{error}") from error
     angles = tuple(float(round(value, 9)) + 0.0 for value in angles)     # + 0.0: never -0
     outside = [value for value in angles if abs(value) > NEWMARK_CABLE_LIMIT_DEG]
@@ -17294,23 +17294,26 @@ class CombinedControlApp:
         # Row 4, the Newmark stage's angles, right below the Mod. row (user,
         # 2026-10-17: "add a Start Angle, Stop Angle, Step Angle below mod.
         # Hz in ST-FMR module"), the outermost loop of the sweep: the whole
-        # Mod. x P x f x A sweep runs at each angle.  The labels read like
-        # the f, P and Mod. labels ("f start GHz:", "Mod. start Hz:").
-        # "Angle step °:" was 8 to 12 px wider than "f step GHz:", the
-        # widest label of its column, and on Windows CI the table then asked
-        # 1069 px of the 1057 px it has in the 1101 px window (its field
-        # columns gave way), so "Ang." as "Mod." (2026-10-17).  0, 0 and 10
-        # by default: with the motor not connected and both angles 0 the
-        # sweep runs as before, without the motor.  Kept so a sweep can lock
-        # them: the angle list is read at Start.
+        # Mod. x P x f x A sweep runs at each angle.  "Angle start °:" and
+        # "Angle stop °:" read like the f and P labels ("f start GHz:", "P
+        # start dBm:"), in columns whose "MFLI reference:" and "SR830 REF
+        # IN:" are wider.  The step's column holds "f step GHz:" at its
+        # widest: "Angle step °:" was 8 to 12 px wider (on Windows CI the
+        # table then asked 1069 px of the 1057 px it has in the 1101 px
+        # window, and its field columns gave way), and "Ang. step °:" still
+        # 2 to 5 px, so "Step °:", as "Step A:" in the magnet row
+        # (2026-10-17).  0, 0 and 10 by default: with the motor not
+        # connected and both angles 0 the sweep runs as before, without the
+        # motor.  Kept so a sweep can lock them: the angle list is read at
+        # Start.
         self.stfmr_lockin_angle_start_entry = parameter(
-            4, 0, "Ang. start °:", self.stfmr_lockin_angle_start_var
+            4, 0, "Angle start °:", self.stfmr_lockin_angle_start_var
         )
         self.stfmr_lockin_angle_stop_entry = parameter(
-            4, 1, "Ang. stop °:", self.stfmr_lockin_angle_stop_var
+            4, 1, "Angle stop °:", self.stfmr_lockin_angle_stop_var
         )
         self.stfmr_lockin_angle_step_entry = parameter(
-            4, 2, "Ang. step °:", self.stfmr_lockin_angle_step_var
+            4, 2, "Step °:", self.stfmr_lockin_angle_step_var
         )
 
         # Row 5, SR830, led by the Meter choice, which says whether this row,
@@ -17737,7 +17740,7 @@ class CombinedControlApp:
         # would show a TC
         # the sweep is not using (review, 2026-10-14).  So are P start, P
         # stop and P step: the power list is read at Start (user,
-        # 2026-10-14).  So are Ang. start, Ang. stop and Ang. step, also
+        # 2026-10-14).  So are Angle start, Angle stop and Step °, also
         # while Start's stage check runs (user, 2026-10-17): the angle list
         # is read at Start, before that check.
         motor_check = self.__dict__.get("stfmr_lockin_motor_check_pending", False)
@@ -19256,7 +19259,7 @@ class CombinedControlApp:
             )
             # The stage angles, the outermost loop, and whether the motor is
             # used (user, 2026-10-17): refused here, before anything else,
-            # when Ang. start / stop ask for a motor that is not connected
+            # when Angle start / stop ask for a motor that is not connected
             # on this page or whose last stop was not confirmed.
             angle_plan = self._stfmr_lockin_angle_plan()
             angles_deg = angle_plan["angles"]
@@ -19494,13 +19497,13 @@ class CombinedControlApp:
     # ---- the stage angles and Start's stage check (user, 2026-10-17) ------------
     def _stfmr_lockin_angle_plan(self) -> dict[str, object]:
         """The sweep's stage angles and whether the motor is used, from
-        Ang. start / Ang. stop / Ang. step (user, 2026-10-17):
+        Angle start / Angle stop / Step ° (user, 2026-10-17):
 
         - the motor connected on this page: the angle list is used, even 0
           to 0 (one move to 0°);
-        - the motor not connected, and Ang. start = Ang. stop = 0 (the
+        - the motor not connected, and Angle start = Angle stop = 0 (the
           default): the sweep runs as before, without the motor, with
-          stage_angle_deg blank in the CSV; Ang. step is not read;
+          stage_angle_deg blank in the CSV; Step ° is not read;
         - the motor not connected otherwise, or connected on the RT-E page:
           refused, with what to do;
         - the motor's last stop not confirmed (motion_may_run): refused, as
@@ -19536,13 +19539,13 @@ class CombinedControlApp:
             owner = self._newmark_stage_ownership().owner
             if owner not in (None, "STFMR"):
                 raise RuntimeError(
-                    f"Ang. start / Ang. stop ask for the motor, but the motor is connected on the {owner} "
-                    "page: disconnect it there and connect it on the Motor row here, or set Ang. start and "
-                    "Ang. stop to 0 for a sweep without the motor"
+                    f"Angle start / Angle stop ask for the motor, but the motor is connected on the {owner} "
+                    "page: disconnect it there and connect it on the Motor row here, or set Angle start and "
+                    "Angle stop to 0 for a sweep without the motor"
                 )
             raise RuntimeError(
-                "Ang. start / Ang. stop ask for the motor: connect it on the Motor row of the STFMR "
-                "instrument connections, or set Ang. start and Ang. stop to 0 for a sweep without the motor"
+                "Angle start / Angle stop ask for the motor: connect it on the Motor row of the STFMR "
+                "instrument connections, or set Angle start and Angle stop to 0 for a sweep without the motor"
             )
         angles = list(stfmr_angle_list(start_text, stop_text, step_text))
         if motor.in_move or motor.motion_may_run:
