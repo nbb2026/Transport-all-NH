@@ -1239,7 +1239,7 @@ class PageWidgetTests(unittest.TestCase):
         # The stage by hand, kept together on the Read LS475 line of the
         # sweep actions: Stage °, Move stage, Stop stage, Set motor 0°.
         group = a.stfmr_lockin_stage_move_button.master
-        self.assertIs(group.master, a.stfmr_lockin_read_gauss_button.master, "the Read LS475 line")
+        self.assertIs(group.master, a.stfmr_lockin_read_gauss_button.master.master, "the Read LS475 line")
         for widget in (a.stfmr_lockin_stage_target_entry, a.stfmr_lockin_stage_stop_button,
                        a.stfmr_lockin_motor_zero_button):
             self.assertIs(widget.master, group)

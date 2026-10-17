@@ -17385,8 +17385,13 @@ class CombinedControlApp:
             state="disabled",
         )
         self.stfmr_lockin_save_button.pack(side="left", padx=4)
-        readback_row = ttk.Frame(sweep_actions)
-        readback_row.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        # The Read LS475 line: the LS475 controls, and the stage by hand
+        # beside them or under them (user, 2026-10-17; arrange_stage_line
+        # below).
+        readback_line = ttk.Frame(sweep_actions)
+        readback_line.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        readback_row = ttk.Frame(readback_line)
+        readback_row.grid(row=0, column=0, sticky="w")
         self.stfmr_lockin_read_gauss_button = ttk.Button(
             readback_row, text="Read LS475", command=self.read_stfmr_lockin_gauss_once,
             state="disabled",
@@ -17396,22 +17401,27 @@ class CombinedControlApp:
             readback_row,
             text="Continuous field read (0.5 s)",
             variable=self.stfmr_lockin_gauss_continuous_var,
-        ).pack(side="left", padx=(0, 12))
+        ).pack(side="left")
         # The Newmark stage by hand, as RT-E's stage block (user,
         # 2026-10-17: "also add Set 0° button for the motor in ST-FMR" and
         # "also add Move stage button for the motor in ST-FMR"): the target,
-        # Move stage, Stop stage and Set motor 0°, kept together on this
-        # line.  Here they cost the plots no height: in the 1101 px window
-        # the line is under the table with the page's width to spare, and at
-        # 2000 px the actions column beside the table is shorter than the
-        # table.  The table (at most five pairs a row, already at the 1101 px
-        # window's width) and the Motor connection row (laid out as the other
-        # rows) stay as they are.  Move stage, the target and Set motor 0°
-        # are locked unless the motor is connected here and nothing runs;
-        # Stop stage stays usable whenever it is connected here, also during
-        # a move or a sweep (_update_stfmr_lockin_motor_row).
-        stage_controls = ttk.Frame(readback_row)
-        stage_controls.pack(side="left")
+        # Move stage, Stop stage and Set motor 0°, kept together.  They cost
+        # the plots no height: in the 1101 px window the actions are under
+        # the table with the page's width to spare, and the controls sit on
+        # the Read LS475 line; at 2000 px the actions column beside the table
+        # is shorter than the table, and they take a line of their own under
+        # it.  On the Read LS475 line there too, the line was 912 px wide on
+        # Windows CI and the table (1069 px) and the actions no longer sat
+        # side by side at 2000 px (2026-10-17), so where they go follows the
+        # table/actions layout (arrange_stage_line).  The table (at most five
+        # pairs a row, already at the 1101 px window's width) and the Motor
+        # connection row (laid out as the other rows) stay as they are.  Move
+        # stage, the target
+        # and Set motor 0° are locked unless the motor is connected here and
+        # nothing runs; Stop stage stays usable whenever it is connected
+        # here, also during a move or a sweep (_update_stfmr_lockin_motor_row).
+        stage_controls = ttk.Frame(readback_line)
+        stage_controls.grid(row=0, column=1, sticky="w")
         ttk.Label(stage_controls, text="Stage °:").pack(side="left", padx=(0, 3))
         self.stfmr_lockin_stage_target_entry = ttk.Entry(
             stage_controls, textvariable=self.stfmr_lockin_stage_target_var, width=7, state="disabled",
@@ -17472,7 +17482,47 @@ class CombinedControlApp:
         self.stfmr_lockin_overload_indicator = status_lamp(
             2, self.stfmr_lockin_overload_var, 56
         )
-        self._arrange_pair_by_width(controls, params, sweep_actions, gap=24, stack_gap=6)
+        # The actions' width with the stage controls on a line of their own:
+        # the table/actions pair decides by it, so where the stage controls
+        # go can never change its decision, as RT-E's scan box does (user,
+        # 2026-10-17).
+        def actions_stacked_width() -> int:
+            return max(part.winfo_reqwidth() for part in (button_row, readback_row, stage_controls, status))
+
+        self._arrange_pair_by_width(controls, params, sweep_actions, gap=24, stack_gap=6,
+                                    right_width=actions_stacked_width)
+
+        def arrange_stage_line(_event=None) -> None:
+            # Beside the LS475 controls only while the actions are under the
+            # table and the box has the width for both; else on a line of
+            # their own.  Decided from the table/actions decision just made
+            # (this runs after it, on the same <Configure>) and the box's
+            # width, never from the actions' own width, which follows this
+            # choice beside the table: so it cannot feed back (the shape that
+            # hung CIDWM on 2026-10-12).  Not one of _arrange_pair_by_width's
+            # pairs: CI's layout checks require STFMR's pairs side by side at
+            # 2000 px, where this line is meant to go under (user, 2026-10-17).
+            try:
+                outer = getattr(controls, "_pair_side_by_side", None)
+                if outer is None:
+                    return
+                room = controls.winfo_width() - self._pair_inset(controls)
+                beside = outer is False and room >= (
+                    readback_row.winfo_reqwidth() + 12 + stage_controls.winfo_reqwidth())
+            except (tk.TclError, ValueError):
+                return
+            if getattr(readback_line, "_stage_controls_beside", None) is beside:
+                return
+            readback_line._stage_controls_beside = beside
+            if beside:
+                readback_row.grid_configure(row=0, column=0, columnspan=1, padx=(0, 12), pady=0)
+                stage_controls.grid_configure(row=0, column=1, columnspan=1, padx=0, pady=0)
+            else:
+                readback_row.grid_configure(row=0, column=0, columnspan=2, padx=0, pady=0)
+                stage_controls.grid_configure(row=1, column=0, columnspan=2, padx=0, pady=(4, 0))
+
+        controls.bind("<Configure>", arrange_stage_line, add="+")
+        arrange_stage_line()
 
         # The save path can be long, so it keeps the full width below.
         save_path_row = ttk.Frame(outer)

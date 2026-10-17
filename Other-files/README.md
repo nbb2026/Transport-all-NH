@@ -32,11 +32,13 @@
   while one of its jobs runs and while a stage question is open. Closing the
   page disconnects the stage on that worker (STOP first if it turns).
 - **STFMR, the stage by hand:** "Stage °:", **Move stage**, **Stop stage**
-  and **Set motor 0°**, kept together on the Read LS475 line of the sweep
-  actions. They cost the plots no height there (in the 1101 px window the
-  line is under the table, with room to spare; at 2000 px the actions column
-  beside the table is shorter than the table), and the table and the Motor
-  row stay as they are. They work as RT-E's: the target within ±360° of the
+  and **Set motor 0°**, kept together in the sweep actions: on the Read
+  LS475 line in the 1101 px window (the actions under the table, with room
+  to spare), on a line of their own under it at 2000 px (the actions beside
+  the table; on the Read LS475 line there the actions were 912 px wide on
+  Windows CI and no longer sat beside the 1069 px table). Either way they
+  cost the plots no height, and the table and the Motor row stay as they
+  are. They work as RT-E's: the target within ±360° of the
   stage zero (else refused), the page's safety tick, the move on the worker
   with its progress and the angle read back in the Motor row's status; a
   latched limit error or the driver off gets RT-E's CLR / EO=1 Yes/No

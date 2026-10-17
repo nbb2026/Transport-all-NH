@@ -183,38 +183,53 @@ class FieldOutputTests(unittest.TestCase):
 
     def test_the_stage_controls_share_the_read_ls475_line(self):
         """User, 2026-10-17: Set motor 0° and Move stage on the STFMR page.
-        Stage °, Move stage, Stop stage and Set motor 0° are kept together on
-        the Read LS475 line of the sweep actions, one line, every text
-        whole, inside the page, in the 1101 px and 2000 px windows; the
-        parameter table and its actions stay side by side at 2000 px."""
+        Stage °, Move stage, Stop stage and Set motor 0° are kept together,
+        every text whole, inside the page: on the Read LS475 line in the 1101
+        px window (the actions under the table), on a line of their own under
+        it at 2000 px (the actions beside the table, which stay side by side:
+        on the Read LS475 line the actions were 912 px wide on Windows and
+        stacked).  Whatever the resize history."""
         a = self.a
         group = [a.stfmr_lockin_stage_target_entry, a.stfmr_lockin_stage_move_button,
                  a.stfmr_lockin_stage_stop_button, a.stfmr_lockin_motor_zero_button]
         read = a.stfmr_lockin_read_gauss_button
+        line = read.master.master
         font = tkinter.font.nametofont("TkDefaultFont")
         table = a.stfmr_lockin_meter_combo.master
+        expected = {self.LAB_DEFAULT: (False, True), LAB_WIDE: (True, False)}
         try:
-            for width in (self.LAB_DEFAULT, LAB_WIDE):
-                with self.subTest(width=width):
+            for history in ((self.LAB_DEFAULT,), (LAB_WIDE,), (LAB_WIDE, self.LAB_DEFAULT),
+                            (self.LAB_DEFAULT, LAB_WIDE), (826, LAB_WIDE, self.LAB_DEFAULT)):
+                for width in history:
                     self.arranged(width, "STFMR", a.stfmr_lockin_resource_widgets)
+                width = history[-1]
+                with self.subTest(history=history):
+                    self.assertEqual((getattr(table.master, "_pair_side_by_side", None),
+                                      getattr(line, "_stage_controls_beside", None)), expected[width])
                     tab = a.stfmr_lockin_tab
                     right = tab.winfo_rootx() + tab.winfo_width()
+                    beside = expected[width][1]
                     for widget in group:
                         self.assertTrue(widget.winfo_ismapped())
-                        self.assertIs(widget.master.master, read.master, "on the Read LS475 line")
-                        self.assertLessEqual(abs(widget.winfo_rooty() + widget.winfo_height() / 2
-                                                 - read.winfo_rooty() - read.winfo_height() / 2), 3, "one line")
+                        self.assertIs(widget.master.master, line)
+                        middle = widget.winfo_rooty() + widget.winfo_height() / 2
+                        if beside:
+                            self.assertLessEqual(abs(middle - read.winfo_rooty() - read.winfo_height() / 2), 3,
+                                                 "on the Read LS475 line")
+                            self.assertGreater(widget.winfo_rootx(), read.winfo_rootx())
+                        else:
+                            self.assertGreaterEqual(widget.winfo_rooty(), read.winfo_rooty() + read.winfo_height(),
+                                                    "under the Read LS475 line")
                         self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), right + 1)
                         if widget.winfo_class() == "TButton":
                             self.assertLessEqual(font.measure(str(widget.cget("text"))), widget.winfo_width() - 10)
                     xs = [w.winfo_rootx() for w in group]
                     self.assertEqual(xs, sorted(xs), "Stage °, Move stage, Stop stage, Set motor 0°")
-                    actions = read.master.master
+                    actions = line.master
                     print(f"STFMR {self.root.winfo_width()} px: table {table.winfo_width()} px "
-                          f"(asks {table.winfo_reqwidth()}), actions {actions.winfo_width()} px "
-                          f"(asks {actions.winfo_reqwidth()}), Read LS475 line {read.master.winfo_reqwidth()} px, "
-                          f"side by side {getattr(table.master, '_pair_side_by_side', None)}")
-            self.assertTrue(getattr(table.master, "_pair_side_by_side", False), "side by side at 2000 px")
+                          f"(asks {table.winfo_reqwidth()}, {table.winfo_reqheight()} px tall), actions "
+                          f"{actions.winfo_width()} px (asks {actions.winfo_reqwidth()}, "
+                          f"{actions.winfo_reqheight()} px tall), stage controls beside {beside}")
         finally:
             self.arranged(LAB_WIDE, "STFMR", a.stfmr_lockin_resource_widgets)
 
