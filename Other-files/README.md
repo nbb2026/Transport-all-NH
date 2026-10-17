@@ -15,7 +15,10 @@
   the last run folder. `SHVScanRecorder`, `make_scan_run_folder`.
 - **The log:** JSON lines as the STFMR run log's (`scan_log_line`):
   `{"timestamp", "event", …}`, each flushed and fsynced, written under one
-  lock from the rte-control worker and the Tk thread. Events:
+  lock from the rte-control worker and the Tk thread. As the live CSV, the
+  log is opened for each record and closed again: no handle is held, so on
+  Windows the folder can be copied mid-scan (and a test's folder removed).
+  Events:
   `run_prepared` (program, `APP_VERSION`, Python; the file name, the mode,
   the plan, Settle s / Acquire s / the effective settle per pass, the
   harmonic passes, each measured lock-in with its harmonics, time constant

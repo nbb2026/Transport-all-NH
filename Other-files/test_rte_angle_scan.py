@@ -1510,14 +1510,17 @@ class AngleStartTests(unittest.TestCase):
         panel.ppms_environment_busy = panel.ppms_field_scan_running = False
         panel.post_ui = lambda callback: callback()
         panel.root = None
-        with tempfile.TemporaryDirectory() as folder, \
-                patch.object(app.filedialog, "askdirectory", return_value=folder) as askdirectory, \
+        # The run folder lives until the test ends: a scan the test finishes
+        # later writes its run log's last entry there (2026-10-18).
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with patch.object(app.filedialog, "askdirectory", return_value=tmp.name) as askdirectory, \
                 patch.object(app.simpledialog, "askstring", return_value=""), \
                 patch.object(app.messagebox, "showerror") as showerror, \
                 patch.object(app.messagebox, "askyesno", return_value=yes) as askyesno:
             panel.start_ppms_field_scan()
         return types.SimpleNamespace(panel=panel, showerror=showerror, askyesno=askyesno,
-                                     askdirectory=askdirectory)
+                                     askdirectory=askdirectory, folder=tmp.name)
 
     def test_angle_needs_the_stage_the_kepco_and_the_ls475(self):
         for options, message in ((dict(stage=False), r'Connect the Newmark NSC-A1 \(the "Motor" row of the '

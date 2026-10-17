@@ -14067,7 +14067,11 @@ class SHVScanRecorder:
     live CSV, made empty here and still appended row by row, each fsynced, by
     _append_ppms_live_csv with its columns unchanged, and <stem>.log, JSON
     lines as STFMRScanRecorder's: {timestamp, event, ...details}, each
-    flushed and fsynced.  Both are opened "x": nothing is ever overwritten.
+    flushed and fsynced.  Both are made "x": nothing is ever overwritten.
+    As the live CSV, the log is opened for each record and closed again, so
+    no handle is held between records: on the lab PC (Windows) the folder
+    can be copied, and a test's folder removed, while a scan runs or after
+    one that never finished.
 
     The rte-control worker and the Tk thread both write (a Stop, a log line
     of either), so every write and the close hold one lock.  A write never
@@ -14085,15 +14089,19 @@ class SHVScanRecorder:
         self.lock = threading.Lock()
         self.failure: BaseException | None = None
         self.closed = False
-        self.log_handle = None
         try:
-            with self.csv_path.open("x", encoding="utf-8-sig", newline=""):
-                pass
-            self.log_handle = self.log_path.open("x", encoding="utf-8")
+            for path, encoding in ((self.csv_path, "utf-8-sig"), (self.log_path, "utf-8")):
+                with path.open("x", encoding=encoding, newline=""):
+                    pass
         except BaseException:
             # The folder and any file made stay, as evidence; nothing starts.
             self.closed = True
             raise
+
+    def _append(self, text: str) -> None:
+        with self.log_path.open("a", encoding="utf-8") as handle:
+            handle.write(text)
+            STFMRScanRecorder._sync(handle)
 
     def event(self, name: str, **details) -> bool:
         """Write one record, from either thread; False when it was not
@@ -14102,8 +14110,7 @@ class SHVScanRecorder:
             if self.closed:
                 return False
             try:
-                self.log_handle.write(scan_log_line(name, details))
-                STFMRScanRecorder._sync(self.log_handle)
+                self._append(scan_log_line(name, details))
                 return True
             except Exception as error:
                 if self.failure is None:
@@ -14117,23 +14124,17 @@ class SHVScanRecorder:
             raise RuntimeError(f"The SHV log could not be written ({error}); the scan stopped") from error
 
     def close(self, outcome: str, **details) -> list[str]:
-        """run_finished, then close; best effort, once (the later calls do
-        nothing).  The errors are returned for the page to show."""
+        """run_finished, then closed for good; best effort, once (the later
+        calls do nothing).  The errors are returned for the page to show."""
         with self.lock:
             if self.closed:
                 return []
-            errors = []
-            try:
-                self.log_handle.write(scan_log_line("run_finished", dict(outcome=outcome, **details)))
-                STFMRScanRecorder._sync(self.log_handle)
-            except Exception as error:
-                errors.append(f"Failed to write the closing log entry: {error}")
             self.closed = True
             try:
-                self.log_handle.close()
+                self._append(scan_log_line("run_finished", dict(outcome=outcome, **details)))
             except Exception as error:
-                errors.append(f"Failed to close the log: {error}")
-            return errors
+                return [f"Failed to write the closing log entry: {error}"]
+            return []
 
 
 # Side-by-side/stacked flips of one pair, within a second at one window

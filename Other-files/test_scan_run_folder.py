@@ -12,6 +12,7 @@ Window-free: no Tk window, no instrument; every dialog is answered here.
 SHV's Start, scans and their logs end to end are in
 test_rte_angle_end_to_end (RunLogTests, ScanEndZeroTests)."""
 import json
+import shutil
 import sys
 import tempfile
 import threading
@@ -106,7 +107,6 @@ class SHVRecorderTests(Folder):
         self.assertTrue(all(set(line) >= {"timestamp", "event"} for line in lines))
         # Closed once: later writes and closes do nothing.
         self.assertTrue(recorder.closed)
-        self.assertTrue(recorder.log_handle.closed)
         self.assertFalse(recorder.event("note", text="late"))
         self.assertEqual(recorder.close("again"), [])
         self.assertEqual(len(self.lines(recorder)), 3)
@@ -139,18 +139,24 @@ class SHVRecorderTests(Folder):
         self.assertEqual((directory / "angle.csv").read_text(encoding="utf-8"), "someone else's")
         self.assertFalse((directory / "angle.log").exists())
 
+    def test_no_handle_is_held_between_records(self):
+        # As the live CSV: each record opens, writes, fsyncs and closes the
+        # log, so the folder can be copied or removed mid-scan on Windows.
+        recorder = app.SHVScanRecorder(self.folder, "angle")
+        self.assertTrue(recorder.event("run_prepared"))
+        shutil.rmtree(recorder.directory)
+        self.assertFalse(recorder.event("note", text="the folder is gone"))
+        with self.assertRaisesRegex(RuntimeError, "The SHV log could not be written"):
+            recorder.check()
+        self.assertEqual(len(recorder.close("error")), 1)
+
     def test_a_failed_write_never_raises_and_is_kept_for_the_worker(self):
         recorder = app.SHVScanRecorder(self.folder, "angle")
         self.addCleanup(recorder.close, "test")
-        real = recorder.log_handle
 
-        class Full:
-            def write(self, _text):
-                raise OSError(28, "No space left on device")
-
-            def __getattr__(self, name):
-                return getattr(real, name)
-        recorder.log_handle = Full()
+        def full(_text):
+            raise OSError(28, "No space left on device")
+        recorder._append = full
         recorder.check()        # nothing failed yet
         self.assertFalse(recorder.event("stage_move", px=1))
         self.assertFalse(recorder.event("point_saved", index=1))
@@ -160,7 +166,8 @@ class SHVRecorderTests(Folder):
         errors = recorder.close("error")
         self.assertEqual(len(errors), 1)
         self.assertIn("Failed to write the closing log entry", errors[0])
-        self.assertTrue(real.closed, "the file is closed all the same")
+        self.assertTrue(recorder.closed, "closed all the same")
+        self.assertEqual(recorder.close("again"), [])
 
     def test_writes_from_two_threads_are_whole_lines(self):
         recorder = app.SHVScanRecorder(self.folder, "angle")

@@ -558,21 +558,17 @@ class AngleScanStopTests(EndToEnd):
         self.assertIsNone(panel._newmark_stage_ownership().owner)
 
 
-class FlakyLog:
-    """The run log's file, whose next ``failures`` writes raise as a full
-    disk would; everything else goes to the real file."""
+def fail_next_log_write(recorder, failures=1):
+    """The run log's next ``failures`` writes raise, as a full disk would."""
+    real = recorder._append
+    left = [failures]
 
-    def __init__(self, handle, failures=1):
-        self.handle, self.failures = handle, failures
-
-    def write(self, text):
-        if self.failures:
-            self.failures -= 1
+    def append(text):
+        if left[0]:
+            left[0] -= 1
             raise OSError(28, "No space left on device")
-        return self.handle.write(text)
-
-    def __getattr__(self, name):
-        return getattr(self.handle, name)
+        return real(text)
+    recorder._append = append
 
 
 class RunLogBase(EndToEnd):
@@ -869,7 +865,7 @@ class RunLogTests(RunLogBase):
         h = self.make(span=("0", "20", "10"), round_trip=False)
         panel = h.panel
         # The write after the move to 20 deg (its stage_move) fails once.
-        h.move_hooks[20.0] = lambda: setattr(panel.rte_recorder, "log_handle", FlakyLog(panel.rte_recorder.log_handle))
+        h.move_hooks[20.0] = lambda: fail_next_log_write(panel.rte_recorder)
         self.start(h)
         h.showerror.assert_called_once()
         self.assertEqual(h.showerror.call_args.args[0], "SHV scan")
