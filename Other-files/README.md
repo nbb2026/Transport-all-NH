@@ -1,5 +1,26 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Newmark stage: plain DLL messages (2026-10-17)
+
+- **What happened:** the first run of `Newmark_motor_test.py` on the lab PC
+  stopped with "Could not load PerformaxCom.dll ... (Windows error 126)":
+  the two Arcus DLLs had not been copied beside the script yet. Nothing was
+  sent. The message was right but vague.
+- **Now (script and program):**
+  - Nothing beside the script (or the program) and Windows finds nothing:
+    "PerformaxCom.dll was not found: it is not in this script's folder (...)",
+    with where the 64-bit pair comes from (Arcus "USB 64-bit DLL v2.06",
+    and the Performax USB driver, "Performax USB Setup 4.01.3").
+  - PerformaxCom.dll there but SiUSBXp.dll not: named, before loading.
+  - Either DLL 32-bit: read from its PE header and named, before Windows'
+    error 193. A 32-bit DLL found elsewhere by Windows still gets the
+    error-193 explanation, not "not found".
+  - The 32-bit-Python message asks for "a 64-bit Python 3" (the lab PC runs
+    3.14).
+- **Tests:** `test_newmark_dll_diagnostics` (fake PE headers; no DLL is
+  loaded), plus updated `test_newmark_motor_test_script` and
+  `test_rte_angle_scan` loader tests.
+
 ## STFMR: defaults from the user's screenshot (2026-10-17)
 
 - **New defaults:** f start 3 GHz, f stop 9 GHz, f step 1 GHz (7 carriers;

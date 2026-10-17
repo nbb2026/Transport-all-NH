@@ -43640,6 +43640,45 @@ def newmark_dll_folder():
     return None
 
 
+# Where the two 64-bit DLLs come from, for the messages (user, 2026-10-17).
+NEWMARK_DLL_SOURCE = ('Arcus Technology\'s "USB 64-bit DLL v2.06" (arcus-technology.com, Support > Downloads), '
+                      'with the Performax USB driver installed ("Performax USB Setup 4.01.3", Newmark\'s NSC-A1 page)')
+
+
+def newmark_dll_bits(path):
+    """32 or 64 from a DLL's PE header (its machine field), or None if the
+    file is not a Windows DLL this can read, as in Newmark_motor_test.py
+    (user, 2026-10-17)."""
+    try:
+        with open(path, "rb") as file:
+            header = file.read(4096)
+        if header[:2] != b"MZ":
+            return None
+        offset = int.from_bytes(header[0x3C:0x40], "little")
+        if header[offset:offset + 4] != b"PE\0\0":
+            return None
+        machine = int.from_bytes(header[offset + 4:offset + 6], "little")
+    except (OSError, ValueError):
+        return None
+    return {0x14C: 32, 0x8664: 64, 0xAA64: 64}.get(machine)
+
+
+def newmark_check_dll_folder(folder):
+    """Refuse, with a plain reason, a folder whose DLL pair cannot load in a
+    64-bit Python: SiUSBXp.dll missing beside PerformaxCom.dll, or either a
+    32-bit DLL (user, 2026-10-17)."""
+    folder = Path(folder)
+    if not (folder / NEWMARK_SIUSB_NAME).is_file():
+        raise NewmarkStageError(f"{NEWMARK_DLL_NAME} is in {folder}, but {NEWMARK_SIUSB_NAME} is not: "
+                                f"{NEWMARK_DLL_NAME} needs it. Copy {NEWMARK_SIUSB_NAME} from the same package "
+                                f"({NEWMARK_DLL_SOURCE}) into that folder.")
+    for name in (NEWMARK_DLL_NAME, NEWMARK_SIUSB_NAME):
+        if newmark_dll_bits(folder / name) == 32:
+            raise NewmarkStageError(f"{folder / name} is a 32-bit DLL; this Python is 64-bit, so both "
+                                    f"{NEWMARK_DLL_NAME} and {NEWMARK_SIUSB_NAME} must be the 64-bit ones "
+                                    f"({NEWMARK_DLL_SOURCE}).")
+
+
 def newmark_explain_load_error(path, error):
     """The Windows error code, from OSError.winerror or else its exact "[WinError N]"
     text (not any "193" in the message, which also holds the path).
@@ -43681,6 +43720,7 @@ def newmark_load_performax():
     folder = newmark_dll_folder()
     path = NEWMARK_DLL_NAME
     if folder is not None:
+        newmark_check_dll_folder(folder)
         if hasattr(os, "add_dll_directory"):
             _NEWMARK_DLL_DIRECTORIES.append(os.add_dll_directory(str(folder)))
         path = str(folder / NEWMARK_DLL_NAME)
@@ -43693,6 +43733,16 @@ def newmark_load_performax():
     try:
         dll = win_dll(path)
     except OSError as error:
+        not_found = (isinstance(error, FileNotFoundError) or getattr(error, "winerror", None) == 126
+                     or "[WinError 126]" in str(error))
+        if folder is None and not_found:
+            # Not beside the program, and Windows did not find it either: say
+            # where to put the pair and where they come from (user, 2026-10-17).
+            raise NewmarkStageError(
+                f"{NEWMARK_DLL_NAME} was not found: it is not in the program's folder "
+                f"({Path(__file__).resolve().parent}), and Windows did not find it elsewhere. Copy the 64-bit "
+                f"{NEWMARK_DLL_NAME} and {NEWMARK_SIUSB_NAME} into that folder. They come from "
+                f"{NEWMARK_DLL_SOURCE}.") from error
         raise NewmarkStageError(newmark_explain_load_error(path, error)) from error
     return newmark_declare_functions(dll), path
 

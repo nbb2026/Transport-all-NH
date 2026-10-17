@@ -1679,7 +1679,7 @@ class LoaderTests(unittest.TestCase):
         self.assertIs(lib.fnPerformaxComFlush.restype, ctypes.c_int)
 
     def test_script_folder_then_normal_search(self):
-        folder = self.folder_with("PerformaxCom.dll")
+        folder = self.folder_with("PerformaxCom.dll", "SiUSBXp.dll")
         (_lib, path), loaded, added = self.load(script_dir=folder)
         self.assertEqual((added, path), ([folder], os.path.join(folder, "PerformaxCom.dll")))
         (_lib, path), loaded, added = self.load()
@@ -1710,8 +1710,15 @@ class LoaderTests(unittest.TestCase):
         self.assertIn("it, or a DLL it needs, was not found (Windows error 126)", text)
         self.assertIn("Python does not search PATH", text)
         self.assertNotIn("64-bit DLL. This Python", text)
-        # Through the loader: a folder with PerformaxCom.dll but without SiUSBXp.dll.
+        # Through the loader: a folder with PerformaxCom.dll but without
+        # SiUSBXp.dll is now named before anything is loaded (user,
+        # 2026-10-17; test_newmark_dll_diagnostics has the other cases).
         folder = self.folder_with("PerformaxCom.dll")
+        with self.assertRaises(script.PerformaxError) as caught:
+            self.load(dll_dir=folder, error=not_found())
+        self.assertIn("but SiUSBXp.dll is not", str(caught.exception))
+        # Both present but a dependency of theirs missing: error 126 as before.
+        folder = self.folder_with("PerformaxCom.dll", "SiUSBXp.dll")
         with self.assertRaises(script.PerformaxError) as caught:
             self.load(dll_dir=folder, error=not_found())
         self.assertIn("PerformaxCom.dll needs SiUSBXp.dll", str(caught.exception))
@@ -1733,7 +1740,7 @@ class LoaderTests(unittest.TestCase):
                 mock.patch.object(ctypes, "WinDLL", mock.Mock(side_effect=AssertionError("loaded")), create=True):
             with self.assertRaises(script.PerformaxError) as caught:
                 REAL_LOADER(None)
-        self.assertIn("32-bit Python: use 64-bit Python 3.11", str(caught.exception))
+        self.assertIn("32-bit Python: use a 64-bit Python 3", str(caught.exception))
 
     def test_missing_functions(self):
         (lib, _path), _loaded, _added = self.load(missing=("fnPerformaxComFlush",))

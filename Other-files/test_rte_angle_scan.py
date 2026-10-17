@@ -618,11 +618,12 @@ class NewmarkLoaderTests(unittest.TestCase):
             raise FileNotFoundError(f"Could not find module '{path}' (or one of its dependencies). Try using the "
                                     "full path with constructor syntax.")
 
-        # Not in the program's folder: the normal search, and Python 3.8+'s error 126.
+        # Not in the program's folder: the normal search, and Python 3.8+'s
+        # error 126, now named as such with where the DLLs go (user, 2026-10-17).
         with patch.object(app.ctypes, "WinDLL", not_found, create=True), \
                 patch.object(app, "newmark_dll_folder", return_value=None):
-            with self.assertRaisesRegex(app.NewmarkStageError, r"Could not load PerformaxCom\.dll: it, or a DLL it "
-                                        r"needs, was not found \(Windows error 126\)"):
+            with self.assertRaisesRegex(app.NewmarkStageError, r"PerformaxCom\.dll was not found: it is not in "
+                                        r"the program's folder"):
                 REAL_LOADER()
 
 

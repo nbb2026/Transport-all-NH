@@ -317,6 +317,46 @@ def python_bits():
     return ctypes.sizeof(ctypes.c_void_p) * 8
 
 
+# Where the two 64-bit DLLs come from, for the messages (user, 2026-10-17:
+# the first run on the lab PC stopped with Windows error 126 because they had
+# not been copied beside the script yet).
+DLL_SOURCE = ('Arcus Technology\'s "USB 64-bit DLL v2.06" (arcus-technology.com, Support > Downloads), '
+              'with the Performax USB driver installed ("Performax USB Setup 4.01.3", Newmark\'s NSC-A1 page)')
+
+
+def dll_bits(path):
+    """32 or 64 from a DLL's PE header (its machine field), or None if the
+    file is not a Windows DLL this can read.  Read before loading, so a
+    32-bit DLL is named as such instead of Windows error 193 (user,
+    2026-10-17)."""
+    try:
+        with open(path, "rb") as file:
+            header = file.read(4096)
+        if header[:2] != b"MZ":
+            return None
+        offset = int.from_bytes(header[0x3C:0x40], "little")
+        if header[offset:offset + 4] != b"PE\0\0":
+            return None
+        machine = int.from_bytes(header[offset + 4:offset + 6], "little")
+    except (OSError, ValueError):
+        return None
+    return {0x14C: 32, 0x8664: 64, 0xAA64: 64}.get(machine)
+
+
+def check_dll_folder(folder):
+    """Refuse, with a plain reason, a folder whose DLL pair cannot load in
+    this 64-bit Python: SiUSBXp.dll missing beside PerformaxCom.dll, or either
+    one a 32-bit DLL (user, 2026-10-17)."""
+    helper = os.path.join(folder, SIUSB_NAME)
+    if not os.path.isfile(helper):
+        raise PerformaxError(f"{DLL_NAME} is in {folder}, but {SIUSB_NAME} is not: {DLL_NAME} needs it. "
+                             f"Copy {SIUSB_NAME} from the same package ({DLL_SOURCE}) into that folder.")
+    for name in (DLL_NAME, SIUSB_NAME):
+        if dll_bits(os.path.join(folder, name)) == 32:
+            raise PerformaxError(f"{os.path.join(folder, name)} is a 32-bit DLL; this Python is 64-bit, so "
+                                 f"both {DLL_NAME} and {SIUSB_NAME} must be the 64-bit ones ({DLL_SOURCE}).")
+
+
 def explain_load_error(path, error):
     """The Windows error code, from OSError.winerror or else its exact "[WinError N]"
     text (not any "193" in the message, which also holds the path).
@@ -352,11 +392,12 @@ def load_performax(dll_dir=None):
     if python_bits() != 64:
         # The spec wants 64-bit Python, and the DLLs here are the 64-bit ones; a 32-bit
         # PerformaxCom.dll would also need another calling convention (user, 2026-10-13).
-        raise PerformaxError(f"This is a {python_bits()}-bit Python: use 64-bit Python 3.11 "
-                             "(py -3.11-64 Newmark_motor_test.py ...), with the 64-bit DLLs")
+        raise PerformaxError(f"This is a {python_bits()}-bit Python: use a 64-bit Python 3 "
+                             "(e.g. py -3.11-64 Newmark_motor_test.py ...), with the 64-bit DLLs")
     folder = dll_folder(dll_dir)
     path = DLL_NAME
     if folder is not None:
+        check_dll_folder(folder)
         _DLL_DIRECTORIES.append(os.add_dll_directory(folder))
         path = os.path.join(folder, DLL_NAME)
         helper = os.path.join(folder, SIUSB_NAME)
@@ -368,6 +409,15 @@ def load_performax(dll_dir=None):
     try:
         dll = win_dll(path)
     except OSError as error:
+        not_found = (isinstance(error, FileNotFoundError) or getattr(error, "winerror", None) == 126
+                     or "[WinError 126]" in str(error))
+        if folder is None and not_found:
+            # Not beside the script, and Windows did not find it either: say
+            # where to put the pair and where they come from (user, 2026-10-17).
+            raise PerformaxError(
+                f"{DLL_NAME} was not found: it is not in this script's folder ({SCRIPT_DIR}), and Windows "
+                f"did not find it elsewhere. Copy the 64-bit {DLL_NAME} and {SIUSB_NAME} into that folder "
+                f"(or name their folder with --dll-dir). They come from {DLL_SOURCE}.") from error
         raise PerformaxError(explain_load_error(path, error)) from error
     return declare_functions(dll), path
 
