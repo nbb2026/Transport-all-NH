@@ -1,5 +1,58 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## RT-E: the stage controls in the RT-E settings; the Angle scan end to end (2026-10-17)
+
+- **The request:** after the first runs on the lab PC ("Move stage" to
+  −90° worked), "now move the stage controllers to the RT-E settings and
+  make the angle scan function workable". Asked what fails in the Angle
+  scan: "Not tried yet; make it ready".
+- **Where the stage controls are:** Stage °, Move stage, Stop stage, Set
+  stage 0° and the stage's live line are a block of two rows in the **RT-E
+  settings** box, with the "KEPCO current A" box an Angle scan holds; the
+  Motor connection row stays in the rack, and the scan box keeps only the
+  scan rows, the status line and the notes. Widgets, locking (Stop stage
+  usable whenever the stage is connected) and texts are unchanged.
+  - In the 1101 px window (the settings stacked, as wide as the page) the
+    block sits beside the lock-in choices, in rows they already take: no
+    plot height (RT-E plots on Windows CI at 1101 x 1300 px: 55 px, as
+    before; Linux 91–92 px).
+  - At 2000 px it sits under the KEPCO rows, the scan box two rows shorter
+    without it: the plots gain (Windows CI 225 → 239 px, Linux 252 → 263
+    px at the lab height).
+  - In a wider window (the settings and the scan box side by side with
+    room for the block and for the scan's widest status line) it sits
+    beside the lock-ins there too.
+  - Where it goes follows the two pairs' decisions and the widths the parts
+    ask for, never its own place: the params/lock-ins pair decides by the
+    lock-ins alone, and the settings/scan pair by the settings without the
+    block (`left_width`, new beside `right_width` in
+    `_arrange_pair_by_width`), so the layout is the same whatever the resize
+    history (CI's test went 2560 → 2000 px and found the pair stacked
+    before this).
+- **The Angle scan, end to end:** a new window-free module,
+  `test_rte_angle_end_to_end`, runs whole Angle scans through the page's
+  own Start (requirements, the Yes/No, the folder and file name, the stage
+  check), its workers and its finish, on a real single-worker `rte-control`
+  thread, with fake KEPCO, LS475, 6221 and lock-in reads and the program's
+  real stage driver on the fake PerformaxCom.dll:
+  - the order (6221 on, KEPCO set once and settled on the LS475, then each
+    angle's move, field, reading, field);
+  - every instrument and DLL call on the worker;
+  - the live CSV (angle per row read back, PX, steps/°) and Save CSV;
+  - round trip, loops, three harmonic passes with an SR830 and the Zurich
+    alone (RT-E's default);
+  - Stop during a move (STOP sent, "Stopped; …; stage stopped at +x°"),
+    Stop during a settle, a failed move (the 6221 off, the field held, the
+    dialog says where the stage is), and closing during a scan (the stage
+    closed on the worker, the device free);
+  - the plots against the angle read back; the idle poll after the scan.
+
+  It found no defect in the scan path itself. One text was wrong for an
+  Angle scan: the scan box's note always read "Field: KEPCO A; readback:
+  signed LS475 G". It now follows the mode: for Angle, "Angle: Stage °;
+  field: KEPCO current A", in a fixed 40-character box so a mode change
+  never moves the layout. **Not yet tried on the hardware.**
+
 ## STFMR: stage angles, a Motor row, Move stage and Set motor 0°; RT-E: a Motor row (2026-10-17)
 
 - **The requests:** "add a Start Angle, Stop Angle, Step Angle below mod.

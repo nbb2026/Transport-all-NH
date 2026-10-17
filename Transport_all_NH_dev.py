@@ -15057,7 +15057,7 @@ class CombinedControlApp:
 
     def _arrange_pair_by_width(
         self, container, left, right, *, gap: int = 4, stack_gap: int | None = None,
-        right_width=None,
+        right_width=None, left_width=None,
     ) -> None:
         """Place two sections side by side when both fit, otherwise stack them.
 
@@ -15070,13 +15070,16 @@ class CombinedControlApp:
         in place of _pair_natural_width.  RT-E's scan box passes its width
         with its own pair stacked, so that pair can never change this one's
         decision (user/CI, 2026-10-14; see RTEPanel.build_ppms_ui).
+        ``left_width`` does the same for the left section: RT-E's settings
+        pass their width without the stage block, which may sit beside the
+        lock-ins only once this pair has decided (user, 2026-10-17).
         """
         def arrange(_event=None) -> None:
             try:
                 inset = self._pair_inset(container)
                 available = container.winfo_width() - inset
                 needed = (
-                    self._pair_natural_width(left)
+                    (self._pair_natural_width(left) if left_width is None else int(left_width()))
                     + (self._pair_natural_width(right) if right_width is None else int(right_width()))
                     + gap
                 )
@@ -46128,6 +46131,13 @@ def rte_scan_plan(mode, start, end, step, loops=1, round_trip=True):
 # scan box keeps the room for it on one line (user, 2026-10-17; the messages
 # are in CI's RTEStatusRowTests).
 RTE_STATUS_WIDEST_EXAMPLE = "Stopped; outputs held unless OFF was requested; stage stopped at -359.999°"
+# The RT-E scan box's note by mode: what Start, End and Step are and where
+# the field comes from (user, 2026-10-17).  At most 40 characters (its box).
+RTE_SCAN_NOTES = {
+    'Field': 'Field: KEPCO A; readback: signed LS475 G',
+    'Current': 'Field: KEPCO A; readback: signed LS475 G',
+    'Angle': 'Angle: Stage °; field: KEPCO current A',
+}
 
 
 def rte_angle_not_started_text(reason):
@@ -46557,7 +46567,13 @@ class RTEPanel(PPMSPanel):
         scan_notes.grid(row=2, column=0, sticky='ew')
         scan_notes.columnconfigure(0, weight=1)
         ttk.Label(scan_notes, textvariable=self.ppms_transport_status_var, width=1, wraplength=0).grid(row=0, column=0, sticky='ew')
-        ttk.Label(scan_notes, text='Field: KEPCO A; readback: signed LS475 G').grid(row=1, column=0, sticky='w')
+        # What the scan's numbers are: KEPCO A for a Field scan (the note as
+        # it always was); for an Angle scan the stage's degrees, with the
+        # field the "KEPCO current A" box holds (user, 2026-10-17: "make the
+        # angle scan function workable").  A fixed box, so a mode change
+        # never changes the scan box's width.
+        self.rte_scan_note = tk.StringVar(value=RTE_SCAN_NOTES['Current'])
+        ttk.Label(scan_notes, textvariable=self.rte_scan_note, width=40).grid(row=1, column=0, sticky='w')
         if laid_out:
             controls_gap = 6
             # The lock-ins' width alone, without the stage block that may sit
@@ -46574,8 +46590,16 @@ class RTEPanel(PPMSPanel):
                 # settings/scan pair decides by this (user/CI, 2026-10-14).
                 return self._pair_inset(scan) + max(
                     part.winfo_reqwidth() for part in (scan_rows, scan_status, scan_notes))
+            def settings_without_block():
+                # The settings' width with the params beside the lock-ins and
+                # the stage block not beside them (user, 2026-10-17): the
+                # settings/scan pair decides by it.  Judged with the block
+                # beside the lock-ins (a 2560 px window), the pair stacked at
+                # 2000 px after a 2560 px one and sat side by side when the
+                # page opened at 2000 px (CI's resize-history test).
+                return self._pair_inset(settings) + params.winfo_reqwidth() + lockins.winfo_reqwidth()
             self._arrange_pair_by_width(controls, settings, scan, gap=controls_gap, stack_gap=4,
-                                        right_width=scan_stacked_width)
+                                        right_width=scan_stacked_width, left_width=settings_without_block)
 
             def arrange_stage_block(_event=None):
                 # Where the stage block goes (user, 2026-10-17), so that it
@@ -46630,6 +46654,9 @@ class RTEPanel(PPMSPanel):
                 else:
                     stage_box.grid_configure(in_=lockins_line, row=1, column=0, columnspan=1, sticky='nw',
                                              padx=0, pady=(4, 0))
+                # The settings column's floor follows the block's new place
+                # once the requests are updated (keep_settings_room).
+                controls.after_idle(keep_settings_room)
 
             def keep_settings_room(_event=None):
                 # Side by side, the settings column is at least as wide as the
@@ -46669,6 +46696,9 @@ class RTEPanel(PPMSPanel):
         for variable, value in zip(self.ppms_simple_range, defaults):
             variable.set(value)
         self.rte_scan_units.set('6221 mA RMS' if current else 'Stage °' if mode == 'Angle' else 'KEPCO A')
+        note = self.__dict__.get('rte_scan_note')
+        if note is not None:
+            note.set(RTE_SCAN_NOTES.get(mode, RTE_SCAN_NOTES['Current']))
         if not self.ppms_field_scan_rows:
             self.ppms_plot_axis = 'current' if current else 'angle' if mode == 'Angle' else 'field'
             self._redraw_ppms_transport_plot()

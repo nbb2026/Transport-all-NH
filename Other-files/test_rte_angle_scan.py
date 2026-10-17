@@ -1733,7 +1733,8 @@ class AnglePageTests(unittest.TestCase):
         # The status/progress row, the acquisition state and the field note
         # stay full width under the scan rows.
         self.assertIs(panel.ppms_field_scan_progress.parent.parent, scan)
-        note = next(w for w in Recorder.made if w.options.get("text") == "Field: KEPCO A; readback: signed LS475 G")
+        note = next(w for w in Recorder.made if w.options.get("textvariable") is panel.rte_scan_note)
+        self.assertEqual(panel.rte_scan_note.get(), "Field: KEPCO A; readback: signed LS475 G")
         self.assertIs(note.parent.parent, scan)
         self.assertEqual((rows.grid_options["row"], panel.ppms_field_scan_progress.parent.grid_options["row"],
                           note.parent.grid_options["row"]), (0, 1, 2))
