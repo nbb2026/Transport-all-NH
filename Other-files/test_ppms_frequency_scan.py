@@ -447,6 +447,8 @@ class StartTests(unittest.TestCase):
         self.assertIn("6221 is switched off and set up again", question)
         self.assertIn("reference lock is awaited", question)
         self.assertIn("at least 5 periods of the frequency", question)
+        self.assertIn("\nHeld as in a Current scan: 300 K (T K) and 26° (Angle °); the field is not commanded\n",
+                      question)
         self.assertTrue(page.ppms_field_scan_status_var.get().startswith(
             "Frequency scan: 43 primes: 7–199 Hz; 43 points, settle 1 s; estimated about "))
         self.assertTrue(page.ppms_live_csv_path.name.startswith("PPMS_Frequency_"))

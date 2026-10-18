@@ -103,10 +103,16 @@
   - the SHV page and its 8 s lock unchanged.
 
   Each safety assertion was checked by breaking its code (8 mutations, all
-  caught). `test_panel_defaults` `ScanBoxFrequencyModeTests` (CI only): the
-  list, both rows, and the box no wider or taller than the Field and
-  Current+Temperature boxes at 1101 and 2000 px. Not yet run on the
-  instruments.
+  caught). `test_panel_defaults` `ScanBoxFrequencyModeTests` (CI only):
+  - the Mode list, and both modes' rows;
+  - the box no wider than in Field and Current+Temperature, and no taller
+    than in Current+Temperature;
+  - at 2000 px nothing sticks out of it;
+  - in the 1101 px window, which already cuts the box's right-hand cells
+    in every mode (gui_checks notes it), no more is cut than in Field or
+    Current+Temperature.
+
+  Not yet run on the instruments.
 
 ## SHV run folder and log; the STFMR file-name step; SHV scans end with the KEPCO and 6221 zeroed (2026-10-18)
 

@@ -835,8 +835,12 @@ class ScanBoxFrequencyModeTests(unittest.TestCase):
         self.assertFalse(frame.winfo_ismapped())
 
     def test_the_box_is_no_wider_and_nothing_sticks_out(self):
+        """At 2000 px nothing in the scan box sticks out of it, in any mode.
+        The 1101 px window already cuts the box's right-hand cells in every
+        mode (gui_checks notes it); there the new modes cut no more than
+        Field and Current+Temperature do."""
         tab = self.panel.ppms_tab
-        sizes = {}
+        sizes, overs = {}, {}
         for width in (1101, LAB_WIDE):
             for mode in ("Field", "Current+Temperature", "Frequency", "Frequency+Current"):
                 with self.subTest(width=width, mode=mode):
@@ -845,19 +849,24 @@ class ScanBoxFrequencyModeTests(unittest.TestCase):
                     right = tab.winfo_rootx() + tab.winfo_width()
                     box_right = self.scan.winfo_rootx() + self.scan.winfo_width()
                     self.assertLessEqual(box_right, right + 1, "the scan box stays on the page")
+                    over = 0
                     pending = list(self.scan.winfo_children())
                     while pending:
                         widget = pending.pop()
                         pending.extend(widget.winfo_children())
                         if widget.winfo_ismapped():
-                            self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), box_right + 1,
-                                                 f"{widget.winfo_class()} sticks out of the scan box")
+                            over = max(over, widget.winfo_rootx() + widget.winfo_width() - box_right)
+                    overs[(width, mode)] = over
+                    if width == LAB_WIDE:
+                        self.assertLessEqual(over, 1, "something sticks out of the scan box at 2000 px")
             with self.subTest(width=width):
                 self.assertLessEqual(sizes[(width, "Frequency")][0], sizes[(width, "Field")][0])
                 self.assertLessEqual(sizes[(width, "Frequency+Current")][0], sizes[(width, "Current+Temperature")][0])
                 self.assertLessEqual(abs(sizes[(width, "Frequency+Current")][1]
                                          - sizes[(width, "Current+Temperature")][1]), 2,
                                      "the outer row costs the plots no more height than the temperature row")
+                self.assertLessEqual(overs[(width, "Frequency")], overs[(width, "Field")], overs)
+                self.assertLessEqual(overs[(width, "Frequency+Current")], overs[(width, "Current+Temperature")], overs)
 
 
 # Named to sort last: unittest runs a module's classes in name order, and this

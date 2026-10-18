@@ -41895,7 +41895,10 @@ class CombinedControlApp:
                 "reference lock is awaited; the first point then waits as below, at least "
                 f"{NONLOCAL_FSCAN_SETTLE_PERIODS:g} periods of the frequency, and takes agreeing windows"
                 + ("; the other currents change only the 6221 amplitude" if mode == "Frequency+Current" else "")
-                + "\n")
+                # What a Current scan holds, said here: the scan sets these
+                # boxes' values and waits for them before the first frequency.
+                + f"\nHeld as in a Current scan: {fixed_temp:g} K (T K) and {fixed_angle:g}° (Angle °); "
+                "the field is not commanded\n")
         if not messagebox.askyesno(
             "PPMS scan time estimate",
             f"Scan mode: {mode}\n{frequency_line}Measurement points: {total}\n{settle_line}\n"
