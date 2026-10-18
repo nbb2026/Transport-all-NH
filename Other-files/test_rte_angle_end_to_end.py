@@ -917,7 +917,10 @@ class RunLogTests(RunLogBase):
         panel.safe_close_ppms()
         h.executor.shutdown(wait=True)
         events = self.events(h)
-        self.assertEqual(self.without_notes(events)[-3:], ["stop_requested", "outputs_zeroed", "run_finished"])
+        # The stop events are set before stop_requested is written (review,
+        # 2026-10-18), so the worker's outputs_zeroed may come first.
+        last = self.without_notes(events)[-3:]
+        self.assertEqual((sorted(last[:2]), last[2]), (["outputs_zeroed", "stop_requested"], "run_finished"))
         (stop,) = [e for e in events if e["event"] == "stop_requested"]
         self.assertEqual(stop["button"], "the program closing")
         # The close leaves neither output on: the scan's end zeroed both on
@@ -939,6 +942,7 @@ class RunLogTests(RunLogBase):
         refusing.submit.side_effect = RuntimeError("cannot schedule new futures after shutdown")
         panel.ppms_executor = refusing
         panel.start_ppms_field_scan()
+        self.pump(h)        # the dialog opens from the Tk event loop (review, 2026-10-18)
         self.assertEqual(h.showerror.call_args.args[0], "SHV scan not started")
         self.assertFalse(panel.ppms_field_scan_running)
         events = self.events(h)

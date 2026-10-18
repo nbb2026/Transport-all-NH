@@ -1,5 +1,75 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## SHV page, Newmark stage and shared controllers: audit fixes (2026-10-18)
+
+- **An unconfirmed stop is kept across a reconnect (H1, review):**
+  - `NewmarkStageOwnership.unconfirmed_stop` holds why the stage's last
+    stop was not confirmed; a page's `claim(page, stage)` shares it with
+    that page's controller, so both pages see it after a Disconnect and a
+    Connect on either page.
+  - `NewmarkNSCA1Controller.motion_may_run` now includes it, so every guard
+    of both pages (Start, Move stage, the CLR / EO=1 checks) refuses until
+    a STOP sequence sees the stage stopped: Stop stage, or the STOP a
+    Disconnect sends. A Connect logs it; SHV's stage line says "last stop
+    NOT confirmed: press Stop stage", ST-FMR's Motor row "CHECK STAGE".
+  - The controller refuses a move or a stage check itself too, before
+    anything is sent.
+  - Disconnect with MST unreadable: STOP whenever a move may still run (an
+    earlier unconfirmed stop included), and "closed, but the stage could
+    not be confirmed stopped ... CHECK THE STAGE" unless that STOP is seen
+    stopped. It closed silently before.
+  - ST-FMR lines touched: the claim in `connect_stfmr_lockin_motor` passes
+    the motor, and its finish shows "CHECK STAGE" when the flag is set.
+- **ABORT is said (H3):** a STOP sequence that needed ABORT adds "ABORT
+  sent: STOP did not stop it" to its notes (`stop_aborted`, and `stop()`'s
+  `aborted`). The texts read "stopped (STOP, then ABORT)", SHV's stage line
+  "stopped at … (ABORT)", the scan's "stage stopped at … (ABORT)".
+- **SHV's KEPCO, LS475 and Newmark controllers log through the page's own
+  `thread_log` (H3),** so their lines are a running scan's run-log notes,
+  as the 6221's and the lock-ins' are.
+- **SHV stop handlers (H2):** Stop, KEPCO Zero / OFF, 6221 / 2400 OFF,
+  Stop stage and the program closing set their event and queue their OFF
+  first, then write `stop_requested`. So the worker's `outputs_zeroed` may
+  now come before it in the log; the timestamps say which came first.
+- **SHV dialogs from the Tk event loop** (`_rte_dialog`, root.after(0)):
+  the scan's finish and failure dialogs, the run folder and run log
+  dialogs, an Angle Start that did not start, a worker job's failure and
+  Stop stage's warning. The page is idle again before a dialog opens.
+- **SHV and the shared save / zero convention:** the run folder, live CSV,
+  log events, `check()`, the zeroing of the 6221 then the KEPCO at every
+  ending and Save CSV as in the run folder were already the convention.
+  SHV's own `run_prepared` stays flattened (its settings at the top level,
+  not under `settings`), as before. Files, columns and texts are
+  otherwise unchanged.
+- **Red "Set stage 0°" (user: "make the set angle zero button in SHV
+  module also red"):** a tk.Button, bg #c62828, white text, #8e0000 when
+  pressed, in a frame of exactly the old Inline ttk button's size, so the
+  layout is unchanged. Grey while locked. SHV's KEPCO Zero / OFF and
+  6221 / 2400 OFF are ttk buttons, not red, at this commit; they are
+  unchanged. ST-FMR's Set motor 0° is unchanged.
+- **Shared controllers:**
+  - C1-1: `connect_mfli` uses a native adapter only if it has every
+    method of `NONLOCAL_MFLI_DAQ_METHODS`. The LabOne C and .NET adapters
+    have no setDouble / getDouble, so they are skipped with a log note,
+    and zhinst.core or the 18.12 bridge connects.
+  - C1-3: the PNA gets OUTP OFF only after its identity check passed.
+  - C1-5: the .NET DLL search goes past a candidate without its Core DLL,
+    and a failed CreateInstance closes the DLL-directory handle.
+  - C2-7: Camera Disconnect waits `CAMERA_STOP_JOIN_S`. If its thread
+    still holds the camera, the status says "Camera still releasing" and
+    Connect is refused with a message until the thread ends. Where pco's
+    `wait_for_new_image` takes a timeout, the frame wait is cut into 1 s
+    slices (`CAMERA_WAIT_SLICE_S`), so a Stop is seen within one. This was
+    not tried on the lab PC's pco.
+- **Tests:** `test_shv_area_review` (window-free, 41 tests). Changed
+  expectations:
+  - two SHV dialog tests open the dialog from root.after;
+  - the program-closing log test accepts `outputs_zeroed` before
+    `stop_requested`.
+  - CI only: the red button's colours, size and lock
+    (`test_pair_layout_loop`), the ABORT status line
+    (`RTEStatusRowTests`) and the unconfirmed-stop stage line.
+
 ## One run folder, live CSV and log for every scan page: the shared base (2026-10-18)
 
 - **Request (user: "make the operation logic and save logic and files in

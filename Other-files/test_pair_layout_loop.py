@@ -234,7 +234,9 @@ class RTEStageBlockTests(Built, unittest.TestCase):
             one_line, width, layouts = live.winfo_height(), block.winfo_reqwidth(), self.layouts()
             heights = {key: canvas.winfo_height() for key, canvas in panel.ppms_harmonic_canvases.items()}
             for message in ("Stage: STOP not confirmed: CHECK THE STAGE",
-                            "Stage: -359.999° (10000 steps/°), moving, limit input on", failure):
+                            "Stage: -359.999° (10000 steps/°), moving, limit input on", failure,
+                            # A stop not confirmed before a reconnect (review, 2026-10-18).
+                            "Stage: -359.999°; last stop NOT confirmed: press Stop stage"):
                 panel.rte_stage_live.set(message)
                 self.root.update()
                 with self.subTest(message=message):
@@ -249,6 +251,41 @@ class RTEStageBlockTests(Built, unittest.TestCase):
             self.assertGreater(live.winfo_height(), one_line, "the failure wraps, it is not cut")
         finally:
             panel.rte_stage_live.set("Stage: not connected")
+            self.root.update()
+
+    def test_set_stage_zero_is_red_and_as_large_as_before(self):
+        # User, 2026-10-18: "make the set angle zero button in SHV module also
+        # red": a tk.Button in the program's red, filling a frame of exactly
+        # the Inline ttk button's size, so the block keeps its layout; grey
+        # while locked.
+        panel = self.a.rte_panel
+        zero = panel.rte_stage_zero_button
+        self.assertEqual(zero.winfo_class(), "Button")
+        self.assertEqual(str(zero.cget("text")), "Set stage 0°")
+        holder = zero.master
+        reference = tk.ttk.Button(holder.master, text="Set stage 0°", width=11, style="Inline.TButton")
+        try:
+            size = (reference.winfo_reqwidth(), reference.winfo_reqheight())
+        finally:
+            reference.destroy()
+        self.assertEqual((holder.winfo_reqwidth(), holder.winfo_reqheight()), size)
+        self.assertIs(holder.master, panel.rte_stage_stop_button.master, "in the stage block, where it was")
+        self.assertEqual(holder.grid_info()["row"], 1)
+        try:
+            panel.ppms_environment_busy = False
+            panel._update_ppms_control_ui()
+            self.root.update()
+            self.assertEqual(str(zero.cget("state")), "normal")
+            self.assertEqual((str(zero.cget("bg")).lower(), str(zero.cget("fg")), str(zero.cget("activebackground"))),
+                             ("#c62828", "white", "#8e0000"))
+            panel.ppms_environment_busy = True
+            panel._update_ppms_control_ui()
+            self.root.update()
+            self.assertEqual(str(zero.cget("state")), "disabled", "locked while busy, as before")
+            self.assertNotEqual(str(zero.cget("bg")).lower(), "#c62828", "a locked button looks locked")
+        finally:
+            panel.ppms_environment_busy = False
+            panel._update_ppms_control_ui()
             self.root.update()
 
     def test_every_plot_is_drawn_in_the_1101_px_window(self):
