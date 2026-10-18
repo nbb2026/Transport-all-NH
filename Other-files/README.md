@@ -1,5 +1,11 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## SHV mode box 13 characters wide (2026-10-18)
+
+- After the merge of the Angle+Field / Angle+Current modes with the commercial-style look, the SHV mode box is 13
+  characters wide (was 9), so "Angle+Current" and "Angle+Field" are not cut off. The scan box is about 30 px wider
+  in every mode. Not checked on CI (the user's Actions minutes are used up until 2026-11-01).
+
 ## Commercial-style look (2026-10-18)
 
 The user asked for the GUI to look "like a expensive commercial software":

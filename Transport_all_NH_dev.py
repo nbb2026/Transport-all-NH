@@ -50564,7 +50564,10 @@ class RTEPanel(PPMSPanel):
         self.ppms_simple_range = [tk.StringVar(value=v) for v in ('0.01', '1', '0.01')]
         self.rte_scan_units = tk.StringVar(value='6221 mA RMS')
         self.rte_round_trip = tk.BooleanVar(value=False)
-        combo = ttk.Combobox(scan_rows, textvariable=self.ppms_simple_mode, values=RTE_SCAN_MODES, state='readonly', width=9)
+        # Thirteen characters, so "Angle+Current" and "Angle+Field" are not cut
+        # off (user, 2026-10-18: the Angle+Field and Angle+Current modes); nine
+        # fitted the old Field / Current / Angle.
+        combo = ttk.Combobox(scan_rows, textvariable=self.ppms_simple_mode, values=RTE_SCAN_MODES, state='readonly', width=13)
         combo.grid(row=0, column=0)
         combo.bind('<<ComboboxSelected>>', self._rte_mode_changed)
         self.rte_edit_widgets.append((combo, 'readonly'))
