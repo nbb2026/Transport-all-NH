@@ -4,6 +4,7 @@ Both run on the Gate-VI Keithley (NonLocalVI2410Controller).  No Tk and no
 instrument: a stand-in canvas records the drawing, and a fake SourceMeter
 answers the SCPI commands.
 """
+import csv
 import threading
 from pathlib import Path
 import unittest
@@ -169,15 +170,20 @@ class ResistancePlotTests(unittest.TestCase):
 
 
 class FinishTests(unittest.TestCase):
-    def finished(self, kind, error, *, output_off=True, redraw_error=None):
+    """The finish reports the end's zeroing, done on the worker (user,
+    2026-10-18: every scan ends with both outputs zeroed)."""
+
+    def finished(self, kind, error, *, results=None, redraw_error=None):
         app_ = bare_app()
         app_.closing = True  # no dialogs
         app_.nonlocal_keithley_task = kind
-        app_.nonlocal_keithley_output_off = output_off
         app_.nonlocal_vi_2410_controller = app.NonLocalVI2410Controller(lambda _m: None)
         app_.nonlocal_vi_output_var, app_.nonlocal_vi_status_var = Var(), Var()
-        app_.nonlocal_iv_eta_var = Var()
+        app_.nonlocal_iv_eta_var, app_.nonlocal_iv6221_source_var = Var(), Var()
         app_.nonlocal_iv_rows, app_.nonlocal_iv_total_points = [(1, 0, 0, 0, 0, False)], 49
+        app_.nonlocal_run_points = 1
+        app_.nonlocal_scan_outputs = (results if results is not None
+                                      else {"6221": "zeroed", "Keithley 2410": "zeroed"})
         redraw = mock.Mock(side_effect=redraw_error)
         app_._redraw_nonlocal_resistance_plot = app_._redraw_nonlocal_iv_plot = redraw
         app_._update_nonlocal_vi_controls = mock.Mock()
@@ -197,18 +203,21 @@ class FinishTests(unittest.TestCase):
                              redraw_error=AttributeError("'NoneType' object has no attribute 'asarray'"))
         self.assertIsNone(app_.nonlocal_keithley_task)
         app_._update_nonlocal_vi_controls.assert_called_once()
-        self.assertIn("finished", app_.nonlocal_vi_status_var.get())
+        self.assertEqual(app_.nonlocal_vi_status_var.get(),
+                         "|R| vs time: Stopped; Keithley 2410 and 6221 zeroed; 1 point saved")
         self.assertEqual(app_.nonlocal_vi_output_var.get(), "Keithley 2410 and 6221 outputs: OFF")
 
     def test_a_stopped_or_failed_sweep_says_so(self):
         app_ = self.finished("iv", InterruptedError("stopped"))
         self.assertEqual(app_.nonlocal_vi_status_var.get(),
-                         "2400-IV sweep stopped after 1/49 points; voltage zeroed and output off."
-                         " No CSV was written.")
+                         "2400-IV: Stopped; Keithley 2410 and 6221 zeroed; 1/49 points saved")
         self.assertEqual(app_.nonlocal_iv_eta_var.get(), "Remaining: --")
-        app_ = self.finished("iv", RuntimeError("bus timeout; more"), output_off=False)
-        self.assertIn("2400-IV sweep stopped by an error after 1/49 points: bus timeout", app_.nonlocal_vi_status_var.get())
-        self.assertEqual(app_.nonlocal_vi_output_var.get(), "Keithley 2410 output: check it",
+        app_ = self.finished("iv", RuntimeError("bus timeout; more"),
+                             results={"6221": "not connected", "Keithley 2410": "zero FAILED: bus"})
+        self.assertEqual(app_.nonlocal_vi_status_var.get(),
+                         "2400-IV: Failed: bus timeout; 6221 not connected; Keithley 2410 zero FAILED: "
+                         "check it; 1/49 points saved")
+        self.assertEqual(app_.nonlocal_vi_output_var.get(), "Keithley 2410 output: check it; 6221 not connected",
                          "an output that may still be on is not called off")
 
 
@@ -560,9 +569,10 @@ class WorkerTests(unittest.TestCase):
     def settings(self, voltages=(-1.0, 0.0, 1.0)):
         return {"voltages": list(voltages), "current_limit_a": 1e-3, "settle_s": 0.0}
 
-    def csv_path(self):
+    def recorder(self, page="NL_2400IV"):
+        # The run folder's recorder, as begin_scan_run makes it (2026-10-18).
         import tempfile
-        return Path(tempfile.mkdtemp()) / "2400-IV_test.csv"
+        return app.ScanRunRecorder(Path(tempfile.mkdtemp()), page, "run", {})
 
     def test_the_ramp_levels(self):
         self.assertEqual(app.ramp_levels(-50), [-5.0 * k for k in range(1, 10)])
@@ -576,10 +586,11 @@ class WorkerTests(unittest.TestCase):
         # User, 2026-10-09: from 0 V to Start V in steps, not in one jump.
         self.app.nonlocal_vi_2410_controller.model = "2400"
         self.app.nonlocal_iv_point_var = Var()
-        path = self.csv_path()
+        recorder = self.recorder()
+        path = recorder.csv_path
         settings = dict(self.settings((-50.0, -45.0)), max_abs_v=50.0)
         with mock.patch.object(app, "NONLOCAL_IV_SWEEP_RAMP_DWELL_S", 0.0):
-            self.app._nonlocal_iv_worker(settings, path)
+            self.app._nonlocal_iv_worker(settings, recorder)
         levels = [float(c.split()[1]) for c in self.meter.commands
                   if c.startswith(":SOUR:VOLT ") and not c.startswith(":SOUR:VOLT:")]
         first = levels.index(-50.0)
@@ -590,8 +601,9 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.meter.output, 0)
 
     def test_a_sweep_reads_every_point_then_switches_off(self):
-        path = self.csv_path()
-        self.app._nonlocal_iv_worker(self.settings(), path)
+        recorder = self.recorder()
+        path = recorder.csv_path
+        self.app._nonlocal_iv_worker(self.settings(), recorder)
         # Each point went to the live CSV as it was read.
         lines = path.read_text(encoding="utf-8-sig").splitlines()
         self.assertEqual(lines[0], "point,set_voltage_V,source_voltage_V,current_A,elapsed_s,at_current_limit")
@@ -611,7 +623,7 @@ class WorkerTests(unittest.TestCase):
     def test_stop_and_errors_still_switch_off(self):
         self.app.nonlocal_keithley_stop_event.set()
         with self.assertRaises(InterruptedError):
-            self.app._nonlocal_iv_worker(self.settings(), self.csv_path())
+            self.app._nonlocal_iv_worker(self.settings(), self.recorder())
         self.assertEqual(self.log, [], "a Stop before the start switches nothing")
         self.assertNotIn(":OUTP ON", self.meter.commands)
         self.assertEqual((self.meter.output, self.meter.voltage), (0, 0.0))
@@ -619,11 +631,12 @@ class WorkerTests(unittest.TestCase):
         self.app.nonlocal_keithley_stop_event.clear()
         self.meter.query = (lambda original: lambda command: (_ for _ in ()).throw(
             RuntimeError("VI_ERROR_TMO")) if command == ":READ?" else original(command))(self.meter.query)
-        path = self.csv_path()
+        recorder = self.recorder()
         with self.assertRaisesRegex(RuntimeError, "VI_ERROR_TMO"):
-            self.app._nonlocal_iv_worker(self.settings(), path)
-        self.assertEqual(len(path.read_text(encoding="utf-8-sig").splitlines()), 1,
-                         "the header was written before the failed point")
+            self.app._nonlocal_iv_worker(self.settings(), recorder)
+        # The files were made at Start; the header comes with the first row.
+        self.assertEqual(recorder.csv_path.read_text(encoding="utf-8-sig"), "",
+                         "no row for the failed point")
         self.assertEqual((self.meter.output, self.meter.voltage), (0, 0.0))
         self.assertEqual(self.app.nonlocal_vi_interlock.phase, "IDLE")
 
@@ -641,9 +654,10 @@ class WorkerTests(unittest.TestCase):
 
         self.app.post_ui = post
         self.app._append_nonlocal_resistance_sample = lambda *values: samples.append(values)
+        recorder = self.recorder("NL_RvsT")
         with self.assertRaises(InterruptedError):
             with mock.patch.object(stop, "wait", side_effect=lambda timeout=None: stop.is_set()):
-                self.app._nonlocal_resistance_worker()
+                self.app._nonlocal_resistance_worker(recorder)
         for callback in self.posted:
             callback()
         self.assertTrue(samples, "samples were published")
@@ -652,6 +666,16 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.meter.output, 0)
         self.assertEqual(self.meter.mode, "VOLT", "back in the pulse setup")
         self.assertEqual(self.app.nonlocal_vi_interlock.phase, "IDLE")
+        # Every reading is in the live CSV (user, 2026-10-18), its point_saved in the log.
+        with recorder.csv_path.open(encoding="utf-8-sig") as file:
+            rows = list(csv.DictReader(file))
+        self.assertEqual(list(rows[0]), list(app.CombinedControlApp.NONLOCAL_RESISTANCE_COLUMNS))
+        self.assertEqual(len(rows), len(samples))
+        self.assertAlmostEqual(float(rows[-1]["resistance_Ohm"]), 1e6, delta=1)
+        self.assertEqual(rows[-1]["source_current_A"], "1e-07")
+        saved = [line for line in recorder.log_path.read_text(encoding="utf-8").splitlines()
+                 if '"point_saved"' in line]
+        self.assertEqual(len(saved), len(rows))
 
 
 class SixTwoTwoOneOffTests(WorkerTests):
@@ -704,10 +728,14 @@ class StartQuestionTests(unittest.TestCase):
         a.nonlocal_iv_limit_var = Var("1e-6")
         a._begin_nonlocal_keithley_task = mock.Mock()
 
-    def ask(self, answer, folder=""):
+    def ask(self, answer, folder="", name=""):
+        # The Yes/No, then begin_scan_run's folder and optional file name
+        # (user, 2026-10-18).
         with mock.patch.object(app.messagebox, "askyesno", return_value=answer) as question, \
-                mock.patch.object(app.filedialog, "askdirectory", return_value=folder):
+                mock.patch.object(app.filedialog, "askdirectory", return_value=folder) as folders, \
+                mock.patch.object(app.simpledialog, "askstring", return_value=name):
             self.app.start_nonlocal_iv_sweep()
+        self.folders = folders
         return question.call_args[0][1] if question.called else None
 
     def test_no_answer_or_no_folder_starts_nothing(self):
@@ -717,12 +745,15 @@ class StartQuestionTests(unittest.TestCase):
         self.assertIn("-6 V → 6 V in 0.25 V steps, 49 points, 0.5 s settle", text)
         self.assertIn("Current limit: 1e-06 A", text)
         self.assertNotIn("Sample", text, "no Sample box (user, 2026-10-09)")
-        self.assertIn("run folder, with a live CSV and the parameter log", text)
+        self.assertIn("Next: the folder and an optional file name for the run folder (live CSV and log)", text)
+        self.assertIn("At every end (completed, stopped or failed) the Keithley and the 6221 are zeroed", text)
+        self.folders.assert_not_called()
         self.ask(True, folder="")
         self.app._begin_nonlocal_keithley_task.assert_not_called()
         self.assertEqual(len(self.app.nonlocal_iv_rows), 49, "the last sweep stays on the plot")
 
     def test_yes_and_a_folder_makes_a_run_folder_with_the_log_and_a_live_csv(self):
+        import json
         import tempfile
         a = self.app
         a.nonlocal_iv_rows = [(1,)] * 49
@@ -731,19 +762,27 @@ class StartQuestionTests(unittest.TestCase):
         a.nonlocal_iv_eta_var, a.nonlocal_iv_point_var = Var(), Var()
         a.nonlocal_vi_status_var, a.nonlocal_vi_output_var = Var(), Var()
         a._redraw_nonlocal_iv_plot = lambda: None
+        a.thread_log = lambda message: None
         folder = tempfile.mkdtemp()
         self.ask(True, folder=folder)
         a._begin_nonlocal_keithley_task.assert_called_once()
         self.assertEqual(a.nonlocal_iv_rows, [])
         self.assertEqual(a.nonlocal_iv_settings["current_limit_a"], 1e-6)
         csv_path = a.nonlocal_iv_csv_path
-        # One folder per run, as on the STFMR and Gate-VI pages.
+        # <folder>/<name>/<name>.csv, a blank name NL_2400IV_<date>_<time>.
         self.assertEqual(csv_path.parent.parent, Path(folder))
-        self.assertRegex(csv_path.parent.name, r"^2400-IV_\d{8}_\d{6}", "no sample name (no Sample box)")
+        self.assertRegex(csv_path.parent.name, r"^NL_2400IV_\d{8}_\d{6}$")
         self.assertEqual(csv_path.name, csv_path.parent.name + ".csv")
-        log = csv_path.with_name(csv_path.stem + "_parameters.log").read_text(encoding="utf-8")
-        self.assertIn("sweep.current_limit_A=1e-06", log)
-        self.assertIn(f"output.csv={csv_path.name}", log)
+        self.assertIs(a.nonlocal_recorder.csv_path, csv_path)
+        first = json.loads(csv_path.with_suffix(".log").read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(first["event"], "run_prepared")
+        self.assertEqual(first["settings"]["current_limit_a"], 1e-6)
+        self.assertEqual(first["settings"]["points"], 49)
+        self.assertEqual(a.nonlocal_iv_directory, Path(folder))
+        # A typed name names the run folder and its files.
+        a._begin_nonlocal_keithley_task.reset_mock()
+        self.ask(True, folder=folder, name="B1 sweep")
+        self.assertEqual(a.nonlocal_iv_csv_path, Path(folder) / "B1 sweep" / "B1 sweep.csv")
 
 
 if __name__ == "__main__":

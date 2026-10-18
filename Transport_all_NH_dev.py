@@ -7933,9 +7933,15 @@ class NonLocalVI2410Controller:
                 return identity
             except BaseException:
                 if instrument is not None:
+                    # Each step in its own try: a write that failed (the
+                    # wrong device, a dead bus) skipped the close, and the
+                    # VISA session stayed open (review, 2026-10-18).
+                    for command in (":SOUR:VOLT 0", ":OUTP OFF"):
+                        try:
+                            instrument.write(command)
+                        except BaseException:
+                            pass
                     try:
-                        instrument.write(":SOUR:VOLT 0")
-                        instrument.write(":OUTP OFF")
                         instrument.close()
                     except BaseException:
                         pass
@@ -8134,9 +8140,17 @@ class NonLocalVI2410Controller:
                     status_callback(voltage_v)
                 self._wait(width_s, stop_event)
             finally:
-                if status_callback is not None:
-                    status_callback(0.0)
-                self.safe_shutdown(reset=False)
+                # The callback stays first, so the pulse's end is recorded
+                # at Width s and not after the drain, but wrapped: one that
+                # raised skipped safe_shutdown and left the pulse on
+                # (review, 2026-10-18).  Its own failure is only logged.
+                try:
+                    if status_callback is not None:
+                        status_callback(0.0)
+                except Exception as callback_error:
+                    self.logger(f"Keithley {self.model} pulse status update failed: {callback_error}")
+                finally:
+                    self.safe_shutdown(reset=False)
             self._check_error(
                 command, after=f"the {voltage_v:g} V pulse (its level or the switch-off)"
             )
@@ -8505,6 +8519,24 @@ class NonLocalVI2410Controller:
             if errors:
                 raise RuntimeError(
                     f"Keithley {self.model}: switching back to the pulse setup failed: " + "; ".join(errors)
+                )
+
+    def zero_output(self, context: str) -> None:
+        """A Non-local scan's end (user, 2026-10-18: every scan ends with
+        its sources zeroed): 0 V (0 A in the |R| current source), drained
+        after high voltage, and the output off, as safe_shutdown does; then
+        the output read back off (:OUTP? 0) and the level read back at 0.
+        Raises when either does not read back."""
+        with self.lock:
+            self._require_instrument()
+            self.safe_shutdown(reset=False)
+            self.confirm_output_off(context)
+            command = ":SOUR:CURR?" if self.source_mode == "CURR" else ":SOUR:VOLT?"
+            level = self._query_float(command)
+            if not (math.isfinite(level) and abs(level) <= 1e-9):
+                raise RuntimeError(
+                    f"Keithley {self.model} level reads {level:g} {'A' if command == ':SOUR:CURR?' else 'V'} "
+                    f"{context}, not 0"
                 )
 
 
@@ -9093,6 +9125,14 @@ class LegacyMFLIBridge:
 class NonLocalACController:
     """Own one 6221 plus independently selectable voltage instruments."""
 
+    # SR830 queries that clear what they report as they are read: asked once,
+    # never again after a misaligned reply (review, 2026-10-18).
+    CLEAR_ON_READ_QUERIES = ("LIAS?", "*ESR?", "ERRS?")
+    # The status of a reading whose LIAS? reply was unreadable: every
+    # overload bit and the reference unlocked, so the reading is left out
+    # (review, 2026-10-18: "treat a misaligned LIAS? as overloaded").
+    SR830_LIAS_UNREADABLE = 0x0F
+
     def __init__(self, logger: Callable[[str], None]) -> None:
         self.logger = logger
         self.resource_manager = None
@@ -9205,6 +9245,30 @@ class NonLocalACController:
         if code != 0:
             raise RuntimeError(f"6221 reported an error after {command!r}: {response}")
 
+    def _read_6221_output_low_to_earth(self) -> int:
+        """1 when the 6221's output low is tied to earth ground, 0 when it
+        floats (Keithley6221Controller._read_output_low_to_earth)."""
+        text = self.source.query(K6221_OUTPUT_LOW_QUERY).strip().upper()
+        if text in ("0", "OFF"):
+            return 0
+        if text in ("1", "ON"):
+            return 1
+        raise RuntimeError(f"6221 returned an unexpected OUTP:LTE state: {text!r}")
+
+    def _set_6221_output_low_floating(self) -> None:
+        """Front panel TRIAX -> OUTPUT LOW -> FLOATING after every *RST,
+        which earths it again: read, written only when it needs changing,
+        and read back, exactly as Keithley6221Controller._set_output_low_floating
+        and the PPMS/SHV rack do (user, 2026-10-18: "Float it like
+        PPMS/SHV").  An earthed output low ties the sample to mains ground
+        and loops through the lock-in inputs (line-frequency pickup)."""
+        if self._read_6221_output_low_to_earth() == 0:
+            return
+        self._write_6221(K6221_OUTPUT_LOW_FLOATING)
+        if self._read_6221_output_low_to_earth() != 0:
+            raise RuntimeError("6221 output low stayed earth-grounded; "
+                               "set TRIAX -> OUTPUT LOW -> FLOATING on the front panel")
+
     def _write_sr830(self, key: str, command: str) -> None:
         lockin = self.lockins[key]
         for attempt in (1, 2):
@@ -9315,11 +9379,15 @@ class NonLocalACController:
         command: str,
         expected_count: int,
     ) -> tuple[float, ...]:
-        """Query numeric SR830 data, recovering from one stale GPIB reply."""
+        """Query numeric SR830 data, recovering from one stale GPIB reply.
+        A query that clears what it reports (CLEAR_ON_READ_QUERIES) is
+        asked once: asked again it answers 0 and hides what the first read
+        cleared (review, 2026-10-18)."""
         lockin = self.lockins[key]
         last_response = ""
         last_error: BaseException | None = None
-        for attempt in range(1, 4):
+        attempts = 1 if command.strip().upper() in self.CLEAR_ON_READ_QUERIES else 3
+        for attempt in range(1, attempts + 1):
             try:
                 last_response = lockin.query(command).strip()
                 values = tuple(
@@ -9332,7 +9400,7 @@ class NonLocalACController:
                 return values
             except Exception as error:
                 last_error = error
-                if attempt >= 3:
+                if attempt >= attempts:
                     break
                 self.logger(
                     f"SR830 #{key} query {command!r} received a misaligned reply "
@@ -9347,6 +9415,30 @@ class NonLocalACController:
             f"SR830 #{key} query {command!r} repeatedly returned non-numeric/abnormal replies: "
             f"{last_response!r}"
         ) from last_error
+
+    def _query_sr830_status(self, key: str) -> int | None:
+        """LIAS? once (review, 2026-10-18): it clears its latched bits as it
+        is read, so after a misaligned reply a retry answered 0 and the
+        overload was lost.  None when the reply is misaligned or not a
+        status byte (a stale SNAP? value such as 4.2e-06 read as 0 before):
+        the buffer is cleared for the next query, and the caller counts the
+        reading as overloaded and invalid (SR830_LIAS_UNREADABLE)."""
+        try:
+            value = self._query_sr830_numbers(key, "LIAS?", 1)[0]
+            if not (math.isfinite(value) and float(value).is_integer() and 0 <= value <= 255):
+                raise ValueError(f"not a status byte: {value!r}")
+            return int(value)
+        except Exception as error:
+            self.logger(
+                f"SR830 #{key} LIAS? reply unreadable ({error}); not asked again (it clears as it "
+                "is read): the reading counts as overloaded"
+            )
+            try:
+                self.lockins[key].clear()
+            except Exception:
+                pass
+            time.sleep(0.08)
+            return None
 
     def read_sr830_time_constants(self, keys) -> dict[str, float]:
         """Each SR830's time constant in seconds, read with OFLT? (nothing
@@ -10698,6 +10790,9 @@ class NonLocalACController:
                     )
             self.source.write("*RST")
             self.source.write("*CLS")
+            # *RST earths the output low: floating again before anything
+            # else is set, read back (user, 2026-10-18).
+            self._set_6221_output_low_floating()
             self.sweep_peak_a = None
             if output_mode == "AC" and sweep_peak_a is not None:
                 # As the RT-E Current scan: the range chosen with the output
@@ -11047,9 +11142,9 @@ class NonLocalACController:
             with self.lock:
                 lockin = self.lockins[key]
                 last_frequency = self._query_sr830_numbers(key, "FREQ?", 1)[0]
-                last_status = int(
-                    self._query_sr830_numbers(key, "LIAS?", 1)[0]
-                )
+                status = self._query_sr830_status(key)
+                # Unreadable: not locked, so the wait goes on.
+                last_status = self.SR830_LIAS_UNREADABLE if status is None else status
             if not (last_status & 8) and math.isclose(
                 last_frequency, frequency_hz, rel_tol=5e-3, abs_tol=0.1
             ):
@@ -11279,11 +11374,17 @@ class NonLocalACController:
         lockin = self.lockins[key]
         values = self._query_sr830_numbers(key, "SNAP? 1,2,3,4,9", 5)
         if self.lias_clear_pending.pop(key, False):
-            # The range change itself set the overload bits: read and drop.
-            self._query_sr830_numbers(key, "LIAS?", 1)
-        status = int(self._query_sr830_numbers(key, "LIAS?", 1)[0])
+            # The range change itself set the overload bits: read and drop
+            # (once, as every LIAS?).
+            self._query_sr830_status(key)
+        status = self._query_sr830_status(key)
+        unreadable = status is None
+        if unreadable:
+            status = self.SR830_LIAS_UNREADABLE
         sensitivity_used = self.sensitivity_indices[key]
-        auto_action = self._auto_range(key, values[2], status)
+        # An unreadable status steps no range: R alone decides, and an
+        # overload that lasts shows again in the next LIAS? (it latches anew).
+        auto_action = self._auto_range(key, values[2], 0 if unreadable else status)
         reference_valid = not (status & 8) and math.isclose(
             values[4], expected_frequency_hz, rel_tol=5e-3, abs_tol=0.1
         )
@@ -11292,7 +11393,10 @@ class NonLocalACController:
             "lockin_key": key,
             "X": values[0], "Y": values[1], "R": values[2],
             "phase_deg": values[3], "reference_frequency_hz": values[4],
-            "lia_status": status, "status_text": self._status_text(status),
+            "lia_status": status,
+            "status_text": (
+                "LIAS? unreadable: counted as overloaded" if unreadable else self._status_text(status)
+            ),
             "reference_valid": reference_valid, "output_on": output_on,
             "measurement_condition": measurement_condition,
             "in_compliance": in_compliance,
@@ -15114,9 +15218,10 @@ class CombinedControlApp:
         self.nonlocal_time_rows = []
         self.nonlocal_run_directory = None
 
-        self.nonlocal_vi_ac_controller = NonLocalACController(self.thread_log)
+        # Their log lines also go to a running scan's run log (user, 2026-10-18).
+        self.nonlocal_vi_ac_controller = NonLocalACController(self._nonlocal_log)
         self.nonlocal_vi_2410_controller = NonLocalVI2410Controller(
-            self.thread_log, NONLOCAL_DEFAULT_KEITHLEY_MODEL
+            self._nonlocal_log, NONLOCAL_DEFAULT_KEITHLEY_MODEL
         )
         self.nonlocal_vi_interlock = NonLocalVIInterlock()
         self.nonlocal_vi_executor = ThreadPoolExecutor(
@@ -26813,7 +26918,8 @@ class CombinedControlApp:
         self.nonlocal_vi_off_button = tk.Button(
             outer,
             text=f"Stop {NONLOCAL_DEFAULT_KEITHLEY_MODEL} / 6221 now",
-            command=self.stop_nonlocal_vi,
+            # The button's name for a running scan's stop_requested (2026-10-18).
+            command=lambda: self.stop_nonlocal_vi(f"Stop {self.nonlocal_vi_2410_controller.model} / 6221 now"),
             bg="#d70018",
             fg="white",
             activebackground="#a80012",
@@ -26890,7 +26996,7 @@ class CombinedControlApp:
         )
         self.nonlocal_vi_start_button.grid(row=0, column=0, padx=(0, 4))
         self.nonlocal_vi_stop_button = ttk.Button(
-            actions, text="Stop scan", command=self.stop_nonlocal_vi
+            actions, text="Stop scan", command=lambda: self.stop_nonlocal_vi("Stop scan")
         )
         self.nonlocal_vi_stop_button.grid(row=0, column=1, padx=(0, 8))
         self.nonlocal_vi_progress = ttk.Progressbar(
@@ -27201,7 +27307,7 @@ class CombinedControlApp:
         source.grid(row=3, column=0, columnspan=5, sticky="ew", pady=(2, 0))
         show_trimmed(source, self.nonlocal_iv6221_source_var)
         self.nonlocal_iv6221_off_button = ttk.Button(
-            params, text="6221 / 2400 OFF", width=15, command=self.stop_nonlocal_vi
+            params, text="6221 / 2400 OFF", width=15, command=lambda: self.stop_nonlocal_vi("6221 / 2400 OFF")
         )
         self.nonlocal_iv6221_off_button.grid(row=3, column=5, columnspan=2, sticky="e", padx=4)
         # The lock-in choices, held while a measurement runs (its plots and
@@ -27267,7 +27373,7 @@ class CombinedControlApp:
         )
         self.nonlocal_iv6221_start_button.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 0))
         self.nonlocal_iv6221_stop_button = ttk.Button(
-            scan, text="Stop", command=self.stop_nonlocal_keithley_task, state="disabled"
+            scan, text="Stop", command=lambda: self.stop_nonlocal_keithley_task("6221-IV Stop"), state="disabled"
         )
         self.nonlocal_iv6221_stop_button.grid(row=3, column=3, columnspan=2, sticky="ew", pady=(4, 0))
         ttk.Checkbutton(
@@ -27592,7 +27698,7 @@ class CombinedControlApp:
         self.nonlocal_resistance_stop_button = ttk.Button(
             controls,
             text="Stop measurement",
-            command=self.stop_nonlocal_keithley_task,
+            command=lambda: self.stop_nonlocal_keithley_task("Stop measurement"),
             state="disabled",
         )
         self.nonlocal_resistance_stop_button.grid(row=0, column=2)
@@ -27654,7 +27760,7 @@ class CombinedControlApp:
         self.nonlocal_iv_set_button.grid(row=0, column=2, columnspan=2, sticky="w", pady=2)
         self.nonlocal_iv_off_button = ttk.Button(
             manual, text=f"{NONLOCAL_DEFAULT_KEITHLEY_MODEL} / 6221 OFF", width=15,
-            command=self.stop_nonlocal_vi,
+            command=lambda: self.stop_nonlocal_vi(f"{self.nonlocal_vi_2410_controller.model} / 6221 OFF"),
         )
         self.nonlocal_iv_off_button.grid(row=0, column=4, sticky="w", padx=(6, 0), pady=2)
         ttk.Label(manual, text="Pulse V:").grid(row=1, column=0, sticky="e", pady=2)
@@ -27703,7 +27809,8 @@ class CombinedControlApp:
         )
         self.nonlocal_iv_start_button.pack(side="left", padx=(0, 4))
         self.nonlocal_iv_stop_button = ttk.Button(
-            buttons, text="Stop sweep", command=self.stop_nonlocal_keithley_task, state="disabled",
+            buttons, text="Stop sweep", command=lambda: self.stop_nonlocal_keithley_task("Stop sweep"),
+            state="disabled",
         )
         self.nonlocal_iv_stop_button.pack(side="left", padx=(0, 4))
         # The CSV is written point by point; the plot can be added beside it.
@@ -36652,29 +36759,6 @@ class CombinedControlApp:
         except ValueError as error:
             messagebox.showwarning("Non-local VI", str(error), parent=self.root)
             return
-        selected = filedialog.askdirectory(
-            parent=self.root,
-            title="Select the folder for this Non-local VI measurement",
-            initialdir=str(self.nonlocal_vi_output_directory),
-        )
-        if not selected:
-            self.nonlocal_vi_status_var.set("Non-local VI scan cancelled")
-            return
-        parent = Path(selected)
-        self.nonlocal_vi_output_directory = parent
-        stamp = datetime_module.datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_directory = parent / f"NonLocal_VI_{stamp}"
-        suffix = 1
-        while run_directory.exists():
-            run_directory = parent / f"NonLocal_VI_{stamp}_{suffix:02d}"
-            suffix += 1
-        try:
-            run_directory.mkdir(parents=True)
-        except OSError as error:
-            messagebox.showerror(
-                "Non-local VI", f"Cannot create the result folder: {error}", parent=self.root
-            )
-            return
         orders = settings["lockin_orders"]
         lockin_description = "; ".join(
             f"SR830 #{key}: {config['coupling']} coupling, "
@@ -36741,6 +36825,11 @@ class CombinedControlApp:
             + self._nonlocal_vi_settle_text(settings)
             + f"Estimated total time: {self._format_duration(settings['estimated_s'])}\n\n"
             + self._nonlocal_vi_high_voltage_note(settings)
+            # The save step and the end, as on every scan page (user,
+            # 2026-10-18).
+            + "Next: the folder and an optional file name for the run folder (live CSV and log). "
+            "At every end (completed, stopped or failed) the Keithley and the 6221 are zeroed and "
+            "read back.\n\n"
             + (
                 "Confirm the interlock wiring and the Trigger Link, then start?"
                 if settings["output_mode"] == "AC"
@@ -36749,16 +36838,27 @@ class CombinedControlApp:
             icon="warning",
             parent=self.root,
         ):
-            try:
-                run_directory.rmdir()
-            except OSError:
-                pass
             return
+        recorder = self._nonlocal_begin_run(
+            "gate", "Select the folder for the Gate-VI run folder", self.nonlocal_vi_output_directory,
+            self._nonlocal_vi_run_settings(settings),
+        )
+        if recorder is None:
+            self.nonlocal_vi_status_var.set("Gate-VI scan not started")
+            return
+        # The dialogs took a while: still free?
+        if (self.nonlocal_keithley_task is not None or self.nonlocal_vi_running
+                or self.nonlocal_vi_busy):
+            self._nonlocal_run_not_started(recorder, "the page became busy during the dialogs")
+            self.nonlocal_vi_status_var.set("Gate-VI scan not started: the page is busy")
+            return
+        self.nonlocal_vi_output_directory = recorder.directory.parent
+        run_directory = recorder.directory
         self.nonlocal_vi_run_directory = run_directory
+        self.nonlocal_vi_total_points = points * loops * len(frequencies)
         self._note_nonlocal_keithley_taken()
         self.nonlocal_vi_stop_event.clear()
         self.nonlocal_vi_running = True
-        self.nonlocal_vi_shutdown_error = None
         # The rack Zurich row's lock state is the scan's now.
         self.nonlocal_mfli_lock_word = None
         self._set_mfli_lock_state(None, vi=True)
@@ -36782,13 +36882,42 @@ class CombinedControlApp:
         )
         self._redraw_nonlocal_vi_plots()
         self._update_nonlocal_vi_controls()
-        future = self.nonlocal_vi_executor.submit(
-            self._nonlocal_vi_scan_worker, settings, run_directory
-        )
+        self._nonlocal_run_started(recorder)
+        try:
+            future = self.nonlocal_vi_executor.submit(
+                self._nonlocal_scan_job, recorder, "gate",
+                lambda: self._nonlocal_vi_scan_worker(settings, recorder),
+                points=len(settings["voltage_scan"]) * loops * len(frequencies),
+            )
+        except Exception as error:
+            self.nonlocal_vi_running = False
+            self._nonlocal_run_not_started(recorder, error)
+            self.nonlocal_vi_status_var.set(f"Gate-VI scan not started: {short_status_error(error)}")
+            self._update_nonlocal_vi_controls()
+            messagebox.showerror("Gate-VI scan not started", str(error), parent=self.root)
+            return
         future.add_done_callback(
             lambda completed: self.post_ui(
-                lambda: self._finish_nonlocal_vi_scan(completed.exception())
+                lambda: self._finish_nonlocal_vi_scan(self._nonlocal_future_error(completed))
             )
+        )
+
+    def _nonlocal_vi_run_settings(self, settings: dict) -> dict:
+        """The Gate-VI run log's settings (run_prepared): the scan's own,
+        which VI_parameters.log had, and every instrument with its address
+        and identity (user, 2026-10-18)."""
+        source = self.nonlocal_vi_ac_controller
+        keithley = self.nonlocal_vi_2410_controller
+        return dict(
+            settings,
+            gate_keithley={"model": keithley.model, "resource": keithley.resource_name,
+                           "identity": keithley.identity},
+            source_6221={"resource": getattr(source, "source_resource", ""),
+                         "identity": getattr(source, "source_identity", "")},
+            lockin_identities=dict(getattr(source, "lockin_identities", {}) or {}),
+            zurich_identity=getattr(source, "mfli_identity", ""),
+            nanovoltmeter_identity=getattr(source, "nanovoltmeter_identity", ""),
+            safety_confirmed=True,
         )
 
     def _nonlocal_vi_high_voltage_note(self, settings: dict) -> str:
@@ -36880,17 +37009,47 @@ class CombinedControlApp:
         with self.nonlocal_vi_data_lock:
             self.nonlocal_vi_pulse_rows.append((elapsed, voltage_v))
 
+    # The Gate-VI run folder's other two live CSVs (user, 2026-10-18): the
+    # summary is <name>.csv, the recorder's; every reading and every gate
+    # |R| go beside it, their columns and order as in VI_raw.csv and
+    # VI_resistance_gate.csv since 2026-10-09.
+    NONLOCAL_VI_RESISTANCE_HEADER = (
+        "timestamp", "stage", "point_index", "pulse_voltage_V",
+        "source_current_A", "measured_voltage_V",
+        "measured_current_A", "absolute_resistance_Ohm", "loop",
+    )
+
+    @staticmethod
+    def _nonlocal_side_csv_path(recorder, suffix: str) -> Path:
+        """<name>_<suffix>.csv beside the run folder's <name>.csv."""
+        return recorder.directory / f"{recorder.directory.name}_{suffix}.csv"
+
+    @staticmethod
+    def _nonlocal_side_csv_rows(recorder, path: Path, rows, *, create: bool = False) -> None:
+        """Rows onto one of the run folder's other CSVs, as the recorder
+        writes its own: under its lock, opened for them and closed again,
+        flushed and fsynced (no handle held: Windows can copy the folder
+        mid-scan).  create: the file made "x" (never overwritten) with its
+        header as the first row.  A failure raises, to end the scan."""
+        with recorder.lock:
+            if recorder.closed:
+                raise RuntimeError(f"The {recorder.label} run folder is closed")
+            with Path(path).open("x" if create else "a", newline="", encoding="utf-8-sig") as handle:
+                csv.writer(handle).writerows(rows)
+                handle.flush()
+                os.fsync(handle.fileno())
+
     def _nonlocal_vi_measure_resistance(
         self,
         run_start: float,
         point_index: int,
         pulse_voltage_v: float,
         stage: str,
-        writer,
-        csv_file,
+        recorder,
         frequency_hz: float = math.nan,
         loop="",
     ) -> dict:
+        recorder.check()
         self.nonlocal_vi_ac_controller.output_off()
         self.nonlocal_vi_ac_controller.confirm_output_off(
             f"before the Keithley {self.nonlocal_vi_2410_controller.model} resistance measurement"
@@ -36908,22 +37067,21 @@ class CombinedControlApp:
         finally:
             self.nonlocal_vi_interlock.end(NonLocalVIInterlock.RESISTANCE)
         elapsed = time.monotonic() - run_start
-        writer.writerow(
-            (
-                datetime_module.datetime.now().isoformat(
-                    timespec="milliseconds"
-                ),
-                stage,
-                point_index,
-                pulse_voltage_v,
-                result["source_current_a"],
-                result["voltage_v"],
-                result["current_a"],
-                result["resistance_ohm"],
-                loop,
-            )
-        )
-        csv_file.flush()
+        self._nonlocal_side_csv_rows(recorder, self._nonlocal_side_csv_path(recorder, "resistance_gate"), [(
+            datetime_module.datetime.now().isoformat(
+                timespec="milliseconds"
+            ),
+            stage,
+            point_index,
+            pulse_voltage_v,
+            result["source_current_a"],
+            result["voltage_v"],
+            result["current_a"],
+            result["resistance_ohm"],
+            loop,
+        )])
+        recorder.event("gate_resistance", stage=stage, point_index=point_index, pulse_voltage_v=pulse_voltage_v,
+                       resistance_ohm=result["resistance_ohm"], over_range=bool(result.get("over_range")))
         with self.nonlocal_vi_data_lock:
             # The frequency and loop of its pulse scan, for a curve per
             # frequency and a line per loop.
@@ -36940,11 +37098,19 @@ class CombinedControlApp:
         return result
 
     def _nonlocal_vi_scan_worker(
-        self, settings: dict, run_directory: Path
+        self, settings: dict, recorder
     ) -> None:
-        raw_file = summary_file = resistance_file = None
+        raw_path = self._nonlocal_side_csv_path(recorder, "raw")
         run_start = time.monotonic()
         try:
+            # The run folder's two other live CSVs first (the summary is the
+            # recorder's), so a file problem stops the scan before any
+            # output; each made "x" with its header.
+            for path, header in ((raw_path, self._nonlocal_vi_raw_header()),
+                                 (self._nonlocal_side_csv_path(recorder, "resistance_gate"),
+                                  self.NONLOCAL_VI_RESISTANCE_HEADER)):
+                self._nonlocal_side_csv_rows(recorder, path, [header], create=True)
+            summary_header = self._nonlocal_vi_summary_header()
             # A voltage left on by Set: drained and off before the 6221.
             self._nonlocal_keithley_off_first("before the Gate-VI scan", in_use="in use by the Gate-VI scan")
             source = self.nonlocal_vi_ac_controller
@@ -37045,65 +37211,21 @@ class CombinedControlApp:
             )
             self.nonlocal_vi_2410_controller.confirm_output_off("after VI configuration")
 
-            raw_file = (run_directory / "VI_raw.csv").open(
-                "x", newline="", encoding="utf-8-sig"
+            # What VI_parameters.log had beyond run_prepared's settings: the
+            # set-up's read-backs and the wait before each point's reading,
+            # from the time constants read back (the CSVs' last column,
+            # settle_waited_s, has each reading's; user, 2026-10-14).
+            recorder.event(
+                "set_up", frequency_hz=frequency, lockin_readbacks=lockin_readbacks,
+                effective_settle_s=max(self._nonlocal_vi_pre_run_s(settings, frequencies[0]), lockin_settle_s),
             )
-            summary_file = (run_directory / "VI_summary.csv").open(
-                "x", newline="", encoding="utf-8-sig"
-            )
-            resistance_file = (run_directory / "VI_resistance_gate.csv").open(
-                "x", newline="", encoding="utf-8-sig"
-            )
-            raw_writer = csv.writer(raw_file)
-            summary_writer = csv.writer(summary_file)
-            resistance_writer = csv.writer(resistance_file)
-            raw_writer.writerow(self._nonlocal_vi_raw_header())
-            summary_writer.writerow(self._nonlocal_vi_summary_header())
-            resistance_writer.writerow(
-                (
-                    "timestamp", "stage", "point_index", "pulse_voltage_V",
-                    "source_current_A", "measured_voltage_V",
-                    "measured_current_A", "absolute_resistance_Ohm", "loop",
-                )
-            )
-            parameter_lines = [
-                "Non-local VI parameter log",
-                f"created={datetime_module.datetime.now().isoformat(timespec='seconds')}",
-            ]
-            for key, value in settings.items():
-                if key not in {"lockin_configs", "mfli_config"}:
-                    parameter_lines.append(f"{key}={value}")
-            for key, config in settings["lockin_configs"].items():
-                parameter_lines.append(f"SR830_{key}={config}")
-            parameter_lines.append(f"Zurich_MFLI={settings['mfli_config']}")
-            parameter_lines.append(
-                f"Keithley_2182A_enabled={settings['use_nanovoltmeter']}"
-            )
-            parameter_lines.append(
-                f"gate_keithley_model={self.nonlocal_vi_2410_controller.model}"
-            )
-            parameter_lines.append(
-                f"gate_keithley_identity={self.nonlocal_vi_2410_controller.identity}"
-            )
-            # The wait before each point's reading, from the time constants
-            # read back (the CSVs' last column, settle_waited_s, has each
-            # reading's; user, 2026-10-14).
-            parameter_lines.append(
-                f"effective_settle_s={max(self._nonlocal_vi_pre_run_s(settings, frequencies[0]), lockin_settle_s):g}"
-            )
-            (run_directory / "VI_parameters.log").write_text(
-                "\n".join(parameter_lines) + "\n", encoding="utf-8"
-            )
-            for file in (raw_file, summary_file, resistance_file):
-                file.flush()
 
             gate_result = self._nonlocal_vi_measure_resistance(
                 run_start,
                 0,
                 settings["voltage_scan"][0],
                 "initial_gate",
-                resistance_writer,
-                resistance_file,
+                recorder,
             )
             point_index = 0
             for frequency_index, set_frequency in enumerate(frequencies, 1):
@@ -37309,9 +37431,10 @@ class CombinedControlApp:
                                 readings = self._nonlocal_vi_order_readings(
                                     current_samples, orders, current_orders,
                                 )
+                                raw_rows = []
                                 for key, order, sample in readings:
                                     config = lockin_readbacks[key]
-                                    raw_writer.writerow(
+                                    raw_rows.append(
                                         (
                                             stamp, "formal", point_index,
                                             pulse_voltage_v, gate_resistance,
@@ -37339,7 +37462,9 @@ class CombinedControlApp:
                                         )
                                     )
                                     samples[(key, order)].append(sample)
-                                raw_file.flush()
+                                # Every reading, fsynced before the next step.
+                                self._nonlocal_side_csv_rows(recorder, raw_path, raw_rows)
+                                recorder.check()
                                 with self.nonlocal_vi_data_lock:
                                     for key, order, sample in readings:
                                         # (elapsed, meter, R, θ, kind, X, Y, order):
@@ -37412,8 +37537,7 @@ class CombinedControlApp:
                         point_index,
                         pulse_voltage_v,
                         "post_point",
-                        resistance_writer,
-                        resistance_file,
+                        recorder,
                         frequency_hz=set_frequency,
                         loop=loop_index,
                     )
@@ -37503,30 +37627,34 @@ class CombinedControlApp:
                             "post_resistance": dict(post_resistance),
                             "settle_waited_s": settle_waited_s,
                         }
-                        summary_writer.writerow(
-                            (
-                                point_index, pulse_voltage_v, key,
-                                config["meter_type"], config["resource"],
-                                config.get("coupling", ""),
-                                harmonic, channel,
-                                current_readback_ma, frequency,
-                                len(used), mean, std, summary["sem"],
-                                summary["mean_x"], summary["mean_y"],
-                                summary["mean_r"], summary["mean_phase"],
-                                summary["mean_reference"],
-                                summary["warning_count"],
-                                summary["compliance_count"], gate_resistance,
-                                post_resistance["source_current_a"],
-                                post_resistance["voltage_v"],
-                                post_resistance["current_a"],
-                                post_resistance["resistance_ohm"],
-                                settings["marker_line"], loop_index,
-                                settle_waited_s,
-                            )
-                        )
+                        # The summary is the run folder's <name>.csv, its
+                        # columns as VI_summary.csv's (user, 2026-10-18).
+                        recorder.append_row(self._nonlocal_csv_row(summary_header, (
+                            point_index, pulse_voltage_v, key,
+                            config["meter_type"], config["resource"],
+                            config.get("coupling", ""),
+                            harmonic, channel,
+                            current_readback_ma, frequency,
+                            len(used), mean, std, summary["sem"],
+                            summary["mean_x"], summary["mean_y"],
+                            summary["mean_r"], summary["mean_phase"],
+                            summary["mean_reference"],
+                            summary["warning_count"],
+                            summary["compliance_count"], gate_resistance,
+                            post_resistance["source_current_a"],
+                            post_resistance["voltage_v"],
+                            post_resistance["current_a"],
+                            post_resistance["resistance_ohm"],
+                            settings["marker_line"], loop_index,
+                            settle_waited_s,
+                        )))
                         with self.nonlocal_vi_data_lock:
                             self.nonlocal_vi_summary_rows.append(summary)
-                    summary_file.flush()
+                    self._nonlocal_point_saved(
+                        recorder, index=point_index, loop=loop_index, pulse_voltage_v=pulse_voltage_v,
+                        frequency_hz=set_frequency, gate_resistance_ohm=gate_resistance,
+                        post_resistance_ohm=post_resistance["resistance_ohm"],
+                    )
                     gate_result = post_resistance
                     self.post_ui(
                         lambda index=point_index: self._complete_nonlocal_vi_point(
@@ -37534,19 +37662,11 @@ class CombinedControlApp:
                         )
                     )
         finally:
-            # A shutdown failure is kept beside the scan's own error, not in
-            # its place (the finish reports both).
-            self.nonlocal_vi_shutdown_error = None
-            try:
-                self._nonlocal_vi_shutdown_outputs()
-            except BaseException as shutdown_error:
-                self.nonlocal_vi_shutdown_error = shutdown_error
-                if shutdown_error.__context__ is None:
-                    raise  # no scan error to report: this is the error
-            finally:
-                for file in (raw_file, summary_file, resistance_file):
-                    if file is not None:
-                        file.close()
+            # The scan's own clean-up: the interlock idle again.  Then
+            # _nonlocal_scan_job zeroes both outputs, each read back; their
+            # results are reported beside the scan's own error, never in its
+            # place (user, 2026-10-18).
+            self.nonlocal_vi_interlock.force_idle()
 
     def _nonlocal_vi_order_readings(
         self, samples: dict, orders: dict, current_orders: dict
@@ -37640,17 +37760,10 @@ class CombinedControlApp:
         )
         self.nonlocal_vi_running = False
         self._set_mfli_lock_state(None, vi=True)
-        shutdown_error = self.__dict__.get("nonlocal_vi_shutdown_error")
-        outputs_off = shutdown_error is None
-        model = self.nonlocal_vi_2410_controller.model
-        self.nonlocal_vi_output_var.set(
-            f"Keithley {model} and 6221 outputs: OFF" if outputs_off
-            else f"Keithley {model} and 6221 outputs: check them"
-        )
-        self.nonlocal_iv6221_source_var.set("6221: OFF" if outputs_off else "6221: check the output")
         self.nonlocal_vi_eta_var.set("Remaining: 00:00:00")
         snapshot_note = ""
         self._redraw_nonlocal_vi_plots()
+        recorder = self.__dict__.get("nonlocal_recorder")
         if self.nonlocal_vi_run_directory is not None:
             try:
                 model = self.nonlocal_vi_2410_controller.model
@@ -37675,52 +37788,31 @@ class CombinedControlApp:
                             self.nonlocal_vi_plot_canvases[key],
                             self.nonlocal_vi_run_directory / f"{name}_snapshot.png",
                         )
-                    except BaseException as error:
-                        failed.append(f"{name}: {short_status_error(error)}")
+                    except BaseException as snapshot_failure:
+                        failed.append(f"{name}: {short_status_error(snapshot_failure)}")
                 if failed:
                     raise RuntimeError("; ".join(failed))
             except BaseException as snapshot_error:
                 # Kept for the final status, which would otherwise replace it.
                 snapshot_note = f"; plot snapshot save failed: {short_status_error(snapshot_error)}"
-        off_note = (
-            "" if outputs_off
-            else "; switching the outputs off failed, check them"
-            + ("" if shutdown_error is error else f": {short_status_error(shutdown_error)}")
+            if recorder is not None:
+                recorder.event("plot_snapshots", saved=not snapshot_note, error=snapshot_note[2:])
+        # The scan's end zeroed both outputs on the worker (user,
+        # 2026-10-18): the status and the output lines say how, a failed
+        # zero beside the scan's own error, never in its place.
+        _outcome, status = self._nonlocal_end_scan(
+            "gate", error, stopped=stopped, total=self.__dict__.get("nonlocal_vi_total_points")
         )
-        if error is not None and not isinstance(error, NonLocalVIStopped):
-            self.nonlocal_vi_status_var.set(
-                f"VI failed: {short_status_error(error).rstrip(';')}"
-                + ("; all outputs off (read back)" if outputs_off else off_note)
-                + snapshot_note
-            )
-            if not self.closing:
-                messagebox.showerror(
-                    "Non-local VI",
-                    str(error) + (f"\n\nSwitching the outputs off also failed: {shutdown_error}"
-                                  if shutdown_error is not None and shutdown_error is not error else ""),
-                    parent=self.root,
-                )
-        elif stopped:
-            self.nonlocal_vi_status_var.set(
-                f"VI stopped; data saved in {self.nonlocal_vi_run_directory}" + off_note + snapshot_note
-            )
-            if shutdown_error is not None and not self.closing:
-                messagebox.showerror(
-                    "Non-local VI", f"Switching the outputs off failed: {shutdown_error}", parent=self.root
-                )
-        else:
-            self.nonlocal_vi_status_var.set(
-                f"VI complete; data saved in {self.nonlocal_vi_run_directory}" + off_note + snapshot_note
-            )
+        self.nonlocal_vi_status_var.set(status + snapshot_note)
         self._update_nonlocal_vi_controls()
         self._update_k6221_controls()
         self._update_keithley_controls()
 
-    def stop_nonlocal_vi(self) -> None:
+    def stop_nonlocal_vi(self, button: str = "Stop") -> None:
         if self.nonlocal_keithley_task is not None:
-            # |R| or I-V: its worker zeroes the Keithley and switches it off.
-            # The 6221 was switched off before it started.
-            self.stop_nonlocal_keithley_task()
+            # A running |R|, 2400-IV or 6221-IV scan (or Set / pulse): its
+            # worker ends it, and a scan's end zeroes both outputs.
+            self.stop_nonlocal_keithley_task(button)
             return
         if not (
             self.nonlocal_vi_ac_controller.any_connected
@@ -37728,6 +37820,9 @@ class CombinedControlApp:
         ):
             return
         self.nonlocal_vi_stop_event.set()
+        if self.nonlocal_vi_running:
+            # The event first, then the log (review, 2026-10-18).
+            self._nonlocal_stop_requested(button)
         self.nonlocal_vi_status_var.set(
             f"Stopping VI and switching off the Keithley {self.nonlocal_vi_2410_controller.model} and 6221 outputs…"
         )
@@ -38217,15 +38312,19 @@ class CombinedControlApp:
             lambda completed: self.post_ui(lambda: finish(completed))
         )
 
-    def stop_nonlocal_keithley_task(self) -> None:
+    def stop_nonlocal_keithley_task(self, button: str = "Stop") -> None:
         task = self.nonlocal_keithley_task
         if task is None:
             return
         self.nonlocal_keithley_stop_event.set()
+        if task in ("resistance", "iv", "iv6221"):
+            # A scan's log (user, 2026-10-18), after the event is set.
+            self._nonlocal_stop_requested(button)
+        model = self.nonlocal_vi_2410_controller.model
         self.nonlocal_vi_status_var.set(
-            "Stopping the |R| measurement; zeroing and switching the output off next…"
+            f"Stopping |R| vs time; the Keithley {model} and the 6221 are zeroed next…"
             if task == "resistance"
-            else "Stopping the 2400-IV sweep; zeroing and switching the output off next…"
+            else f"Stopping the 2400-IV sweep; the Keithley {model} and the 6221 are zeroed next…"
             if task == "iv"
             else "Stopping Set 6221; switching the 6221 off next…"
             if task == "iv6221set"
@@ -38233,7 +38332,7 @@ class CombinedControlApp:
             if task == "2400set"
             else "Stopping the pulse; switching the Keithley off next…"
             if task == "2400pulse"
-            else "Stopping the 6221-IV scan; switching the 6221 off next…"
+            else f"Stopping the 6221-IV scan; the 6221 and the Keithley {model} are zeroed next…"
         )
         self._update_nonlocal_keithley_controls()
 
@@ -38312,6 +38411,237 @@ class CombinedControlApp:
             return f"Keithley {model} and 6221 outputs: OFF"
         return f"Keithley {model} output: check it"
 
+    # Every Non-local scan's run folder, live CSV and log, and its end (user,
+    # 2026-10-18: one save logic on every scan page, the convention above
+    # ScanRunRecorder; every scan ends with its sources zeroed, as SHV) ------
+
+    # scan key -> (its name in texts and begin_scan_run's label, the blank
+    # name's prefix: <prefix>_<date>_<time>).
+    NONLOCAL_SCAN_NAMES = {
+        "resistance": ("|R| vs time", "NL_RvsT"),
+        "iv": ("2400-IV", "NL_2400IV"),
+        "iv6221": ("6221-IV", "NL_6221IV"),
+        "gate": ("Gate-VI", "NL_GateVI"),
+    }
+
+    def _nonlocal_log(self, message: str) -> None:
+        """A Non-local log line (the page's controllers log here too): the
+        program log, and while a scan runs its run log, as a "note"."""
+        self.thread_log(message)
+        recorder = self.__dict__.get("nonlocal_recorder")
+        if recorder is not None:
+            recorder.note(message)
+
+    def _nonlocal_begin_run(self, scan: str, folder_title: str, initial_dir, settings: dict):
+        """A Start's save step, after its Yes/No: the folder, the optional
+        file name, then <folder>/<name>/ with <name>.csv and <name>.log and
+        run_prepared (begin_scan_run).  None: nothing starts, no output is
+        touched (a dialog cancelled, the name refused, or the files not
+        made, which begin_scan_run shows)."""
+        label, prefix = self.NONLOCAL_SCAN_NAMES[scan]
+        if initial_dir is not None and not Path(initial_dir).is_dir():
+            initial_dir = Path(__file__).resolve().parent
+        return begin_scan_run(self.root, label, folder_title, initial_dir, settings, prefix=prefix)
+
+    def _nonlocal_run_started(self, recorder) -> None:
+        """The run is the page's now (Tk thread, just before its worker)."""
+        self.nonlocal_recorder = recorder
+        self.nonlocal_run_points = 0
+        self.nonlocal_scan_outputs = None
+        self.thread_log(f"Non-local run folder: {recorder.directory} ({recorder.csv_path.name} and "
+                        f"{recorder.log_path.name})")
+
+    def _nonlocal_run_not_started(self, recorder, error) -> None:
+        """The worker could not take the run: closed not_started."""
+        if self.__dict__.get("nonlocal_recorder") is recorder:
+            self.nonlocal_recorder = None
+        self._nonlocal_close_run(recorder, "not_started", error=str(error), points_saved=0)
+
+    def _nonlocal_close_run(self, recorder, outcome: str, **details) -> None:
+        """run_finished and the close, once (ScanRunRecorder.close)."""
+        for problem in recorder.close(outcome, **details):
+            self.thread_log(f"Non-local run log {recorder.log_path.name}: {problem}")
+
+    @staticmethod
+    def _nonlocal_stopped(error) -> bool:
+        return isinstance(error, (InterruptedError, NonLocalVIStopped))
+
+    def _nonlocal_run_outcome(self, error, stopped: bool = False) -> str:
+        """completed, stopped (a Stop, or the stop event of the scan) or
+        error: a real failure is reported as one even while stopping."""
+        if error is not None and not self._nonlocal_stopped(error):
+            return "error"
+        return "stopped" if stopped or error is not None else "completed"
+
+    @staticmethod
+    def _nonlocal_csv_row(header, values) -> dict:
+        """A live-CSV row by column name, in the columns' order; a row of
+        another length would drop or shift cells, so it is refused."""
+        values = tuple(values)
+        if len(values) != len(header):
+            raise RuntimeError(f"A row of {len(values)} cells for {len(header)} columns was not written")
+        return dict(zip(header, values))
+
+    def _nonlocal_point_saved(self, recorder, **details) -> None:
+        """Worker, after a point's row(s): point_saved, then check(), so a
+        failed log write ends the scan before the next instrument step."""
+        self.nonlocal_run_points = int(self.__dict__.get("nonlocal_run_points") or 0) + 1
+        recorder.event("point_saved", **details)
+        recorder.check()
+
+    def _nonlocal_stop_requested(self, button: str) -> None:
+        """A running scan's stop_requested, after its stop event is set."""
+        recorder = self.__dict__.get("nonlocal_recorder")
+        if recorder is not None:
+            recorder.event("stop_requested", button=button)
+
+    def _nonlocal_scan_job(self, recorder, scan: str, body, **details) -> None:
+        """The page's worker: one Non-local scan, scan_started to its end.
+        Every ending (completed, stopped, failed) zeroes the sources after
+        the scan's own clean-up (body's), each tried whatever the other did
+        (_nonlocal_zero_outputs).  The finish reads nonlocal_scan_outputs.
+        While the program closes no finish comes, so the log is closed here."""
+        error = None
+        try:
+            recorder.event("scan_started", scan=self.NONLOCAL_SCAN_NAMES[scan][0], **details)
+            recorder.check()
+            body()
+        except BaseException as caught:
+            error = caught
+            raise
+        finally:
+            results = self._nonlocal_zero_outputs(recorder)
+            if self.__dict__.get("closing") or self.__dict__.get("nonlocal_vi_closed"):
+                outcome = self._nonlocal_run_outcome(error)
+                self._nonlocal_close_run(
+                    recorder, outcome, error=str(error) if outcome == "error" else "",
+                    **({"stop_reason": f"the program closed ({error})"} if outcome == "stopped" else {}),
+                    outputs=results, points_saved=int(self.__dict__.get("nonlocal_run_points") or 0),
+                )
+                self.nonlocal_recorder = None
+
+    def _nonlocal_zero_outputs(self, recorder=None) -> dict[str, str]:
+        """A scan's end on the page's worker (user, 2026-10-18): the 6221
+        off (SOUR:WAVE:ABOR, CURR 0, OUTP OFF; OUTP? 0 read back), then the
+        Keithley at 0 V and off (zero_output: both read back), each tried
+        whatever the other did, "not connected" when it is not.  Every scan
+        zeroes both, as SHV zeroes the KEPCO in a Current scan.  The
+        interlocks are untouched: both only switch off.  Never raises."""
+        source = self.nonlocal_vi_ac_controller
+        keithley = self.nonlocal_vi_2410_controller
+        label = f"Keithley {keithley.model}"
+
+        def zero_6221():
+            if not source.source_connected:
+                return "not connected"
+            source.output_off()
+            source.confirm_output_off("at the scan end")
+
+        def zero_keithley():
+            if not keithley.connected:
+                return "not connected"
+            keithley.zero_output("at the scan end")
+
+        results = zero_scan_outputs((("6221", zero_6221), (label, zero_keithley)))
+        self.nonlocal_scan_outputs = results
+        if recorder is not None:
+            recorder.event("outputs_zeroed", **{"6221": results["6221"], "keithley": results[label]},
+                           keithley_model=keithley.model)
+        self._nonlocal_log("Non-local scan end: " + "; ".join(f"{name} {state}" for name, state in results.items()))
+        return results
+
+    def _nonlocal_outputs_text(self, results, check: bool = True) -> str:
+        """"Keithley 2400 and 6221 zeroed", or each output's end
+        (scan_end_outputs_text)."""
+        keithley = f"Keithley {self.nonlocal_vi_2410_controller.model}"
+        return scan_end_outputs_text(results, ("6221", keithley), check=check, together=f"{keithley} and 6221")
+
+    def _nonlocal_show_outputs(self, results) -> None:
+        """The page's output lines after a scan's zeroing: OFF only for an
+        output read back at zero, "check it" for one that was not."""
+        model = self.nonlocal_vi_2410_controller.model
+        keithley = f"Keithley {model}"
+        results = results or {}
+        states = ((keithley, results.get(keithley, "")), ("6221", results.get("6221", "")))
+        off = [name for name, state in states if state == "zeroed"]
+        absent = [name for name, state in states if state == "not connected"]
+        failed = [name for name, state in states if name not in off and name not in absent]
+        if len(failed) == 2:
+            text = f"{keithley} and 6221 outputs: check them"
+        elif len(off) == 2:
+            text = f"{keithley} and 6221 outputs: OFF"
+        else:
+            text = "; ".join([f"{name} output: OFF" for name in off]
+                             + [f"{name} output: check it" for name in failed]
+                             + [f"{name} not connected" for name in absent])
+        self.nonlocal_vi_output_var.set(text)
+        six = results.get("6221", "")
+        if six != "not connected":
+            self.nonlocal_iv6221_source_var.set("6221: OFF" if six == "zeroed" else "6221: check the output")
+        if keithley not in absent:
+            self._show_nonlocal_keithley_state("OFF" if keithley in off else "check the output")
+        # The texts of the page's next Set / pulse follow the same states.
+        self.nonlocal_keithley_output_off = keithley not in failed
+        self.nonlocal_keithley_off_unconfirmed = keithley in failed
+        self.nonlocal_6221_off_unconfirmed = "6221" in failed
+
+    def _nonlocal_dialog_later(self, kind: str, title: str, text: str) -> None:
+        """A scan's finish dialog (messagebox.<kind>), opened from the Tk
+        event loop: a finish runs inside drain_ui_queue, and a dialog opened
+        there holds every page's post_ui callbacks until it closes (README,
+        2026-10-14)."""
+        if self.__dict__.get("closing"):
+            return
+
+        def open_dialog() -> None:
+            if not self.__dict__.get("closing"):
+                getattr(messagebox, kind)(title, text, parent=self.root)
+
+        try:
+            self.root.after(0, open_dialog)
+        except (AttributeError, RuntimeError, tk.TclError):
+            pass  # the window is going: no dialog
+
+    def _nonlocal_end_scan(self, scan: str, error, *, stopped: bool = False, total=None) -> tuple[str, str]:
+        """A Non-local scan's finish on the Tk thread (user, 2026-10-18):
+        "<scan>: Completed; " / "Stopped; " + how each output ended, or
+        "Failed: <error>; " and the same, then the points saved and the run
+        folder.  The run log is closed (run_finished) before any dialog; a
+        failure's dialog says how each output ended, and a dialog says
+        CHECK IT when one was not confirmed at zero.  Returns (outcome,
+        status)."""
+        title = self.NONLOCAL_SCAN_NAMES[scan][0]
+        recorder = self.__dict__.get("nonlocal_recorder")
+        results = self.__dict__.get("nonlocal_scan_outputs")
+        done = int(self.__dict__.get("nonlocal_run_points") or 0)
+        outcome = self._nonlocal_run_outcome(error, stopped)
+        head = ({"completed": "Completed", "stopped": "Stopped"}.get(outcome)
+                or f"Failed: {short_status_error(error, 100).rstrip(';')}")
+        points = (f"{done}/{total} points" if total is not None and outcome != "completed"
+                  else f"{done} point" + ("" if done == 1 else "s"))
+        # "Completed; Keithley 2400 and 6221 zeroed": a box's own line.
+        self.nonlocal_end_line = f"{head}; {self._nonlocal_outputs_text(results)}"
+        status = (f"{title}: {self.nonlocal_end_line}; {points} saved"
+                  + (f" in {recorder.directory.name}" if recorder is not None else ""))
+        if recorder is not None:
+            self._nonlocal_close_run(
+                recorder, outcome, error=str(error) if outcome == "error" else "",
+                **({"stop_reason": str(error or "Stop")} if outcome == "stopped" else {}),
+                points_saved=done, status=status, outputs=results,
+            )
+        self.nonlocal_recorder = None
+        self._nonlocal_show_outputs(results)
+        zeroing = ("At the end: " + "; ".join(f"{name} {state}" for name, state in results.items())
+                   if results else "At the end: the 6221 and the Keithley were not confirmed zeroed")
+        if outcome == "error":
+            self._nonlocal_dialog_later("showerror", f"{title} failed", f"{error}\n\n{zeroing}")
+        elif not results or any(state not in ("zeroed", "not connected") for state in results.values()):
+            self._nonlocal_dialog_later(
+                "showerror", f"{title} outputs",
+                f"The scan {outcome}, but an output was not confirmed at zero: CHECK IT.\n\n{zeroing}",
+            )
+        return outcome, status
+
     # |R| vs time ---------------------------------------------------------
 
     def start_nonlocal_resistance(self) -> None:
@@ -38326,21 +38656,69 @@ class CombinedControlApp:
                 parent=self.root,
             )
             return
+        # |R| vs time is a scan too (user, 2026-10-18): a run folder with a
+        # live CSV of every reading and the log, and its sources zeroed at
+        # its end.  It has no Yes/No: the folder dialog follows the checks.
+        controller = self.nonlocal_vi_2410_controller
+        source = self.nonlocal_vi_ac_controller
+        settings = {
+            "keithley": {"model": controller.model, "resource": controller.resource_name,
+                         "identity": controller.identity},
+            "source_6221": {"connected": source.source_connected,
+                            "resource": getattr(source, "source_resource", ""),
+                            "identity": getattr(source, "source_identity", ""),
+                            "note": "switched off before the Keithley, zeroed at the end"},
+            "current_levels_a": list(NONLOCAL_VI_RES_CURRENT_LEVELS_A),
+            "target_voltage_v": [KEITHLEY_RES_TARGET_VOLTAGE_LOW_V, KEITHLEY_RES_TARGET_VOLTAGE_HIGH_V],
+            "voltage_protection_v": NONLOCAL_VI_RES_COMPLIANCE_V,
+            "nplc": NONLOCAL_VI_RES_NPLC,
+            "sample_interval_s": KEITHLEY_RES_SAMPLE_INTERVAL_S,
+            "range_settle_s": KEITHLEY_RES_SETTLE_S,
+            "plot_window_s": KEITHLEY_RES_WINDOW_S,
+            "safety_confirmed": True,
+            "started": datetime_module.datetime.now().isoformat(timespec="seconds"),
+        }
+        directory = self.__dict__.get("nonlocal_resistance_directory") or self.nonlocal_iv_directory
+        recorder = self._nonlocal_begin_run(
+            "resistance", "Select the folder for the |R| vs time run folder", directory, settings
+        )
+        if recorder is None:
+            return
+        # The dialogs took a while: still free?
+        if self.nonlocal_keithley_task is not None or not self._nonlocal_keithley_free("the |R| measurement"):
+            self._nonlocal_run_not_started(recorder, "the Keithley was taken during the dialogs")
+            return
+        self.nonlocal_resistance_directory = recorder.directory.parent
         self.nonlocal_resistance_rows = []
         self._redraw_nonlocal_resistance_plot()
         self.nonlocal_vi_status_var.set(
-            "Autoranging, then measuring |R| vs time continuously (rolling last 20 s)…"
+            "Autoranging, then measuring |R| vs time continuously (rolling last 20 s); "
+            f"live CSV in {recorder.directory.name}…"
         )
         self.nonlocal_vi_output_var.set(
             f"Keithley {self.nonlocal_vi_2410_controller.model} ON: |R| current source"
         )
-        self._begin_nonlocal_keithley_task(
-            "resistance",
-            self._nonlocal_resistance_worker,
-            self._finish_nonlocal_resistance,
-        )
+        self._nonlocal_run_started(recorder)
+        try:
+            self._begin_nonlocal_keithley_task(
+                "resistance",
+                lambda: self._nonlocal_scan_job(
+                    recorder, "resistance", lambda: self._nonlocal_resistance_worker(recorder)
+                ),
+                self._finish_nonlocal_resistance,
+            )
+        except Exception as error:
+            self._nonlocal_run_not_started(recorder, error)
+            self.nonlocal_vi_status_var.set(f"|R| vs time not started: {short_status_error(error)}")
+            messagebox.showerror("|R| vs time not started", str(error), parent=self.root)
 
-    def _nonlocal_resistance_worker(self) -> None:
+    # The |R| vs time live CSV (user, 2026-10-18), one row per reading.
+    NONLOCAL_RESISTANCE_COLUMNS = (
+        "point", "elapsed_s", "source_current_A", "voltage_V", "current_A",
+        "resistance_Ohm", "timestamp",
+    )
+
+    def _nonlocal_resistance_worker(self, recorder) -> None:
         stop = self.nonlocal_keithley_stop_event
         levels = list(NONLOCAL_VI_RES_CURRENT_LEVELS_A)
 
@@ -38375,12 +38753,26 @@ class CombinedControlApp:
 
             measurement_start = time.monotonic()
             next_sample = measurement_start
+            point = 0
             while True:
                 wait_s = max(0.0, next_sample - time.monotonic())
                 if stop.wait(wait_s):
                     raise InterruptedError("Resistance measurement stopped")
+                recorder.check()
                 voltage_v, current_a, resistance_ohm = controller.read_resistance()
                 elapsed = time.monotonic() - measurement_start
+                # Every reading in the live CSV before the next step, an open
+                # circuit's too (|R| nan); the plot keeps the last 20 s.
+                point += 1
+                recorder.append_row(self._nonlocal_csv_row(self.NONLOCAL_RESISTANCE_COLUMNS, (
+                    point, f"{elapsed:.3f}", f"{source_current:.6g}", f"{voltage_v:.10g}",
+                    f"{current_a:.10g}", f"{resistance_ohm:.10g}",
+                    datetime_module.datetime.now().isoformat(timespec="milliseconds"),
+                )))
+                self._nonlocal_point_saved(
+                    recorder, index=point, elapsed_s=round(elapsed, 3), source_current_a=source_current,
+                    resistance_ohm=resistance_ohm,
+                )
                 if all(
                     math.isfinite(value)
                     for value in (voltage_v, current_a, resistance_ohm)
@@ -38562,32 +38954,20 @@ class CombinedControlApp:
             font=(self.ui_font_family, self.ui_small_font_size, "bold"),
         )
 
+    @staticmethod
+    def _nonlocal_future_error(future):
+        """The worker's exception, or None; a cancelled job counts as one."""
+        try:
+            return future.exception()
+        except BaseException as error:
+            return error
+
     def _finish_nonlocal_resistance(self, future) -> None:
         self.nonlocal_keithley_task = None
-        untouched = bool(self.__dict__.get("nonlocal_keithley_untouched"))
-        self.nonlocal_vi_output_var.set(
-            f"Keithley {self.nonlocal_vi_2410_controller.model}: not switched on" if untouched
-            else self._nonlocal_output_text()
-        )
-        try:
-            future.result()
-        except InterruptedError:
-            self.nonlocal_vi_status_var.set(
-                "Resistance measurement stopped before the Keithley was switched on"
-                if untouched else
-                "Continuous resistance measurement finished; last 20 s kept, source current zeroed and output off"
-            )
-        except BaseException as error:
-            self.nonlocal_vi_status_var.set(
-                f"Resistance measurement stopped by an error: {short_status_error(error).rstrip(';')}"
-                + self._nonlocal_output_warning()
-            )
-            if not self.closing:
-                messagebox.showerror("Resistance measurement failed", str(error), parent=self.root)
-        else:
-            self.nonlocal_vi_status_var.set(
-                "Continuous resistance measurement finished; source current zeroed and output off"
-            )
+        # The scan's end zeroed the Keithley and the 6221 on the worker
+        # (user, 2026-10-18); the status and the output lines say how.
+        _outcome, status = self._nonlocal_end_scan("resistance", self._nonlocal_future_error(future))
+        self.nonlocal_vi_status_var.set(status)
         try:
             self._redraw_nonlocal_resistance_plot()
         finally:
@@ -38920,63 +39300,47 @@ class CombinedControlApp:
                 )
                 if high_voltage else ""
             )
-            + "\n\nThe sweep writes a run folder, with a live CSV and the parameter log, "
-            "in the folder you choose next. The Keithley is zeroed and switched off at the end.",
+            + "\n\nNext: the folder and an optional file name for the run folder (live CSV and "
+            "log). At every end (completed, stopped or failed) the Keithley and the 6221 are "
+            "zeroed and read back.",
             icon="warning" if high_voltage else "question",
             parent=self.root,
         ):
             return
-        folder = filedialog.askdirectory(
-            parent=self.root,
-            title="Select the folder for the 2400-IV run folder",
-            initialdir=str(
-                self.nonlocal_iv_directory
-                if Path(self.nonlocal_iv_directory).is_dir()
-                else Path(__file__).resolve().parent
-            ),
-        )
-        if not folder:
-            return
-        if self.nonlocal_keithley_task is not None or not self._nonlocal_keithley_free("the 2400-IV sweep"):
-            return
-        self.nonlocal_iv_directory = Path(folder)
         settings["started"] = datetime_module.datetime.now().isoformat(timespec="seconds")
-        # A folder per run, as on the STFMR and Gate-VI pages.
-        try:
-            run_directory = self._nonlocal_make_run_directory(
-                Path(folder), "2400-IV", ""
-            )
-        except OSError as error:
-            messagebox.showerror("2400-IV", f"Cannot create the run folder: {error}", parent=self.root)
-            return
-        csv_path = run_directory / f"{run_directory.name}.csv"
+        # The run log's settings, as the parameter log had them (user,
+        # 2026-10-18: the shared run folder and log replace it).
         parameters = {
-            "instrument.model": f"Keithley {settings.get('model', '')}",
-            "instrument.resource": settings.get("resource", ""),
-            "instrument.identity": settings.get("identity", ""),
-            "sweep.started": settings.get("started", ""),
-            "sweep.start_V": settings.get("start_v"),
-            "sweep.end_V": settings.get("end_v"),
-            "sweep.step_V": settings.get("step_v"),
-            "sweep.settle_s": settings.get("settle_s"),
-            "sweep.current_limit_A": settings.get("current_limit_a"),
-            "sweep.nplc": NONLOCAL_IV_SWEEP_NPLC,
-            "sweep.source_range_V": settings["source"]["range_v"],
-            "sweep.ovp_V": (
+            "keithley": {"model": settings.get("model", ""), "resource": settings.get("resource", ""),
+                         "identity": settings.get("identity", "")},
+            "started": settings.get("started", ""),
+            "start_v": settings.get("start_v"),
+            "end_v": settings.get("end_v"),
+            "step_v": settings.get("step_v"),
+            "settle_s": settings.get("settle_s"),
+            "current_limit_a": settings.get("current_limit_a"),
+            "nplc": NONLOCAL_IV_SWEEP_NPLC,
+            "source_range_v": settings["source"]["range_v"],
+            "ovp_v": (
                 f"none ({settings['source']['ovp_v']:g} V maximum)"
                 if settings["source"]["ovp_none"] else settings["source"]["ovp_v"]
             ),
-            "sweep.points": total,
-            "output.csv": csv_path.name,
+            "points": total,
+            "voltages": list(settings["voltages"]),
+            "ramp_to_start_v": list(ramp),
+            "ramp_dwell_s": NONLOCAL_IV_SWEEP_RAMP_DWELL_S,
+            "safety_confirmed": True,
         }
-        try:
-            self.write_parameter_log(
-                csv_path.with_name(f"{csv_path.stem}_parameters.log"),
-                self.format_parameter_log("Non-local 2400-IV parameter log", parameters),
-            )
-        except OSError as error:
-            messagebox.showerror("2400-IV", str(error), parent=self.root)
+        recorder = self._nonlocal_begin_run(
+            "iv", "Select the folder for the 2400-IV run folder", self.nonlocal_iv_directory, parameters
+        )
+        if recorder is None:
             return
+        if self.nonlocal_keithley_task is not None or not self._nonlocal_keithley_free("the 2400-IV sweep"):
+            self._nonlocal_run_not_started(recorder, "the Keithley was taken during the dialogs")
+            return
+        self.nonlocal_iv_directory = recorder.directory.parent
+        csv_path = recorder.csv_path
         self.nonlocal_iv_csv_path = csv_path
         self.nonlocal_iv_settings = settings
         self.nonlocal_iv_rows = []
@@ -38992,67 +39356,81 @@ class CombinedControlApp:
         self.nonlocal_vi_output_var.set(
             f"Keithley {self.nonlocal_vi_2410_controller.model} ON: 2400-IV voltage source"
         )
-        self._begin_nonlocal_keithley_task(
-            "iv",
-            lambda: self._nonlocal_iv_worker(settings, csv_path),
-            self._finish_nonlocal_iv_sweep,
-        )
+        self._nonlocal_run_started(recorder)
+        try:
+            self._begin_nonlocal_keithley_task(
+                "iv",
+                lambda: self._nonlocal_scan_job(
+                    recorder, "iv", lambda: self._nonlocal_iv_worker(settings, recorder), points=total
+                ),
+                self._finish_nonlocal_iv_sweep,
+            )
+        except Exception as error:
+            self._nonlocal_run_not_started(recorder, error)
+            self.nonlocal_vi_status_var.set(f"2400-IV not started: {short_status_error(error)}")
+            messagebox.showerror("2400-IV not started", str(error), parent=self.root)
 
-    def _nonlocal_iv_worker(self, settings: dict, csv_path: Path) -> None:
+    # The 2400-IV live CSV's columns, in their order since 2026-10-08.
+    NONLOCAL_IV_COLUMNS = (
+        "point", "set_voltage_V", "source_voltage_V", "current_A",
+        "elapsed_s", "at_current_limit",
+    )
+
+    def _nonlocal_iv_worker(self, settings: dict, recorder) -> None:
         stop = self.nonlocal_keithley_stop_event
         limit = float(settings["current_limit_a"])
         settle_s = float(settings["settle_s"])
 
         def sweep(controller) -> None:
-            # The CSV first, so a file problem stops the sweep before the
-            # Keithley is switched on; each point is written as it is read.
-            with Path(csv_path).open("x", newline="", encoding="utf-8-sig") as file:
-                writer = csv.writer(file)
-                writer.writerow((
-                    "point", "set_voltage_V", "source_voltage_V", "current_A",
-                    "elapsed_s", "at_current_limit",
-                ))
-                file.flush()
-                # The limit as the Keithley reads it back marks the points at it.
-                limit_read = controller.start_iv_sweep(
-                    limit, settings.get("max_abs_v", KEITHLEY_LOW_SOURCE_RANGE_V)
+            # The run folder's files were made at Start, so a file problem
+            # stops the sweep before the Keithley is switched on; each point
+            # is written as it is read (the recorder fsyncs it).
+            recorder.check()
+            # The limit as the Keithley reads it back marks the points at it.
+            limit_read = controller.start_iv_sweep(
+                limit, settings.get("max_abs_v", KEITHLEY_LOW_SOURCE_RANGE_V)
+            )
+            # From 0 V to Start V in steps, not in one jump (user,
+            # 2026-10-09); these levels are not measured.
+            start_v = float(settings["voltages"][0])
+            for level in ramp_levels(start_v):
+                if stop.is_set():
+                    raise InterruptedError("2400-IV sweep stopped")
+                recorder.check()
+                controller.set_iv_voltage(level)
+                self.post_ui(
+                    lambda value=level: self.nonlocal_iv_point_var.set(
+                        f"Ramping to Start V: {value:+g} V of {start_v:+g} V"
+                    )
                 )
-                # From 0 V to Start V in steps, not in one jump (user,
-                # 2026-10-09); these levels are not measured.
-                start_v = float(settings["voltages"][0])
-                for level in ramp_levels(start_v):
-                    if stop.is_set():
-                        raise InterruptedError("2400-IV sweep stopped")
-                    controller.set_iv_voltage(level)
-                    self.post_ui(
-                        lambda value=level: self.nonlocal_iv_point_var.set(
-                            f"Ramping to Start V: {value:+g} V of {start_v:+g} V"
-                        )
-                    )
-                    if stop.wait(NONLOCAL_IV_SWEEP_RAMP_DWELL_S):
-                        raise InterruptedError("2400-IV sweep stopped")
-                started = time.monotonic()
-                for index, target in enumerate(settings["voltages"], start=1):
-                    if stop.is_set():
-                        raise InterruptedError("2400-IV sweep stopped")
-                    controller.set_iv_voltage(target)
-                    if stop.wait(settle_s):
-                        raise InterruptedError("2400-IV sweep stopped")
-                    voltage_v, current_a = controller.read_iv_point()
-                    row = (
-                        index,
-                        float(target),
-                        voltage_v,
-                        current_a,
-                        time.monotonic() - started,
-                        abs(current_a) >= limit_read * 0.99,
-                    )
-                    writer.writerow((
-                        index, f"{target:.10g}", f"{voltage_v:.10g}", f"{current_a:.10g}",
-                        f"{row[4]:.3f}", int(row[5]),
-                    ))
-                    file.flush()
-                    self.post_ui(lambda row=row: self._append_nonlocal_iv_point(row))
+                if stop.wait(NONLOCAL_IV_SWEEP_RAMP_DWELL_S):
+                    raise InterruptedError("2400-IV sweep stopped")
+            started = time.monotonic()
+            for index, target in enumerate(settings["voltages"], start=1):
+                if stop.is_set():
+                    raise InterruptedError("2400-IV sweep stopped")
+                recorder.check()
+                controller.set_iv_voltage(target)
+                if stop.wait(settle_s):
+                    raise InterruptedError("2400-IV sweep stopped")
+                voltage_v, current_a = controller.read_iv_point()
+                row = (
+                    index,
+                    float(target),
+                    voltage_v,
+                    current_a,
+                    time.monotonic() - started,
+                    abs(current_a) >= limit_read * 0.99,
+                )
+                recorder.append_row(self._nonlocal_csv_row(self.NONLOCAL_IV_COLUMNS, (
+                    index, f"{target:.10g}", f"{voltage_v:.10g}", f"{current_a:.10g}",
+                    f"{row[4]:.3f}", int(row[5]),
+                )))
+                self._nonlocal_point_saved(
+                    recorder, index=index, set_voltage_v=float(target), source_voltage_v=voltage_v,
+                    current_a=current_a, at_current_limit=bool(row[5]),
+                )
+                self.post_ui(lambda row=row: self._append_nonlocal_iv_point(row))
 
         self._run_on_nonlocal_keithley(NonLocalVIInterlock.VOLTAGE, sweep)
 
@@ -39074,39 +39452,13 @@ class CombinedControlApp:
 
     def _finish_nonlocal_iv_sweep(self, future) -> None:
         self.nonlocal_keithley_task = None
-        done, total = len(self.nonlocal_iv_rows), self.nonlocal_iv_total_points
-        path = self.__dict__.get("nonlocal_iv_csv_path")
-        try:
-            name = (
-                f" Run folder: {Path(path).parent.name}" if path and Path(path).exists()
-                else " No CSV was written."
-            )
-        except OSError:
-            name = f" Run folder: {Path(path).parent.name}" if path else ""
-        untouched = bool(self.__dict__.get("nonlocal_keithley_untouched"))
-        self.nonlocal_vi_output_var.set(
-            f"Keithley {self.nonlocal_vi_2410_controller.model}: not switched on" if untouched
-            else self._nonlocal_output_text()
-        )
         self.nonlocal_iv_eta_var.set("Remaining: --")
-        try:
-            future.result()
-        except InterruptedError:
-            self.nonlocal_vi_status_var.set(
-                f"2400-IV sweep stopped before the Keithley was switched on.{name}" if untouched
-                else f"2400-IV sweep stopped after {done}/{total} points; voltage zeroed and output off.{name}"
-            )
-        except BaseException as error:
-            self.nonlocal_vi_status_var.set(
-                f"2400-IV sweep stopped by an error after {done}/{total} points: {short_status_error(error).rstrip(';')}"
-                + self._nonlocal_output_warning() + "." + name
-            )
-            if not self.closing:
-                messagebox.showerror("2400-IV sweep failed", str(error), parent=self.root)
-        else:
-            self.nonlocal_vi_status_var.set(
-                f"2400-IV sweep complete: {done} points; voltage zeroed and output off.{name}"
-            )
+        # The scan's end zeroed the Keithley and the 6221 on the worker
+        # (user, 2026-10-18); the status and the output lines say how.
+        _outcome, status = self._nonlocal_end_scan(
+            "iv", self._nonlocal_future_error(future), total=self.nonlocal_iv_total_points
+        )
+        self.nonlocal_vi_status_var.set(status)
         try:
             self._redraw_nonlocal_iv_plot()
         finally:
@@ -39858,32 +40210,13 @@ class CombinedControlApp:
             + filter_text
             + f"Lock-ins (harmonic): {meters}\n"
             f"Estimated time: about {estimate}\n\n"
-            "The scan writes a run folder, with a live CSV and the parameter log, "
-            "in the folder you choose next. The 6221 is switched off at the end.",
+            "Next: the folder and an optional file name for the run folder (live CSV and "
+            "log). At every end (completed, stopped or failed) the 6221 and the Keithley are "
+            "zeroed and read back.",
             parent=self.root,
         ):
             return
-        folder = filedialog.askdirectory(
-            parent=self.root,
-            title="Select the folder for the 6221-IV run folder",
-            initialdir=str(
-                self.nonlocal_iv6221_directory
-                if Path(self.nonlocal_iv6221_directory).is_dir()
-                else Path(__file__).resolve().parent
-            ),
-        )
-        if not folder:
-            return
-        if self.nonlocal_keithley_task is not None or self.nonlocal_vi_running or self.nonlocal_vi_busy:
-            return
-        self.nonlocal_iv6221_directory = Path(folder)
         settings["started"] = datetime_module.datetime.now().isoformat(timespec="seconds")
-        try:
-            run_directory = self._nonlocal_make_run_directory(Path(folder), "6221-IV")
-        except OSError as error:
-            messagebox.showerror("6221-IV", f"Cannot create the run folder: {error}", parent=self.root)
-            return
-        csv_path = run_directory / f"{run_directory.name}.csv"
         parameters = {
             key: value for key, value in settings.items()
             if key not in {"plan", "lockin_configs", "mfli_config", "passes", "orders", "measured"}
@@ -39900,15 +40233,21 @@ class CombinedControlApp:
             getattr(self.nonlocal_vi_ac_controller, "source_resource", "")
             or self.nonlocal_vi_source_resource_var.get().strip()
         )
-        parameters["output.csv"] = csv_path.name
-        try:
-            self.write_parameter_log(
-                run_directory / f"{run_directory.name}_parameters.log",
-                self.format_parameter_log("Non-local 6221-IV parameter log", parameters),
-            )
-        except OSError as error:
-            messagebox.showerror("6221-IV", str(error), parent=self.root)
+        parameters["6221_identity"] = getattr(self.nonlocal_vi_ac_controller, "source_identity", "")
+        parameters["passes"] = settings["passes"]
+        parameters["safety_confirmed"] = True
+        # The run folder and its log (user, 2026-10-18: the shared run
+        # folder and log replace the parameter log).
+        recorder = self._nonlocal_begin_run(
+            "iv6221", "Select the folder for the 6221-IV run folder", self.nonlocal_iv6221_directory, parameters
+        )
+        if recorder is None:
             return
+        if self.nonlocal_keithley_task is not None or self.nonlocal_vi_running or self.nonlocal_vi_busy:
+            self._nonlocal_run_not_started(recorder, "the page became busy during the dialogs")
+            return
+        self.nonlocal_iv6221_directory = recorder.directory.parent
+        csv_path = recorder.csv_path
         self.nonlocal_iv6221_settings = settings
         self.nonlocal_iv6221_rows = []
         self.nonlocal_iv6221_total_points = total
@@ -39919,27 +40258,21 @@ class CombinedControlApp:
         )
         self.nonlocal_iv6221_point_var.set("Transport acquisition: starting; 6221 output switching on")
         self._redraw_nonlocal_iv6221_plots()
-        self.nonlocal_vi_status_var.set(f"6221-IV: {total} points; run folder {run_directory}")
+        self.nonlocal_vi_status_var.set(f"6221-IV: {total} points; run folder {recorder.directory}")
         self.nonlocal_vi_output_var.set("6221 ON: 6221-IV scan")
-        self._begin_nonlocal_keithley_task(
-            "iv6221",
-            lambda: self._nonlocal_iv6221_worker(settings, csv_path),
-            self._finish_nonlocal_iv6221,
-        )
-
-    @staticmethod
-    def _nonlocal_make_run_directory(parent: Path, prefix: str, sample: str = "") -> Path:
-        """A new folder per run, as on the STFMR and Gate-VI pages."""
-        stamp = datetime_module.datetime.now().strftime("%Y%m%d_%H%M%S")
-        name = re.sub(r"[^\w.-]+", "_", str(sample)).strip("._")[:40]
-        stem = f"{prefix}_{name}_{stamp}" if name else f"{prefix}_{stamp}"
-        directory = Path(parent) / stem
-        suffix = 1
-        while directory.exists():
-            directory = Path(parent) / f"{stem}_{suffix:02d}"
-            suffix += 1
-        directory.mkdir(parents=True)
-        return directory
+        self._nonlocal_run_started(recorder)
+        try:
+            self._begin_nonlocal_keithley_task(
+                "iv6221",
+                lambda: self._nonlocal_scan_job(
+                    recorder, "iv6221", lambda: self._nonlocal_iv6221_worker(settings, recorder), points=total
+                ),
+                self._finish_nonlocal_iv6221,
+            )
+        except Exception as error:
+            self._nonlocal_run_not_started(recorder, error)
+            self.nonlocal_iv6221_status_var.set(f"Not started: {short_status_error(error, 100)}")
+            messagebox.showerror("6221-IV not started", str(error), parent=self.root)
 
     @staticmethod
     def _nonlocal_iv6221_header(settings: dict) -> list[str]:
@@ -40114,7 +40447,7 @@ class CombinedControlApp:
             "theta": math.degrees(math.atan2(y_mean, x_mean)),
         }
 
-    def _nonlocal_iv6221_worker(self, settings: dict, csv_path: Path) -> None:
+    def _nonlocal_iv6221_worker(self, settings: dict, recorder) -> None:
         stop = self.nonlocal_keithley_stop_event
         source = self.nonlocal_vi_ac_controller
         keithley = self.nonlocal_vi_2410_controller
@@ -40192,165 +40525,176 @@ class CombinedControlApp:
                 )
 
             frequency, long_settle, point_settle, point_settings = set_up(frequencies[0])
-            with Path(csv_path).open("x", newline="", encoding="utf-8-sig") as file:
-                writer = csv.writer(file)
-                writer.writerow(self._nonlocal_iv6221_header(settings))
-                file.flush()
-                started = time.monotonic()
-                index = 0
-                for frequency_index, set_frequency in enumerate(frequencies, 1):
-                    if frequency_index > 1:
+            recorder.event("frequency_set_up", frequency_index=1, frequency_hz=float(frequency),
+                           set_frequency_hz=float(frequencies[0]))
+            # The live CSV is the run folder's, made at Start (user,
+            # 2026-10-18); its header is the first row's keys, these columns.
+            header = self._nonlocal_iv6221_header(settings)
+            started = time.monotonic()
+            index = 0
+            for frequency_index, set_frequency in enumerate(frequencies, 1):
+                if frequency_index > 1:
+                    if stop.is_set():
+                        raise InterruptedError("6221-IV scan stopped")
+                    recorder.check()
+                    # As STFMR between frequencies: the source off (read
+                    # back), then set up at the next frequency.
+                    source.output_off()
+                    source.confirm_output_off("before the next frequency")
+                    self.post_ui(lambda value=set_frequency: self.nonlocal_iv6221_source_var.set(
+                        f"6221: OFF; setting up {value:g} Hz"
+                    ))
+                    self.post_ui(
+                        lambda n=frequency_index, value=set_frequency:
+                        self.nonlocal_iv6221_point_var.set(
+                            f"Transport acquisition: 6221 off; setting up frequency "
+                            f"{n}/{len(frequencies)}, {value:g} Hz"
+                        )
+                    )
+                    frequency, long_settle, point_settle, point_settings = set_up(set_frequency)
+                    recorder.event("frequency_set_up", frequency_index=frequency_index,
+                                   frequency_hz=float(frequency), set_frequency_hz=float(set_frequency))
+                running = False
+                for run in passes:
+                    if stop.is_set():
+                        raise InterruptedError("6221-IV scan stopped")
+                    recorder.check()
+                    for key, harmonic in run["harmonics"].items():
+                        if run["pass"] > 1:
+                            source.set_lockin_harmonic(key, harmonic)
+                    keys = run["keys"]
+                    for loop, point, target in plan:
+                        index += 1
                         if stop.is_set():
                             raise InterruptedError("6221-IV scan stopped")
-                        # As STFMR between frequencies: the source off (read
-                        # back), then set up at the next frequency.
-                        source.output_off()
-                        source.confirm_output_off("before the next frequency")
-                        self.post_ui(lambda value=set_frequency: self.nonlocal_iv6221_source_var.set(
-                            f"6221: OFF; setting up {value:g} Hz"
-                        ))
+                        recorder.check()
+                        if keithley.connected:
+                            keithley.confirm_output_off("before a 6221-IV point")
+                        if running:
+                            actual_ma = source.update_amplitude(target)
+                        else:
+                            actual_ma = source.set_current(target, frequency)
+                            running = True
                         self.post_ui(
-                            lambda n=frequency_index, value=set_frequency:
-                            self.nonlocal_iv6221_point_var.set(
-                                f"Transport acquisition: 6221 off; setting up frequency "
-                                f"{n}/{len(frequencies)}, {value:g} Hz"
+                            lambda value=actual_ma, hz=frequency: self.nonlocal_iv6221_source_var.set(
+                                f"6221 ON: {value:.4g} mA RMS / {hz:g} Hz"
                             )
                         )
-                        frequency, long_settle, point_settle, point_settings = set_up(set_frequency)
-                    running = False
-                    for run in passes:
-                        if stop.is_set():
+                        far = self._nonlocal_iv6221_far_point(loop, point, settings.get("round_trip"))
+                        settle_waited = long_settle if far else point_settle
+                        if stop.wait(settle_waited):
                             raise InterruptedError("6221-IV scan stopped")
-                        for key, harmonic in run["harmonics"].items():
-                            if run["pass"] > 1:
-                                source.set_lockin_harmonic(key, harmonic)
-                        keys = run["keys"]
-                        for loop, point, target in plan:
-                            index += 1
-                            if stop.is_set():
-                                raise InterruptedError("6221-IV scan stopped")
-                            if keithley.connected:
-                                keithley.confirm_output_off("before a 6221-IV point")
-                            if running:
-                                actual_ma = source.update_amplitude(target)
-                            else:
-                                actual_ma = source.set_current(target, frequency)
-                                running = True
-                            self.post_ui(
-                                lambda value=actual_ma, hz=frequency: self.nonlocal_iv6221_source_var.set(
-                                    f"6221 ON: {value:.4g} mA RMS / {hz:g} Hz"
-                                )
-                            )
-                            far = self._nonlocal_iv6221_far_point(loop, point, settings.get("round_trip"))
-                            settle_waited = long_settle if far else point_settle
-                            if stop.wait(settle_waited):
-                                raise InterruptedError("6221-IV scan stopped")
-                            if loop == 1 and point == 1:
-                                # The reference lock, at the start of each pass;
-                                # a PLL at a few Hz can take several seconds.
-                                deadline = time.monotonic() + NONLOCAL_IV6221_REFERENCE_WAIT_S
-                                while True:
-                                    sync = source.wait_references(
-                                        frequency, stop, tuple(key for key in keys if key != "mfli")
-                                    )
-                                    if stop.is_set():
-                                        raise InterruptedError("6221-IV scan stopped")
-                                    self.post_ui(
-                                        lambda info=sync: self._publish_reference_sync(info, "AC", vi=True)
-                                    )
-                                    unlocked = [
-                                        key for key in keys
-                                        if not (sync.get(key) or {}).get("valid", False)
-                                    ]
-                                    if not unlocked or time.monotonic() >= deadline:
-                                        break
-                                    self.post_ui(
-                                        lambda names=", ".join(NONLOCAL_METER_NAMES[k] for k in unlocked):
-                                        self.nonlocal_iv6221_point_var.set(
-                                            f"Transport acquisition: waiting for the reference lock ({names})"
-                                        )
-                                    )
-                                if unlocked:
-                                    hint = (
-                                        f"; the Zurich Ref. is {settings['mfli_config']['reference_source']}"
-                                        if "mfli" in unlocked and settings["mfli_config"] else ""
-                                    )
-                                    raise RuntimeError(
-                                        f"Lock-in reference not locked at {frequency:g} Hz: "
-                                        f"{', '.join(NONLOCAL_METER_NAMES[k] for k in unlocked)}; check Trigger Link line "
-                                        f"{settings['marker_line']}, its cable and the Zurich Ref. input{hint}"
-                                    )
-                                if settings["mfli_config"]:
-                                    self.post_ui(lambda: self._show_nonlocal_mfli_lock(True))
-                            # The first point of each pass, as RT-E's: windows of
-                            # Acquire s until two in a row agree (at most 10).
-                            first = loop == 1 and point == 1
-                            windows, previous = 0, None
-                            discarded_total: dict[str, int] = {}
-                            compliance_total = 0
+                        if loop == 1 and point == 1:
+                            # The reference lock, at the start of each pass;
+                            # a PLL at a few Hz can take several seconds.
+                            deadline = time.monotonic() + NONLOCAL_IV6221_REFERENCE_WAIT_S
                             while True:
-                                windows += 1
-                                if first:
-                                    self.post_ui(
-                                        lambda n=windows: self.nonlocal_iv6221_point_var.set(
-                                            f"Transport acquisition: first point, settling window "
-                                            f"{n}/{PPMS_FIRST_POINT_MAX_WINDOWS}"
-                                        )
-                                    )
-                                readings, discarded, compliance = self._nonlocal_iv6221_read_point(
-                                    source, frequency, keys, point_settings, stop
+                                sync = source.wait_references(
+                                    frequency, stop, tuple(key for key in keys if key != "mfli")
                                 )
-                                # Every window's left-out readings count for the point.
-                                for key, count in discarded.items():
-                                    discarded_total[key] = discarded_total.get(key, 0) + count
-                                compliance_total += compliance
-                                results = self._nonlocal_iv6221_results(readings, run, point_settings)
-                                if (not first or windows >= PPMS_FIRST_POINT_MAX_WINDOWS
-                                        or self._nonlocal_iv6221_settled(previous, results)):
+                                if stop.is_set():
+                                    raise InterruptedError("6221-IV scan stopped")
+                                self.post_ui(
+                                    lambda info=sync: self._publish_reference_sync(info, "AC", vi=True)
+                                )
+                                unlocked = [
+                                    key for key in keys
+                                    if not (sync.get(key) or {}).get("valid", False)
+                                ]
+                                if not unlocked or time.monotonic() >= deadline:
                                     break
-                                previous = results
-                            discarded, compliance = discarded_total, compliance_total
-                            row = {
-                                "index": index, "pass": run["pass"], "loop": loop, "point": point,
-                                "set_current_rms_ma": float(target), "current_rms_ma": float(actual_ma),
-                                "frequency_hz": float(frequency),
-                                "set_frequency_hz": float(set_frequency),
-                                "frequency_index": frequency_index,
-                                "frequency_count": len(frequencies),
-                                "elapsed_s": time.monotonic() - started,
-                                "series": {name: result for name, result in results.items()},
-                                "discarded": sum(discarded.values()), "windows": windows,
-                                "settle_waited_s": settle_waited,
-                            }
-                            csv_row = [
-                                index, run["pass"], loop, point, f"{target:.10g}", f"{actual_ma:.10g}",
-                                f"{frequency:.10g}", f"{row['elapsed_s']:.3f}", windows,
-                            ]
-                            for key in settings["measured"]:
-                                if key == "mfli":
-                                    used = readings.get("mfli", [])
-                                    for order in settings["zurich_orders"]:
-                                        result = results.get(("mfli", order))
-                                        if result is not None:
-                                            csv_row += [f"{result['X']:.10g}", f"{result['Y']:.10g}",
-                                                        f"{result['R']:.10g}", f"{result['theta']:.6g}"]
-                                        else:
-                                            csv_row += ["", "", "", ""]
-                                    csv_row += [len(used), discarded.get("mfli", "")]
-                                elif key in keys:
-                                    harmonic = run["harmonics"][key]
-                                    result = results[(key, harmonic)]
-                                    csv_row += [harmonic, f"{result['X']:.10g}", f"{result['Y']:.10g}",
-                                                f"{result['R']:.10g}", f"{result['theta']:.6g}",
-                                                result["samples"], discarded[key]]
-                                else:
-                                    # This SR830's orders ended in an earlier pass.
-                                    csv_row += ["", "", "", "", "", "", ""]
-                            csv_row.append(compliance)
-                            csv_row.append(f"{settle_waited:.6g}")
-                            writer.writerow(csv_row)
-                            file.flush()
-                            self.post_ui(lambda data=row: self._append_nonlocal_iv6221_point(data))
+                                self.post_ui(
+                                    lambda names=", ".join(NONLOCAL_METER_NAMES[k] for k in unlocked):
+                                    self.nonlocal_iv6221_point_var.set(
+                                        f"Transport acquisition: waiting for the reference lock ({names})"
+                                    )
+                                )
+                            if unlocked:
+                                hint = (
+                                    f"; the Zurich Ref. is {settings['mfli_config']['reference_source']}"
+                                    if "mfli" in unlocked and settings["mfli_config"] else ""
+                                )
+                                raise RuntimeError(
+                                    f"Lock-in reference not locked at {frequency:g} Hz: "
+                                    f"{', '.join(NONLOCAL_METER_NAMES[k] for k in unlocked)}; check Trigger Link line "
+                                    f"{settings['marker_line']}, its cable and the Zurich Ref. input{hint}"
+                                )
+                            if settings["mfli_config"]:
+                                self.post_ui(lambda: self._show_nonlocal_mfli_lock(True))
+                        # The first point of each pass, as RT-E's: windows of
+                        # Acquire s until two in a row agree (at most 10).
+                        first = loop == 1 and point == 1
+                        windows, previous = 0, None
+                        discarded_total: dict[str, int] = {}
+                        compliance_total = 0
+                        while True:
+                            windows += 1
+                            if first:
+                                self.post_ui(
+                                    lambda n=windows: self.nonlocal_iv6221_point_var.set(
+                                        f"Transport acquisition: first point, settling window "
+                                        f"{n}/{PPMS_FIRST_POINT_MAX_WINDOWS}"
+                                    )
+                                )
+                            readings, discarded, compliance = self._nonlocal_iv6221_read_point(
+                                source, frequency, keys, point_settings, stop
+                            )
+                            # Every window's left-out readings count for the point.
+                            for key, count in discarded.items():
+                                discarded_total[key] = discarded_total.get(key, 0) + count
+                            compliance_total += compliance
+                            results = self._nonlocal_iv6221_results(readings, run, point_settings)
+                            if (not first or windows >= PPMS_FIRST_POINT_MAX_WINDOWS
+                                    or self._nonlocal_iv6221_settled(previous, results)):
+                                break
+                            previous = results
+                        discarded, compliance = discarded_total, compliance_total
+                        row = {
+                            "index": index, "pass": run["pass"], "loop": loop, "point": point,
+                            "set_current_rms_ma": float(target), "current_rms_ma": float(actual_ma),
+                            "frequency_hz": float(frequency),
+                            "set_frequency_hz": float(set_frequency),
+                            "frequency_index": frequency_index,
+                            "frequency_count": len(frequencies),
+                            "elapsed_s": time.monotonic() - started,
+                            "series": {name: result for name, result in results.items()},
+                            "discarded": sum(discarded.values()), "windows": windows,
+                            "settle_waited_s": settle_waited,
+                        }
+                        csv_row = [
+                            index, run["pass"], loop, point, f"{target:.10g}", f"{actual_ma:.10g}",
+                            f"{frequency:.10g}", f"{row['elapsed_s']:.3f}", windows,
+                        ]
+                        for key in settings["measured"]:
+                            if key == "mfli":
+                                used = readings.get("mfli", [])
+                                for order in settings["zurich_orders"]:
+                                    result = results.get(("mfli", order))
+                                    if result is not None:
+                                        csv_row += [f"{result['X']:.10g}", f"{result['Y']:.10g}",
+                                                    f"{result['R']:.10g}", f"{result['theta']:.6g}"]
+                                    else:
+                                        csv_row += ["", "", "", ""]
+                                csv_row += [len(used), discarded.get("mfli", "")]
+                            elif key in keys:
+                                harmonic = run["harmonics"][key]
+                                result = results[(key, harmonic)]
+                                csv_row += [harmonic, f"{result['X']:.10g}", f"{result['Y']:.10g}",
+                                            f"{result['R']:.10g}", f"{result['theta']:.6g}",
+                                            result["samples"], discarded[key]]
+                            else:
+                                # This SR830's orders ended in an earlier pass.
+                                csv_row += ["", "", "", "", "", "", ""]
+                        csv_row.append(compliance)
+                        csv_row.append(f"{settle_waited:.6g}")
+                        # The columns as since 2026-10-08, now by name.
+                        recorder.append_row(self._nonlocal_csv_row(header, csv_row))
+                        self._nonlocal_point_saved(
+                            recorder, index=index, harmonic_pass=run["pass"], loop=loop, point=point,
+                            set_current_rms_ma=float(target), current_rms_ma=float(actual_ma),
+                            frequency_hz=float(frequency), windows=windows, discarded=sum(discarded.values()),
+                        )
+                        self.post_ui(lambda data=row: self._append_nonlocal_iv6221_point(data))
         finally:
             try:
                 self.nonlocal_vi_interlock.end(NonLocalVIInterlock.SR830_READ)
@@ -40382,53 +40726,23 @@ class CombinedControlApp:
 
     def _finish_nonlocal_iv6221(self, future) -> None:
         self.nonlocal_keithley_task = None
-        done, total = len(self.nonlocal_iv6221_rows), self.nonlocal_iv6221_total_points
-        path = self.nonlocal_iv6221_csv_path
-        name = (
-            f" Run folder: {Path(path).parent.name}" if path and Path(path).exists()
-            else " No CSV was written."
-        )
-        # The 6221 is OFF only once read back off; the worker switches it
-        # off also when the Keithley check failed (a Set may have left it
-        # on; review, 2026-10-13: it showed OFF without a read-back).
-        off = bool(self.__dict__.get("nonlocal_keithley_output_off", True))
-        if self.__dict__.get("nonlocal_keithley_off_unconfirmed"):
-            self.nonlocal_vi_output_var.set(self._nonlocal_output_text())
-        else:
-            self.nonlocal_vi_output_var.set(
-                self._nonlocal_output_text() if off else "6221 output: check it"
-            )
-        self.nonlocal_iv6221_source_var.set("6221: OFF" if off else "6221: check the output")
+        error = self._nonlocal_future_error(future)
+        # The scan's end zeroed the 6221 and the Keithley on the worker
+        # (user, 2026-10-18): the status and the output lines say how, and
+        # the 6221 counts as OFF only read back off.
+        _outcome, status = self._nonlocal_end_scan("iv6221", error, total=self.nonlocal_iv6221_total_points)
+        results = self.__dict__.get("nonlocal_scan_outputs") or {}
+        six_off = results.get("6221") == "zeroed"
         self.nonlocal_iv6221_point_var.set(
-            "Transport acquisition: done; 6221 output OFF" if off
-            else "Transport acquisition: stopped; check the 6221 output"
+            "Transport acquisition: done; 6221 output OFF" if six_off
+            else "Transport acquisition: ended; check the 6221 output"
         )
         # The 6221 is off: the lock lamps no longer show a live lock.
         self._set_mfli_lock_state(None, vi=True)
-        try:
-            future.result()
-        except InterruptedError:
-            self.nonlocal_iv6221_status_var.set(f"Stopped after {done}/{total} points")
-            self.nonlocal_vi_status_var.set(
-                f"6221-IV scan stopped after {done}/{total} points; 6221 output off.{name}"
-            )
-        except BaseException as error:
-            self.nonlocal_iv6221_status_var.set(
-                f"Failed: {short_status_error(error, 100).rstrip(';')}"
-            )
-            self.nonlocal_vi_status_var.set(
-                f"6221-IV scan stopped by an error after {done}/{total} points: "
-                f"{short_status_error(error).rstrip(';')}" + self._nonlocal_output_warning()
-            )
-            if not self.closing:
-                messagebox.showerror("6221-IV scan failed", str(error), parent=self.root)
-        else:
-            self.nonlocal_iv6221_status_var.set(
-                "Completed; 6221 current set to 0 (output OFF, read back)"
-            )
-            self.nonlocal_vi_status_var.set(
-                f"6221-IV scan complete: {done} points; 6221 output off (read back).{name}"
-            )
+        # The box's own line: the outcome and the outputs (the points and the
+        # run folder are on the page's status line).
+        self.nonlocal_iv6221_status_var.set(self.__dict__.get("nonlocal_end_line", ""))
+        self.nonlocal_vi_status_var.set(status)
         try:
             self._redraw_nonlocal_iv6221_plots()
         finally:
@@ -40524,6 +40838,9 @@ class CombinedControlApp:
             self.nonlocal_mfli_after_id = None
         self.nonlocal_vi_stop_event.set()
         self.nonlocal_keithley_stop_event.set()
+        # A running scan's log: its worker's end zeroes both outputs and
+        # closes the log, as no finish comes now (user, 2026-10-18).
+        self._nonlocal_stop_requested("the program closing")
         try:
             self._disconnect_nonlocal_vi_worker()
         except BaseException as error:

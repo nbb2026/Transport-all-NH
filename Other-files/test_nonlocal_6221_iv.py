@@ -200,9 +200,11 @@ class WorkerTests(unittest.TestCase):
     def run_scan(self, name="6221-IV_test.csv", **overrides):
         settings = self.app._parse_nonlocal_iv6221_settings()
         settings.update({"settle_s": 0.0, "acquire_s": 1e-9, **overrides})
-        path = self.folder / name
-        self.app._nonlocal_iv6221_worker(settings, path)
-        return path, settings
+        # The run folder's recorder (user, 2026-10-18): <folder>/<name>/<name>.csv.
+        recorder = app.ScanRunRecorder(self.folder, "NL_6221IV", Path(name).stem, {})
+        self.recorder = recorder
+        self.app._nonlocal_iv6221_worker(settings, recorder)
+        return recorder.csv_path, settings
 
     def rows(self, path):
         with path.open(encoding="utf-8-sig") as file:
@@ -541,20 +543,6 @@ class ParseTests(unittest.TestCase):
         self.assertIsNone(a._parse_nonlocal_iv6221_settings()["mfli_config"])
 
 
-class RunFolderTests(unittest.TestCase):
-    def test_each_run_gets_its_own_folder(self):
-        parent = Path(tempfile.mkdtemp())
-        make = app.CombinedControlApp._nonlocal_make_run_directory
-        first = make(parent, "2400-IV", "1µm Pt/Pt")
-        self.assertTrue(first.is_dir())
-        self.assertEqual(first.parent, parent)
-        self.assertTrue(first.name.startswith("2400-IV_1µm_Pt_Pt_"), first.name)
-        with mock.patch.object(app.datetime_module, "datetime") as clock:
-            clock.now.return_value.strftime.return_value = "20261008_120000"
-            self.assertEqual(make(parent, "6221-IV").name, "6221-IV_20261008_120000")
-            self.assertEqual(make(parent, "6221-IV").name, "6221-IV_20261008_120000_01")
-
-
 class ControllerTests(unittest.TestCase):
     """The controller options 6221-IV uses; Gate-VI's do not change."""
 
@@ -809,7 +797,9 @@ class ZurichRowTests(unittest.TestCase):
 
 
 class FinishAndPlotTests(unittest.TestCase):
-    def test_finish_messages_name_the_run_folder_and_the_6221(self):
+    def test_finish_messages_name_the_run_folder_and_the_outputs(self):
+        # Since 2026-10-18 (user) every ending zeroes the 6221 and the
+        # Keithley on the worker; the finish reports how, from those results.
         a = bare_app()
         a.closing = True
         a.nonlocal_keithley_task, a.nonlocal_last_task = "iv6221", "iv6221"
@@ -818,40 +808,35 @@ class FinishAndPlotTests(unittest.TestCase):
         a.nonlocal_iv6221_status_var, a.nonlocal_iv6221_point_var = Var(), Var()
         a.nonlocal_iv6221_source_var = Var()
         a.nonlocal_iv6221_rows, a.nonlocal_iv6221_total_points = [{}] * 3, 100
-        run = Path(tempfile.mkdtemp()) / "6221-IV_20261008_120000"
-        run.mkdir()
-        csv_path = run / "6221-IV_20261008_120000.csv"
-        csv_path.write_text("point\n", encoding="utf-8")
-        a.nonlocal_iv6221_csv_path = csv_path
         a._redraw_nonlocal_iv6221_plots = mock.Mock()
         a._update_nonlocal_vi_controls = mock.Mock()
         a._set_mfli_lock_state = mock.Mock()
-        for error, off, expected in (
-            (InterruptedError("stopped"), True,
-             "6221-IV scan stopped after 3/100 points; 6221 output off. "
-             "Run folder: 6221-IV_20261008_120000"),
-            (RuntimeError("compliance; more"), False,
-             "6221-IV scan stopped by an error after 3/100 points: compliance; check the 6221 output"),
+        folder = Path(tempfile.mkdtemp())
+        for error, results, expected, box in (
+            (InterruptedError("stopped"), {"6221": "zeroed", "Keithley 2400": "zeroed"},
+             "6221-IV: Stopped; Keithley 2400 and 6221 zeroed; 3/100 points saved in run1",
+             "Stopped; Keithley 2400 and 6221 zeroed"),
+            (RuntimeError("compliance; more"), {"6221": "zero FAILED: bus", "Keithley 2400": "not connected"},
+             "6221-IV: Failed: compliance; 6221 zero FAILED; Keithley 2400 not connected: check it; "
+             "3/100 points saved in run2", "Failed: compliance; 6221 zero FAILED; Keithley 2400 not "
+             "connected: check it"),
         ):
             with self.subTest(expected=expected):
+                recorder = app.ScanRunRecorder(folder, "NL_6221IV", f"run{len(list(folder.iterdir())) + 1}", {})
+                a.nonlocal_recorder, a.nonlocal_scan_outputs, a.nonlocal_run_points = recorder, results, 3
                 a.nonlocal_keithley_task = "iv6221"
-                a.nonlocal_keithley_output_off = off
                 future = Future()
                 future.set_exception(error)
                 a._finish_nonlocal_iv6221(future)
                 self.assertEqual(a.nonlocal_vi_status_var.get(), expected)
+                self.assertEqual(a.nonlocal_iv6221_status_var.get(), box)
                 self.assertIsNone(a.nonlocal_keithley_task)
-        self.assertEqual(a.nonlocal_vi_output_var.get(), "6221 output: check it")
+                self.assertTrue(recorder.closed)
+                self.assertIsNone(a.nonlocal_recorder)
+        self.assertEqual(a.nonlocal_vi_output_var.get(), "6221 output: check it; Keithley 2400 not connected")
         self.assertEqual(a.nonlocal_iv6221_source_var.get(), "6221: check the output")
+        self.assertEqual(a.nonlocal_iv6221_point_var.get(), "Transport acquisition: ended; check the 6221 output")
         a._set_mfli_lock_state.assert_called_with(None, vi=True)
-        # Stopped before the first point: no CSV was made.
-        csv_path.unlink()
-        a.nonlocal_keithley_task, a.nonlocal_keithley_output_off = "iv6221", True
-        future = Future()
-        future.set_exception(InterruptedError("stopped"))
-        a._finish_nonlocal_iv6221(future)
-        self.assertTrue(a.nonlocal_vi_status_var.get().endswith("6221 output off. No CSV was written."))
-        self.assertEqual(a.nonlocal_iv6221_source_var.get(), "6221: OFF")
 
     def test_each_harmonic_order_has_its_x_y_theta_row_with_the_meters_overlaid(self):
         a = bare_app()

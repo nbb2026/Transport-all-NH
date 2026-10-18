@@ -217,16 +217,17 @@ class GateWorkerTests(unittest.TestCase):
         a.nonlocal_vi_progress = mock.Mock()
         a.nonlocal_vi_eta_var, a.nonlocal_vi_output_var = Var(), Var()
         a.nonlocal_vi_status_var = RecordingVar()
-        directory = Path(tempfile.mkdtemp())
-        return a, settings, directory
+        # The run folder's recorder (user, 2026-10-18).
+        recorder = app.ScanRunRecorder(Path(tempfile.mkdtemp()), "NL_GateVI", "run", {})
+        return a, settings, recorder
 
     def test_the_default_gate_passes_a_sample_above_the_range(self):
         result, _meter, _sources = measure(math.inf)   # the real controller's result
-        a, settings, directory = self.run_scan("100", result)
-        a._nonlocal_vi_scan_worker(settings, directory)
+        a, settings, recorder = self.run_scan("100", result)
+        a._nonlocal_vi_scan_worker(settings, recorder)
         self.assertEqual(a.nonlocal_vi_2410_controller.apply_voltage_pulse.call_count,
                          len(settings["voltage_scan"]), "every pulse given")
-        with (directory / "VI_resistance_gate.csv").open(encoding="utf-8-sig") as file:
+        with (recorder.directory / "run_resistance_gate.csv").open(encoding="utf-8-sig") as file:
             rows = list(csv.reader(file))
         stages = [row[1] for row in rows[1:]]
         self.assertEqual(stages[0], "initial_gate", "the stage text the plot filters on")
@@ -236,20 +237,20 @@ class GateWorkerTests(unittest.TestCase):
 
     def test_a_gate_above_the_range_says_why_it_blocks(self):
         result, _meter, _sources = measure(math.inf)
-        a, settings, directory = self.run_scan("5000", result)
+        a, settings, recorder = self.run_scan("5000", result)
         with self.assertRaisesRegex(
                 RuntimeError,
                 r"Pulse 1 blocked by the resistance gate: \|R\|≥4\.900000e\+09 Ω "
                 r"\(above the range at 1 nA\), must be >5\.000000e\+09 Ω"):
-            a._nonlocal_vi_scan_worker(settings, directory)
+            a._nonlocal_vi_scan_worker(settings, recorder)
         a.nonlocal_vi_2410_controller.apply_voltage_pulse.assert_not_called()
 
     def test_a_measured_value_keeps_its_old_message(self):
         result = {"source_current_a": 1e-9, "voltage_v": 0.05, "current_a": 1e-9,
                   "resistance_ohm": 5e7, "sample_count": 25, "over_range": False}
-        a, settings, directory = self.run_scan("100", result)
+        a, settings, recorder = self.run_scan("100", result)
         with self.assertRaisesRegex(RuntimeError, r"\|R\|=5\.000000e\+07 Ω, must be >1\.000000e\+08 Ω$"):
-            a._nonlocal_vi_scan_worker(settings, directory)
+            a._nonlocal_vi_scan_worker(settings, recorder)
         a.nonlocal_vi_2410_controller.apply_voltage_pulse.assert_not_called()
 
 
@@ -269,6 +270,8 @@ class Executor:
 def keithley_read_back_fails():
     keithley = mock.Mock(connected=True, model="2410")
     keithley.confirm_output_off.side_effect = RuntimeError("VI_ERROR_TMO")
+    # A scan's end zeroes it and reads it back the same way (2026-10-18).
+    keithley.zero_output.side_effect = RuntimeError("VI_ERROR_TMO")
     return keithley
 
 
@@ -318,10 +321,16 @@ class SixTwoTwoOneOffTests(unittest.TestCase):
     def scan_6221(self, source):
         a = self.page(source)
         settings = a._parse_nonlocal_iv6221_settings()
-        path = Path(tempfile.mkdtemp()) / "6221-IV_test.csv"
+        # As the Start runs it (user, 2026-10-18): the run folder, then the
+        # worker inside the scan's job, whose end zeroes both outputs.
+        recorder = app.ScanRunRecorder(Path(tempfile.mkdtemp()), "NL_6221IV", "run", {})
+        a.thread_log = lambda message: None
+        a._nonlocal_run_started(recorder)
         a._begin_nonlocal_keithley_task(
-            "iv6221", lambda: a._nonlocal_iv6221_worker(settings, path),
+            "iv6221", lambda: a._nonlocal_scan_job(
+                recorder, "iv6221", lambda: a._nonlocal_iv6221_worker(settings, recorder)),
             a._finish_nonlocal_iv6221)
+        self.recorder = recorder
         return a
 
     def test_set_6221_again_switches_the_sine_off_and_reads_it_back(self):
@@ -341,21 +350,26 @@ class SixTwoTwoOneOffTests(unittest.TestCase):
     def test_6221_iv_start_switches_the_sine_off_and_reads_it_back(self):
         source = sine_left_on(FakeSource())
         a = self.scan_6221(source)
-        self.assertEqual(source.calls, [("output_off",), ("confirm_output_off",)])
+        # The scan's own off, then the end's zeroing: off and read back again.
+        self.assertEqual(source.calls, [("output_off",), ("confirm_output_off",)] * 2)
         self.assertFalse(source.output_on)
         self.assertEqual(a.nonlocal_vi_interlock.phase, "IDLE")
         self.assertIsNone(a.nonlocal_keithley_task)
         self.assertEqual(a.nonlocal_iv6221_source_var.get(), "6221: OFF")
-        self.assertEqual(a.nonlocal_vi_output_var.get(), "Keithley 2410 output: check it")
-        self.assertEqual(a.nonlocal_iv6221_status_var.get(), "Failed: VI_ERROR_TMO")
-        self.assertTrue(a.nonlocal_vi_status_var.get().endswith("; check the Keithley 2410 output"))
+        self.assertEqual(a.nonlocal_vi_output_var.get(), "6221 output: OFF; Keithley 2410 output: check it")
+        self.assertEqual(a.nonlocal_iv6221_status_var.get(),
+                         "Failed: VI_ERROR_TMO; 6221 zeroed; Keithley 2410 zero FAILED: check it")
+        self.assertIn("6221 zeroed; Keithley 2410 zero FAILED: check it", a.nonlocal_vi_status_var.get())
+        self.assertTrue(self.recorder.closed)
 
     def test_without_a_read_back_the_6221_is_never_shown_off(self):
         for start in (self.set_6221, self.scan_6221):
             with self.subTest(start=start.__name__):
                 source = sine_left_on(StuckSource())
                 a = start(source)
-                self.assertEqual(source.calls, [("output_off",), ("confirm_output_off",)])
+                # A scan's end tries the off again (2026-10-18); Set does not.
+                self.assertEqual(source.calls, [("output_off",), ("confirm_output_off",)]
+                                 * (2 if start == self.scan_6221 else 1))
                 self.assertEqual(a.nonlocal_iv6221_source_var.get(), "6221: check the output")
                 self.assertNotIn("6221 output off", a.nonlocal_vi_status_var.get())
 
