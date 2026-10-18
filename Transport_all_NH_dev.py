@@ -1667,6 +1667,16 @@ PPMS_SCAN_PLOT_AXES = {
 # up again at every frequency of every harmonic pass, so each of those set-ups
 # gets it too (user, 2026-10-18: the estimate counts the lock waits).
 PPMS_SET_UP_ALLOWANCE_S = 12.0
+# A frequency scan's set-up reads the 6221's frequency back to this: the 6221
+# reports its own setpoint, and the 0.5 % that a lock-in reading may differ
+# by cannot tell neighbouring primes apart above about 400 Hz (review,
+# 2026-10-18: 997 Hz not applied would read back the reset 1000 Hz).
+PPMS_FREQUENCY_READBACK_TOL_HZ = 0.01
+# The Zurich's lock at a frequency scan's new frequency: this many valid
+# readings in a row, each nearer the new frequency than the one before
+# (review, 2026-10-18: without a lock flag, LabOne 18.12, a reading held
+# over from the previous prime is valid within 0.5 %).
+PPMS_ZURICH_LOCK_READS = 3
 # SR830 slots accept the same selections as the Zurich: a multi-order choice
 # runs one scan pass per order, with the meter re-tuned between passes.
 PPMS_HARMONIC_MODE_ORDERS = PPMS_ZURICH_MODE_ORDERS
@@ -16552,7 +16562,10 @@ class CombinedControlApp:
             widget = ttk.Entry(panel, textvariable=variable, width=6)
             widget.grid(row=row, column=col+1, sticky="ew", padx=2, pady=1)
             self.ppms_control_widgets.append(widget)
-            target_mode = {"T K": "Temperature", "H Oe": "Field", "Angle °": "Angle", "I mA RMS": "Current"}.get(label)
+            # "f Hz" is locked in the frequency scans, which do not read it
+            # (review, 2026-10-18).
+            target_mode = {"T K": "Temperature", "H Oe": "Field", "Angle °": "Angle", "I mA RMS": "Current",
+                           "f Hz": "Frequency"}.get(label)
             if target_mode:
                 self.ppms_scan_target_widgets.setdefault(target_mode, []).append(widget)
             return widget
@@ -39577,9 +39590,9 @@ class CombinedControlApp:
         if mode == "Current+Temperature":
             scanned = {"Current", "Temperature"}
         if mode == "Frequency+Current":
-            # Its main row is the current sweep, as in a Current scan
-            # (user, 2026-10-18).
-            scanned = {"Current"}
+            # Its main row is the current sweep, as in a Current scan, and
+            # neither frequency scan reads "f Hz" (user, 2026-10-18).
+            scanned = {"Current", "Frequency"}
         for parameter, widgets in getattr(self, "ppms_scan_target_widgets", {}).items():
             for widget in widgets:
                 widget.configure(state="normal" if enabled and parameter not in scanned else "disabled")
@@ -41064,8 +41077,8 @@ class CombinedControlApp:
         frequencies (user, 2026-10-18: the estimate counts every point and
         the per-frequency lock waits).  Each frequency of each harmonic pass
         is set up again: the first pass's set-ups have their planning
-        allowance with the points, and every later pass's get
-        PPMS_SET_UP_ALLOWANCE_S each.  The first point at each frequency
+        allowance in the Start estimate's blocks (one per frequency), and
+        every later pass's get PPMS_SET_UP_ALLOWANCE_S each.  The first point at each frequency
         takes at least one more Acquire s window (two must agree), and its
         wait is at least NONLOCAL_FSCAN_SETTLE_PERIODS periods of the
         frequency where that is longer than the pass's settle.
@@ -41334,9 +41347,13 @@ class CombinedControlApp:
                 f"6221 compliance readback mismatch: requested {compliance_v:g} V, "
                 f"read {actual_compliance:g} V"
             )
-        if not math.isclose(
-            actual_frequency, frequency_hz, rel_tol=5e-3, abs_tol=0.1
-        ):
+        # A frequency scan asks for its setpoint to 0.01 Hz
+        # (frequency_readback_tol_hz; review, 2026-10-18); every other
+        # set-up keeps the 0.5 %.
+        frequency_tol_hz = settings.get("frequency_readback_tol_hz")
+        if not (math.isclose(actual_frequency, frequency_hz, rel_tol=5e-3, abs_tol=0.1)
+                if frequency_tol_hz is None
+                else abs(actual_frequency - frequency_hz) <= float(frequency_tol_hz)):
             raise RuntimeError(
                 f"6221 frequency readback mismatch: requested {frequency_hz:g} Hz, "
                 f"read {actual_frequency:g} Hz"
@@ -41650,15 +41667,27 @@ class CombinedControlApp:
             )
         self.post_ui(update)
 
-    def _stop_ppms_transport_source(self) -> None:
+    def _stop_ppms_transport_source(self, *, read_back: bool = False) -> None:
         self.ppms_idle_autorange_enabled = False
         controller = self.ppms_instrument_controllers["6221"]
         controller.safe_output_off()
-        self.post_ui(
-            lambda: self.ppms_transport_status_var.set(
-                "Transport acquisition: 6221 output OFF"
-            )
-        )
+        text = "Transport acquisition: 6221 output OFF"
+        if read_back:
+            # The PPMS page's scans say what OUTP? reads after the off: after
+            # a "6221 still ON" failure the line said OFF unread (review,
+            # 2026-10-18).  The read never raises, so the scan's own error
+            # is the one reported.
+            try:
+                state = self._ppms_query_numbers("6221", "OUTP?", 1)[0]
+            except Exception as error:
+                text = f"Transport acquisition: 6221 OFF sent; read-back failed: {short_status_error(error, 60)}"
+            else:
+                if state == 0:
+                    text = "Transport acquisition: 6221 output OFF (read back)"
+                else:
+                    text = f"Transport acquisition: 6221 still ON (OUTP?={state:g}); switch it off"
+                    self.thread_log(f"PPMS: the 6221 still reads ON (OUTP?={state:g}) after the scan's output off")
+        self.post_ui(lambda: self.ppms_transport_status_var.set(text))
 
     @staticmethod
     def _ppms_field_is_ready(result: dict[str, object], target_oe: float, driven: bool = False) -> bool:
@@ -41849,8 +41878,10 @@ class CombinedControlApp:
         # during acquisition and replaces this estimate after completed points.
         blocks = len(nested["angle"]) * len(nested["temperature"]) * len(currents)
         if frequencies:
-            # Every frequency is set up again (user, 2026-10-18).
-            blocks *= len(frequencies)
+            # One set-up per frequency, whatever the number of currents: the
+            # currents after the first change only the amplitude (review,
+            # 2026-10-18; it counted one per current at each frequency).
+            blocks = len(nested["angle"]) * len(nested["temperature"]) * len(frequencies)
             estimated_seconds += len(nested["angle"]) * len(nested["temperature"]) * self._ppms_frequency_set_up_s(
                 frequencies, pass_settles, acquisition_s)
         estimated_seconds += 6.0 * total + PPMS_SET_UP_ALLOWANCE_S * blocks
@@ -41962,6 +41993,7 @@ class CombinedControlApp:
         self.ppms_field_scan_stop_event.clear()
         self.ppms_field_scan_running = True
         self.ppms_scan_preserve_on_stop = False
+        self.ppms_scan_stop_6221_note = ""
         self.ppms_active_scan_mode = mode
         self.ppms_plot_addresses = dict(zip(active_lockins, addresses))
         self.ppms_plot_axis = PPMS_SCAN_PLOT_AXES[mode]
@@ -42072,6 +42104,11 @@ class CombinedControlApp:
                 messagebox.showerror(label, str(error), parent=self.root)
         elif stopped:
             detail = "all settings and outputs kept, nothing zeroed" if getattr(self, "ppms_scan_preserve_on_stop", False) else "output-off request handled"
+            # A Stop while a frequency scan changed frequency, between the
+            # 6221's off and its re-arm, leaves it off (review, 2026-10-18).
+            stopped_off = getattr(self, "ppms_scan_stop_6221_note", "")
+            if stopped_off and getattr(self, "ppms_scan_preserve_on_stop", False):
+                detail = f"{stopped_off}; the other settings kept, nothing zeroed"
             self.ppms_field_scan_status_var.set(f"{label} stopped; CSV kept; {detail}")
             self.ppms_field_scan_eta_var.set("Remaining: --")
         else:
@@ -42273,7 +42310,7 @@ class CombinedControlApp:
                 if ((stop.is_set() or self.closing) and not failed
                         and settings.get("scan_mode") in ("Field", "Field+Temperature")):
                     self._ppms_zero_field_after_interrupted_scan(rate, approach)
-                self._stop_ppms_transport_source()
+                self._stop_ppms_transport_source(read_back=True)
 
     def _ppms_frequency_scan_block(self, sequence, rate, stable, approach, settings):
         """A Frequency or Frequency+Current scan at the block's temperature
@@ -42303,7 +42340,8 @@ class CombinedControlApp:
                     return
                 point_settings = dict(settings, current_rms_ma=current, frequency_hz=frequency,
                                       peak_a=math.sqrt(2.) * current * 1e-3,
-                                      reference_timeout_s=NONLOCAL_IV6221_REFERENCE_WAIT_S)
+                                      reference_timeout_s=NONLOCAL_IV6221_REFERENCE_WAIT_S,
+                                      frequency_readback_tol_hz=PPMS_FREQUENCY_READBACK_TOL_HZ)
                 if sweep:
                     point_settings["continuous_sweep_peak_a"] = sweep_peak
                 if position == 0:
@@ -42323,13 +42361,15 @@ class CombinedControlApp:
 
         The set-up is the page's own (_configure_ppms_transport_scan): the
         sine at the new frequency with its amplitude, compliance and range,
-        each read back, the SR830s checked, the sine re-armed and its output
-        read back as on, then the SR830 reference lock awaited at the new
-        frequency.  The lock may take up to NONLOCAL_IV6221_REFERENCE_WAIT_S
-        (20 s), Non-local's wait at each frequency, rather than the 8 s of a
-        scan start, as a PLL at a few hertz is slow to lock.  The Zurich is
-        then awaited the same way (_ppms_wait_zurich_reference).  Nothing
-        else is set on any instrument."""
+        each read back (the frequency to PPMS_FREQUENCY_READBACK_TOL_HZ), the
+        SR830s checked, the sine re-armed and its output read back as on,
+        then the SR830 reference lock awaited at the new frequency.  The lock
+        may take up to NONLOCAL_IV6221_REFERENCE_WAIT_S (20 s), Non-local's
+        wait at each frequency, rather than the 8 s of a scan start, as a PLL
+        at a few hertz is slow to lock.  The Zurich is then awaited the same
+        way (_ppms_wait_zurich_reference), told the frequency the 6221 had
+        before, read with SOUR:WAVE:FREQ? before the off.  Nothing else is
+        set on any instrument."""
         stop = self.ppms_field_scan_stop_event
         frequency = float(settings["frequency_hz"])
         if stop.is_set() or self.closing:
@@ -42338,6 +42378,7 @@ class CombinedControlApp:
             f"Frequency {index}/{count}: {frequency:g} Hz; 6221 off, setting up again…"))
         source = self.ppms_instrument_controllers["6221"]
         with source.lock:
+            previous_hz = self._ppms_query_numbers("6221", "SOUR:WAVE:FREQ?", 1)[0]
             source.safe_output_off()
             state = self._ppms_query_numbers("6221", "OUTP?", 1)[0]
         if state != 0:
@@ -42345,11 +42386,24 @@ class CombinedControlApp:
                 f"6221 output still ON (OUTP?={state:g}) before setting up {frequency:g} Hz; scan stopped")
         self.post_ui(lambda: self.ppms_transport_status_var.set(
             f"Transport acquisition: 6221 OFF (read back); setting up {frequency:g} Hz"))
-        self._configure_ppms_transport_scan(settings)
+        try:
+            self._configure_ppms_transport_scan(settings)
+        except PPMSScanCancelled:
+            # A Stop between the off and the re-arm leaves the 6221 off: the
+            # finish line says so instead of "all outputs kept" (review,
+            # 2026-10-18).  A Stop in the lock wait after the re-arm reads ON.
+            try:
+                still_off = self._ppms_query_numbers("6221", "OUTP?", 1)[0] == 0
+                note = "6221 off (stopped while changing frequency)" if still_off else ""
+            except Exception:
+                note = "6221 state unknown (stopped while changing frequency): check it"
+            self.ppms_scan_stop_6221_note = note
+            raise
         self._ppms_wait_zurich_reference(
-            frequency, float(settings.get("reference_timeout_s", PPMS_TRANSPORT_REFERENCE_TIMEOUT_S)))
+            frequency, float(settings.get("reference_timeout_s", PPMS_TRANSPORT_REFERENCE_TIMEOUT_S)),
+            previous_hz)
 
-    def _ppms_wait_zurich_reference(self, frequency, timeout_s):
+    def _ppms_wait_zurich_reference(self, frequency, timeout_s, previous_hz=None):
         """The Zurich's lock at a frequency scan's new frequency.  The base
         page has no Zurich; PPMSPanel waits for it."""
         return None
@@ -42544,8 +42598,18 @@ class CombinedControlApp:
                     stable_s, tuple(transport_settings["active_lockins"]))
                 # A frequency scan's first point at each frequency waits at
                 # least NONLOCAL_FSCAN_SETTLE_PERIODS periods of it, as
-                # Non-local does (user, 2026-10-18); absent otherwise.
-                settle_s = max(settle_s, float(transport_settings.get("frequency_settle_s", 0.0)))
+                # Non-local does (user, 2026-10-18); absent otherwise.  The
+                # log and the status say so when that is the longer wait
+                # (review, 2026-10-18).
+                periods_s = float(transport_settings.get("frequency_settle_s", 0.0))
+                if periods_s > settle_s:
+                    settle_s = periods_s
+                    periods_text = (
+                        f"this frequency's first reading waits {ppms_settle_status_text(periods_s)} s: "
+                        f"{NONLOCAL_FSCAN_SETTLE_PERIODS:g} periods of "
+                        f"{float(transport_settings['frequency_hz']):g} Hz")
+                    self.thread_log(f"{getattr(type(self), 'ppms_page_name', 'PPMS')} scan: {periods_text}")
+                    self.post_ui(lambda text=periods_text: self.ppms_field_scan_status_var.set(text[0].upper() + text[1:]))
                 if settle_s > 0 and self.ppms_field_scan_stop_event.wait(settle_s):
                     break
                 result = self._read_ppms_live()
@@ -42747,7 +42811,7 @@ class CombinedControlApp:
                     self.ppms_field_scan_stop_event.is_set()
                     and not self._ppms_preserve_stopped_scan()
                 )):
-                    self._stop_ppms_transport_source()
+                    self._stop_ppms_transport_source(read_back=True)
             except BaseException as error:
                 self.thread_log(
                     f"PPMS: failed to turn the 6221 off at the end of the transport scan: {error}"
@@ -45166,30 +45230,56 @@ class PPMSPanel(CombinedControlApp):
                 self.post_ui(lambda s=dict(measured): self._display_zurich_sample(s))
         return sample
 
-    def _ppms_wait_zurich_reference(self, frequency, timeout_s):
+    def _ppms_wait_zurich_reference(self, frequency, timeout_s, previous_hz=None):
         """A frequency scan's Zurich lock at each new frequency (user,
         2026-10-18), after the SR830s' lock in the set-up: read until its
-        external-reference PLL is locked at the new frequency, as Non-local
-        waits for the Zurich at each frequency (wait_references).  Read-only:
-        nothing on the Zurich is set.  The expected frequency becomes the new
-        one; the scan's readings compare with the point's frequency."""
-        self.zurich_expected_frequency = float(frequency)
+        external-reference PLL follows the new frequency, as Non-local waits
+        for the Zurich at each frequency (wait_references).  Nothing on the
+        Zurich is set; each read resets its Signal Input max/min trackers,
+        as every scan read does.  The expected frequency becomes the new one;
+        the scan's readings compare with the point's frequency.
+
+        A reading counts only when it is valid and nearer the new frequency
+        than ``previous_hz``, the 6221's frequency before the change, and
+        PPMS_ZURICH_LOCK_READS must count in a row.  LabOne 18.12 gives no
+        lock flag (extref_locked None), so validity is the frequency alone,
+        within 0.5 %: above about 400 Hz a reading held over from the
+        previous prime would pass (review, 2026-10-18).  When the frequency
+        did not change, the readings in a row suffice."""
+        frequency = float(frequency)
+        self.zurich_expected_frequency = frequency
         if not getattr(self, 'zurich_scan_enabled', False):
             return
         stop = self.ppms_field_scan_stop_event
+        try:
+            previous = float(previous_hz)
+        except (TypeError, ValueError):
+            previous = math.nan
+        unchanged = not math.isfinite(previous) or abs(previous - frequency) <= PPMS_FREQUENCY_READBACK_TOL_HZ
         deadline = time.monotonic() + float(timeout_s)
+        in_a_row = 0
         while True:
             if stop.is_set() or self.closing or getattr(self, 'zurich_closed', False):
                 raise PPMSScanCancelled("Stopped as requested while waiting for the Zurich reference")
             with self.zurich_controller.lock:
-                sample = self.zurich_controller.read_mfli(float(frequency))
-            if sample.get('reference_valid'):
-                self.post_ui(lambda s=dict(sample): self._display_zurich_sample(s))
-                return
+                sample = self.zurich_controller.read_mfli(frequency)
+            try:
+                reported = float(sample.get('reference_frequency_hz'))
+            except (TypeError, ValueError):
+                reported = math.nan
+            followed = unchanged or (math.isfinite(reported)
+                                     and abs(reported - frequency) < abs(reported - previous))
+            if sample.get('reference_valid') and followed:
+                in_a_row += 1
+                if in_a_row >= PPMS_ZURICH_LOCK_READS:
+                    self.post_ui(lambda s=dict(sample): self._display_zurich_sample(s))
+                    return
+            else:
+                in_a_row = 0
             if time.monotonic() >= deadline:
                 raise RuntimeError(
-                    f"Zurich failed to lock the 6221 external reference at {float(frequency):g} Hz "
-                    f"within {float(timeout_s):g} s; {sample.get('status_text', '')}")
+                    f"Zurich failed to lock the 6221 external reference at {frequency:g} Hz "
+                    f"within {float(timeout_s):g} s (it reads {reported:g} Hz); {sample.get('status_text', '')}")
             if stop.wait(0.2):
                 raise PPMSScanCancelled("Stopped as requested while waiting for the Zurich reference")
 

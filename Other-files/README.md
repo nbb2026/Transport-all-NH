@@ -14,8 +14,8 @@
   `NONLOCAL_FSCAN_START_HZ` / `STOP_HZ`). The Step box is emptied and
   greyed, and the unit reads "Hz (primes)". The 6221 amplitude, compliance
   and the lock-ins come from the settings boxes, as a Current scan's fixed
-  values do; "f Hz" is not read. Temperature and angle are held at the
-  T K and Angle ° boxes, and the field is not commanded, all as in a
+  values do; "f Hz" is not read, and is locked in both frequency modes.
+  Temperature and angle are held at the T K and Angle ° boxes, and the field is not commanded, all as in a
   Current scan. Plots against the set frequency, "Frequency (Hz)" (linear:
   the plot helper has no log axis).
 - **Frequency+Current (the user's choice: frequency outer):** the main row
@@ -28,23 +28,33 @@
 - **At each frequency (`_ppms_frequency_scan_block`,
   `_ppms_set_up_frequency`), in Non-local's reviewed order for a frequency
   change (6221-IV, Gate-VI):**
-  1. The 6221 is switched off and read back as off (`OUTP?` 0). If it
-     still reads on, the scan fails before anything else is sent.
+  1. The 6221's frequency is read (`SOUR:WAVE:FREQ?`, for step 4), then
+     it is switched off and read back as off (`OUTP?` 0). If it still
+     reads on, the scan fails before anything else is sent.
   2. The page's own set-up (`_configure_ppms_transport_scan`) runs at the
      new frequency: *RST, the sine with its amplitude, compliance and
-     range, each read back; the SR830s checked; the sine re-armed and read
-     back as on. Frequency+Current keeps the one fixed range of the whole
-     sweep (`continuous_sweep_peak_a`), as a Current scan.
+     range, each read back (the frequency to 0.01 Hz,
+     `PPMS_FREQUENCY_READBACK_TOL_HZ`, since 0.5 % cannot tell neighbouring
+     primes apart above about 400 Hz; other set-ups keep the 0.5 %); the
+     SR830s checked; the sine re-armed and read back as on.
+     Frequency+Current keeps the one fixed range of the whole sweep
+     (`continuous_sweep_peak_a`), as a Current scan.
   3. The SR830 reference lock is awaited at the new frequency, for up to
      20 s (`NONLOCAL_IV6221_REFERENCE_WAIT_S`, Non-local's wait at each
      frequency) instead of a scan start's 8 s. A PLL at a few hertz is
      slow to lock.
   4. The Zurich's lock at the new frequency is awaited the same way
-     (`_ppms_wait_zurich_reference`, read-only), and its expected frequency
-     becomes the new one.
+     (`_ppms_wait_zurich_reference`; nothing on it is set), and its
+     expected frequency becomes the new one. A reading counts only when it
+     is valid and nearer the new frequency than the 6221's frequency before
+     the change, and 3 must count in a row (`PPMS_ZURICH_LOCK_READS`).
+     LabOne 18.12 gives no lock flag, so validity is the frequency alone,
+     within 0.5 %, and a reading held over from the previous prime would
+     otherwise pass above about 400 Hz.
   5. The settle runs: Settle s or 1 × the slowest TC, and at least 5
      periods of the frequency (`NONLOCAL_FSCAN_SETTLE_PERIODS`), as
-     Non-local waits.
+     Non-local waits. The log and the status say when the 5 periods are
+     the longer wait.
   6. The first point's agreeing windows follow, as at a scan's start.
   - Every frequency gets steps 1 to 6, the first current of each
     frequency included.
@@ -62,21 +72,28 @@
   7–199 Hz (Step not used)" and what happens at each frequency;
   "Frequency scan: 43 primes: 7–199 Hz; 43 points, …".
 - **Estimate:** every point counts as before (settle + Acquire s + 6 s).
-  Every frequency of every harmonic pass is a set-up with the 12 s
-  allowance (`PPMS_SET_UP_ALLOWANCE_S`, the same 12 s as before). Each
-  frequency's first point adds one more window, and the part of its 5
-  periods longer than the settle.
+  Every frequency of every harmonic pass is one set-up with the 12 s
+  allowance (`PPMS_SET_UP_ALLOWANCE_S`, the same 12 s as before), however
+  many currents it has. Each frequency's first point adds one more
+  window, and the part of its 5 periods longer than the settle.
 - **Rows:** no new column. `6221_frequency_hz` is the set frequency;
   `sr830_<n>_frequency_hz` and `zurich_reference_hz` are the references
   the lock-ins read. `effective_settle_s` includes the 5 periods.
 - **Ending, as Current and Current+Temperature on this page:**
   - Completed: the 6221 keeps its last output (the last frequency and
     current).
-  - Stop button: every output and setpoint is kept, nothing zeroed.
+  - Stop button: every output and setpoint is kept, nothing zeroed. A
+    Stop between a frequency change's off and its re-arm leaves the 6221
+    off, and the finish line says so: "6221 off (stopped while changing
+    frequency); the other settings kept, nothing zeroed".
   - "I off": the 6221 is switched off.
   - A failure (a lock that does not come, a 6221 that stays on): the 6221
     is switched off and the field is kept.
   - An SR830 range failure keeps the output, as before.
+  - Every PPMS scan's own off at its end (failure, "I off", closing) now
+    reads `OUTP?` back, and the transport line says "6221 output OFF (read
+    back)", or "still ON … switch it off". The SHV page's offs are
+    unchanged.
   - Known effect: after a completed scan the 6221 runs at the last prime
     while "f Hz" still holds its own value, so the idle Zurich row may
     show WARNING (reference frequency mismatch) until Set I or I off.
@@ -100,10 +117,14 @@
   - columns, Stop, I off and failures, each ending as a Current scan's;
   - the plot axis and curve names;
   - every mode-keyed table;
-  - the SHV page and its 8 s lock unchanged.
+  - the SHV page and its 8 s lock unchanged;
+  - the review's points: the 0.01 Hz read-back, a Zurich reading held
+    over at 1009 → 1013 Hz, the Stop line, Frequency+Current endings at
+    every step (Stop and I off), the range failure, harmonic passes through
+    `_ppms_scan_with_final_field`, "f Hz" registered.
 
-  Each safety assertion was checked by breaking its code (8 mutations, all
-  caught). `test_panel_defaults` `ScanBoxFrequencyModeTests` (CI only):
+  Each safety assertion was checked by breaking its code (16 mutations,
+  all caught). `test_panel_defaults` `ScanBoxFrequencyModeTests` (CI only):
   - the Mode list, and both modes' rows;
   - the box no wider than in Field and Current+Temperature, and no taller
     than in Current+Temperature;

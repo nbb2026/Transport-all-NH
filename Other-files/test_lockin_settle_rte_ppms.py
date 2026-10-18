@@ -482,7 +482,7 @@ class PPMSWorkerTests(NoWindows):
         obj._append_ppms_live_csv = lambda row: None
         obj._configure_ppms_transport_scan = lambda config: log.append(("configure",))
         obj._update_ppms_transport_current = lambda config: log.append(("amplitude", config["current_rms_ma"]))
-        obj._stop_ppms_transport_source = lambda: log.append(("off",))
+        obj._stop_ppms_transport_source = lambda **_options: log.append(("off",))
 
         def read(frequency, lockins, duration):
             log.append(("read",))

@@ -199,7 +199,8 @@ class NestedTests(unittest.TestCase):
         obj._apply_ppms_environment_readback = lambda data: None
         obj.post_ui = lambda callback: callback()
         obj.thread_log = lambda text: None
-        obj._stop_ppms_transport_source = lambda: events.append(('off',))
+        # read_back: the PPMS scans read OUTP? back after the off (2026-10-18).
+        obj._stop_ppms_transport_source = lambda **_options: events.append(('off',))
         obj._configure_ppms_transport_scan = lambda config: events.append(('configure', config['current_rms_ma']))
         obj._update_ppms_transport_current = lambda config: events.append(('amplitude', config['current_rms_ma']))
         obj._ppms_zero_field_after_interrupted_scan = lambda *args: events.append(('zero',))

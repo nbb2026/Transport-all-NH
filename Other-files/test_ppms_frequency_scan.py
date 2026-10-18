@@ -17,6 +17,21 @@ from unittest import mock
 
 from test_nonlocal_keithley import Var
 from test_ppms_motor_debug import app
+from test_ppms_sr830_tc import build_ppms_panel
+
+
+class Log(list):
+    """The instruments' shared log; ``hook`` sees each entry as it is
+    added (a Stop pressed at that step)."""
+
+    def __init__(self):
+        super().__init__()
+        self.hook = None
+
+    def append(self, entry):
+        super().append(entry)
+        if self.hook is not None:
+            self.hook(entry)
 
 
 class Clock:
@@ -141,7 +156,11 @@ class FakeSR830:
 class FakeZurich:
     """The Zurich on the PPMS page: its ExtRef PLL needs one read to follow
     a new frequency (``instant`` locks it at once, for a scan that does not
-    wait for it).  ``never_locks`` keeps it unlocked."""
+    wait for it).  ``never_locks`` keeps it unlocked.
+
+    ``stale_reads`` is LabOne 18.12's case: no lock flag, and after a change
+    that many reads still report the frequency it followed before, valid
+    whenever that is within 0.5 % of the one expected."""
 
     def __init__(self, log, source):
         self.log, self.source = log, source
@@ -149,6 +168,7 @@ class FakeZurich:
         self.mfli_connected, self.mfli_config = True, {"timeconstant_s": 1.0}
         self.following = None
         self.never_locks = self.instant = False
+        self.stale_reads, self.held, self.pll_hz = 0, 0, source.frequency
 
     def configure_mfli(self, *args, **options):
         self.log.append(("zurich", "configure_mfli"))
@@ -165,12 +185,25 @@ class FakeZurich:
     def read_mfli(self, expected):
         self.log.append(("zurich?", "read_mfli", float(expected)))
         state = (self.source.output, self.source.frequency)
+        if self.stale_reads:
+            if state != self.following:
+                self.following, self.held = state, self.stale_reads
+            if self.held:
+                self.held -= 1
+            else:
+                self.pll_hz = self.source.frequency if self.source.output else 0.0
+            valid = math.isclose(self.pll_hz, expected, rel_tol=5e-3, abs_tol=0.1)
+            return {"X": 2e-6, "Y": 0.0, "R": 2e-6, "phase_deg": 0.0, "reference_frequency_hz": self.pll_hz,
+                    "reference_valid": valid, "extref_locked": None,
+                    "status_text": "LabOne 18.12 judges LOCK by reference-frequency convergence",
+                    "input_overload": False, "input_range_v": 0.01, "auto_range": ""}
         locked = (not self.never_locks and self.source.output and (self.following == state or self.instant)
                   and math.isclose(self.source.frequency, expected, rel_tol=5e-3, abs_tol=0.1))
         self.following = state
         return {"X": 2e-6, "Y": 0.0, "R": 2e-6, "phase_deg": 0.0,
                 "reference_frequency_hz": self.source.frequency if self.source.output else 0.0,
-                "reference_valid": bool(locked), "status_text": "OK" if locked else "Trigger In 1 not locked",
+                "reference_valid": bool(locked), "extref_locked": bool(locked),
+                "status_text": "OK" if locked else "Trigger In 1 not locked",
                 "input_overload": False, "input_range_v": 0.01, "auto_range": ""}
 
     def read_stfmr_mfli(self, expected, auto_range=False, initial=False, attempts=0):
@@ -210,7 +243,8 @@ class Rig:
     6221 already running from a Set I at 317.3 Hz."""
 
     def __init__(self, test, mode, frequencies, currents, zurich=True, preserve_on_stop=True):
-        self.log = []
+        self.test = test
+        self.log = Log()
         self.clock = Clock()
         page = app.PPMSPanel.__new__(app.PPMSPanel)
         page.parent_app = types.SimpleNamespace()   # nothing borrowed from a main page
@@ -285,6 +319,26 @@ class Rig:
     def index(self, entry, start=0):
         return self.log.index(entry, start)
 
+    def stop_at(self, entry, occurrence=1):
+        """Press Stop (or "I off", with preserve_on_stop False) when the
+        log gets ``entry`` for the ``occurrence``-th time."""
+        seen = []
+
+        def hook(added):
+            if added == entry:
+                seen.append(added)
+                if len(seen) == occurrence:
+                    self.stopped_at = len(self.log)
+                    self.stop.set()
+        self.log.hook = hook
+
+    def assert_switched_off(self):
+        """Switched off at the end, and read back as off (review, 2026-10-18)."""
+        self.test.assertEqual(self.log[-3:], [("6221", "SOUR:WAVE:ABOR"), ("6221", "OUTP OFF"), ("6221?", "OUTP?")])
+        self.test.assertEqual(self.source.output, 0)
+        self.test.assertEqual(self.page.ppms_transport_status_var.get(),
+                              "Transport acquisition: 6221 output OFF (read back)")
+
 
 class PrimeListTests(unittest.TestCase):
     def test_the_primes_from_start_to_end_with_no_step(self):
@@ -352,12 +406,15 @@ class ModeTableTests(unittest.TestCase):
         self.assertEqual(page.ppms_acquisition_time_var.get(), "1")
 
     def test_the_step_box_is_greyed_in_frequency_and_the_current_box_in_frequency_current(self):
+        """And "f Hz" in both, which neither reads (review, 2026-10-18)."""
         page = app.CombinedControlApp.__new__(app.CombinedControlApp)
-        page.ppms_scan_target_widgets = {key: [mock.Mock()] for key in ("Temperature", "Field", "Angle", "Current")}
+        page.ppms_scan_target_widgets = {key: [mock.Mock()] for key in
+                                         ("Temperature", "Field", "Angle", "Current", "Frequency")}
         page.ppms_scan_step_entry = mock.Mock()
-        for mode, scanned, step in (("Frequency", set(), "disabled"),
-                                    ("Frequency+Current", {"Current"}, None),
-                                    ("Current", {"Current"}, None)):
+        for mode, scanned, step in (("Frequency", {"Frequency"}, "disabled"),
+                                    ("Frequency+Current", {"Current", "Frequency"}, None),
+                                    ("Current", {"Current"}, None),
+                                    ("Field", {"Field"}, None)):
             with self.subTest(mode=mode):
                 page.ppms_scan_step_entry.reset_mock()
                 page.ppms_simple_mode = Var(mode)
@@ -368,6 +425,14 @@ class ModeTableTests(unittest.TestCase):
                     page.ppms_scan_step_entry.configure.assert_called_once_with(state=step)
                 else:
                     page.ppms_scan_step_entry.configure.assert_not_called()
+
+    def test_f_hz_is_a_scan_target_widget(self):
+        """The real page build (on stand-in widgets) registers "f Hz" as the
+        Frequency target, so both frequency scans lock it."""
+        panel, _ttk = build_ppms_panel()
+        widgets = panel.ppms_scan_target_widgets["Frequency"]
+        self.assertEqual([w.options.get("textvariable") for w in widgets], [panel.ppms_transport_frequency_var])
+        self.assertEqual(panel.ppms_frequency_range_frame.grid_options, None, "the outer row starts hidden")
 
     def test_both_redraws_know_every_axis(self):
         row = {"6221_frequency_hz": 7.0, "6221_current_rms_ma": 1.0, "measured_field_oe": 0.0,
@@ -517,7 +582,8 @@ class StartTests(unittest.TestCase):
         # Frequency+Current: 3 primes x 3 currents.
         _page, _question, _settings, estimate = launcher(self, "Frequency+Current", ("0.01", "0.03", "0.01"),
                                                          outer=("7", "13"))
-        self.assertAlmostEqual(estimate, 9 * 2 + 6 * 9 + 12 * 9 + 3 * 1)
+        # One 12 s set-up per frequency, not per current (review, 2026-10-18).
+        self.assertAlmostEqual(estimate, 9 * 2 + 6 * 9 + 12 * 3 + 3 * 1)
 
     def test_set_up_allowance_per_pass(self):
         passes = [(1.0, 1.0, "SR830-1"), (1.0, 1.0, "SR830-1")]
@@ -611,6 +677,10 @@ class SequenceTests(unittest.TestCase):
         # The temperature is held at the T K box, as a Current scan holds it.
         self.assertEqual([entry for entry in rig.log if entry[:2] == ("ppms", "set_temperature")],
                          [("ppms", "set_temperature", 300.0)])
+        # The log says when the 5 periods are the longer wait (review, 2026-10-18).
+        notes = [entry[1] for entry in rig.log if entry[0] == "log" and "periods of" in entry[1]]
+        self.assertEqual(notes, ["PPMS scan: this frequency's first reading waits 2.5 s: 5 periods of 2 Hz",
+                                 "PPMS scan: this frequency's first reading waits 1.67 s: 5 periods of 3 Hz"])
 
     def test_the_columns_are_a_current_scans(self):
         """Existing columns keep their places; no column is added."""
@@ -629,7 +699,7 @@ class SequenceTests(unittest.TestCase):
             rig.run()
         self.assertEqual(len(rig.rows()), 1)
         # A failure ends as a Current scan's: the 6221 switched off.
-        self.assertEqual(rig.log[-2:], [("6221", "SOUR:WAVE:ABOR"), ("6221", "OUTP OFF")])
+        rig.assert_switched_off()
         self.assertEqual(rig.source.output, 0)
 
     def test_a_zurich_that_does_not_lock_fails_the_scan_and_switches_the_6221_off(self):
@@ -639,7 +709,7 @@ class SequenceTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Zurich failed to lock the 6221 external reference at 3 Hz within 20 s"):
             rig.run()
         self.assertEqual(len(rig.rows()), 1)
-        self.assertEqual(rig.log[-2:], [("6221", "SOUR:WAVE:ABOR"), ("6221", "OUTP OFF")])
+        rig.assert_switched_off()
 
     def test_a_6221_that_stays_on_is_not_set_up_again(self):
         rig = Rig(self, "Frequency", (2.0, 3.0), (1.0,))
@@ -655,6 +725,133 @@ class SequenceTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, r"6221 output still ON \(OUTP\?=1\) before setting up 3 Hz"):
             rig.run()
         self.assertNotIn(("6221", "SOUR:WAVE:FREQ 3"), rig.log)
+        # The end's off is read back too, and the line says it is still ON
+        # instead of OFF (review, 2026-10-18).
+        self.assertEqual(rig.page.ppms_transport_status_var.get(),
+                         "Transport acquisition: 6221 still ON (OUTP?=1); switch it off")
+
+    def test_the_6221_frequency_is_read_back_to_0_01_hz(self):
+        """997 Hz not applied reads back the reset 1000 Hz, within the
+        0.5 % a lock-in reading may differ by: refused before the re-arm
+        (review, 2026-10-18)."""
+        rig = Rig(self, "Frequency", (997.0,), (1.0,))
+        rig.source.on_write = lambda command: (setattr(rig.source, "frequency", 1000.0)
+                                               if command == "SOUR:WAVE:FREQ 997" else None)
+        with self.assertRaisesRegex(RuntimeError, "6221 frequency readback mismatch: requested 997 Hz, read 1000 Hz"):
+            rig.run()
+        self.assertNotIn(("6221", "SOUR:WAVE:ARM"), rig.log)
+        rig.assert_switched_off()
+        # Any other set-up keeps the 0.5 % (the SHV page's included).
+        other = Rig(self, "Current", None, (1.0,), zurich=False)
+        other.source.on_write = lambda command: (setattr(other.source, "frequency", 1000.0)
+                                                 if command == "SOUR:WAVE:FREQ 997" else None)
+        settings = dict(other.settings, frequency_hz=997.0)
+        with mock.patch.object(app.time, "monotonic", other.clock), mock.patch.object(app.time, "sleep", lambda _s: None):
+            app.CombinedControlApp._configure_ppms_transport_scan(other.page, settings)
+        self.assertEqual((other.source.output, other.source.frequency), (1, 1000.0))
+
+    def test_a_zurich_reading_held_from_the_previous_prime_does_not_count(self):
+        """LabOne 18.12 (no lock flag): after 1009 Hz, 1013 Hz is within
+        0.5 %, so a reading still at 1009 Hz is valid.  The wait counts only
+        readings nearer 1013 Hz, three in a row (review, 2026-10-18)."""
+        rig = Rig(self, "Frequency", (1009.0, 1013.0), (1.0,))
+        rig.zurich.stale_reads = 2
+        rig.run()
+        init = rig.index(("6221", "SOUR:WAVE:INIT"), rig.index(("6221", "SOUR:WAVE:FREQ 1013")))
+        first_read = rig.index(("sr830_8?", "SNAP? 1,2,3,4,9"), init)
+        waits = [entry for entry in rig.log[init:first_read] if entry == ("zurich?", "read_mfli", 1013.0)]
+        self.assertEqual(len(waits), 2 + app.PPMS_ZURICH_LOCK_READS, "two held readings, then three at 1013 Hz")
+        self.assertEqual(app.PPMS_ZURICH_LOCK_READS, 3)
+        rows = rig.rows()
+        self.assertEqual([float(r["zurich_reference_hz"]) for r in rows], [1009.0, 1013.0])
+        # The 6221's frequency before each change is read before its off.
+        before = rig.index(("6221", "SOUR:WAVE:ABOR"), rig.index(("6221?", "SOUR:WAVE:FREQ?"), init - 60))
+        self.assertLess(before, init)
+
+    def test_a_stop_while_the_frequency_changes_says_the_6221_is_off(self):
+        """Stop between the per-frequency off and the re-arm: the finish
+        line says the 6221 is off, not "all outputs kept" (review,
+        2026-10-18).  A Stop in the lock wait after the re-arm keeps it on."""
+        for entry, output, text in (
+                (("6221", "SOUR:WAVE:FREQ 3"), 0,
+                 "PPMS Frequency scan stopped; CSV kept; 6221 off (stopped while changing frequency); "
+                 "the other settings kept, nothing zeroed"),
+                (("6221", "SOUR:WAVE:INIT"), 1,
+                 "PPMS Frequency scan stopped; CSV kept; all settings and outputs kept, nothing zeroed")):
+            with self.subTest(entry=entry):
+                rig = Rig(self, "Frequency", (2.0, 3.0), (1.0,))
+                rig.stop_at(entry, occurrence=1 if entry[1].startswith("SOUR:WAVE:FREQ") else 2)
+                with self.assertRaises(app.PPMSScanCancelled) as caught:
+                    rig.run()
+                self.assertEqual(len(rig.rows()), 1)
+                self.assertEqual(rig.source.output, output)
+                with mock.patch.object(app.messagebox, "showerror") as dialog:
+                    rig.page._report_ppms_scan_finished("Frequency", True, caught.exception)
+                dialog.assert_not_called()
+                self.assertEqual(rig.page.ppms_field_scan_status_var.get(), text)
+
+    def test_frequency_current_endings_at_every_step(self):
+        """The Stop button keeps what is on at that moment; "I off" switches
+        the 6221 off and reads it back: at the change's off, in the set-up,
+        the SR830 lock, the Zurich wait, the amplitude update and the
+        settle, as a Current scan ends."""
+        peak = f"SOUR:WAVE:AMPL {math.sqrt(2) * 1e-3:.12e}"
+        steps = (
+            ("the set-up after the off", ("6221", "*RST"), 2, 0, 2),
+            ("the SR830 lock", ("6221", "SOUR:WAVE:INIT"), 2, 1, 2),
+            ("the Zurich wait", ("zurich?", "read_mfli", 3.0), 1, 1, 2),
+            ("the amplitude update", ("6221", peak), 1, 1, 1),
+            ("the settle", ("wait", round(5 / 3, 9)), 1, 1, 2),
+        )
+        for name, entry, occurrence, output, rows in steps:
+            for preserve in (True, False):
+                with self.subTest(step=name, stop_button=preserve):
+                    rig = Rig(self, "Frequency+Current", (2.0, 3.0), (0.5, 1.0), preserve_on_stop=preserve)
+                    rig.stop_at(entry, occurrence)
+                    try:
+                        rig.run()
+                    except app.PPMSScanCancelled:
+                        pass
+                    self.assertEqual(len(rig.rows()), rows)
+                    if preserve:
+                        self.assertEqual(rig.source.output, output)
+                        self.assertNotIn(("6221", "OUTP OFF"), rig.log[rig.stopped_at:], "nothing switched off")
+                    else:
+                        rig.assert_switched_off()
+
+    def test_a_lock_in_range_failure_keeps_the_output_as_before(self):
+        rig = Rig(self, "Frequency", (2.0, 3.0), (1.0,))
+        acquire = rig.page._acquire_ppms_first_point
+        calls = []
+
+        def first_point(*args):
+            calls.append(args)
+            if len(calls) == 2:
+                raise app.PPMSLockinRangeError("SR830 autorange did not settle")
+            return acquire(*args)
+        rig.page._acquire_ppms_first_point = first_point
+        with self.assertRaises(app.PPMSLockinRangeError):
+            rig.run()
+        self.assertEqual((rig.source.output, rig.source.frequency), (1, 3.0))
+        self.assertEqual(len(rig.rows()), 1)
+
+    def test_every_harmonic_pass_runs_the_whole_frequency_scan(self):
+        """Through _ppms_scan_with_final_field with the passes Start built:
+        SR830-1 at 1+2, so pass 2 sets HARM 2 and SR830-3 drops out."""
+        rig = Rig(self, "Frequency", (2.0, 3.0), (1.0,))
+        first = dict(rig.settings, harmonic_pass=1)
+        second = dict(rig.settings, harmonic_pass=2, harmonic_a=2, active_lockins=("830_a",))
+        settings = dict(rig.settings, harmonic_passes=(first, second))
+        with mock.patch.object(app.time, "monotonic", rig.clock), \
+                mock.patch.object(app.time, "sleep", lambda _s: None), \
+                mock.patch.object(app, "PPMSMotorDebug", Motor):
+            rig.page._ppms_scan_with_final_field([(1, 1, 1, 1234.0)], 100.0, 0.0, 1, settings)
+        rows = rig.rows()
+        self.assertEqual([(r["harmonic_pass"], float(r["6221_frequency_hz"])) for r in rows],
+                         [("1", 2.0), ("1", 3.0), ("2", 2.0), ("2", 3.0)])
+        self.assertEqual(rig.log.count(("6221", "SOUR:WAVE:INIT")), 4)
+        self.assertIn(("sr830_8", "HARM 2"), rig.log)
+        self.assertEqual([r["sr830_10_harmonic"] for r in rows], ["3", "3", "", ""])
 
     def test_stop_mid_scan_keeps_every_output_as_a_current_scan(self):
         """The Stop button during the second frequency's settle: that point
@@ -673,7 +870,7 @@ class SequenceTests(unittest.TestCase):
         rig.stop.on_wait = lambda seconds: rig.stop.set() if math.isclose(seconds, 5 / 3) else None
         rig.run()
         self.assertEqual(len(rig.rows()), 1)
-        self.assertEqual(rig.log[-2:], [("6221", "SOUR:WAVE:ABOR"), ("6221", "OUTP OFF")])
+        rig.assert_switched_off()
 
     def test_the_current_scans_ending_is_the_same(self):
         """A Current scan, as the frequency modes mirror it: completed keeps
@@ -686,7 +883,7 @@ class SequenceTests(unittest.TestCase):
         rig.sr830["830_a"].never_locks_at = 317.3
         with self.assertRaisesRegex(RuntimeError, "within 8 s"):
             rig.run()
-        self.assertEqual(rig.log[-2:], [("6221", "SOUR:WAVE:ABOR"), ("6221", "OUTP OFF")])
+        rig.assert_switched_off()
 
 
 class PlotTests(unittest.TestCase):
