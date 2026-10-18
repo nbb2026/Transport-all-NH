@@ -36,6 +36,14 @@ class NestedTests(unittest.TestCase):
             (5, 10, [(10., 1.)]),
         ):
             self.assertEqual(app.ppms_scan_temperature_segments(current, target, 8), expected)
+        # A typed rate under 1 K/min is kept below 9 K too: min(rate, 1),
+        # never raised to 1 (review, 2026-10-18).
+        for current, target, expected in (
+            (20, 5, [(9.1, .5), (5., .5)]),
+            (5, 20, [(20., .5)]),
+            (20, 10, [(10., .5)]),
+        ):
+            self.assertEqual(app.ppms_scan_temperature_segments(current, target, .5), expected)
         with self.assertRaises(ValueError):
             app.ppms_scan_temperature_segments(20, 5, 11)
 
@@ -50,7 +58,9 @@ class NestedTests(unittest.TestCase):
             return original(target, rate, approach)
         obj.ppms_environment_controller.set_temperature = set_temperature
         self.run_worker(obj, motor, settings)
-        self.assertEqual(calls, [(9.1, 8.), (5., 1.), (20., 1.), (20., 10.)])
+        # Above 9 K the warm-up returns to the typed 8 K/min, not to a fixed
+        # 10 K/min (review, 2026-10-18).
+        self.assertEqual(calls, [(9.1, 8.), (5., 1.), (20., 1.), (20., 8.)])
 
     def test_field_axis_units_threshold_and_raw_values_unchanged(self):
         obj = app.CombinedControlApp.__new__(app.CombinedControlApp)

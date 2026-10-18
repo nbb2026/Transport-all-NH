@@ -303,10 +303,15 @@ class Rig:
         self.page, self.settings = page, settings
 
     def run(self):
+        """The scan as Start runs it: its one harmonic pass through
+        _ppms_scan_with_final_field, which zeroes the 6221 at every end
+        (user, 2026-10-18)."""
+        settings = dict(self.settings)
+        settings["harmonic_passes"] = (dict(self.settings),)
         with mock.patch.object(app.time, "monotonic", self.clock), \
                 mock.patch.object(app.time, "sleep", lambda _s: None), \
                 mock.patch.object(app, "PPMSMotorDebug", Motor):
-            self.page._ppms_nested_scan_worker([(1, 1, 1, 1234.0)], 100.0, 0.0, 1, dict(self.settings))
+            self.page._ppms_scan_with_final_field([(1, 1, 1, 1234.0)], 100.0, 0.0, 1, settings)
 
     def rows(self):
         with self.page.ppms_live_csv_path.open(encoding="utf-8-sig", newline="") as handle:
@@ -333,11 +338,15 @@ class Rig:
         self.log.hook = hook
 
     def assert_switched_off(self):
-        """Switched off at the end, and read back as off (review, 2026-10-18)."""
-        self.test.assertEqual(self.log[-3:], [("6221", "SOUR:WAVE:ABOR"), ("6221", "OUTP OFF"), ("6221?", "OUTP?")])
+        """Switched off at the end, and read back as off (review, 2026-10-18),
+        by the zeroing every ending has (user, 2026-10-18)."""
+        sent = [entry for entry in self.log if entry[0] in ("6221", "6221?")]
+        self.test.assertEqual(sent[-3:], [("6221", "SOUR:WAVE:ABOR"), ("6221", "OUTP OFF"), ("6221?", "OUTP?")])
         self.test.assertEqual(self.source.output, 0)
         self.test.assertEqual(self.page.ppms_transport_status_var.get(),
                               "Transport acquisition: 6221 output OFF (read back)")
+        self.test.assertEqual(self.page.ppms_scan_outputs, {"6221": "zeroed"})
+        self.test.assertIn(("log", "PPMS scan end: 6221 zeroed"), self.log)
 
 
 class PrimeListTests(unittest.TestCase):
@@ -516,7 +525,10 @@ class StartTests(unittest.TestCase):
                       question)
         self.assertTrue(page.ppms_field_scan_status_var.get().startswith(
             "Frequency scan: 43 primes: 7–199 Hz; 43 points, settle 1 s; estimated about "))
-        self.assertTrue(page.ppms_live_csv_path.name.startswith("PPMS_Frequency_"))
+        # The run folder, named PPMS_<date>_<time> when the name is blank
+        # (user, 2026-10-18).
+        self.assertRegex(page.ppms_run_folder.name, r"^PPMS_\d{8}_\d{6}$")
+        self.assertEqual(page.ppms_run_recorder.csv_path.parent, page.ppms_run_folder)
         # The worker gets the passes built here, with the frequencies in them.
         self.assertEqual(len(settings["harmonic_passes"]), 1)
         self.assertEqual(settings["harmonic_passes"][0]["frequencies"], settings["frequencies"])
@@ -658,9 +670,10 @@ class SequenceTests(unittest.TestCase):
             self.assertNotIn(("6221", command), between, "the amplitude update does not re-arm")
         # Until the next frequency's set-up resets it.
         self.assertLess(rig.index(("6221", "*RST"), second), third_freq)
-        self.assertEqual(rig.source.output, 1, "a completed scan keeps the last output, as a Current scan")
+        # A completed scan zeroes the 6221 too (user, 2026-10-18; it kept
+        # the last output), after the last point.
+        rig.assert_switched_off()
         self.assertEqual(rig.source.frequency, 3.0)
-        self.assertAlmostEqual(rig.source.amplitude, math.sqrt(2) * 1e-3)
         self.assertFalse(any(entry[:2] == ("ppms", "set_field") for entry in log))
 
     def test_frequency_mode_sets_each_frequency_up_and_reads_once(self):
@@ -726,9 +739,14 @@ class SequenceTests(unittest.TestCase):
             rig.run()
         self.assertNotIn(("6221", "SOUR:WAVE:FREQ 3"), rig.log)
         # The end's off is read back too, and the line says it is still ON
-        # instead of OFF (review, 2026-10-18).
+        # instead of OFF (review, 2026-10-18); so does the end's zeroing
+        # (user, 2026-10-18), for the finish to say CHECK IT.
+        self.assertIn(("log", "PPMS: the 6221 still reads ON (OUTP?=1) after the scan's output off"), rig.log)
+        self.assertEqual(rig.page.ppms_scan_outputs,
+                         {"6221": "zero FAILED: the 6221 output did not read back OFF (OUTP? 1)"})
         self.assertEqual(rig.page.ppms_transport_status_var.get(),
-                         "Transport acquisition: 6221 still ON (OUTP?=1); switch it off")
+                         "Transport acquisition: 6221 zero FAILED: the 6221 output did not read back OFF (OUTP? 1); "
+                         "switch it off")
 
     def test_the_6221_frequency_is_read_back_to_0_01_hz(self):
         """997 Hz not applied reads back the reset 1000 Hz, within the
@@ -768,33 +786,30 @@ class SequenceTests(unittest.TestCase):
         before = rig.index(("6221", "SOUR:WAVE:ABOR"), rig.index(("6221?", "SOUR:WAVE:FREQ?"), init - 60))
         self.assertLess(before, init)
 
-    def test_a_stop_while_the_frequency_changes_says_the_6221_is_off(self):
-        """Stop between the per-frequency off and the re-arm: the finish
-        line says the 6221 is off, not "all outputs kept" (review,
-        2026-10-18).  A Stop in the lock wait after the re-arm keeps it on."""
-        for entry, output, text in (
-                (("6221", "SOUR:WAVE:FREQ 3"), 0,
-                 "PPMS Frequency scan stopped; CSV kept; 6221 off (stopped while changing frequency); "
-                 "the other settings kept, nothing zeroed"),
-                (("6221", "SOUR:WAVE:INIT"), 1,
-                 "PPMS Frequency scan stopped; CSV kept; all settings and outputs kept, nothing zeroed")):
+    def test_a_stop_while_the_frequency_changes_ends_with_the_6221_zeroed(self):
+        """Stop between the per-frequency off and the re-arm, or in the lock
+        wait after it: the 6221 is zeroed and read back either way, and the
+        finish says so (user, 2026-10-18; the line said "6221 off (stopped
+        while changing frequency)" or "all settings and outputs kept")."""
+        for entry in (("6221", "SOUR:WAVE:FREQ 3"), ("6221", "SOUR:WAVE:INIT")):
             with self.subTest(entry=entry):
                 rig = Rig(self, "Frequency", (2.0, 3.0), (1.0,))
+                rig.page.root = types.SimpleNamespace(after=lambda _ms, show: show())
                 rig.stop_at(entry, occurrence=1 if entry[1].startswith("SOUR:WAVE:FREQ") else 2)
                 with self.assertRaises(app.PPMSScanCancelled) as caught:
                     rig.run()
                 self.assertEqual(len(rig.rows()), 1)
-                self.assertEqual(rig.source.output, output)
+                rig.assert_switched_off()
                 with mock.patch.object(app.messagebox, "showerror") as dialog:
                     rig.page._report_ppms_scan_finished("Frequency", True, caught.exception)
                 dialog.assert_not_called()
-                self.assertEqual(rig.page.ppms_field_scan_status_var.get(), text)
+                self.assertEqual(rig.page.ppms_field_scan_status_var.get(), "Stopped; 6221 zeroed")
 
     def test_frequency_current_endings_at_every_step(self):
-        """The Stop button keeps what is on at that moment; "I off" switches
-        the 6221 off and reads it back: at the change's off, in the set-up,
-        the SR830 lock, the Zurich wait, the amplitude update and the
-        settle, as a Current scan ends."""
+        """The Stop button and "I off" both end with the 6221 switched off
+        and read back (user, 2026-10-18; the Stop button kept what was on):
+        at the change's off, in the set-up, the SR830 lock, the Zurich wait,
+        the amplitude update and the settle, as a Current scan ends."""
         peak = f"SOUR:WAVE:AMPL {math.sqrt(2) * 1e-3:.12e}"
         steps = (
             ("the set-up after the off", ("6221", "*RST"), 2, 0, 2),
@@ -813,13 +828,14 @@ class SequenceTests(unittest.TestCase):
                     except app.PPMSScanCancelled:
                         pass
                     self.assertEqual(len(rig.rows()), rows)
+                    rig.assert_switched_off()
                     if preserve:
-                        self.assertEqual(rig.source.output, output)
-                        self.assertNotIn(("6221", "OUTP OFF"), rig.log[rig.stopped_at:], "nothing switched off")
-                    else:
-                        rig.assert_switched_off()
+                        # The Stop button: the step under way ends, and only
+                        # the end's zeroing switches the 6221 off (output
+                        # ``output`` at the stop).
+                        self.assertEqual(rig.log[rig.stopped_at:].count(("6221", "OUTP OFF")), 1)
 
-    def test_a_lock_in_range_failure_keeps_the_output_as_before(self):
+    def test_a_lock_in_range_failure_ends_with_the_6221_zeroed(self):
         rig = Rig(self, "Frequency", (2.0, 3.0), (1.0,))
         acquire = rig.page._acquire_ppms_first_point
         calls = []
@@ -832,7 +848,10 @@ class SequenceTests(unittest.TestCase):
         rig.page._acquire_ppms_first_point = first_point
         with self.assertRaises(app.PPMSLockinRangeError):
             rig.run()
-        self.assertEqual((rig.source.output, rig.source.frequency), (1, 3.0))
+        # Its own clean-up still keeps the output; the end's zeroing does
+        # not (user, 2026-10-18: it kept the output).
+        self.assertEqual(rig.source.frequency, 3.0)
+        rig.assert_switched_off()
         self.assertEqual(len(rig.rows()), 1)
 
     def test_every_harmonic_pass_runs_the_whole_frequency_scan(self):
@@ -853,16 +872,19 @@ class SequenceTests(unittest.TestCase):
         self.assertIn(("sr830_8", "HARM 2"), rig.log)
         self.assertEqual([r["sr830_10_harmonic"] for r in rows], ["3", "3", "", ""])
 
-    def test_stop_mid_scan_keeps_every_output_as_a_current_scan(self):
+    def test_stop_mid_scan_zeroes_only_the_6221(self):
         """The Stop button during the second frequency's settle: that point
-        is not saved, and nothing is switched off or zeroed."""
+        is not saved, and only the end's zeroing of the 6221 is sent after
+        it (user, 2026-10-18; nothing was switched off before)."""
         rig = Rig(self, "Frequency", (2.0, 3.0, 5.0), (1.0,))
         rig.stop.on_wait = lambda seconds: rig.stop.set() if math.isclose(seconds, 5 / 3) else None
         rig.run()
         self.assertEqual(len(rig.rows()), 1)
         stopped = rig.index(("wait", round(5 / 3, 9)))
-        self.assertFalse([entry for entry in rig.log[stopped:] if entry[0] == "6221"], "nothing sent after the Stop")
-        self.assertEqual((rig.source.output, rig.source.frequency), (1, 3.0))
+        self.assertEqual([entry for entry in rig.log[stopped:] if entry[0] in ("6221", "6221?")],
+                         [("6221", "SOUR:WAVE:ABOR"), ("6221", "OUTP OFF"), ("6221?", "OUTP?")])
+        rig.assert_switched_off()
+        self.assertEqual(rig.source.frequency, 3.0)
         self.assertNotIn(("6221", "SOUR:WAVE:FREQ 5"), rig.log)
 
     def test_i_off_mid_scan_switches_the_6221_off_as_a_current_scan(self):
@@ -873,12 +895,12 @@ class SequenceTests(unittest.TestCase):
         rig.assert_switched_off()
 
     def test_the_current_scans_ending_is_the_same(self):
-        """A Current scan, as the frequency modes mirror it: completed keeps
-        the output, a failure switches it off."""
+        """A Current scan, as the frequency modes mirror it: completed or
+        failed, the 6221 ends zeroed (user, 2026-10-18; completed kept it)."""
         rig = Rig(self, "Current", None, (0.5, 1.0))
         rig.zurich.instant = True
         rig.run()
-        self.assertEqual(rig.source.output, 1)
+        rig.assert_switched_off()
         rig = Rig(self, "Current", None, (0.5, 1.0))
         rig.sr830["830_a"].never_locks_at = 317.3
         with self.assertRaisesRegex(RuntimeError, "within 8 s"):

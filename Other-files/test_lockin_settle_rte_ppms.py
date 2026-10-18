@@ -720,8 +720,10 @@ class PPMSStartTests(NoWindows):
         self.assertIn("Measurement points: 10\nWait before each reading: 3 s (1 x 3 s, the time constant "
                       "of SR830-2, the slowest lock-in measured; Settle s is 0.5 s); harmonic passes with "
                       "fewer lock-ins wait 1 s\n", message)
-        # 4 s of ramp, 5 x (3 + 1) s, 5 x (1 + 1) s, and 6 x 10 + 12 s.
-        self.assertIn("Estimated duration: about 1 min 46 s", message)
+        # 4 s of ramp in each of the two passes, 5 x (3 + 1) s, 5 x (1 + 1)
+        # s, 6 x 10 s and a 12 s set-up per pass: the ramps and set-ups come
+        # again in the second pass (review, 2026-10-18; it said 1 min 46 s).
+        self.assertIn("Estimated duration: about 2 min 02 s", message)
         # Both passes measure SR830-1 and the Zurich: one wait, no such note.
         obj = self.scan_object(zurich_tau=0.1, harmonic_a="1+2")
         obj.ppms_sr830_time_constant_codes = {"830_a": 11}

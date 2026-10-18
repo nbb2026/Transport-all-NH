@@ -14,26 +14,38 @@ from test_ppms_motor_debug import app
 
 class ModeTests(unittest.TestCase):
     def test_stop_is_non_modal_in_all_four_modes(self):
+        # Every end zeroes the 6221 (user, 2026-10-18): the status says so,
+        # and a stop with the 6221 read back off opens no dialog.
         obj = app.CombinedControlApp.__new__(app.CombinedControlApp)
-        obj.closing, obj.root = False, None
+        later = []
+        obj.closing, obj.root = False, types.SimpleNamespace(after=lambda _ms, show: later.append(show))
         obj.thread_log = Mock()
         obj.ppms_field_scan_status_var = Mock()
         obj.ppms_field_scan_eta_var = Mock()
+        obj.ppms_scan_outputs = {"6221": "zeroed"}
         for mode in ("Temperature", "Field", "Angle", "Current"):
             for error in (None, app.PPMSScanCancelled("stopped as requested while waiting for lock-in reference")):
                 with patch.object(app.messagebox, "showerror") as popup:
                     obj._report_ppms_scan_finished(mode, True, error)
                     popup.assert_not_called()
-                self.assertIn(f"{mode} scan stopped", obj.ppms_field_scan_status_var.set.call_args.args[0])
+                self.assertEqual(later, [])
+                self.assertEqual(obj.ppms_field_scan_status_var.set.call_args.args[0],
+                                 "Stopped; 6221 zeroed" + ("; field kept at its setpoint" if mode == "Field" else ""))
 
     def test_real_failure_is_not_hidden_by_stop(self):
+        # The dialog opens from the Tk event loop and says how the 6221 ended
+        # (user, 2026-10-18).
         obj = app.CombinedControlApp.__new__(app.CombinedControlApp)
-        obj.closing, obj.root = False, None
+        obj.closing, obj.root = False, types.SimpleNamespace(after=lambda _ms, show: show())
+        obj.thread_log = Mock()
         obj.ppms_field_scan_status_var = Mock()
         obj.ppms_field_scan_eta_var = Mock()
+        obj.ppms_scan_outputs = {"6221": "zeroed"}
         with patch.object(app.messagebox, "showerror") as popup:
             obj._report_ppms_scan_finished("Current", True, OSError("CSV write failed"))
-            popup.assert_called_once_with("PPMS Current scan", "CSV write failed", parent=None)
+            popup.assert_called_once_with("PPMS Current scan", "CSV write failed\n\nAt the end: 6221 zeroed",
+                                          parent=obj.root)
+        self.assertEqual(obj.ppms_field_scan_status_var.set.call_args.args[0], "Failed: CSV write failed")
 
     def test_controls_are_created_inside_static_content(self):
         tree = ast.parse(textwrap.dedent(inspect.getsource(app.CombinedControlApp.build_ppms_ui)))
@@ -141,13 +153,19 @@ class ModeTests(unittest.TestCase):
                     self.launch("Angle", (26, 28, 1), speed=typed)
 
     def test_optional_filename_and_no_overwrite(self):
-        for entered, expected in (("sampleA", "sampleA.csv"), ("sampleA.csv", "sampleA.csv")):
+        # The run folder <folder>/<name>/ with <name>.csv and <name>.log
+        # (user, 2026-10-18); a name in use gets _01, and nothing is
+        # overwritten; blank: PPMS_<date>_<time>.
+        for entered, expected in (("sampleA", "sampleA"), ("sampleA.csv", "sampleA")):
             obj, _, _ = self.launch("Angle", (0, 10, 5), filename=entered)
-            self.assertEqual(obj.ppms_live_csv_path.name, expected)
-        obj, _, _ = self.launch("Angle", (0, 10, 5), filename="sampleA.csv", existing="sampleA.csv")
-        self.assertEqual(obj.ppms_live_csv_path.name, "sampleA_01.csv")
+            self.assertEqual(obj.ppms_run_folder.name, expected)
+            self.assertEqual(obj.ppms_run_recorder.csv_path.name, f"{expected}.csv")
+            self.assertEqual(obj.ppms_run_recorder.log_path.name, f"{expected}.log")
+        obj, _, _ = self.launch("Angle", (0, 10, 5), filename="sampleA.csv", existing="sampleA")
+        self.assertEqual(obj.ppms_run_folder.name, "sampleA_01")
+        self.assertEqual(obj.ppms_run_recorder.csv_path.name, "sampleA_01.csv")
         obj, _, _ = self.launch("Angle", (0, 10, 5), filename=" ")
-        self.assertTrue(obj.ppms_live_csv_path.name.startswith("PPMS_Angle_"))
+        self.assertRegex(obj.ppms_run_folder.name, r"^PPMS_\d{8}_\d{6}$")
         self.launch("Angle", (0, 10, 5), filename=None)
 
     def test_temperature_field_launch(self):

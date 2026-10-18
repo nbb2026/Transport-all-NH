@@ -286,6 +286,9 @@ class MacroTempKeepsItsRate(unittest.TestCase):
         panel.ppms_environment_controller.read_environment.return_value = {'temperature_k': live_k}
         panel.ppms_executor = ImmediateExecutor()
         panel.post_ui = lambda callback: callback()
+        # The next line runs from the Tk event loop (root.after), not inside
+        # the post_ui callback (review, 2026-10-18); here at once.
+        panel.root = types.SimpleNamespace(after=lambda _ms, callback: callback())
         panel._set_ppms_environment_ui = Mock()
         panel._ppms_macro_finish = Mock()
         panel.ppms_field_scan_running = False   # the SCAN stand-in starts nothing
