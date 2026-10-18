@@ -2587,10 +2587,30 @@ PPMS_TRANSPORT_FREQUENCY_HZ = 317.3
 RTE_TRANSPORT_FREQUENCY_HZ = 317.3
 RTE_TRANSPORT_CURRENT_RMS_MA = 1.0
 # SHV start-up scan, the user's figures (2026-10-18): an Angle scan from 0 to
-# -360 deg in 5 deg steps, round trip, Acquire s 2 (Settle s 0.5 and Loops 1
-# as before).  The Angle range is also what choosing Angle puts in the boxes.
+# -360 deg in 5 deg steps, Acquire s 2 (Settle s 0.5 and Loops 1 as before),
+# round trip off since 2026-10-18 (user: "default not click Round trip").
+# The Angle range is also what choosing Angle puts in the boxes.
 RTE_DEFAULT_SCAN_MODE = 'Angle'
 RTE_ANGLE_DEFAULT_RANGE = ('0', '-360', '5')
+# The SHV scan modes.  Angle+Field and Angle+Current (user, 2026-10-18: "add
+# the angle + field scan mode, field is the outside loop"; "also angle+current
+# mode, the current is outside loop"): the main row is the inner angle sweep,
+# and an outer row, shown only in those modes, gives the KEPCO currents or
+# the 6221 currents of the outer loop.
+RTE_SCAN_MODES = ('Field', 'Current', 'Angle', 'Angle+Field', 'Angle+Current')
+# The modes that turn the stage (the stage check at Start, the stage columns).
+RTE_ANGLE_MODES = ('Angle', 'Angle+Field', 'Angle+Current')
+# Each outer row: its label, its start-up range (Angle+Field 0 to 8 A in 2 A
+# steps, the user's figures; Angle+Current the Current scan's), and the
+# CSV's last column, the outer step's number.
+RTE_OUTER_ROWS = {
+    'Angle+Field': dict(label='Outer KEPCO A:', defaults=('0', '8', '2'), index_column='outer_field_index'),
+    'Angle+Current': dict(label='Outer 6221 mA RMS:', defaults=('0.01', '1', '0.01'),
+                          index_column='outer_current_index'),
+}
+# _rte_settle_field reads the LS475 every 0.2 s; the shortest settle is
+# STFMR_FIELD_SETTLE_REQUIRED_SAMPLES of them (the time estimates count it).
+RTE_FIELD_SETTLE_POLL_S = 0.2
 RTE_ACQUISITION_S = 2.0
 # The "KEPCO current A" box at start-up, the field an Angle scan holds (user's
 # figure, 2026-10-18; it was 0 A).  Only Apply KEPCO or an Angle scan's Start,
@@ -49993,6 +50013,39 @@ def rte_scan_plan(mode, start, end, step, loops=1, round_trip=True):
                  for point, value in enumerate(nodes, 1))
 
 
+def rte_outer_plan(mode, start, end, step):
+    """The outer loop of an Angle+Field or Angle+Current scan (user,
+    2026-10-18): its KEPCO currents (A) or 6221 currents (mA RMS), from
+    Start to End in Step, one pass, no round trip.  The KEPCO currents get
+    the Field scan's +/-10 A check (rte_scan_plan's); the 6221 currents are
+    checked by the caller, as a Current scan's, with
+    validate_ppms_transport_scan_settings."""
+    inner = {'Angle+Field': 'Field', 'Angle+Current': 'Current'}.get(mode)
+    if inner is None:
+        raise ValueError('Only Angle+Field and Angle+Current scans have an outer loop')
+    label = RTE_OUTER_ROWS[mode]['label'].rstrip(':')
+    try:
+        return tuple(value for _loop, _point, value in rte_scan_plan(inner, start, end, step, 1, False))
+    except ValueError as error:
+        raise ValueError(f'{label}: {error}') from error
+
+
+def rte_outer_step_of(row):
+    """An Angle+Field or Angle+Current row's outer step for the plot (user,
+    2026-10-18): (value, name), the name its KEPCO current ("+2 A") or its
+    6221 current ("0.5 mA"); None for the rows of every other mode."""
+    if 'outer_field_index' in row:
+        value, unit, form = row.get('kepco_programmed_current_a'), 'A', '+g'
+    elif 'outer_current_index' in row:
+        value, unit, form = row.get('6221_current_rms_ma'), 'mA', 'g'
+    else:
+        return None
+    if not isinstance(value, (int, float)) or not math.isfinite(value):
+        index = row.get('outer_field_index', row.get('outer_current_index'))
+        return (float(index) if isinstance(index, (int, float)) else 0.0), f'step {index}'
+    return float(value), f'{value:{form}} {unit}'
+
+
 # The room the RT-E scan box keeps for its status line: the stage block goes
 # beside the lock-in choices only when the scan box keeps it on one line
 # (user, 2026-10-17; the messages are in CI's RTEStatusRowTests).  It is the
@@ -50068,6 +50121,9 @@ RTE_SCAN_NOTES = {
     'Field': 'Field: KEPCO A; readback: signed LS475 G',
     'Current': 'Field: KEPCO A; readback: signed LS475 G',
     'Angle': 'Angle: Stage °; field: KEPCO current A',
+    # The outer loop's unit on the outer row (user, 2026-10-18).
+    'Angle+Field': 'Angle+Field: Stage °; outer: KEPCO A',
+    'Angle+Current': 'Angle+Current: Stage °; outer: 6221 mA',
 }
 
 
@@ -50187,9 +50243,9 @@ class RTEPanel(PPMSPanel):
                               ('830_c', False), ('zurich', True)):
             self.ppms_lockin_selection[key].set(measured)
         # The start-up scan (user's figures, 2026-10-18): Angle, 0 to -360
-        # deg in 5 deg steps, round trip, Acquire s 2.  The mode change sets the
-        # range, round trip, units label, scan note and plot axis, as
-        # choosing Angle does.
+        # deg in 5 deg steps, Acquire s 2, round trip off (user, 2026-10-18).
+        # The mode change sets the range, round trip, units label, scan note,
+        # outer row (removed) and plot axis, as choosing Angle does.
         self.ppms_acquisition_time_var.set(f'{RTE_ACQUISITION_S:g}')
         self.ppms_simple_mode.set(RTE_DEFAULT_SCAN_MODE)
         self._rte_mode_changed()
@@ -50444,6 +50500,17 @@ class RTEPanel(PPMSPanel):
         self.rte_stage_stop_button = ttk.Button(stage_box, text='Stop stage', width=11, style='Inline.TButton',
                                                 command=self._rte_stage_stop)
         self.rte_stage_stop_button.grid(row=0, column=3, padx=2, sticky='ew')
+        # "Go to 0°" (user, 2026-10-18: "add a zero button here to move to
+        # stage 0-degree position"): Move stage to 0°, by the same path and
+        # checks, without touching the Stage ° box; not "Set stage 0°", which
+        # makes the present place the zero.  Right of Stop stage, as large as
+        # Move stage; in column 4, the block's spare column, at its own width
+        # (sticky w), so what the live line needs beyond the buttons still
+        # goes there.  This row was about 310 px; with it, the block may be
+        # wider (unmeasured without CI).
+        self.rte_stage_home_button = ttk.Button(stage_box, text='Go to 0°', width=11, style='Inline.TButton',
+                                                command=self._rte_stage_go_to_zero)
+        self.rte_stage_home_button.grid(row=0, column=4, padx=2, sticky='w')
         zero = ttk.Button(stage_box, text='Set stage 0°', width=11, style='Inline.TButton',
                           command=self._rte_stage_set_zero)
         if laid_out:
@@ -50466,7 +50533,7 @@ class RTEPanel(PPMSPanel):
         # Move stage and Set stage 0° are edit widgets (locked while busy);
         # Stop stage stays usable whenever the stage is connected, even
         # during a move or scan (_update_ppms_control_ui).
-        for widget in (stage_entry, move, zero):
+        for widget in (stage_entry, move, self.rte_stage_home_button, zero):
             self.rte_edit_widgets.append((widget, 'normal'))
         # One live line for the connection and the reading, the former status
         # label and live line merged: "Stage: not connected", "Stage:
@@ -50497,7 +50564,7 @@ class RTEPanel(PPMSPanel):
         self.ppms_simple_range = [tk.StringVar(value=v) for v in ('0.01', '1', '0.01')]
         self.rte_scan_units = tk.StringVar(value='6221 mA RMS')
         self.rte_round_trip = tk.BooleanVar(value=False)
-        combo = ttk.Combobox(scan_rows, textvariable=self.ppms_simple_mode, values=('Field', 'Current', 'Angle'), state='readonly', width=9)
+        combo = ttk.Combobox(scan_rows, textvariable=self.ppms_simple_mode, values=RTE_SCAN_MODES, state='readonly', width=9)
         combo.grid(row=0, column=0)
         combo.bind('<<ComboboxSelected>>', self._rte_mode_changed)
         self.rte_edit_widgets.append((combo, 'readonly'))
@@ -50519,6 +50586,29 @@ class RTEPanel(PPMSPanel):
         self.ppms_field_scan_stop_button.grid(row=2, column=1, columnspan=2, sticky='ew')
         self.ppms_field_scan_save_button = ttk.Button(scan_rows, text='Save CSV as', command=self.save_ppms_field_scan_csv)
         self.ppms_field_scan_save_button.grid(row=2, column=3, columnspan=2, sticky='ew')
+        # The outer row of Angle+Field and Angle+Current (user, 2026-10-18):
+        # its label, then Start / End / Step under the main row's.  Shown only
+        # in those two modes (_rte_mode_changed), so every other mode's scan
+        # box is laid out exactly as before; in them the box grows by this one
+        # row.  One row for both modes: the label's text and the entries'
+        # variables are swapped on a mode change, each mode keeping its own
+        # three variables, so a value is never read in the other's unit.
+        self.rte_outer_ranges = {mode: [tk.StringVar(value=v) for v in row['defaults']]
+                                 for mode, row in RTE_OUTER_ROWS.items()}
+        self.rte_outer_label = tk.StringVar(value=RTE_OUTER_ROWS['Angle+Field']['label'])
+        self.rte_outer_widgets, self.rte_outer_entries = [], []
+        outer_label = ttk.Label(scan_rows, textvariable=self.rte_outer_label)
+        self.rte_outer_widgets.append((outer_label, dict(row=3, column=0, sticky='e')))
+        for i, (label, variable) in enumerate(zip(('Start', 'End', 'Step'), self.rte_outer_ranges['Angle+Field'])):
+            self.rte_outer_widgets.append((ttk.Label(scan_rows, text=label),
+                                           dict(row=3, column=1 + 2*i, sticky='e', padx=(4, 0))))
+            entry = ttk.Entry(scan_rows, textvariable=variable, width=6)
+            self.rte_outer_widgets.append((entry, dict(row=3, column=2 + 2*i, padx=2, sticky='ew')))
+            self.rte_outer_entries.append(entry)
+            self.rte_edit_widgets.append((entry, 'normal'))
+        for widget, options in self.rte_outer_widgets:
+            widget.grid(**options)
+            widget.grid_remove()
         # Status messages run to about a hundred characters and wrapped into
         # two lines when the label was one grid cell beside the progress bar.
         # Spanning the panel gives the text every pixel the progress bar does
@@ -50663,21 +50753,49 @@ class RTEPanel(PPMSPanel):
     def _rte_mode_changed(self, _event=None):
         mode = self.ppms_simple_mode.get()
         current = mode == 'Current'
-        # Round trip by default for Field and Angle: an Angle scan then comes
-        # back toward its start, unwinding the sample wires (user, 2026-10-13).
-        self.rte_round_trip.set(not current)
-        # Angle: 0 to -360 deg in 5 deg steps (user's figures, 2026-10-18).
-        defaults = (('0.01', '1', '0.01') if current else RTE_ANGLE_DEFAULT_RANGE if mode == 'Angle'
+        angle = mode in RTE_ANGLE_MODES
+        # Round trip by default for Field only (and never for Current).  The
+        # Angle scans had it on, so that they came back toward their start
+        # (user, 2026-10-13); off since 2026-10-18 (user: "default not click
+        # Round trip"), for Angle, Angle+Field and Angle+Current.
+        self.rte_round_trip.set(mode == 'Field')
+        # Angle: 0 to -360 deg in 5 deg steps (user's figures, 2026-10-18),
+        # also the inner sweep of Angle+Field and Angle+Current.
+        defaults = (('0.01', '1', '0.01') if current else RTE_ANGLE_DEFAULT_RANGE if angle
                     else ('-3', '3', '0.05'))
         for variable, value in zip(self.ppms_simple_range, defaults):
             variable.set(value)
-        self.rte_scan_units.set('6221 mA RMS' if current else 'Stage °' if mode == 'Angle' else 'KEPCO A')
+        self.rte_scan_units.set('6221 mA RMS' if current else 'Stage °' if angle else 'KEPCO A')
         note = self.__dict__.get('rte_scan_note')
         if note is not None:
             note.set(RTE_SCAN_NOTES.get(mode, RTE_SCAN_NOTES['Current']))
+        self._rte_show_outer_row(mode)
         if not self.ppms_field_scan_rows:
-            self.ppms_plot_axis = 'current' if current else 'angle' if mode == 'Angle' else 'field'
+            self.ppms_plot_axis = 'current' if current else 'angle' if angle else 'field'
             self._redraw_ppms_transport_plot()
+
+    def _rte_show_outer_row(self, mode):
+        """The outer row (user, 2026-10-18): shown, with its mode's label,
+        variables and start-up range, for Angle+Field and Angle+Current;
+        removed (grid_remove) for every other mode, whose layout is then
+        exactly as before.  The range is set back to the defaults whenever
+        the mode is chosen, as the main row's is."""
+        widgets = self.__dict__.get('rte_outer_widgets')
+        if widgets is None:
+            return      # the offline tests' page stand-ins have no scan box
+        row = RTE_OUTER_ROWS.get(mode)
+        if row is None:
+            for widget, _options in widgets:
+                widget.grid_remove()
+            return
+        variables = self.rte_outer_ranges[mode]
+        for variable, value in zip(variables, row['defaults']):
+            variable.set(value)
+        self.rte_outer_label.set(row['label'])
+        for entry, variable in zip(self.rte_outer_entries, variables):
+            entry.configure(textvariable=variable)
+        for widget, options in widgets:
+            widget.grid(**options)
 
     def _update_ppms_control_ui(self):
         if 'rte_edit_widgets' not in self.__dict__:
@@ -50894,7 +51012,15 @@ class RTEPanel(PPMSPanel):
                 self.rte_stage_live.set(f'Stage: {degrees:+.3f}°, moving')
         self.post_ui(show)
 
-    def _rte_stage_move(self):
+    def _rte_stage_go_to_zero(self):
+        """Go to 0° (user, 2026-10-18): Move stage with the target 0°, the
+        Stage ° box left as it is."""
+        self._rte_stage_move(target=0.0)
+
+    def _rte_stage_move(self, target=None):
+        """Move stage: to the Stage ° box's angle, or to ``target`` (Go to
+        0°), with every check, the stage's Yes/No for a CLR or an EO=1, both
+        stop events and the progress on the stage line."""
         try:
             self._require_ppms_control_ready()
             stage = self.rte_controllers['newmark']
@@ -50905,7 +51031,7 @@ class RTEPanel(PPMSPanel):
                 # it stopped (review, 2026-10-18); the controller refuses too.
                 raise RuntimeError(f'The {stage.label}\'s last stop was not confirmed, so it may still be turning: '
                                    'press Stop stage first (check the stage)')
-            target = float(self.rte_stage_target.get())
+            target = float(self.rte_stage_target.get() if target is None else target)
             if not math.isfinite(target) or abs(target) > NEWMARK_CABLE_LIMIT_DEG:
                 raise ValueError(f'The stage angle must be within ±{NEWMARK_CABLE_LIMIT_DEG:g}° of the stage zero '
                                  '(the sample wires)')
@@ -51316,23 +51442,25 @@ class RTEPanel(PPMSPanel):
         if self.closing or self.rte_closed or self.ppms_field_scan_stop_event.wait(seconds):
             raise PPMSScanCancelled('SHV stopped; partial point discarded')
 
-    def _rte_settle_field(self):
+    def _rte_settle_field(self, **details):
         """Wait, at most STFMR_FIELD_SETTLE_TIMEOUT_S, for three LS475
         readings in a row to agree.  A field that has not settled by then no
         longer ends the scan: the scan goes on with a note in the log, as the
         LS475's drift must not affect an RT-E scan (user, 2026-10-18).  A
-        failed LS475 read still raises."""
+        failed LS475 read still raises.  ``details`` go into the log's
+        field_settled / field_not_settled (Angle+Field's step_index, user,
+        2026-10-18)."""
         deadline, readings, field = time.monotonic() + STFMR_FIELD_SETTLE_TIMEOUT_S, [], None
         while field is None or time.monotonic() < deadline:
-            self._rte_wait(.2)
+            self._rte_wait(RTE_FIELD_SETTLE_POLL_S)
             field = self._rte_read_field()
             readings = (readings + [field])[-STFMR_FIELD_SETTLE_REQUIRED_SAMPLES:]
             self.post_ui(lambda value=field: self.rte_field_live.set(f'LS475 field: {value:+.7g} G'))
             tolerance = max(STFMR_FIELD_SETTLE_ABS_TOLERANCE_G, abs(field) * STFMR_FIELD_SETTLE_REL_TOLERANCE)
             if len(readings) == STFMR_FIELD_SETTLE_REQUIRED_SAMPLES and max(readings) - min(readings) <= tolerance:
-                self._rte_log('field_settled', field_g=field, readings_g=readings)
+                self._rte_log('field_settled', field_g=field, readings_g=readings, **details)
                 return field
-        self._rte_log('field_not_settled', timeout_s=STFMR_FIELD_SETTLE_TIMEOUT_S, readings_g=readings)
+        self._rte_log('field_not_settled', timeout_s=STFMR_FIELD_SETTLE_TIMEOUT_S, readings_g=readings, **details)
         self.thread_log(f'SHV: the LS475 field did not settle within {STFMR_FIELD_SETTLE_TIMEOUT_S:g} s (last '
                         f'readings {", ".join(f"{value:+.6g}" for value in readings)} G); the scan goes on')
         return field
@@ -51353,15 +51481,18 @@ class RTEPanel(PPMSPanel):
                                    'turning: press Stop stage first (check the stage)')
             self._rte_capture_zurich()
             mode = self.ppms_simple_mode.get()
-            plan = rte_scan_plan(mode, *(v.get() for v in self.ppms_simple_range),
+            # Angle+Field and Angle+Current (user, 2026-10-18): the main row is
+            # an Angle scan's sweep, the inner loop, with its checks.
+            angle = mode in RTE_ANGLE_MODES
+            plan = rte_scan_plan('Angle' if angle else mode, *(v.get() for v in self.ppms_simple_range),
                                  self.ppms_field_scan_loop_var.get(), self.rte_round_trip.get())
             if not self.rte_controllers['gauss'].connected:
                 raise ValueError('Connect LS475 for measured-field recording')
             if mode == 'Field' and not self.rte_controllers['kepco'].connected:
                 raise ValueError('Connect KEPCO for a field scan')
-            if mode == 'Angle':
+            if angle:
                 # The stage turns the sample holder while the KEPCO holds a
-                # fixed field (user, 2026-10-13).
+                # fixed field (user, 2026-10-13), or steps it (Angle+Field).
                 stage = self.rte_controllers['newmark']
                 if not stage.connected:
                     # Where its Connect is: the rack's "Motor" row since
@@ -51379,25 +51510,38 @@ class RTEPanel(PPMSPanel):
                     raise ValueError(f'The {stage.label} has no steps/° scale; Disconnect and Connect the '
                                      'stage again')
                 if not self.rte_controllers['kepco'].connected:
-                    raise ValueError('Connect KEPCO for an angle scan: it holds the field')
+                    raise ValueError('Connect KEPCO for an angle scan: it '
+                                     + ('sets the outer field' if mode == 'Angle+Field' else 'holds the field'))
+            # The outer loop (user, 2026-10-18), after the inner range's and
+            # the instruments' checks: Angle+Field's KEPCO currents within
+            # +/-10 A, Angle+Current's 6221 currents checked below.
+            outer = rte_outer_plan(mode, *(v.get() for v in self.rte_outer_ranges[mode])) if mode in RTE_OUTER_ROWS \
+                else None
             # A Field scan takes its KEPCO currents from the scan range and
             # needs only the voltage limit; a Current scan never drives the
             # KEPCO.  The unused boxes no longer refuse a scan (audit,
             # 2026-10-13).  An Angle scan holds the "KEPCO current A" box's
             # current, with the voltage limit, for the whole scan.
+            # Angle+Current holds that field too (user, 2026-10-18); an
+            # Angle+Field scan takes its currents from the outer row and needs
+            # only the voltage limit.
             field_current = None
-            if mode == 'Angle':
+            if mode in ('Angle', 'Angle+Current'):
                 field_current, limit = self._rte_drive_parameters()
             else:
-                limit = self._rte_voltage_limit() if mode == 'Field' else None
+                limit = self._rte_voltage_limit() if mode in ('Field', 'Angle+Field') else None
             settings = self._ppms_direct_transport_settings()
-            if mode == 'Current':
-                for _, _, value in plan:
-                    validate_ppms_transport_scan_settings(value, settings['frequency_hz'], settings['compliance_v'],
-                        settings['harmonic_a'], settings['harmonic_b'], settings['active_lockins'],
-                        allow_no_lockins=self.zurich_scan_enabled, harmonic_c=settings['harmonic_c'])
+            # Every 6221 current a scan sets: a Current scan's, and
+            # Angle+Current's outer currents (user, 2026-10-18).
+            for value in ([value for _, _, value in plan] if mode == 'Current'
+                          else outer if mode == 'Angle+Current' else ()):
+                validate_ppms_transport_scan_settings(value, settings['frequency_hz'], settings['compliance_v'],
+                    settings['harmonic_a'], settings['harmonic_b'], settings['active_lockins'],
+                    allow_no_lockins=self.zurich_scan_enabled, harmonic_c=settings['harmonic_c'])
             passes = self._rte_harmonic_passes(settings)
-            if len(plan) * len(passes) > 100000:
+            # The points of one harmonic pass: the outer steps x the inner plan.
+            per_pass = len(plan) * (len(outer) if outer else 1)
+            if per_pass * len(passes) > 100000:
                 raise ValueError('SHV scans are limited to 100000 points including harmonic passes')
             stable, duration = float(self.ppms_field_scan_stable_var.get()), float(self.ppms_acquisition_time_var.get())
             if not math.isfinite(stable) or not 0 <= stable <= 86400 or not math.isfinite(duration) or not 0 < duration <= 86400:
@@ -51415,10 +51559,31 @@ class RTEPanel(PPMSPanel):
         pass_settles = self._ppms_settle_per_pass(stable, passes, bool(self.__dict__.get('zurich_scan_enabled', False)))
         settle_s, slowest_tc_s, slowest_meter = max(pass_settles, key=lambda item: item[0])
         settle_text = ppms_lockin_settle_text(stable, settle_s, slowest_tc_s, slowest_meter)
-        least_text = self._format_scan_duration(
-            sum((settle + duration) * len(plan) + duration for settle, _tc, _meter in pass_settles))
-        if mode == 'Angle':
+        least_s = sum((settle + duration) * per_pass + duration for settle, _tc, _meter in pass_settles)
+        if outer:
+            # Angle+Field and Angle+Current (user, 2026-10-18): the stage's
+            # turning counted too, every move of every pass from the first
+            # angle on, the returns to the first angle before each outer step
+            # included (the move to the first angle from wherever the stage
+            # is is not); Angle+Field adds the shortest field settle of each
+            # step, Angle+Current the first point's second window of each
+            # current after a pass's first (that one is counted above).
+            # Acceleration, the instrument reads and an LS475 that does not
+            # settle come on top ("at least").
+            angles = [target for _loop, _point, target in plan] * (len(outer) * len(passes))
+            turning = sum(abs(b - a) for a, b in zip(angles, angles[1:]))
+            steps_s = (len(outer) * STFMR_FIELD_SETTLE_REQUIRED_SAMPLES * RTE_FIELD_SETTLE_POLL_S
+                       if mode == 'Angle+Field' else (len(outer) - 1) * duration)
+            least_s += turning / NEWMARK_SPEED_DEG_S + len(passes) * steps_s
+        least_text = self._format_scan_duration(least_s)
+        if angle:
             first, last = plan[0][2], max((p[2] for p in plan), key=lambda value: abs(value - plan[0][2]))
+        if outer:
+            if not messagebox.askyesno(f'SHV {mode} scan', self._rte_outer_question(
+                    mode, plan, outer, passes, limit, field_current, settle_text, least_text, len(angles), turning),
+                    parent=self.root):
+                return
+        if mode == 'Angle':
             trip = ', round trip' if self.rte_round_trip.get() else ''
             if not messagebox.askyesno(
                     'SHV Angle scan',
@@ -51449,7 +51614,7 @@ class RTEPanel(PPMSPanel):
         # no box (user, 2026-10-18).
         try:
             run_settings = self._rte_run_settings(mode, plan, passes, settings, limit, field_current, stable,
-                                                  duration, pass_settles, settle_s, typed)
+                                                  duration, pass_settles, settle_s, typed, outer=outer)
         except Exception as error:
             messagebox.showerror('SHV run log', f'Could not gather the settings for the run log; the scan was not '
                                  f'started: {error}', parent=self.root)
@@ -51460,7 +51625,7 @@ class RTEPanel(PPMSPanel):
         # pressed during the check (or its CLR / EO=1) keeps the scan from
         # starting (user, 2026-10-17).
         self.ppms_field_scan_stop_event.clear()
-        if mode == 'Angle':
+        if angle:
             self.rte_stage_stop_event.clear()
 
         def begin(stage_check_mst=None):
@@ -51481,7 +51646,7 @@ class RTEPanel(PPMSPanel):
                 return
             prepared = dict(run_settings, run_folder=str(recorder.directory), csv_path=str(recorder.csv_path),
                             log_path=str(recorder.log_path))
-            if mode == 'Angle':
+            if angle:
                 # Where the stage was: its last reading, from the worker (the
                 # Tk thread never calls the DLL), and the stage check's MST
                 # just now; the first stage_move reads it back again.
@@ -51499,10 +51664,10 @@ class RTEPanel(PPMSPanel):
             self.ppms_live_csv_path, self.ppms_live_csv_fields = path, None
             self.ppms_field_scan_running = True
             self.ppms_active_scan_mode = mode
-            self.ppms_plot_axis = 'field' if mode == 'Field' else 'angle' if mode == 'Angle' else 'current'
+            self.ppms_plot_axis = 'field' if mode == 'Field' else 'angle' if angle else 'current'
             self.ppms_plot_addresses = {key: self._ppms_sr830_address(self.ppms_instrument_controllers[key].resource_name) for key in settings['active_lockins']}
             self.ppms_field_scan_rows = []
-            self.ppms_field_scan_total = len(plan) * len(passes)
+            self.ppms_field_scan_total = per_pass * len(passes)
             self.ppms_field_scan_started_at = time.monotonic()
             self.ppms_field_scan_progress.configure(maximum=self.ppms_field_scan_total, value=0)
             # Field and Current have no Yes/No, so the status line shows the
@@ -51535,11 +51700,22 @@ class RTEPanel(PPMSPanel):
                 self.ppms_field_scan_status_var.set(
                     f'SHV Angle {first:g}° to {last:g}°, KEPCO {field_current:+g} A held; '
                     f'{self.ppms_field_scan_total} points')
+            elif outer:
+                # Shorter than the Angle line (user, 2026-10-18): the
+                # Yes/No and the log have the ranges.
+                self.rte_stage_where = 'stage not moved'
+                steps = 'fields' if mode == 'Angle+Field' else 'currents'
+                self.ppms_field_scan_status_var.set(
+                    f'SHV {mode}: {len(outer)} {steps} x {len(plan)} angles; {self.ppms_field_scan_total} points')
             self._update_ppms_control_ui()
             self._redraw_ppms_transport_plot()
             self.thread_log(f'SHV {mode} scan; run folder: {recorder.directory} ({path.name} and '
-                            f'{recorder.log_path.name}); {len(plan)} points x {len(passes)} harmonic pass(es)'
+                            f'{recorder.log_path.name}); {per_pass} points x {len(passes)} harmonic pass(es)'
                             + (f'; stage {first:g}° to {last:g}°, KEPCO {field_current:+g} A held' if mode == 'Angle' else '')
+                            + (f'; outer {RTE_OUTER_ROWS[mode]["label"].rstrip(":")} {outer[0]:g} to {outer[-1]:g} '
+                               f'({len(outer)} steps), inner stage {first:g}° to {last:g}°'
+                               + (f', KEPCO {field_current:+g} A held' if mode == 'Angle+Current' else '')
+                               if outer else '')
                             + f'; each reading waits {settle_text}; at least {least_text}')
             # The wait announced here; the worker logs only a different one (a
             # harmonic pass with fewer lock-ins).
@@ -51549,7 +51725,7 @@ class RTEPanel(PPMSPanel):
                 # Every ending zeroed the 6221 and the KEPCO on the worker
                 # (user, 2026-10-18); the status says how it went.
                 results = self.__dict__.get('rte_scan_outputs')
-                outputs = rte_outputs_text(results, check=mode != 'Angle')
+                outputs = rte_outputs_text(results, check=not angle)
                 try:
                     future.result()
                     status = f'Completed; {outputs}'
@@ -51560,13 +51736,13 @@ class RTEPanel(PPMSPanel):
                     outcome, error_text = 'error', str(error)
                     # And an output not confirmed at zero (review, 2026-10-18).
                     status = rte_failed_status_text(error, results)
-                    if mode == 'Angle':
+                    if angle:
                         # Where the stage is after a failure, "NOT confirmed stopped"
                         # included, goes to the log and the dialog; the status line
                         # keeps only the failure, to stay on one line (user, 2026-10-13).
                         where = self.rte_stage_where or 'stage not moved'
                     self.thread_log('SHV scan ' + status + (f'; {where}' if where else ''))
-                if mode == 'Angle' and outcome != 'error':
+                if angle and outcome != 'error':
                     status += f'; {self.rte_stage_where}'     # where the stage is (user, 2026-10-13)
                 # The log's last entry and its close, on every way a scan ends,
                 # before any dialog (user, 2026-10-18): the outcome, the error
@@ -51575,7 +51751,7 @@ class RTEPanel(PPMSPanel):
                 self._rte_close_recorder(
                     outcome, error=error_text, **({'stop_reason': reason} if reason else {}),
                     points_saved=len(self.ppms_field_scan_rows), status=status, outputs=results,
-                    **({'stage': self.rte_stage_where or 'stage not moved'} if mode == 'Angle' else {}))
+                    **({'stage': self.rte_stage_where or 'stage not moved'} if angle else {}))
                 zeroing = ('At the end: ' + '; '.join(f'{name} {results[key]}' for name, key in
                                                       (('6221', '6221'), ('KEPCO', 'kepco')))
                            if results else 'At the end: the 6221 and the KEPCO were not confirmed zeroed')
@@ -51599,8 +51775,11 @@ class RTEPanel(PPMSPanel):
                     self._update_ppms_control_ui()
             self.rte_scan_outputs = None     # this scan's zeroing, set by its worker
             try:
+                # Angle: the held KEPCO current; Angle+Field and Angle+Current
+                # also the outer loop (user, 2026-10-18).
                 future = self.ppms_executor.submit(self._rte_harmonic_scan_worker, mode, plan, passes, limit, stable, duration,
-                                                   *((field_current,) if mode == 'Angle' else ()))
+                                                   *((field_current,) if mode == 'Angle' else
+                                                     (field_current, outer) if outer else ()))
             except Exception as error:
                 self.ppms_field_scan_running = False
                 self._rte_close_recorder('not_started', error=str(error), points_saved=0)
@@ -51609,7 +51788,7 @@ class RTEPanel(PPMSPanel):
                 return
             self.rte_scan_future = future
             future.add_done_callback(lambda f: self.post_ui(lambda: finished(f)))
-        if mode != 'Angle':
+        if not angle:
             begin()
             return
         # Angle: the stage's before-move checks (MST, then EO) as a short job
@@ -51649,8 +51828,49 @@ class RTEPanel(PPMSPanel):
 
     # ---- the run folder's log (user, 2026-10-18: "like ST-FMR, pls also write a
     # log of SHV and save results in a folder") ------------------------------------
+    def _rte_outer_question(self, mode, plan, outer, passes, limit, field_current, settle_text, least_text,
+                            moves, turning):
+        """The Yes/No of an Angle+Field or Angle+Current scan (user,
+        2026-10-18): the outer steps, the angles of each sweep, the points,
+        the stage moves (the returns to the first angle counted) and the time
+        estimate, what each step sets and what the end zeroes."""
+        first, last = plan[0][2], max((p[2] for p in plan), key=lambda value: abs(value - plan[0][2]))
+        trip = ', round trip' if self.rte_round_trip.get() else ''
+        steps = len(outer) * len(passes)
+        if mode == 'Angle+Field':
+            outer_text = (f'Field, the OUTER loop: {len(outer)} KEPCO steps from {outer[0]:+g} A to {outer[-1]:+g} A '
+                          f'(voltage limit {limit:g} V). At each step the KEPCO is set to that current (the first '
+                          'switches the output on, the others change its current only) and the field is settled on '
+                          f'the LS475 (at most {STFMR_FIELD_SETTLE_TIMEOUT_S:g} s; an unsettled field is noted in the '
+                          'log and the scan goes on); then the whole angle sweep runs.')
+            unit = 'field'
+        else:
+            outer_text = (f'6221 current, the OUTER loop: {len(outer)} steps from {outer[0]:g} to {outer[-1]:g} mA RMS. '
+                          'At each step only the 6221 amplitude changes, within the fixed range set for the largest '
+                          'current (as a Current scan); the first point after each change is read with the agreeing '
+                          'windows; then the whole angle sweep runs.\n\n'
+                          f'The field is fixed: the KEPCO is set once to {field_current:+g} A (voltage limit '
+                          f'{limit:g} V), settled on the LS475 and held during the scan.')
+            unit = 'current'
+        passes_text = (f' Each of the {len(passes)} harmonic passes runs the whole {unit} x angle scan.'
+                       if len(passes) > 1 else '')
+        return (f'{mode} scan.\n\n{outer_text}\n\n'
+                f'Angles of each {unit}, the INNER loop: from {first:g}° to {last:g}° (step '
+                f'{abs(float(self.ppms_simple_range[2].get())):g}°{trip}): {len(plan)} angles. The stage goes back '
+                f'to {first:g}° as the first move of each {unit}\'s sweep, after the {unit} has changed.\n\n'
+                f'{len(outer)} {unit} steps x {len(plan)} angles x {len(passes)} harmonic pass(es) = '
+                f'{len(plan) * steps} points.{passes_text} {moves} stage moves ({steps - 1} of them back to '
+                f'{first:g}°), {turning:g}° of turning in all.\n\n'
+                f'Each angle waits {settle_text} before it is read; the scan takes at least {least_text} (the '
+                'turning counted, the move to the first angle not).\n\n'
+                'When the scan ends (completed, stopped or failed) the 6221 and then the KEPCO are zeroed; the '
+                'stage stays where the scan left it.\n\n'
+                'The Newmark stage turns the SAMPLE HOLDER with its wires attached, at '
+                f'{NEWMARK_SPEED_DEG_S:g}°/s, to each angle counted from the stage zero (absolute moves, all '
+                f'within ±{NEWMARK_CABLE_LIMIT_DEG:g}° of it). Can the wires follow?\n\nStart the scan?')
+
     def _rte_run_settings(self, mode, plan, passes, settings, limit, field_current, stable, duration,
-                          pass_settles, settle_s, typed_name):
+                          pass_settles, settle_s, typed_name, outer=None):
         """run_prepared's settings and instrument state, on the Tk thread at
         Start with the other inputs: the program, the plan and its timing,
         the harmonic passes, the lock-ins, the 6221 and the KEPCO, every
@@ -51703,12 +51923,22 @@ class RTEPanel(PPMSPanel):
             file_name=typed_name, mode=mode,
             plan=dict(start=values[0] if values else None, end=values[1] if len(values) > 1 else None,
                       step=values[2] if len(values) > 2 else None,
-                      unit={'Field': 'A (KEPCO)', 'Angle': 'deg (stage)'}.get(mode, 'mA RMS (6221)'),
+                      unit='A (KEPCO)' if mode == 'Field' else 'deg (stage)' if mode in RTE_ANGLE_MODES
+                      else 'mA RMS (6221)',
                       loops=loops, round_trip=bool(box(round_trip)) if round_trip is not None else None,
                       points=len(plan), points_per_loop=len(plan) // loops,
-                      harmonic_passes=len(passes), total_points=len(plan) * len(passes),
+                      harmonic_passes=len(passes),
+                      total_points=len(plan) * (len(outer) if outer else 1) * len(passes),
                       first_target=targets[0],
                       farthest_target=max(targets, key=lambda value: abs(value - targets[0]))),
+            # Angle+Field and Angle+Current (user, 2026-10-18): the outer
+            # loop's row and its steps; ``plan`` is the inner angle sweep.
+            **({'outer': dict(
+                start=box(state['rte_outer_ranges'][mode][0]) if 'rte_outer_ranges' in state else None,
+                end=box(state['rte_outer_ranges'][mode][1]) if 'rte_outer_ranges' in state else None,
+                step=box(state['rte_outer_ranges'][mode][2]) if 'rte_outer_ranges' in state else None,
+                unit='A (KEPCO)' if mode == 'Angle+Field' else 'mA RMS (6221)', steps=len(outer),
+                values=list(outer), order='outer first, the angle sweep inner')} if outer else {}),
             timing=dict(settle_s=stable, acquire_s=duration, effective_settle_s=settle_s,
                         settle_time_constants=LOCKIN_SETTLE_TAUS,
                         per_pass=[dict(harmonic_pass=index, effective_settle_s=wait, slowest_tc_s=tc,
@@ -51723,9 +51953,12 @@ class RTEPanel(PPMSPanel):
             lockins=lockins,
             source_6221=dict(current_rms_ma=settings['current_rms_ma'], frequency_hz=settings['frequency_hz'],
                              compliance_v=settings['compliance_v'],
-                             note='the plan gives the currents' if mode == 'Current' else ''),
-            kepco=(dict(current_a=field_current, voltage_limit_v=limit, held=True) if mode == 'Angle'
+                             note='the plan gives the currents' if mode == 'Current'
+                             else 'the outer loop gives the currents' if mode == 'Angle+Current' else ''),
+            kepco=(dict(current_a=field_current, voltage_limit_v=limit, held=True)
+                   if mode in ('Angle', 'Angle+Current')
                    else dict(current_a='the plan', voltage_limit_v=limit) if mode == 'Field'
+                   else dict(current_a='the outer loop', voltage_limit_v=limit) if mode == 'Angle+Field'
                    else dict(used=False)),
             resources=resources,
             motor=dict(connected=bool(getattr(stage, 'connected', False)),
@@ -51784,7 +52017,7 @@ class RTEPanel(PPMSPanel):
             # the stop event and the queued OFF (review, 2026-10-18).
             self._rte_log('stop_requested', button='6221 / 2400 OFF')
 
-    def _rte_harmonic_scan_worker(self, mode, plan, passes, limit, stable, duration, field_current=None):
+    def _rte_harmonic_scan_worker(self, mode, plan, passes, limit, stable, duration, field_current=None, outer=None):
         # Every ending of a scan, completed, stopped or failed, zeroes the
         # 6221 and then the KEPCO, here on the worker once the scan's own
         # clean-up has run (a moving stage is stopped there first), each
@@ -51795,14 +52028,18 @@ class RTEPanel(PPMSPanel):
         # results are for finished(), the log and the dialog.
         self.rte_scan_outputs = None
         try:
-            self._rte_harmonic_passes_worker(mode, plan, passes, limit, stable, duration, field_current)
+            self._rte_harmonic_passes_worker(mode, plan, passes, limit, stable, duration, field_current, outer)
         finally:
             self.rte_scan_outputs = self._rte_zero_outputs_after_scan()
 
-    def _rte_harmonic_passes_worker(self, mode, plan, passes, limit, stable, duration, field_current):
+    def _rte_harmonic_passes_worker(self, mode, plan, passes, limit, stable, duration, field_current, outer=None):
         # The log (user, 2026-10-18); a failed write ends the scan here,
-        # before anything is switched on.
-        self._rte_log('scan_started', mode=mode, points=len(plan), harmonic_passes=len(passes))
+        # before anything is switched on.  Angle+Field and Angle+Current:
+        # every pass runs the whole outer x angle scan, as an Angle scan's
+        # pass runs its whole sweep (user, 2026-10-18).
+        per_pass = len(plan) * (len(outer) if outer else 1)
+        self._rte_log('scan_started', mode=mode, points=per_pass, harmonic_passes=len(passes),
+                      **({'outer_steps': len(outer)} if outer else {}))
         self._rte_log_check()
         for index, settings in enumerate(passes):
             self._rte_wait(0)
@@ -51824,8 +52061,8 @@ class RTEPanel(PPMSPanel):
                 self._rte_log('harmonic_pass', **harmonics)
                 self._rte_log_check()
             self._rte_scan_worker(mode, plan, dict(settings, continue_source=bool(index),
-                                  progress_offset=index * len(plan)), limit, stable, duration,
-                                  *((field_current,) if mode == 'Angle' else ()))
+                                  progress_offset=index * per_pass), limit, stable, duration,
+                                  *((field_current,) if mode == 'Angle' else (field_current, outer) if outer else ()))
 
     def _rte_zero_6221_after_scan(self):
         """The 6221 at zero: its output turned off and read back (OUTP? 0),
@@ -51871,29 +52108,50 @@ class RTEPanel(PPMSPanel):
         self._rte_wait(0)
         self._update_ppms_transport_current(settings)
 
-    def _rte_scan_worker(self, mode, plan, settings, limit, stable, duration, field_current=None):
+    def _rte_scan_worker(self, mode, plan, settings, limit, stable, duration, field_current=None, outer=None):
         field_failure = False
         stage_failure = False
         drift_noted = False
+        angle = mode in RTE_ANGLE_MODES
         try:
             # Same expression, in the same order, as the validator's peak_a:
             # (I*1e-3)*sqrt2 could come out 1 ulp below sqrt2*I*1e-3, so a scan
             # starting at its largest current failed the range check at Start
-            # (review, 2026-10-13).
-            sweep_peak = math.sqrt(2.0) * max(p[2] for p in plan) * 1e-3 if mode == 'Current' else None
-            for index, (loop, point, target) in enumerate(plan, 1):
+            # (review, 2026-10-13).  Angle+Current: the largest outer current
+            # (user, 2026-10-18), its 6221 range fixed for every current.
+            sweep_peak = (math.sqrt(2.0) * max(p[2] for p in plan) * 1e-3 if mode == 'Current'
+                          else math.sqrt(2.0) * max(outer) * 1e-3 if mode == 'Angle+Current' else None)
+            # Angle+Field and Angle+Current (user, 2026-10-18): the outer step
+            # OUTSIDE, the whole angle sweep inside, so each outer value's
+            # points are in a row; every other mode is its plan, as before.
+            steps = tuple(enumerate(outer, 1)) if outer else ((None, None),)
+            points = [(step_index, step_value, loop, point, target)
+                      for step_index, step_value in steps for loop, point, target in plan]
+            for index, (step_index, step_value, loop, point, target) in enumerate(points, 1):
                 self._rte_wait(0)
                 # The point's number in the whole scan, all harmonic passes
                 # counted: the progress bar's, and the log's "index".
                 progress = index + settings.get('progress_offset', 0)
+                # The first point of an outer step: its value is set there,
+                # before that step's first move (back to the first angle).
+                new_step = outer is not None and (index - 1) % len(plan) == 0
                 point_settings = dict(settings)
                 if mode == 'Current':
                     point_settings['current_rms_ma'] = target
                     point_settings['continuous_sweep_peak_a'] = sweep_peak
+                elif mode == 'Angle+Current':
+                    point_settings['current_rms_ma'] = step_value
+                    point_settings['continuous_sweep_peak_a'] = sweep_peak
                 if index == 1 and not settings.get('continue_source'):
                     self._configure_ppms_transport_scan(point_settings)
-                elif mode == 'Current':
+                elif mode == 'Current' or (mode == 'Angle+Current' and new_step):
+                    # Angle+Current steps the 6221 as a Current scan does: its
+                    # amplitude only, in the range fixed at the first point.
                     self._rte_update_current(point_settings)
+                if mode == 'Angle+Current' and new_step:
+                    self._rte_log('current_programmed', index=progress, step_index=step_index,
+                                  steps=len(outer), current_rms_ma=step_value)
+                    self._rte_log_check()
                 if mode == 'Field':
                     try:
                         self._rte_wait(0)
@@ -51914,11 +52172,39 @@ class RTEPanel(PPMSPanel):
                     # field failure, so it takes the normal failure path, as
                     # a failed live-CSV row (user, 2026-10-18).
                     self._rte_log_check()
-                elif mode == 'Angle':
+                elif angle:
+                    if mode == 'Angle+Field' and new_step:
+                        # Each outer field (user, 2026-10-18), as a Field scan
+                        # steps its current: the output switched on with the
+                        # voltage limit for the first, the current only after
+                        # (a later harmonic pass starts again from the first
+                        # field, the output still on); then settled, before
+                        # the sweep's first move.
+                        try:
+                            self._rte_wait(0)
+                            kepco = self.rte_controllers['kepco']
+                            if index == 1 and not settings.get('continue_source'):
+                                kepco.set_output('CURR', step_value, limit)
+                            else:
+                                kepco.set_scan_current(step_value)
+                            self._rte_log('field_programmed', index=progress, step_index=step_index,
+                                          steps=len(outer), current_a=step_value, voltage_limit_v=limit)
+                            # The Field scan's line: a longer one would wrap
+                            # in its fixed box and change the rack's height.
+                            self.post_ui(lambda value=step_value: self.rte_drive_live.set(
+                                f'KEPCO programmed: {value:+g} A'))
+                            self._rte_settle_field(step_index=step_index)
+                        except PPMSScanCancelled:
+                            raise
+                        except Exception:
+                            field_failure = True
+                            raise
+                        self._rte_log_check()
                     # The field first, once: the KEPCO current box's value with
                     # the voltage limit, settled on the LS475 and then held
-                    # while the stage turns (user, 2026-10-13).
-                    if index == 1 and not settings.get('continue_source'):
+                    # while the stage turns (user, 2026-10-13); Angle+Current
+                    # too (user, 2026-10-18).
+                    if mode != 'Angle+Field' and index == 1 and not settings.get('continue_source'):
                         try:
                             self._rte_wait(0)
                             self.rte_controllers['kepco'].set_output('CURR', field_current, limit)
@@ -51945,7 +52231,8 @@ class RTEPanel(PPMSPanel):
                     # log write after a finished move is not a stage failure
                     # (user, 2026-10-18).
                     self._rte_log('stage_move', index=progress, target_deg=target, angle_deg=stage_state['angle_deg'],
-                                  px=stage_state['px'], steps_per_degree=stage_state['steps_per_degree'])
+                                  px=stage_state['px'], steps_per_degree=stage_state['steps_per_degree'],
+                                  **({'step_index': step_index} if outer else {}))
                     self._rte_log_check()
                 # The lock-in settle before the reading: Settle s, or
                 # LOCKIN_SETTLE_TAUS (1, the user's 1 x TC) time constants of
@@ -51959,9 +52246,12 @@ class RTEPanel(PPMSPanel):
                 try:
                     before = self._rte_read_field()
                 except Exception:
-                    field_failure = mode in ('Field', 'Angle')
+                    field_failure = mode in ('Field', *RTE_ANGLE_MODES)
                     raise
-                if index == 1:
+                # Angle+Current: the first point after each current change is
+                # read as a pass's first, with the agreeing windows (user,
+                # 2026-10-18).
+                if index == 1 or (mode == 'Angle+Current' and new_step):
                     sample, windows = self._acquire_ppms_first_point(settings['frequency_hz'], settings['active_lockins'], duration)
                 else:
                     sample = self._average_ppms_transport_sample(settings['frequency_hz'], settings['active_lockins'], duration)
@@ -51970,7 +52260,7 @@ class RTEPanel(PPMSPanel):
                 try:
                     measured = self._rte_read_field()
                 except Exception:
-                    field_failure = mode in ('Field', 'Angle')
+                    field_failure = mode in ('Field', *RTE_ANGLE_MODES)
                     raise
                 # The LS475's drift during the acquisition no longer ends the
                 # scan or discards the point: "don't let the LS475 drift affect
@@ -51980,7 +52270,7 @@ class RTEPanel(PPMSPanel):
                 # and the first drift beyond the old limit (2 G or 0.2 %) of a
                 # pass is noted in the log.
                 drift_g = measured - before
-                if (mode in ('Field', 'Angle') and not drift_noted
+                if (mode in ('Field', *RTE_ANGLE_MODES) and not drift_noted
                         and abs(drift_g) > max(STFMR_FIELD_SETTLE_ABS_TOLERANCE_G,
                                                abs(before) * STFMR_FIELD_SETTLE_REL_TOLERANCE)):
                     drift_noted = True
@@ -51993,7 +52283,7 @@ class RTEPanel(PPMSPanel):
                 # Angle rows add the stage's target and where it is (PX read
                 # back, equal to the target); Field and Current rows keep their
                 # columns.
-                stage_columns = {} if mode != 'Angle' else dict(
+                stage_columns = {} if not angle else dict(
                     stage_target_deg=target, stage_angle_deg=stage_state['angle_deg'],
                     stage_position_steps=stage_state['px'],
                     stage_steps_per_degree=stage_state['steps_per_degree'])
@@ -52001,7 +52291,7 @@ class RTEPanel(PPMSPanel):
                     harmonic_pass=settings.get('harmonic_pass', 1),
                     elapsed_s=time.monotonic() - self.ppms_field_scan_started_at,
                     kepco_programmed_current_a=kepco.cached_current_a if kepco.output_owned else '',
-                    kepco_voltage_limit_v=limit if mode in ('Field', 'Angle') else '',
+                    kepco_voltage_limit_v=limit if mode in ('Field', *RTE_ANGLE_MODES) else '',
                     measured_field_g=measured, **stage_columns, stable_s=stable,
                     first_point_windows=windows, warmup_s=(windows - 1) * duration,
                     **{'6221_current_rms_ma': point_settings['current_rms_ma'],
@@ -52019,6 +52309,11 @@ class RTEPanel(PPMSPanel):
                 # after every older column (user, 2026-10-18).
                 row['field_before_g'] = before
                 row['field_drift_g'] = drift_g
+                if outer:
+                    # The outer step's number, the last column (user,
+                    # 2026-10-18); its value is in kepco_programmed_current_a
+                    # or 6221_current_rms_ma.
+                    row[RTE_OUTER_ROWS[mode]['index_column']] = step_index
                 # Later passes may omit SR830s whose selected orders are done.
                 # Preserve the first pass CSV schema with empty cells.
                 if self.ppms_field_scan_rows:
@@ -52028,10 +52323,12 @@ class RTEPanel(PPMSPanel):
                 self.post_ui(lambda data=dict(row), progress=progress: self._rte_show_point(data, progress))
                 # The saved point in the log; a failed write ends the scan
                 # after it, as a failed live-CSV row does (user, 2026-10-18).
-                x_column = {'Field': 'measured_field_g', 'Angle': 'stage_angle_deg'}.get(mode, '6221_current_rms_ma')
+                x_column = ('measured_field_g' if mode == 'Field' else 'stage_angle_deg' if angle
+                            else '6221_current_rms_ma')
                 self._rte_log('point_saved', index=progress, harmonic_pass=settings.get('harmonic_pass', 1),
                               loop=loop, point=point, target=target, x_column=x_column, x=row[x_column],
-                              field_before_g=before, field_after_g=measured, field_drift_g=drift_g)
+                              field_before_g=before, field_after_g=measured, field_drift_g=drift_g,
+                              **({'step_index': step_index} if outer else {}))
                 self._rte_log_check()
         except PPMSScanCancelled:
             raise
@@ -52143,10 +52440,16 @@ class RTEPanel(PPMSPanel):
             series = {channel: {} for channel, _ in targets}
             colors = {channel: {} for channel, _ in targets}
             markers = {channel: {} for channel, _ in targets}
+            labels = {channel: {} for channel, _ in targets}
             for meter in orders.get(order, []):
                 color = PPMS_METER_COLORS.get(meter, '#666666')
                 meter_label = PPMS_SR830_LABELS.get(meter, 'Zurich')
                 resolve_prefix = self._ppms2_prefix_resolver(meter, order)
+                # Angle+Field and Angle+Current (user, 2026-10-18): a curve per
+                # outer value, named by it ("+2 A", "0.5 mA") and shaded from
+                # light (lowest) to dark (highest), as PPMS's per-temperature
+                # and per-frequency curves; no in-plot legend, as there.
+                steps = {}
                 for row in self.ppms_field_scan_rows:
                     x_value = row.get(x_key)
                     if not isinstance(x_value, (float, int)):
@@ -52154,20 +52457,33 @@ class RTEPanel(PPMSPanel):
                     prefix = resolve_prefix(row)
                     if prefix is None:
                         continue
-                    name = f"{meter_label} P{row.get('harmonic_pass', 1)} L{row['loop']}"
+                    step = rte_outer_step_of(row)
+                    if step is None:
+                        name = f"{meter_label} P{row.get('harmonic_pass', 1)} L{row['loop']}"
+                    else:
+                        name = f"{meter_label} {step[1]} P{row.get('harmonic_pass', 1)} L{row['loop']}"
                     for channel, suffix in columns:
                         value = row.get(prefix + suffix)
                         if not isinstance(value, (int, float)) or not math.isfinite(value):
                             continue
                         series[channel].setdefault(name, []).append((x_value, value))
                         colors[channel][name] = color
+                        if step is not None:
+                            steps[name] = step[0]
+                            labels[channel][name] = name
                         if meter == 'zurich':
                             markers[channel][name] = 'open_circle'
+                shaded = self._ppms_frequency_plot_colors(color, steps) if steps else {}
+                for channel, _ in targets:
+                    for name in colors[channel]:
+                        if name in shaded:
+                            colors[channel][name] = shaded[name]
             for channel, canvas in targets:
                 self._draw_nonlocal_series(canvas, series[channel], x_label,
                     'Phase (degrees)' if channel == 'theta' else channel.upper() + ' voltage',
                     'Waiting for scan data', markers=True, auto_voltage_unit=channel != 'theta',
-                    show_legend=False, series_colors=colors[channel], series_markers=markers[channel])
+                    show_legend=False, series_colors=colors[channel], series_markers=markers[channel],
+                    **({'series_labels': labels[channel]} if labels[channel] else {}))
 
     def save_ppms_field_scan_csv(self):
         if not self.ppms_field_scan_rows or self.ppms_field_scan_running:

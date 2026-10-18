@@ -88,6 +88,7 @@ class Kepco:
 
     def set_scan_current(self, value):
         self.log.append(("kepco", "set_scan_current", value, threading.get_ident()))
+        self.cached_current_a = value       # as the controller's (Angle+Field rows, 2026-10-18)
 
     def safe_output_off(self):
         self.log.append(("kepco", "off", threading.get_ident()))
@@ -469,7 +470,9 @@ class AngleScanTests(EndToEnd):
         self.assertEqual(panel.rte_scan_units.get(), "Stage °")
         # The note says which box holds the field (user, 2026-10-17).
         self.assertEqual(panel.rte_scan_note.get(), "Angle: Stage °; field: KEPCO current A")
-        self.assertIs(panel.rte_round_trip.get(), True, "back toward the start: the wires unwind")
+        # Round trip off for Angle (user, 2026-10-18: "default not click
+        # Round trip"; it was on since 2026-10-13).
+        self.assertIs(panel.rte_round_trip.get(), False, "round trip off by default")
         self.assertEqual(panel.ppms_plot_axis, "angle")
         self.assertEqual(draw.call_args.args[2], "Sample angle (°)", "an empty plot against the angle")
         for mode in ("Field", "Current"):
@@ -1032,6 +1035,301 @@ class ScanEndZeroTests(RunLogBase):
         self.assertEqual(app.rte_outputs_text({"6221": "zero FAILED: x", "kepco": "zero FAILED: y"}, check=False),
                          "zero FAILED: 6221 and KEPCO")
         self.assertEqual(app.rte_outputs_text(None), "KEPCO and 6221 not confirmed zeroed: check them")
+
+
+class OuterScanTests(RunLogBase):
+    """Angle+Field and Angle+Current, end to end (user, 2026-10-18: "add the
+    angle + field scan mode, field is the outside loop"; "also angle+current
+    mode, the current is outside loop"), on the real page, worker and stage
+    controller of the scans above."""
+
+    def make_outer(self, mode, outer, span=("0", "10", "10"), **kwargs):
+        h = self.make(span=span, round_trip=False, **kwargs)
+        panel = h.panel
+        with patch.object(app.CombinedControlApp, "_draw_nonlocal_series"):
+            panel.ppms_simple_mode.set(mode)
+            panel._rte_mode_changed()
+        self.assertIs(panel.rte_round_trip.get(), False, "round trip off by default")
+        for variable, value in zip(panel.ppms_simple_range, span):
+            variable.set(value)
+        for variable, value in zip(panel.rte_outer_ranges[mode], outer):
+            variable.set(value)
+        h.configured, h.updated = [], []
+
+        def configure(settings):
+            h.configured.append(dict(settings))
+            h.log.append(("6221", "on", settings["current_rms_ma"], settings["frequency_hz"], threading.get_ident()))
+
+        def update(settings):
+            h.updated.append(dict(settings))
+            h.log.append(("6221", "current", settings["current_rms_ma"], threading.get_ident()))
+        panel._configure_ppms_transport_scan = configure
+        panel._update_ppms_transport_current = update
+        h.log.clear()
+        return h
+
+    @staticmethod
+    def sequence(h):
+        """The calls in order, without their threads: a move's angle, a
+        KEPCO step's and a 6221 change's current, the 6221 on's current, the
+        mode of set_output."""
+        calls = []
+        for entry in h.log:
+            if entry[0] in ("gauss", "lockins") or entry[1] in ("off", "OUTP?", "force_off"):
+                calls.append(entry[:2])
+            elif entry[1] in ("on", "set_output"):
+                calls.append(entry[:3])
+            else:
+                calls.append(entry[:-1])
+        return calls
+
+    @staticmethod
+    def point(angle, first=False):
+        return [("stage", "move", angle), ("stage", "at", angle), ("gauss", "read"),
+                ("lockins", "first" if first else "read"), ("gauss", "read")]
+
+    def test_angle_field_steps_the_field_outside_the_angle_sweep(self):
+        h = self.make_outer("Angle+Field", ("0", "2", "1"))
+        self.start(h)
+        panel = h.panel
+        h.showerror.assert_not_called()
+        title, question = h.askyesno.call_args.args[:2]
+        self.assertEqual(title, "SHV Angle+Field scan")
+        self.assertIn("3 field steps x 2 angles x 1 harmonic pass(es) = 6 points.", question)
+        self.assertIn("6 stage moves (2 of them back to 0°), 50° of turning in all", question)
+        # Per field: the KEPCO (set_output for the first, set_scan_current
+        # after), the LS475 settle, then the sweep from the first angle.
+        settle = [("gauss", "read")] * app.STFMR_FIELD_SETTLE_REQUIRED_SAMPLES
+        expected = [("6221", "on", panel_current(panel)), ("kepco", "set_output", "CURR")] + settle
+        expected += self.point(0.0, first=True) + self.point(10.0)
+        for value in (1.0, 2.0):
+            expected += [("kepco", "set_scan_current", value)] + settle + self.point(0.0) + self.point(10.0)
+        self.assertEqual(self.sequence(h), expected + ZEROED)
+        self.assertEqual([e[2:5] for e in h.log if e[:2] == ("kepco", "set_output")], [("CURR", 0.0, 5.0)])
+        self.assertEqual({entry[-1] for entry in h.log}, {h.worker})
+        self.assertEqual({thread for _name, thread in h.dll.calls}, {h.worker})
+        # The rows: Angle's columns, the outer step's number last.
+        rows = self.rows(h)
+        self.assertEqual([(float(r["kepco_programmed_current_a"]), float(r["stage_angle_deg"]), r["outer_field_index"])
+                          for r in rows],
+                         [(0., 0., "1"), (0., 10., "1"), (1., 0., "2"), (1., 10., "2"), (2., 0., "3"), (2., 10., "3")])
+        self.assertEqual(list(rows[0])[-2:], ["field_drift_g", "outer_field_index"])
+        self.assertEqual({(r["scan_mode"], r["kepco_voltage_limit_v"]) for r in rows}, {("Angle+Field", "5.0")})
+        self.assertEqual([r["point"] for r in rows], ["1", "2"] * 3)
+        self.assertEqual([r["first_point_windows"] for r in rows], ["2", "1", "1", "1", "1", "1"])
+        self.assertEqual(panel.ppms_field_scan_status_var.get(), "Completed; KEPCO and 6221 zeroed; stage at +10.000°")
+        # The log: an event per field step, the settle with its number.
+        events = self.events(h)
+        expected_events = ["run_prepared", "scan_started", "harmonic_pass"]
+        for _field in range(3):
+            expected_events += ["field_programmed", "field_settled", "stage_move", "point_saved", "stage_move",
+                                "point_saved"]
+        self.assertEqual(self.without_notes(events), expected_events + ["outputs_zeroed", "run_finished"])
+        self.assertEqual([(e["step_index"], e["steps"], e["current_a"]) for e in events
+                          if e["event"] == "field_programmed"], [(1, 3, 0.0), (2, 3, 1.0), (3, 3, 2.0)])
+        self.assertEqual([e["step_index"] for e in events if e["event"] == "field_settled"], [1, 2, 3])
+        self.assertEqual([e["step_index"] for e in events if e["event"] == "point_saved"], [1, 1, 2, 2, 3, 3])
+        prepared = events[0]
+        self.assertEqual(prepared["mode"], "Angle+Field")
+        self.assertEqual((prepared["outer"]["values"], prepared["outer"]["unit"], prepared["outer"]["steps"]),
+                         ([0.0, 1.0, 2.0], "A (KEPCO)", 3))
+        self.assertEqual(prepared["kepco"], {"current_a": "the outer loop", "voltage_limit_v": 5.0})
+        self.assertEqual((prepared["plan"]["points"], prepared["plan"]["total_points"]), (2, 6))
+        self.assertEqual(events[0]["stage_at_start"]["stage_check_mst"], 0, "the stage check at Start")
+        self.assertEqual(events[-1]["outputs"], {"6221": "zeroed", "kepco": "zeroed"})
+        self.assert_closed(h)
+        # The plot: against the angle, a curve per field, named by its current.
+        drawn = next(c for c in reversed(h.draw.call_args_list) if c.args[1])
+        self.assertEqual(drawn.args[2], "Sample angle (°)")
+        self.assertEqual({name.split(" ")[1] for name in drawn.args[1]}, {"+0", "+1", "+2"})
+        for name, points in drawn.args[1].items():
+            self.assertEqual([x for x, _y in points], [0.0, 10.0], name)
+
+    def test_angle_field_harmonic_passes_run_the_whole_scan_each(self):
+        h = self.make_outer("Angle+Field", ("0", "1", "1"), meter="sr830")
+        self.start(h)
+        h.showerror.assert_not_called()
+        rows = self.rows(h)
+        self.assertEqual([(r["harmonic_pass"], r["outer_field_index"], float(r["stage_angle_deg"])) for r in rows],
+                         [(p, f, a) for p in "123" for f in "12" for a in (0.0, 10.0)])
+        # The output switched on once; each later pass steps back to the first field.
+        self.assertEqual([e[1:3] for e in h.log if e[0] == "kepco" and e[1] in ("set_output", "set_scan_current")],
+                         [("set_output", "CURR"), ("set_scan_current", 1.0), ("set_scan_current", 0.0),
+                          ("set_scan_current", 1.0), ("set_scan_current", 0.0), ("set_scan_current", 1.0)])
+        self.assertEqual(len([e for e in h.log if e[:2] == ("6221", "on")]), 1)
+        self.assertEqual([e[1] for e in h.log if e[0] == "sr830"], ["HARM 2", "HARM 3"])
+        self.assertEqual(h.panel.ppms_field_scan_total, 12)
+        self.assertEqual({entry[-1] for entry in h.log}, {h.worker})
+
+    def test_stop_while_a_field_settles(self):
+        h = self.make_outer("Angle+Field", ("0", "2", "1"))
+        panel, real_read = h.panel, h.gauss.read_field
+        stepped, stopped = [], []
+        real_step = h.kepco.set_scan_current
+        h.kepco.set_scan_current = lambda value: (stepped.append(value), real_step(value))
+
+        def read():
+            reading = real_read()
+            if stepped and not stopped:
+                stopped.append(True)
+                panel.stop_ppms_field_scan()      # at the first read of field 2's settle
+            return reading
+        h.gauss.read_field = read
+        self.start(h)
+        h.showerror.assert_not_called()
+        self.assertEqual(panel.ppms_field_scan_status_var.get(), "Stopped; KEPCO and 6221 zeroed; stage at +10.000°")
+        self.assertEqual(stepped, [1.0], "no further field")
+        moves = [e[2] for e in h.log if e[:2] == ("stage", "move")]
+        self.assertEqual(moves, [0.0, 10.0], "no move after the Stop: the stage stays at 10°")
+        self.assertEqual(len(self.rows(h)), 2)
+        self.assertEqual(self.names(h, "kepco", "6221")[-3:], ZEROED)
+        events = self.without_notes(self.events(h))
+        self.assertEqual(events.count("field_programmed"), 2)
+        self.assertEqual(events.count("field_settled"), 1, "field 2 never settled")
+        self.assertEqual(events[-3:], ["stop_requested", "outputs_zeroed", "run_finished"])
+        self.assertEqual(self.events(h)[-1]["outcome"], "stopped")
+        self.assert_closed(h)
+
+    def test_stop_during_the_return_to_the_first_angle(self):
+        h = self.make_outer("Angle+Field", ("0", "1", "1"), span=("0", "90", "90"))
+        panel = h.panel
+        real_step = h.kepco.set_scan_current
+
+        def step(value):
+            real_step(value)
+            # The next move is the return to 0°: Stop 3 s into it.
+            h.move_hooks[0.0] = lambda: h.clock.hooks.append((h.clock.t + 3.0, panel.stop_ppms_field_scan))
+        h.kepco.set_scan_current = step
+        self.start(h)
+        h.showerror.assert_not_called()
+        self.assertIn("STOP", h.sim.received[h.sim.received.index("X900000"):])
+        status = panel.ppms_field_scan_status_var.get()
+        self.assertTrue(status.startswith("Stopped; KEPCO and 6221 zeroed; stage stopped at +"), status)
+        where = float(status.rsplit(" ", 1)[1].rstrip("°"))
+        self.assertTrue(0 < where < 90, where)
+        self.assertEqual([e[2] for e in h.log if e[:2] == ("stage", "move")], [0.0, 90.0, 0.0])
+        self.assertEqual(len(self.rows(h)), 2, "field 2 saved nothing")
+        self.assertEqual(self.names(h, "kepco", "6221")[-3:], ZEROED)
+        self.assertFalse(h.stage.motion_may_run)
+
+    def test_a_stage_failure_in_the_first_sweep(self):
+        h = self.make_outer("Angle+Field", ("0", "1", "1"), sim=EndsShort())
+        self.start(h)
+        panel = h.panel
+        h.showerror.assert_called_once()
+        message = h.showerror.call_args.args[1]
+        self.assertIn("not at the target", message)
+        self.assertIn("Stage stopped at +9.999°", message)
+        self.assertIn("At the end: 6221 zeroed; KEPCO zeroed", message)
+        self.assertTrue(panel.ppms_field_scan_status_var.get().startswith("Failed: "))
+        self.assertEqual(self.names(h, "kepco", "6221"),
+                         [("6221", "on"), ("kepco", "set_output"), ("6221", "off")] + ZEROED,
+                         "the 6221 off at once, no next field, then both zeroed; the stage not moved again")
+        self.assertEqual([e[2] for e in h.log if e[:2] == ("stage", "move")], [0.0, 10.0])
+        events = self.without_notes(self.events(h))
+        self.assertEqual(events[-3:], ["stage_failure", "outputs_zeroed", "run_finished"])
+        self.assert_closed(h)
+
+    def test_a_field_that_cannot_be_set_switches_the_kepco_off_and_zeroes_both(self):
+        h = self.make_outer("Angle+Field", ("0", "1", "1"))
+        h.kepco.set_scan_current = Mock(side_effect=RuntimeError("KEPCO 4886 'CURR 1.000000' VI_ERROR_TMO"))
+        self.start(h)
+        self.assertEqual(self.names(h, "kepco", "6221"),
+                         [("6221", "on"), ("kepco", "set_output"), ("6221", "off"), ("kepco", "off")] + ZEROED)
+        self.assertEqual([e[2] for e in h.log if e[:2] == ("stage", "move")], [0.0, 10.0], "no return move")
+        self.assertTrue(h.panel.ppms_field_scan_status_var.get().startswith("Failed: KEPCO 4886"))
+        self.assertEqual(self.events(h)[-1]["outcome"], "error")
+
+    def test_angle_current_steps_the_6221_outside_the_angle_sweep(self):
+        h = self.make_outer("Angle+Current", ("0.5", "1.5", "0.5"))
+        self.start(h)
+        panel = h.panel
+        h.showerror.assert_not_called()
+        title, question = h.askyesno.call_args.args[:2]
+        self.assertEqual(title, "SHV Angle+Current scan")
+        self.assertIn("the KEPCO is set once to +1.5 A (voltage limit 5 V)", question)
+        settle = [("gauss", "read")] * app.STFMR_FIELD_SETTLE_REQUIRED_SAMPLES
+        # The 6221 on at the first current, the field set once and settled,
+        # then per current its amplitude (the first point read with the
+        # agreeing windows) and the sweep from the first angle.
+        expected = [("6221", "on", 0.5), ("kepco", "set_output", "CURR")] + settle
+        expected += self.point(0.0, first=True) + self.point(10.0)
+        for value in (1.0, 1.5):
+            expected += [("6221", "current", value)] + self.point(0.0, first=True) + self.point(10.0)
+        self.assertEqual(self.sequence(h), expected + ZEROED)
+        self.assertEqual([e[2:5] for e in h.log if e[:2] == ("kepco", "set_output")], [("CURR", 1.5, 5.0)])
+        # The 6221's range is fixed for the largest current, as a Current scan's.
+        peak = 2 ** .5 * 1.5 * 1e-3
+        self.assertEqual({round(s["continuous_sweep_peak_a"], 12) for s in h.configured + h.updated},
+                         {round(peak, 12)})
+        self.assertEqual({entry[-1] for entry in h.log}, {h.worker})
+        rows = self.rows(h)
+        self.assertEqual([(float(r["6221_current_rms_ma"]), float(r["stage_angle_deg"]), r["outer_current_index"],
+                           r["first_point_windows"]) for r in rows],
+                         [(.5, 0., "1", "2"), (.5, 10., "1", "1"), (1., 0., "2", "2"), (1., 10., "2", "1"),
+                          (1.5, 0., "3", "2"), (1.5, 10., "3", "1")])
+        self.assertEqual(list(rows[0])[-2:], ["field_drift_g", "outer_current_index"])
+        self.assertEqual({r["kepco_programmed_current_a"] for r in rows}, {"1.5"})
+        self.assertEqual(panel.ppms_field_scan_status_var.get(), "Completed; KEPCO and 6221 zeroed; stage at +10.000°")
+        events = self.events(h)
+        expected_events = ["run_prepared", "scan_started", "harmonic_pass", "current_programmed", "field_programmed",
+                           "field_settled", "stage_move", "point_saved", "stage_move", "point_saved"]
+        for _current in range(2):
+            expected_events += ["current_programmed", "stage_move", "point_saved", "stage_move", "point_saved"]
+        self.assertEqual(self.without_notes(events), expected_events + ["outputs_zeroed", "run_finished"])
+        self.assertEqual([(e["step_index"], e["current_rms_ma"]) for e in events if e["event"] == "current_programmed"],
+                         [(1, .5), (2, 1.), (3, 1.5)])
+        prepared = events[0]
+        self.assertEqual((prepared["outer"]["values"], prepared["outer"]["unit"]), ([.5, 1., 1.5], "mA RMS (6221)"))
+        self.assertEqual(prepared["kepco"], {"current_a": 1.5, "voltage_limit_v": 5.0, "held": True})
+        self.assert_closed(h)
+        drawn = next(c for c in reversed(h.draw.call_args_list) if c.args[1])
+        self.assertEqual({" ".join(name.split(" ")[1:3]) for name in drawn.args[1]}, {"0.5 mA", "1 mA", "1.5 mA"})
+
+    def test_angle_current_stop_mid_move_and_a_6221_step_failure(self):
+        h = self.make_outer("Angle+Current", ("0.5", "1", "0.5"), span=("0", "90", "90"))
+        panel = h.panel
+        h.move_hooks[90.0] = lambda: h.clock.hooks.append((h.clock.t + 3.0, panel.stop_ppms_field_scan))
+        self.start(h)
+        h.showerror.assert_not_called()
+        self.assertTrue(panel.ppms_field_scan_status_var.get().startswith(
+            "Stopped; KEPCO and 6221 zeroed; stage stopped at +"))
+        self.assertNotIn(("6221", "current"), self.names(h, "6221"), "the next current never set")
+        self.assertEqual(self.names(h, "kepco", "6221")[-3:], ZEROED)
+        # A 6221 step that fails: the scan fails, both are zeroed, the stage stays.
+        h = self.make_outer("Angle+Current", ("0.5", "1", "0.5"))
+        h.panel._update_ppms_transport_current = Mock(side_effect=RuntimeError("6221 live amplitude readback mismatch"))
+        self.start(h)
+        self.assertTrue(h.panel.ppms_field_scan_status_var.get().startswith("Failed: 6221 live amplitude"))
+        self.assertEqual(self.names(h, "kepco", "6221"),
+                         [("6221", "on"), ("kepco", "set_output"), ("6221", "off")] + ZEROED)
+        self.assertEqual([e[2] for e in h.log if e[:2] == ("stage", "move")], [0.0, 10.0])
+        self.assertEqual(self.events(h)[-1]["outputs"], {"6221": "zeroed", "kepco": "zeroed"})
+
+    def test_the_other_modes_are_unchanged_by_the_outer_row(self):
+        # An Angle scan after an Angle+Field one: no outer column, one held field.
+        h = self.make_outer("Angle+Field", ("0", "1", "1"))
+        self.start(h)
+        panel = h.panel
+        with patch.object(app.CombinedControlApp, "_draw_nonlocal_series"):
+            panel.ppms_simple_mode.set("Angle")
+            panel._rte_mode_changed()
+        for variable, value in zip(panel.ppms_simple_range, ("0", "10", "10")):
+            variable.set(value)
+        h.log.clear()
+        self.start(h)
+        rows = self.rows(h)
+        self.assertEqual(list(rows[0])[-1], "field_drift_g")
+        self.assertEqual({r["scan_mode"] for r in rows}, {"Angle"})
+        self.assertEqual([e[1] for e in h.log if e[0] == "kepco"], ["set_output", "force_off"])
+        drawn = next(c for c in reversed(h.draw.call_args_list) if c.args[1])
+        self.assertEqual(sorted(drawn.args[1]), ["Zurich P1 L1"], "one curve, named as before")
+        self.assertNotIn("series_labels", drawn.kwargs)
+
+
+def panel_current(panel):
+    """The 6221 current the page's box holds (the Field and Angle scans' excitation)."""
+    return float(panel.ppms_transport_current_var.get())
 
 
 if __name__ == "__main__":

@@ -446,7 +446,8 @@ class RTE(unittest.TestCase):
             panel = app.RTEPanel(parent, Widget())
             # The start-up scan is the user's Angle scan (2026-10-18).
             self.assertEqual(panel.ppms_simple_mode.get(), 'Angle')
-            self.assertTrue(panel.rte_round_trip.get())
+            # Round trip off (user, 2026-10-18: "default not click Round trip").
+            self.assertFalse(panel.rte_round_trip.get())
             self.assertEqual([v.get() for v in panel.ppms_simple_range], ['0', '-360', '5'])
             self.assertEqual(panel.ppms_acquisition_time_var.get(), '2')
             measurement = panel.ppms_instruments_frame.parent

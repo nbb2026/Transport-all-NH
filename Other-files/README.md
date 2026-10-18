@@ -54,6 +54,75 @@ the window-free suites ran. Check it on CI or the lab PC before use.
   without the clone, a size that cannot match), the lamps, the overview
   text, the card/page tree pass and the red buttons.
 
+## SHV: Angle+Field and Angle+Current scans, round trip off, Go to 0° (2026-10-18)
+
+User, 2026-10-18: "default not click Round trip, add the angle + field scan
+mode, field is the outside loop"; "also angle+current mode, the current is
+outside loop"; "add a zero button here to move to stage 0-degree position".
+Not yet run on the instruments, and not run on CI (no Actions minutes left):
+the window-free suites only.
+
+- **Round trip off by default** for Angle, Angle+Field and Angle+Current, at
+  start-up (the page starts in Angle) and whenever one is chosen. Field keeps
+  it on, Current off, as before.
+- **Two new modes** in the SHV list: `Field, Current, Angle, Angle+Field,
+  Angle+Current` (`RTE_SCAN_MODES`). In both the main row (Start / End / Step
+  / Loops / Round trip) is the INNER angle sweep, with Angle's defaults (0 to
+  −360° in 5° steps), its ±360° wire limit and every Angle check at Start
+  (motor, KEPCO and LS475 connected, the steps/° scale, no unconfirmed stop,
+  the stage check MST / EO with its CLR / EO=1 Yes/No). An outer row under
+  the Start scan row, shown only in these two modes (`grid_remove`
+  otherwise, so the other modes' layout is unchanged), gives the OUTER loop:
+  - **Angle+Field**, "Outer KEPCO A:" Start / End / Step, default 0 / 8 / 2,
+    each current within ±10 A (`rte_outer_plan`, the Field scan's check).
+    At each field: the KEPCO set with the voltage limit box (`set_output` for
+    the first, `set_scan_current` after), `_rte_settle_field` (non-fatal:
+    after 15 s it goes on with a log note), then the whole angle sweep. The
+    "KEPCO current A" box is not used.
+  - **Angle+Current**, "Outer 6221 mA RMS:" Start / End / Step, default
+    0.01 / 1 / 0.01, every current checked by
+    `validate_ppms_transport_scan_settings`. The KEPCO holds the "KEPCO
+    current A" box's field, set once and settled, as in Angle. At each
+    current only the 6221 amplitude changes, in the range fixed for the
+    largest current (`continuous_sweep_peak_a`, as a Current scan); the first
+    point after each change is read with the agreeing windows.
+  - Each mode has its own three variables; the label and the entries'
+    variables are swapped on a mode change and reset to the defaults, as the
+    main row is.
+  - Between outer steps the stage goes back to the first angle as the first
+    move of the next sweep (absolute moves), after the field or current has
+    changed. Each harmonic pass runs the whole outer x angle scan.
+  - The Yes/No gives the outer steps, the angles per step, the points, the
+    stage moves (the returns counted) with the degrees of turning, and the
+    shortest duration (the turning at 5°/s and the shortest field settle or
+    the extra first-point windows counted; the move to the first angle not).
+  - Rows: Angle's columns, then the outer step's number as the LAST column
+    (`outer_field_index` or `outer_current_index`); its value is in
+    `kepco_programmed_current_a` or `6221_current_rms_ma`. The log has
+    `field_programmed` / `field_settled` (with `step_index`) per field, or
+    `current_programmed` per current, `stage_move` and `point_saved` with
+    `step_index`, and the usual events; `run_prepared` has the `outer` row.
+  - Plot: against the sample angle, a curve per outer value named by it
+    ("+2 A", "0.5 mA") and shaded light to dark, as PPMS's per-temperature
+    curves (no in-plot legend, as there). Other modes draw as before.
+  - Every end (completed, stopped, failed) zeroes the 6221 and the KEPCO;
+    the stage is not moved. Scan notes: "Angle+Field: Stage °; outer: KEPCO
+    A", "Angle+Current: Stage °; outer: 6221 mA".
+- **Go to 0°**, right of Stop stage: Move stage to 0° (`_rte_stage_move(target=0.0)`,
+  the same checks, Yes/No, stop events and stage line), the Stage ° box left
+  as it is. Not Set stage 0°, which redefines the zero. Locked as Move stage.
+- **Unverified without CI:** the scan box's height in the outer modes (one
+  row more) and whether "Outer 6221 mA RMS:" widens its first column; whether
+  "Angle+Field" / "Angle+Current" fit the 9-character mode box; whether the
+  stage block, one button wider, still sits beside the lock-ins at 1101 px.
+- **Tests:** `test_rte_angle_scan` (`OuterPlanTests`, `OuterRowPageTests`,
+  `GoToZeroTests`, new `AngleStartTests` cases) and
+  `test_rte_angle_end_to_end` (`OuterScanTests`). Changed expectations: round
+  trip off for Angle in `test_rte_angle_scan`, `test_rte_angle_end_to_end`,
+  `test_rte_panel` and (CI only) `test_panel_defaults`; the mode list in
+  `test_ppms_frequency_scan` and `test_rte_angle_scan`; the stage block's
+  layout and states with Go to 0° in `test_rte_angle_scan`.
+
 ## Review of the merged areas: fixes (2026-10-18)
 
 Review of c3b4b24..1c51161 (the five areas merged). Not yet run on the

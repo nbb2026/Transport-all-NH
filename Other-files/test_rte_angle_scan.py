@@ -226,10 +226,17 @@ class Recorder(rte_tests.Widget):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.grid_options = {}
+        self.grid_removed = False
         Recorder.made.append(self)
 
     def grid(self, **kwargs):
         self.grid_options = dict(kwargs)
+        self.grid_removed = False
+
+    def grid_remove(self):
+        # Tk keeps the grid options of a removed widget (2026-10-18: the
+        # SHV outer row).
+        self.grid_removed = True
 
 
 class AfterRoot:
@@ -1473,10 +1480,13 @@ class ManualStageControlTests(StageBase):
 # ---- Start (Angle), status lines, defaults, plots ---------------------------------
 class AngleStartTests(unittest.TestCase):
     def start(self, mode="Angle", yes=True, stage=True, kepco=True, gauss=True, scale=10000,
-              span=("0", "10", "5"), drive="1.5", limit="5", executor=None, may_run=False, owner=None):
+              span=("0", "10", "5"), drive="1.5", limit="5", executor=None, may_run=False, owner=None,
+              outer=None, trip=True):
         """The real RTEPanel.start_ppms_field_scan up to its submit (as in
         test_ppms_rte_review), with every dialog answered here.  ``owner``:
-        the page that has the motor's USB device (user, 2026-10-17)."""
+        the page that has the motor's USB device (user, 2026-10-17).
+        ``outer``: the outer row of Angle+Field / Angle+Current (user,
+        2026-10-18)."""
         panel = rte_tests.RTE.make_worker(self)
         if owner is not None:
             panel._newmark_stage_ownership().claim(owner)
@@ -1486,7 +1496,9 @@ class AngleStartTests(unittest.TestCase):
         panel.ppms_simple_mode = Var(mode)
         panel.ppms_simple_range = [Var(v) for v in span]
         panel.ppms_field_scan_loop_var = Var("1")
-        panel.rte_round_trip = Var(True)
+        panel.rte_round_trip = Var(trip)
+        if outer is not None:
+            panel.rte_outer_ranges = {mode: [Var(v) for v in outer]}
         panel.rte_controllers["gauss"].connected = gauss
         panel.rte_controllers["kepco"].connected = kepco
         panel.rte_controllers["newmark"] = Mock(connected=stage, steps_per_degree=scale, motion_may_run=may_run,
@@ -1672,6 +1684,98 @@ class AngleStartTests(unittest.TestCase):
                 else:
                     showerror.assert_not_called()
 
+    # ---- Angle+Field and Angle+Current (user, 2026-10-18) ----------------------
+    def test_outer_modes_need_what_angle_needs_and_a_valid_outer_row(self):
+        for mode, good in (("Angle+Field", ("0", "8", "2")), ("Angle+Current", ("0.01", "0.03", "0.01"))):
+            cases = [(dict(stage=False), r'Connect the Newmark NSC-A1 \(the "Motor" row'),
+                     (dict(kepco=False), "Connect KEPCO for an angle scan"),
+                     (dict(gauss=False), "Connect LS475"),
+                     (dict(scale=None), "has no steps/° scale"),
+                     (dict(span=("0", "-365", "5")), "within"),
+                     (dict(may_run=True), "last stop was not confirmed"),
+                     (dict(limit="25"), "20 V"),
+                     (dict(outer=(good[0], good[1], "0")), "step must be greater than 0")]
+            if mode == "Angle+Field":
+                cases += [(dict(outer=("0", "10.5", "2")), r"Outer KEPCO A: KEPCO sweep current must stay within "
+                                                           r"\+/-10 A"),
+                          (dict(outer=("-12", "0", "4")), "10 A")]
+            else:
+                cases += [(dict(drive="12"), "10 A"),
+                          (dict(outer=("0", "0.02", "0.01")), "greater than 0 mA RMS")]
+            for options, message in cases:
+                with self.subTest(mode=mode, options=options):
+                    run = self.start(mode=mode, **{"outer": good, **options})
+                    run.showerror.assert_called_once()
+                    self.assertEqual(run.showerror.call_args.args[0], "SHV scan parameters")
+                    self.assertRegex(run.showerror.call_args.args[1], message)
+                    run.askyesno.assert_not_called()
+                    run.panel.ppms_executor.submit.assert_not_called()
+        # The KEPCO current box is Angle+Field's no concern: the outer row
+        # gives its currents.
+        run = self.start(mode="Angle+Field", outer=("0", "8", "2"), drive="12")
+        run.showerror.assert_not_called()
+
+    def test_angle_field_confirmation_and_submitted_scan(self):
+        run = self.start(mode="Angle+Field", outer=("0", "4", "2"), span=("0", "10", "5"), trip=False, yes=False)
+        title, question = run.askyesno.call_args.args[:2]
+        self.assertEqual(title, "SHV Angle+Field scan")
+        # Turning: 0-5-10 three times, back to 0 before fields 2 and 3: 50°,
+        # 10 s at 5°/s; 9 x (1 s + 1 s) + 1 s + 10 s + 3 x 0.6 s settle =
+        # 30.8 s.
+        for text in ("Field, the OUTER loop: 3 KEPCO steps from +0 A to +4 A (voltage limit 5 V)",
+                     "the first switches the output on, the others change its current only",
+                     "at most 15 s; an unsettled field is noted in the log and the scan goes on",
+                     "Angles of each field, the INNER loop: from 0° to 10° (step 5°): 3 angles",
+                     "The stage goes back to 0° as the first move of each field's sweep, after the field has changed",
+                     "3 field steps x 3 angles x 1 harmonic pass(es) = 9 points.",
+                     "9 stage moves (2 of them back to 0°), 50° of turning in all",
+                     "the scan takes at least 31 s",
+                     "the 6221 and then the KEPCO are zeroed; the stage stays where the scan left it",
+                     "SAMPLE HOLDER with its wires attached", "Can the wires follow?"):
+            self.assertIn(text, question)
+        run.askdirectory.assert_not_called()
+        run.panel.ppms_executor.submit.assert_not_called()
+        run = self.start(mode="Angle+Field", outer=("0", "4", "2"), span=("0", "10", "5"), trip=False)
+        run.panel.rte_controllers["newmark"].check_ready.assert_called_once_with()
+        (scan,) = run.panel.ppms_executor.scans()
+        self.assertEqual(scan[1], "Angle+Field")
+        self.assertEqual([p[2] for p in scan[2]], [0., 5., 10.], "the inner sweep, round trip off")
+        self.assertEqual((scan[4], scan[7], scan[8]), (5., None, (0., 2., 4.)),
+                         "the voltage limit, no held current, the outer currents")
+        self.assertEqual(run.panel.ppms_plot_axis, "angle")
+        self.assertEqual(run.panel.ppms_field_scan_total, 9)
+        self.assertEqual(run.panel.ppms_field_scan_status_var.get(), "SHV Angle+Field: 3 fields x 3 angles; 9 points")
+        self.assertFalse(run.panel.rte_stage_stop_event.is_set(), "an old Stop stage does not stop the new scan")
+
+    def test_angle_current_confirmation_and_submitted_scan(self):
+        run = self.start(mode="Angle+Current", outer=("0.01", "0.03", "0.01"), span=("0", "10", "10"), trip=False,
+                         yes=False)
+        title, question = run.askyesno.call_args.args[:2]
+        self.assertEqual(title, "SHV Angle+Current scan")
+        # 6 points x 2 s + 1 s, the first point's second window at the two
+        # later currents (2 s), turning 50° (10 s): 25 s.
+        for text in ("6221 current, the OUTER loop: 3 steps from 0.01 to 0.03 mA RMS.",
+                     "only the 6221 amplitude changes, within the fixed range set for the largest current",
+                     "the first point after each change is read with the agreeing windows",
+                     "The field is fixed: the KEPCO is set once to +1.5 A (voltage limit 5 V)",
+                     "Angles of each current, the INNER loop: from 0° to 10° (step 10°): 2 angles",
+                     "3 current steps x 2 angles x 1 harmonic pass(es) = 6 points.",
+                     "6 stage moves (2 of them back to 0°), 50° of turning in all",
+                     "the scan takes at least 25 s"):
+            self.assertIn(text, question)
+        run = self.start(mode="Angle+Current", outer=("0.01", "0.03", "0.01"), span=("0", "10", "10"), trip=False)
+        (scan,) = run.panel.ppms_executor.scans()
+        self.assertEqual(scan[1], "Angle+Current")
+        self.assertEqual((scan[4], scan[7]), (5., 1.5), "the voltage limit, the held KEPCO current")
+        self.assertEqual([round(v, 6) for v in scan[8]], [.01, .02, .03])
+        self.assertEqual(run.panel.ppms_field_scan_status_var.get(),
+                         "SHV Angle+Current: 3 currents x 2 angles; 6 points")
+
+    def test_the_outer_points_limit(self):
+        run = self.start(mode="Angle+Field", outer=("-10", "10", "0.01"), span=("0", "-360", "1"))
+        self.assertIn("limited to 100000 points", run.showerror.call_args.args[1])
+        run.panel.ppms_executor.submit.assert_not_called()
+
 
 class AnglePageTests(unittest.TestCase):
     def test_mode_change_defaults(self):
@@ -1684,11 +1788,17 @@ class AnglePageTests(unittest.TestCase):
         panel._rte_mode_changed()
         # 0 to -360 deg in 5 deg steps (user's figures, 2026-10-18).
         self.assertEqual([v.get() for v in panel.ppms_simple_range], ["0", "-360", "5"])
-        self.assertTrue(panel.rte_round_trip.get(), "round trip: back toward the start, unwinding the wires")
+        # Off by default since 2026-10-18 (user: "default not click Round
+        # trip"); Field keeps it on, Current off.
+        self.assertFalse(panel.rte_round_trip.get(), "round trip off for Angle")
         self.assertEqual(panel.rte_scan_units.get(), "Stage °")
         self.assertEqual(panel.ppms_plot_axis, "angle")
         for mode, values, units, axis, trip in (("Current", ["0.01", "1", "0.01"], "6221 mA RMS", "current", False),
-                                                ("Field", ["-3", "3", "0.05"], "KEPCO A", "field", True)):
+                                                ("Field", ["-3", "3", "0.05"], "KEPCO A", "field", True),
+                                                ("Angle+Field", ["0", "-360", "5"], "Stage °", "angle", False),
+                                                ("Field", ["-3", "3", "0.05"], "KEPCO A", "field", True),
+                                                ("Angle+Current", ["0", "-360", "5"], "Stage °", "angle", False),
+                                                ("Angle", ["0", "-360", "5"], "Stage °", "angle", False)):
             panel.ppms_simple_mode.set(mode)
             panel._rte_mode_changed()
             self.assertEqual(([v.get() for v in panel.ppms_simple_range], panel.rte_scan_units.get(),
@@ -1794,22 +1904,29 @@ class AnglePageTests(unittest.TestCase):
         self.assertFalse([w for w in Recorder.made if w.parent is scan and w is not rows
                           and "row" in w.grid_options and w.grid_options["row"] == 0], "only the scan rows on top")
         # Three scan rows (mode/Start/End/Step; units/Loops/Settle s/Acquire
-        # s; Start scan/Stop/Save CSV as/Round trip).
+        # s; Start scan/Stop/Save CSV as/Round trip), and the outer row of
+        # Angle+Field and Angle+Current (user, 2026-10-18), removed in Angle.
         self.assertEqual({w.grid_options["row"] for w in Recorder.made
-                          if w.parent is rows and "row" in w.grid_options}, {0, 1, 2})
+                          if w.parent is rows and "row" in w.grid_options and not w.grid_removed}, {0, 1, 2})
+        self.assertEqual({w.grid_options["row"] for w in Recorder.made
+                          if w.parent is rows and "row" in w.grid_options and w.grid_removed}, {3})
         labels = {w.options["text"]: w for w in Recorder.made
                   if w.parent is block and "text" in w.options and "command" not in w.options}
         buttons = {w.options.get("text"): w for w in Recorder.made if "command" in w.options}
         move, zero, stop = buttons["Move stage"], buttons["Set stage 0°"], buttons["Stop stage"]
         self.assertIs(stop, panel.rte_stage_stop_button)
+        # Go to 0° right of Stop stage (user, 2026-10-18), as Move stage.
+        go = buttons["Go to 0°"]
+        self.assertIs(go, panel.rte_stage_home_button)
+        self.assertEqual((go.options["width"], go.options["style"]), (11, "Inline.TButton"))
         target = next(w for w in Recorder.made if w.options.get("textvariable") is panel.rte_stage_target)
         live = next(w for w in Recorder.made if w.options.get("textvariable") is panel.rte_stage_live)
         layout = {(w.grid_options["row"], w.grid_options["column"]): w for w in Recorder.made if w.parent is block}
         self.assertEqual(layout, {
-            (0, 0): labels["Stage °"], (0, 1): target, (0, 2): move, (0, 3): stop,
+            (0, 0): labels["Stage °"], (0, 1): target, (0, 2): move, (0, 3): stop, (0, 4): go,
             (1, 0): zero, (1, 2): live})
         self.assertEqual(target.options["width"], 9)
-        for button in (move, stop, zero):
+        for button in (move, stop, go, zero):
             # No taller than the entries beside them.
             self.assertEqual(button.options["style"], "Inline.TButton", button.options["text"])
         # One live line, a fixed box, for the reading.
@@ -1830,20 +1947,21 @@ class AnglePageTests(unittest.TestCase):
         self.assertEqual(panel.rte_controllers["newmark"].owner_scope, "SHV")
         self.assertIsNone(panel.rte_controllers["newmark"].dll, "no DLL is loaded before Connect")
         combo = next(w for w in Recorder.made if w.options.get("textvariable") is panel.ppms_simple_mode)
-        self.assertEqual(combo.options["values"], ("Field", "Current", "Angle"))
+        self.assertEqual(combo.options["values"], ("Field", "Current", "Angle", "Angle+Field", "Angle+Current"))
         # The button states are as they were in the rack and settings rows.
-        states = lambda: tuple(w.options["state"] for w in (entry, connect, disconnect, target, move, stop, zero))
-        self.assertEqual(states(), ("normal", "normal", "disabled", "normal", "normal", "disabled", "normal"),
+        states = lambda: tuple(w.options["state"] for w in (entry, connect, disconnect, target, move, stop, zero, go))
+        self.assertEqual(states(), ("normal", "normal", "disabled", "normal", "normal", "disabled", "normal", "normal"),
                          "no stage connected")
         stage = panel.rte_controllers["newmark"]
         stage.handle = object()         # connected, as far as the page can tell
         try:
             panel.ppms_environment_busy = True
             panel._update_ppms_control_ui()
-            self.assertEqual(states(), ("disabled",) * 5 + ("normal", "disabled"), "Stop stage works while busy")
+            self.assertEqual(states(), ("disabled",) * 5 + ("normal", "disabled", "disabled"),
+                             "Stop stage works while busy")
             panel.ppms_environment_busy = False
             panel._update_ppms_control_ui()
-            self.assertEqual(states(), ("disabled", "disabled", "normal", "normal", "normal", "normal", "normal"))
+            self.assertEqual(states(), ("disabled", "disabled", "normal", "normal", "normal", "normal", "normal", "normal"))
         finally:
             stage.handle = None
         panel.safe_close_ppms()
@@ -1860,21 +1978,22 @@ class AnglePageTests(unittest.TestCase):
         buttons = {w.options.get("text"): w for w in Recorder.made if "command" in w.options}
         move, zero, stop = buttons["Move stage"], buttons["Set stage 0°"], buttons["Stop stage"]
         target = next(w for w in Recorder.made if w.options.get("textvariable") is panel.rte_stage_target)
+        go = buttons["Go to 0°"]     # locked as Move stage (user, 2026-10-18)
         states = lambda: tuple(w.options["state"] for w in (entry, connect, disconnect, target, move, stop, zero,
-                                                            panel.rte_start_button))
+                                                            panel.rte_start_button, go))
         stage = panel.rte_controllers["newmark"]
         stage.handle = object()         # connected, as far as the page can tell
         try:
             panel.ppms_control_safety_var.set(True)
             panel.rte_stage_prompt_open = True
             panel._update_ppms_control_ui()
-            self.assertEqual(states(), ("disabled",) * 5 + ("normal", "disabled", "disabled"))
+            self.assertEqual(states(), ("disabled",) * 5 + ("normal", "disabled", "disabled", "disabled"))
             self.assertEqual(buttons["KEPCO Zero / OFF"].options.get("state", "normal"), "normal")
             self.assertEqual(buttons["6221 / 2400 OFF"].options.get("state", "normal"), "normal")
             panel.rte_stage_prompt_open = False
             panel._update_ppms_control_ui()
             self.assertEqual(states(), ("disabled", "disabled", "normal", "normal", "normal", "normal", "normal",
-                                        "normal"))
+                                        "normal", "normal"))
         finally:
             stage.handle = None
         panel.safe_close_ppms()
@@ -2880,6 +2999,218 @@ class CloseTests(StageBase):
         self.assertNotIn(threading.get_ident(), {thread for _name, thread in h.dll.calls})
         self.assertFalse(h.stage.connected)
         kepco.safe_output_off.assert_not_called()
+
+
+# ---- Angle+Field and Angle+Current: the plan, the outer row, the plot (user, 2026-10-18) ----
+class OuterPlanTests(unittest.TestCase):
+    def test_the_outer_plans(self):
+        self.assertEqual(app.rte_outer_plan("Angle+Field", "0", "8", "2"), (0., 2., 4., 6., 8.))
+        self.assertEqual(app.rte_outer_plan("Angle+Field", "4", "-4", "4"), (4., 0., -4.), "either direction")
+        self.assertEqual(app.rte_outer_plan("Angle+Field", "-10", "10", "10"), (-10., 0., 10.), "the limit itself")
+        self.assertEqual(app.rte_outer_plan("Angle+Field", "3", "3", "1"), (3.,), "one field")
+        currents = app.rte_outer_plan("Angle+Current", "0.01", "1", "0.01")
+        self.assertEqual((len(currents), currents[0], currents[-1]), (100, .01, 1.))
+        for args, message in ((("Angle+Field", "0", "10.5", "2"), "Outer KEPCO A: KEPCO sweep current must stay "
+                                                                    "within +/-10 A"),
+                              (("Angle+Field", "-10.01", "0", "5"), "+/-10 A"),
+                              (("Angle+Field", "0", "8", "0"), "Outer KEPCO A: Scan range must be finite"),
+                              (("Angle+Field", "nan", "8", "2"), "finite"),
+                              (("Angle+Current", "0.01", "1", "-0"), "Outer 6221 mA RMS: Scan range"),
+                              (("Angle", "0", "1", "1"), "Only Angle+Field and Angle+Current")):
+            with self.subTest(args=args):
+                with self.assertRaises(ValueError) as caught:
+                    app.rte_outer_plan(*args)
+                self.assertIn(message, str(caught.exception))
+        # The defaults: 0 to 8 A in 2 A steps; the Current scan's range.
+        self.assertEqual(app.RTE_OUTER_ROWS["Angle+Field"]["defaults"], ("0", "8", "2"))
+        self.assertEqual(app.RTE_OUTER_ROWS["Angle+Current"]["defaults"], ("0.01", "1", "0.01"))
+        for mode in ("Angle+Field", "Angle+Current"):
+            self.assertLessEqual(len(app.RTE_SCAN_NOTES[mode]), 40, "the note's 40-character box")
+
+    def test_the_outer_step_of_a_row(self):
+        self.assertIsNone(app.rte_outer_step_of({"kepco_programmed_current_a": 2.0}), "the other modes' rows")
+        self.assertEqual(app.rte_outer_step_of({"kepco_programmed_current_a": 2.0, "outer_field_index": 2}),
+                         (2.0, "+2 A"))
+        self.assertEqual(app.rte_outer_step_of({"6221_current_rms_ma": 0.5, "outer_current_index": 1}),
+                         (0.5, "0.5 mA"))
+        self.assertEqual(app.rte_outer_step_of({"kepco_programmed_current_a": "", "outer_field_index": 3}),
+                         (3.0, "step 3"))
+
+
+class OuterRowPageTests(unittest.TestCase):
+    """The outer row on the real page built from stand-ins (user, 2026-10-18):
+    removed in Field, Current and Angle, shown in Angle+Field and
+    Angle+Current with each mode's own label and variables."""
+
+    def mode(self, panel, mode):
+        with patch.object(app.CombinedControlApp, "_draw_nonlocal_series"):
+            panel.ppms_simple_mode.set(mode)
+            panel._rte_mode_changed()
+
+    def test_the_outer_row_follows_the_mode(self):
+        panel = AnglePageTests.build_page(self)
+        rows = panel.rte_start_button.parent
+        outer = [widget for widget, _options in panel.rte_outer_widgets]
+        others = [w for w in Recorder.made if w.parent is rows and w not in outer]
+        layout = lambda: [(w, dict(w.grid_options), w.grid_removed) for w in others]
+        before = layout()
+        # The page starts on Angle, with round trip off and no outer row.
+        self.assertEqual(panel.ppms_simple_mode.get(), "Angle")
+        self.assertIs(panel.rte_round_trip.get(), False)
+        self.assertTrue(all(w.grid_removed for w in outer))
+        self.assertEqual(len(outer), 7, "its label, then Start / End / Step and their entries")
+        self.assertEqual({w.grid_options["row"] for w in outer}, {3})
+        self.assertEqual(sorted(w.grid_options["column"] for w in outer), list(range(7)))
+        entries = panel.rte_outer_entries
+        for mode, label, values, note in (
+                ("Angle+Field", "Outer KEPCO A:", ["0", "8", "2"], "Angle+Field: Stage °; outer: KEPCO A"),
+                ("Angle+Current", "Outer 6221 mA RMS:", ["0.01", "1", "0.01"],
+                 "Angle+Current: Stage °; outer: 6221 mA")):
+            with self.subTest(mode=mode):
+                panel.rte_outer_ranges[mode][1].set("99")       # typed earlier: the mode change resets it
+                self.mode(panel, mode)
+                self.assertFalse(any(w.grid_removed for w in outer), "shown")
+                self.assertEqual(panel.rte_outer_label.get(), label)
+                self.assertEqual([e.options["textvariable"] for e in entries], panel.rte_outer_ranges[mode])
+                self.assertEqual([v.get() for v in panel.rte_outer_ranges[mode]], values)
+                self.assertEqual([v.get() for v in panel.ppms_simple_range], ["0", "-360", "5"], "Angle's sweep")
+                self.assertEqual(panel.rte_scan_units.get(), "Stage °")
+                self.assertIs(panel.rte_round_trip.get(), False, "round trip off (user, 2026-10-18)")
+                self.assertEqual(panel.rte_scan_note.get(), note)
+                self.assertEqual(panel.ppms_plot_axis, "angle")
+                self.assertEqual(layout(), before, "the other scan widgets where they were")
+        # The two modes' variables are their own: one unit never reads the other's.
+        self.assertFalse(set(map(id, panel.rte_outer_ranges["Angle+Field"]))
+                         & set(map(id, panel.rte_outer_ranges["Angle+Current"])))
+        for mode, trip in (("Field", True), ("Current", False), ("Angle", False)):
+            with self.subTest(mode=mode):
+                self.mode(panel, mode)
+                self.assertTrue(all(w.grid_removed for w in outer), "removed: the layout as before")
+                self.assertIs(panel.rte_round_trip.get(), trip)
+                self.assertEqual(layout(), before)
+        # The entries are locked as the other scan boxes while busy.
+        panel.ppms_field_scan_running = True
+        panel._update_ppms_control_ui()
+        self.assertEqual({e.options["state"] for e in entries}, {"disabled"})
+        panel.ppms_field_scan_running = False
+        panel._update_ppms_control_ui()
+        self.assertEqual({e.options["state"] for e in entries}, {"normal"})
+        panel.safe_close_ppms()
+
+    def test_a_curve_per_outer_step_and_the_other_modes_as_before(self):
+        panel = rte_tests.RTE.make_worker(self)
+        canvas = object()
+        panel.ppms_harmonic_canvases = {(1, "x"): canvas}
+        panel._ppms2_measured_orders = Mock(return_value={1: ["830_a"]})
+        panel._ppms2_prefix_resolver = Mock(return_value=lambda row: "sr830_8_")
+        panel._draw_nonlocal_series = Mock()
+        panel.ppms_plot_axis = "angle"
+        base = lambda angle, **extra: dict({"loop": 1, "stage_angle_deg": angle, "sr830_8_x_v": angle + 1.}, **extra)
+        for column, rows, names in (
+                ("outer_field_index",
+                 [base(0., kepco_programmed_current_a=k, outer_field_index=i) for i, k in ((1, 0.), (2, 2.), (3, 4.))
+                  for _ in (0,)] + [base(5., kepco_programmed_current_a=4., outer_field_index=3)],
+                 ["SR830-1 +0 A P1 L1", "SR830-1 +2 A P1 L1", "SR830-1 +4 A P1 L1"]),
+                ("outer_current_index",
+                 [base(0., **{"6221_current_rms_ma": c, "outer_current_index": i}) for i, c in ((1, .5), (2, 1.))],
+                 ["SR830-1 0.5 mA P1 L1", "SR830-1 1 mA P1 L1"])):
+            with self.subTest(column=column):
+                panel.ppms_field_scan_rows = rows
+                panel._draw_nonlocal_series.reset_mock()
+                panel._redraw_ppms_transport_plot()
+                call = panel._draw_nonlocal_series.call_args
+                series = call.args[1]
+                self.assertEqual(list(series), names, "one curve per outer value, named by it")
+                self.assertEqual(call.args[2], "Sample angle (°)")
+                colors = call.kwargs["series_colors"]
+                self.assertEqual(len(set(colors.values())), len(names), "shaded per value")
+                self.assertEqual(call.kwargs["series_labels"], {name: name for name in names})
+                self.assertIs(call.kwargs["show_legend"], False, "no in-plot legend, as PPMS's")
+        self.assertEqual(series["SR830-1 1 mA P1 L1"], [(0., 1.)])
+        # An Angle scan's rows: the curves and the call as before.
+        panel.ppms_field_scan_rows = [base(0.), base(5.)]
+        panel._draw_nonlocal_series.reset_mock()
+        panel._redraw_ppms_transport_plot()
+        call = panel._draw_nonlocal_series.call_args
+        self.assertEqual(list(call.args[1]), ["SR830-1 P1 L1"])
+        self.assertNotIn("series_labels", call.kwargs)
+        self.assertEqual(call.kwargs["series_colors"], {"SR830-1 P1 L1": app.PPMS_METER_COLORS["830_a"]})
+
+
+# ---- Go to 0° (user, 2026-10-18: "add a zero button here to move to stage 0-degree position") ----
+class GoToZeroTests(StageBase):
+    def test_it_is_move_stage_to_zero_with_the_box_left_alone(self):
+        h = self.make()
+        h.stage.connect("auto")
+        h.panel.rte_stage_target.set("10")
+        h.panel._rte_stage_move()
+        self.drain(h)
+        h.panel.rte_stage_target.set("25")
+        h.panel.rte_stage_stop_event.set()      # an old Stop stage: cleared, as by Move stage
+        with patch.object(app.RTEPanel, "_rte_stage_job", autospec=True,
+                          side_effect=app.RTEPanel._rte_stage_job) as job:
+            h.panel._rte_stage_go_to_zero()
+            self.drain(h)
+        job.assert_called_once()
+        self.assertEqual(h.sim.moves, ["X100000", "X0"], "an absolute move to 0°")
+        self.assertEqual(h.panel.rte_stage_target.get(), "25", "the Stage ° box unchanged")
+        self.assertEqual(h.panel.rte_stage_live.get(), "Stage: +0.000° (10000 steps/°)")
+        self.assertFalse(h.panel.ppms_environment_busy)
+        # The same call as Move stage's.
+        with patch.object(h.panel, "_rte_stage_move") as move:
+            h.panel._rte_stage_go_to_zero()
+        move.assert_called_once_with(target=0.0)
+
+    def test_the_refusals_of_move_stage(self):
+        cases = (("an unconfirmed stop", lambda h: setattr(h.stage, "motion_may_run", True), NOT_CONFIRMED),
+                 ("a scan running", lambda h: setattr(h.panel, "ppms_field_scan_running", True), BUSY),
+                 ("the rack busy", lambda h: setattr(h.panel, "ppms_environment_busy", True), BUSY),
+                 ("no safety tick", lambda h: setattr(h.panel, "ppms_control_safety_var", Var(False)),
+                  "safety confirmation"),
+                 ("not connected", lambda h: setattr(h.stage, "handle", None), "Connect the Newmark NSC-A1 first"))
+        for name, change, message in cases:
+            with self.subTest(name):
+                h = self.make()
+                h.stage.connect("auto")
+                h.sim.received.clear()
+                change(h)
+                h.panel.ppms_executor = Mock()
+                with patch.object(app.messagebox, "showerror") as showerror:
+                    h.panel._rte_stage_go_to_zero()
+                showerror.assert_called_once()
+                self.assertIn(message, showerror.call_args.args[1])
+                h.panel.ppms_executor.submit.assert_not_called()
+                self.assertEqual(actions(h.sim.received), [], "nothing sent")
+
+    def test_a_latched_limit_error_is_asked_then_cleared_before_the_move(self):
+        h = self.make(Watched())
+        h.stage.connect("auto")
+        h.panel.rte_stage_target.set("10")
+        h.panel._rte_stage_move()
+        self.drain(h)
+        latch(h.sim)
+        questions = Questions(h, {LATCHED: True})
+        with patch.object(app.messagebox, "askyesno", questions), \
+                patch.object(app.messagebox, "showerror") as showerror:
+            h.panel._rte_stage_go_to_zero()
+            self.drain(h)
+        showerror.assert_not_called()
+        self.assertEqual(questions.titles(), [LATCHED])
+        self.assertEqual(actions(questions.after(LATCHED)), ["CLR", "X0"], "the fix, then the move to 0°")
+        self.assertEqual(h.panel.rte_stage_live.get(), "Stage: +0.000° (10000 steps/°)")
+
+    def test_stop_stage_stops_it(self):
+        h = self.make()
+        h.stage.connect("auto")
+        h.panel.rte_stage_target.set("90")
+        h.panel._rte_stage_move()
+        self.drain(h)
+        h.clock.hooks.append((h.clock.t + 3.0, h.panel.rte_stage_stop_event.set))
+        h.panel._rte_stage_go_to_zero()
+        self.drain(h)
+        self.assertIn("STOP", h.sim.received[h.sim.received.index("X0"):])
+        self.assertTrue(h.panel.rte_stage_live.get().startswith("Stage: stopped at +"), h.panel.rte_stage_live.get())
+        self.assertTrue(h.panel.rte_stage_live.get().endswith("(Stop)"))
 
 
 if __name__ == "__main__":
