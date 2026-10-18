@@ -74,10 +74,24 @@ class FakeSmb100a:
             value = float(command.split()[1])
             if value not in self.refuses:
                 self.level = value
+        # The carrier, the LFO and the RF are read back too (2026-10-18):
+        # the generator takes every one of them.
+        elif command.startswith("FREQ "):
+            self.carrier_hz = float(command[5:-3]) * 1e9
+        elif command.startswith("LFO:FREQ "):
+            self.lfo_hz = float(command.split()[1])
+        elif command in ("OUTPUT ON", "OUTPUT OFF"):
+            self.rf_on = command == "OUTPUT ON"
 
     def query(self, command):
         self.queries.append(command)
         self.sequence.append(command)
+        if command == "FREQ?":
+            return f"{self.carrier_hz:.12g}"
+        if command == "LFO:FREQ?":
+            return f"{self.lfo_hz:.12g}"
+        if command == "OUTP?":
+            return "1" if getattr(self, "rf_on", False) else "0"
         if command != ":POW?":
             raise AssertionError(f"unexpected query {command}")
         if self.reply is not None:
@@ -292,8 +306,11 @@ class Smb100aPowerTests(NoWindows):
         LabVIEW trace's as before, with ':POW?' right after ':POW'."""
         controller, fake = self.controller()
         self.assertEqual(controller.configure(5.0, 12.0, 117.3), 12.0, "returns the read-back")
-        self.assertEqual(fake.sequence, [":AM:DEPT:LIN 1.0E+2", "LFO:VOLT 0.50 V", "LFO:FREQ 117.3 Hz",
-                                         ":POW 12", ":POW?", "FREQ 5GHz", "LFO ON", "OUTPUT ON", "AM:STAT ON"])
+        # The LFO and the carrier are read back too, also before the RF is
+        # switched on (review, 2026-10-18).
+        self.assertEqual(fake.sequence, [":AM:DEPT:LIN 1.0E+2", "LFO:VOLT 0.50 V", "LFO:FREQ 117.3 Hz", "LFO:FREQ?",
+                                         ":POW 12", ":POW?", "FREQ 5GHz", "FREQ?", "LFO ON", "OUTPUT ON",
+                                         "AM:STAT ON"])
         self.assertEqual(fake.writes, [":AM:DEPT:LIN 1.0E+2", "LFO:VOLT 0.50 V", "LFO:FREQ 117.3 Hz",
                                        ":POW 12", "FREQ 5GHz", "LFO ON", "OUTPUT ON", "AM:STAT ON"],
                          "every write and its order as before")
@@ -309,7 +326,7 @@ class Smb100aPowerTests(NoWindows):
                                                           rf":POW\? read back {re.escape(reply_text)}"):
                     controller.configure(5.0, 12.0, 117.3)
                 self.assertEqual(fake.sequence, [":AM:DEPT:LIN 1.0E+2", "LFO:VOLT 0.50 V", "LFO:FREQ 117.3 Hz",
-                                                 ":POW 12", ":POW?"],
+                                                 "LFO:FREQ?", ":POW 12", ":POW?"],
                                  "no carrier, no LFO ON, no OUTPUT ON, no AM:STAT ON")
         # Within 0.01 dB, the same tolerance as set_power().
         controller, fake = self.controller(reply="12.01")
@@ -495,9 +512,10 @@ class PowerSweepTests(PowerSweepCase):
                                      r"~(\d+ s|\d+ min|\d+\.\d h) left$")
         # The point count first, so it stays within the 52-character label
         # (review, 2026-10-14).
-        self.assertEqual(statuses[-1], "Scan complete: 12 points saved; 2 frequencies, 3 powers; outputs OFF; "
-                                       "CSV saved")
-        self.assertLessEqual(width_in_zeros(statuses[-1].split("; outputs OFF")[0]), 52)
+        # The outputs and the count first, within the label; what was
+        # swept may run past it (user, 2026-10-18).
+        self.assertEqual(statuses[-1], "Completed; 4886 and RF zeroed; 12 points saved; 2 frequencies, 3 powers")
+        self.assertLessEqual(width_in_zeros(statuses[-1].split("; 2 frequencies")[0]), 52)
         # The 52-character status label, with long labels and hours left
         # (Arial 15 px, a little wider than the lab's YaHei UI).
         long_run = [
@@ -599,8 +617,8 @@ class PowerSweepTests(PowerSweepCase):
             self.assertRegex(status, r"^5 GHz/3(07|11) Hz/1[02] dBm; \d+/16; [-+][0-9.]+ A; "
                                      r"~(\d+ s|\d+ min|\d+\.\d h)$")
             self.assertLessEqual(width_in_zeros(status), 52)
-        self.assertEqual(statuses[-1], "Scan complete: 8 points saved; 1 frequency, 2 modulation frequencies, "
-                                       "2 powers; outputs OFF; CSV saved")
+        self.assertEqual(statuses[-1], "Completed; 4886 and RF zeroed; 8 points saved; 1 frequency, "
+                                       "2 modulation frequencies, 2 powers")
         series = h._stfmr_lockin_field_component_series(
             h.stfmr_lockin_rows, "SR830", "8", "x_v", group_frequency=True)
         self.assertEqual(set(series), {f"8_mod_{m}_pow_{p}_freq_5_loop_1" for m in (307, 311) for p in (10, 12)})
@@ -666,7 +684,7 @@ class PowerSweepTests(PowerSweepCase):
         self.assertEqual({float(r["microwave_power_dbm"]) for r in read_csv(recorder.csv_path)}, {10.0})
         history = events(recorder)
         self.assertEqual((history[-1]["outcome"], history[-1]["outputs_off"]), ("stopped", True))
-        self.assertTrue(h.stfmr_lockin_status_var.history[-1].startswith("Scan stopped; 4 points saved"))
+        self.assertEqual(h.stfmr_lockin_status_var.history[-1], "Stopped; 4886 and RF zeroed; 4 points saved")
 
     def test_the_mfli_first_point_range_check_runs_again_after_each_power_change(self):
         """Review, 2026-10-14: after a power change the MFLI's first reading
@@ -722,9 +740,12 @@ class RealSmb100aSweepTests(PowerSweepCase):
         self.assertEqual(writes[-3:], ["AM:STAT OFF", "LFO OFF", "OUTPUT OFF"])
         # The first power is read back too, right after it is sent and
         # before the RF is switched on (review, 2026-10-14).
-        self.assertEqual(smb.instrument.queries, [":POW?", ":POW?", ":POW?"])
+        # The LFO and every carrier are read back too, and the RF off at the
+        # end (review and user, 2026-10-18).
+        self.assertEqual(smb.instrument.queries, ["LFO:FREQ?", ":POW?", "FREQ?", "FREQ?", ":POW?", "FREQ?",
+                                                  "FREQ?", ":POW?", "FREQ?", "FREQ?", "OUTP?"])
         sequence = smb.instrument.sequence
-        self.assertEqual(sequence[3:6], [":POW 10", ":POW?", "FREQ 5GHz"])
+        self.assertEqual(sequence[4:8], [":POW 10", ":POW?", "FREQ 5GHz", "FREQ?"])
         self.assertLess(sequence.index(":POW?"), sequence.index("OUTPUT ON"))
         for level in (":POW 12", ":POW 14"):
             self.assertEqual(sequence[sequence.index(level) + 1], ":POW?")
@@ -746,8 +767,8 @@ class RealSmb100aSweepTests(PowerSweepCase):
         self.assertIn("SMB100A did not take the new power: sent ':POW 10', :POW? read back '6'",
                       self.error.call_args.args[1])
         self.assertEqual(smb.instrument.sequence, [
-            ":AM:DEPT:LIN 1.0E+2", "LFO:VOLT 0.50 V", "LFO:FREQ 117.3 Hz", ":POW 10", ":POW?",
-            "AM:STAT OFF", "LFO OFF", "OUTPUT OFF"], "nothing switched on, then the usual output-off")
+            ":AM:DEPT:LIN 1.0E+2", "LFO:VOLT 0.50 V", "LFO:FREQ 117.3 Hz", "LFO:FREQ?", ":POW 10", ":POW?",
+            "AM:STAT OFF", "LFO OFF", "OUTPUT OFF", "OUTP?"], "nothing switched on, then the usual output-off")
         self.assertEqual([c for c in h.stfmr_lockin_controllers["kepco"].calls if c[0] == "output"], [],
                          "the 4886 never switched on")
         self.assertEqual(h.stfmr_lockin_controllers["830"].calls, [], "the lock-in not set up either")
@@ -766,7 +787,9 @@ class RealSmb100aSweepTests(PowerSweepCase):
         writes = smb.instrument.writes
         self.assertEqual(writes[writes.index(":POW 14"):], [":POW 14", "AM:STAT OFF", "LFO OFF", "OUTPUT OFF"],
                          "no carrier change, the RF off")
-        self.assertEqual(smb.instrument.queries, [":POW?"] * 3, "the first power, 12 and the refused 14")
+        self.assertEqual([q for q in smb.instrument.queries if q == ":POW?"], [":POW?"] * 3,
+                         "the first power, 12 and the refused 14")
+        self.assertEqual(smb.instrument.queries[-1], "OUTP?", "the RF read back off (2026-10-18)")
         kepco = h.stfmr_lockin_controllers["kepco"].calls
         self.assertEqual(kepco[-2:], [("zero",), ("zero",)], "zeroed before the change and at the end")
         self.assertEqual({float(r["microwave_power_dbm"]) for r in read_csv(recorder.csv_path)}, {10.0, 12.0})
@@ -794,8 +817,7 @@ class DefaultSweepTests(PowerSweepCase):
         for status in [s for s in statuses if "; scanning " in s]:
             self.assertRegex(status, r"^[56] GHz; scanning \d+/10; I=[-+][0-9.]+ A; "
                                      r"remaining about (\d+ s|\d+ min|\d+\.\d h)$")
-        self.assertEqual(statuses[-1], "Multi-frequency scan complete: 2 frequencies, 6 points saved; "
-                                       "4886/SMB100A outputs OFF; CSV saved")
+        self.assertEqual(statuses[-1], "Completed; 4886 and RF zeroed; 6 points saved; 2 frequencies")
         series = h._stfmr_lockin_current_field_series(h.stfmr_lockin_rows, "MFLI", "mfli")
         self.assertEqual(set(series), {"mfli_freq_5_loop_1", "mfli_freq_6_loop_1"}, "the old names")
         labels, _colors = App._stfmr_lockin_frequency_series_styles(series, "current_a")

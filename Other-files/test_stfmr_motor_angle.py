@@ -327,8 +327,8 @@ class AngleSweepTests(MotorBase):
         self.assertEqual(history[-1]["outcome"], "completed")
         self.assertEqual(history[-1]["stage"], "stage at +90.000°")
         self.assertEqual(run.h.stfmr_lockin_status_var.get(),
-                         "Scan complete: 32 points saved; 2 frequencies, 2 modulation frequencies, 2 powers, "
-                         "2 angles; outputs OFF; CSV saved")
+                         "Completed; 4886 and RF zeroed; 32 points saved; 2 frequencies, 2 modulation frequencies, "
+                         "2 powers, 2 angles")
         self.assertEqual(run.h.stfmr_lockin_motor_status_var.get(), "+90.000°")
         self.assertIn("X900000", run.sim.received)
         # The confirmation names the angles, the stage and the move time.
@@ -409,7 +409,8 @@ class AngleSweepTests(MotorBase):
         self.assertTrue(h.stfmr_lockin_stage_where.startswith("stage stopped at +"), h.stfmr_lockin_stage_where)
         where = h.stfmr_lockin_stage_where.split(" at ", 1)[1]
         self.assertTrue(0 < float(where.rstrip("°")) < 90, where)
-        self.assertEqual(h.stfmr_lockin_status_var.get(), f"Stopped; stage at {where}; 2 saved; outputs OFF")
+        # The outputs first, then the stage, as SHV's (user, 2026-10-18).
+        self.assertEqual(h.stfmr_lockin_status_var.get(), f"Stopped; 4886 and RF zeroed; stage at {where}; 2 saved")
         self.assertLessEqual(width_in_zeros(h.stfmr_lockin_status_var.get()), LABEL)
         self.assertEqual(h.stfmr_lockin_motor_status_var.get(), where)
         # Nothing was switched on after the move; the end zeroes and switches off.
@@ -502,7 +503,11 @@ class AngleSweepTests(MotorBase):
         label = h._stfmr_lockin_pass_label(10.25)
         self.assertEqual(label, "10.25 GHz/1013 Hz/-12.5 dBm/-359.5°")
         for status in (f"{label}; 12345/48000; ~10.5 h", f"{label}: I=-2.925 A; pre-read",
-                       "Stopped; stage at -359.999°; 12345 saved; outputs OFF",
+                       "Stopped; 4886 and RF zeroed; stage at -359.999°; 12345 saved",
+                       # A failed zero: the outputs and the stage still fit.
+                       "Stopped; 4886 zero FAILED; RF zeroed; stage at -359.999°",
+                       "Stopping; zeroing the 4886, SMB100A RF off next…",
+                       "Ending; zeroing the 4886, SMB100A RF off…",
                        "Turning the stage to -359.5°; then the SMB100A and lock-in",
                        "Sweep not started: " + app.short_status_error(RuntimeError("x" * 80), 33)):
             with self.subTest(status=status):
@@ -1079,8 +1084,8 @@ class HandMoveTests(MotorBase):
         self.error.assert_not_called()
         self.assertFalse(h.stfmr_lockin_running)
         self.assertIn("STOP", run.sim.received[run.sim.received.index("X900000"):])
-        self.assertTrue(h.stfmr_lockin_status_var.get().startswith("Stopped; stage at +"))
-        self.assertTrue(h.stfmr_lockin_status_var.get().endswith("; 2 saved; outputs OFF"))
+        self.assertTrue(h.stfmr_lockin_status_var.get().startswith("Stopped; 4886 and RF zeroed; stage at +"))
+        self.assertTrue(h.stfmr_lockin_status_var.get().endswith("; 2 saved"))
         after = h.log[h.log.index(("motor", "move", 90.0)) + 1:]
         self.assertEqual([e[:2] for e in after], [("kepco", "zero"), ("smb", "rf_off")])
         self.assertEqual(events(h.last_recorder)[-1]["outcome"], "stopped")

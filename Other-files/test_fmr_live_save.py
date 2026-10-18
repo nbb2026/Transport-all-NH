@@ -12,26 +12,40 @@ class FMRLiveSaveTests(unittest.TestCase):
         self.obj = app.CombinedControlApp.__new__(app.CombinedControlApp)
         self.obj.root = Mock()
 
+    # The FMR live CSV is begin_scan_run's run folder since 2026-10-18 (user:
+    # every scan page saves the same way): <folder>/<name>/<name>.csv + .log.
+    def begin(self, folder, name):
+        obj = self.obj
+        obj.stfmr_resource_vars = {}
+        obj.stfmr_safety_var = Mock(get=Mock(return_value=True))
+        with patch.object(app.filedialog, 'askdirectory', return_value=folder), \
+             patch.object(app.simpledialog, 'askstring', return_value=name):
+            return obj._begin_stfmr_fmr_run('fmr', obj._stfmr_fmr_settings('fmr', ('S21',), [3e9], 0, 5))
+
     def test_live_csv_signed_values_and_collision(self):
         with tempfile.TemporaryDirectory() as folder:
-            existing = Path(folder) / 'sample.csv'
-            existing.write_text('original')
-            with patch.object(app.filedialog, 'askdirectory', return_value=folder), \
-                 patch.object(app.simpledialog, 'askstring', return_value='sample.csv'):
-                self.assertTrue(self.obj._prepare_stfmr_fmr_live_csv())
-            self.assertEqual(self.obj.stfmr_fmr_live_csv_path.name, 'sample_01.csv')
+            existing = Path(folder) / 'sample'
+            existing.mkdir()
+            (existing / 'sample.csv').write_text('original')
+            recorder = self.begin(folder, 'sample.csv')
+            self.assertEqual(recorder.csv_path, Path(folder) / 'sample_01' / 'sample_01.csv')
             for value in (-335.0, 335.0):
-                self.obj._append_stfmr_fmr_live_csv({'measured_field_g': value})
-            with self.obj.stfmr_fmr_live_csv_path.open(encoding='utf-8-sig') as stream:
+                recorder.append_row({name: (value if name == 'measured_field_g' else '')
+                                     for name in self.obj._stfmr_fmr_csv_fields()})
+            with recorder.csv_path.open(encoding='utf-8-sig') as stream:
                 rows = list(csv.DictReader(stream))
             self.assertEqual([float(row['measured_field_g']) for row in rows], [-335, 335])
-            self.assertEqual(existing.read_text(), 'original')
+            self.assertEqual((existing / 'sample.csv').read_text(), 'original')
+            recorder.close('test')
 
     def test_cancel_prevents_hardware_start(self):
         obj = self.obj
         obj.stfmr_fmr_running = obj.stfmr_frequency_running = False
         obj._stfmr_fmr_inputs = Mock(return_value=(('S21',), [3e9], 0, [-1, 1], 5, .2))
         obj._configure_stfmr_fmr_frequency = Mock()
+        obj.stfmr_resource_vars = {}
+        obj.stfmr_safety_var = Mock(get=Mock(return_value=True))
+        obj.stfmr_fmr_step_current_var = Mock(get=Mock(return_value='0.05'))
         with patch.object(app.messagebox, 'askyesno', return_value=True), \
              patch.object(app.filedialog, 'askdirectory', return_value=''):
             obj.start_stfmr_fmr_scan()
@@ -40,14 +54,11 @@ class FMRLiveSaveTests(unittest.TestCase):
 
     def test_default_and_cancel_name(self):
         with tempfile.TemporaryDirectory() as folder:
-            with patch.object(app.filedialog, 'askdirectory', return_value=folder), \
-                 patch.object(app.simpledialog, 'askstring', return_value=None):
-                self.assertFalse(self.obj._prepare_stfmr_fmr_live_csv())
+            self.assertIsNone(self.begin(folder, None))
             self.assertEqual(list(Path(folder).iterdir()), [])
-            with patch.object(app.filedialog, 'askdirectory', return_value=folder), \
-                 patch.object(app.simpledialog, 'askstring', return_value=''):
-                self.assertTrue(self.obj._prepare_stfmr_fmr_live_csv())
-            self.assertTrue(self.obj.stfmr_fmr_live_csv_path.name.startswith('FMR_field_'))
+            recorder = self.begin(folder, '')
+            self.assertTrue(recorder.directory.name.startswith('FMR_field_'))
+            recorder.close('test')
 
     def test_signed_plot(self):
         obj = self.obj

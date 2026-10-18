@@ -214,11 +214,17 @@ class Smb100aTests(NoWindows):
             self.writes.append(command)
             if command.startswith(":POW "):
                 self.level = command.split()[1]
+            elif command.startswith("LFO:FREQ "):
+                self.lfo = command.split()[1]
+            elif command.startswith("FREQ "):
+                self.carrier = f"{float(command[5:-3]) * 1e9:.12g}"
 
         def query(self, command):
-            # configure() reads the first power back (review, 2026-10-14).
-            assert command == ":POW?", command
-            return self.level
+            # configure() reads the first power back (review, 2026-10-14),
+            # and the LFO and the carrier since 2026-10-18.
+            answers = {":POW?": "level", "LFO:FREQ?": "lfo", "FREQ?": "carrier"}
+            assert command in answers, command
+            return getattr(self, answers[command])
 
     def test_only_the_lfo_frequency_is_sent_as_configure_sends_it(self):
         controller = app.STFMRSMB100AController(lambda _message: None)
@@ -318,8 +324,10 @@ class ModulationSweepTests(SweepTests):
         # The point count first: after the carriers and the modulation
         # frequencies it fell past the 52-character label (review,
         # 2026-10-14).
-        self.assertEqual(statuses[-1], "Scan complete: 12 points saved; 2 frequencies, 3 modulation "
-                                       "frequencies; outputs OFF; CSV saved")
+        # The outputs and the count first since 2026-10-18 (user: every
+        # scan ends with its sources zeroed).
+        self.assertEqual(statuses[-1], "Completed; 4886 and RF zeroed; 12 points saved; 2 frequencies, 3 modulation "
+                                       "frequencies")
 
     def test_the_csv_keeps_its_columns(self):
         """The rows already had a modulation_frequency_hz column, so no
@@ -447,8 +455,7 @@ class DefaultSweepTests(SweepTests):
             # Start estimate's (review, 2026-10-14).
             self.assertRegex(status, r"^[56] GHz; scanning \d+/10; I=[-+][0-9.]+ A; "
                                      r"remaining about (\d+ s|\d+ min|\d+\.\d h)$")
-        self.assertEqual(statuses[-1], "Multi-frequency scan complete: 2 frequencies, 6 points saved; "
-                                       "4886/SMB100A outputs OFF; CSV saved")
+        self.assertEqual(statuses[-1], "Completed; 4886 and RF zeroed; 6 points saved; 2 frequencies")
         series = h._stfmr_lockin_current_field_series(h.stfmr_lockin_rows, "MFLI", "mfli")
         self.assertEqual(set(series), {"mfli_freq_5_loop_1", "mfli_freq_6_loop_1"}, "the old names")
         labels, _colors = App._stfmr_lockin_frequency_series_styles(series, "current_a")

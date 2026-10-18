@@ -352,14 +352,13 @@ class LoopTextTests(unittest.TestCase):
 def fmr_app(card):
     a = bare_app()
     a.closing = False
-    a.root = None
+    a.root = review.Root(review.Clock())
     a.stfmr_fmr_running = a.stfmr_frequency_running = False
-    a.stfmr_controllers = {"kepco": review.connected_4886(card)}
+    a.stfmr_controllers = {"kepco": review.connected_4886(card), "vna": types.SimpleNamespace(connected=False)}
     review.kepco_vars(a)
     a.stfmr_safety_var = Var(True)
     a.stfmr_output_mode_var, a.stfmr_output_target_var, a.stfmr_output_limit_var = (
         Var("Current"), Var("2"), Var("5"))
-    a.stfmr_fmr_rf_off_var = Var(False)
     a._set_stfmr_scan_busy = lambda busy: None
     return a
 
@@ -370,16 +369,22 @@ def finish(a, kind, **options):
     setattr(a, f"stfmr_{kind}_rows", [])
     setattr(a, f"stfmr_{kind}_status_var", Var())
     setattr(a, f"stfmr_{kind}_save_button", mock.Mock())
+    a.stfmr_fmr_frequencies = a.stfmr_fmr_currents = a.stfmr_frequency_points = [1.0]
     with mock.patch.object(app.messagebox, "showerror") as error, \
             mock.patch.object(app.messagebox, "showwarning") as warning:
         getattr(a, f"_finish_stfmr_{kind}_scan")(**options)
+        a.root.run(lambda: False)       # the dialogs come from the Tk event loop
     warning.assert_not_called()
     return getattr(a, f"stfmr_{kind}_status_var").get(), error
 
 
 class FmrScanEndBeforeAnyWriteTests(unittest.TestCase):
-    """review: an FMR scan or frequency sweep that ended before any 4886
-    write showed a made-up 'Current, 0 A, OUTP: OFF' and '4886 zeroed/OFF'."""
+    """review (2026-10-13): an FMR scan or frequency sweep that ended before
+    any 4886 write showed a made-up 'Current, 0 A, OUTP: OFF'.  Since the
+    user's decision of 2026-10-18 (every scan ends with its sources zeroed)
+    every end sends the 4886 zero and OUTP OFF, as its Zero / OFF button does
+    (both setpoints with the mode unknown), so the readout shows what was
+    sent; "4886 not used" is gone."""
 
     def test_stopped_or_failed_before_the_first_write(self):
         for kind in ("fmr", "frequency"):
@@ -388,13 +393,15 @@ class FmrScanEndBeforeAnyWriteTests(unittest.TestCase):
                     card = review.Card4886()
                     a = fmr_app(card)
                     status, error = finish(a, kind, **options)
-                    self.assertEqual(card.writes, [], "nothing sent")
-                    self.assertEqual(review.readout(a), ["Mode: --", "I: -- A", "V: -- V", "OUTP: --"])
-                    self.assertNotIn("zeroed/OFF", status)
+                    self.assertEqual(card.writes, ["CURR 0.000000", "VOLT 0.000000", "OUTP OFF"])
+                    self.assertEqual(review.readout(a), ["Mode: Current", "I: +0 A", "V: +0 V", "OUTP: OFF"])
                     if "stopped" in options:
-                        self.assertIn("4886 not used", status)
+                        self.assertEqual(status, "Stopped; 4886 zeroed; RF not connected; 0 points saved")
+                        error.assert_not_called()
                     else:
+                        self.assertEqual(status, "Failed: PNA did not answer")
                         error.assert_called_once()
+                        self.assertIn("At the end: 4886 zeroed; PNA RF not connected", error.call_args.args[1])
 
     def test_after_a_write_the_scan_end_still_reports_off(self):
         for kind in ("fmr", "frequency"):
@@ -405,7 +412,7 @@ class FmrScanEndBeforeAnyWriteTests(unittest.TestCase):
                 status, _error = finish(a, kind, stopped=True)
                 self.assertEqual(card.writes[-2:], ["CURR 0.000000", "OUTP OFF"])
                 self.assertEqual(review.readout(a), ["Mode: Current", "I: +0 A", "V: +0 V", "OUTP: OFF"])
-                self.assertIn("4886 zeroed/OFF", status)
+                self.assertTrue(status.startswith("Stopped; 4886 zeroed"), status)
 
 
 class FmrDisconnectReadoutTests(unittest.TestCase):
