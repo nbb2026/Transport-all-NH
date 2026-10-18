@@ -657,6 +657,9 @@ class RTEStatusRowTests(unittest.TestCase):
         "Stopped; " + app.rte_outputs_text(None, check=False) + "; stage stopped at -359.999°",
         "Completed; " + app.rte_outputs_text({"6221": "zeroed", "kepco": "zeroed"}, check=False)
         + "; stage at +360.000°",
+        # ABORT stopped it, STOP did not (review, 2026-10-18).
+        "Stopped; " + app.rte_outputs_text({"6221": "zeroed", "kepco": "zeroed"}, check=False)
+        + "; stage stopped at -359.999° (ABORT)",
         # An Angle Start that did not start (review, 2026-10-17): the longest
         # fixed reason, and the widest refusal the stage check or a fix can
         # give, cut to 44 characters (about 478 px in Arial 15 px).

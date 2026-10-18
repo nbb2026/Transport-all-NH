@@ -1633,11 +1633,19 @@ class AngleStartTests(unittest.TestCase):
                 self.assertEqual(run.panel.rte_stage_where, "stage not moved")
                 run.panel.rte_stage_where = where       # as the worker leaves it
                 run.panel.rte_scan_outputs = outputs    # the worker's zeroing
+                # The finish runs inside drain_ui_queue, so its dialogs open
+                # from the Tk event loop (review, 2026-10-18): root.after(0).
+                afters = []
+                run.panel.root = AfterRoot(afters)
                 with patch.object(app.messagebox, "showerror") as showerror:
                     if outcome is None:
                         future.set_result(None)
                     else:
                         future.set_exception(outcome)
+                    showerror.assert_not_called()
+                    self.assertFalse(run.panel.ppms_field_scan_running, "idle before any dialog opens")
+                    while afters:
+                        afters.pop(0)()
                 self.assertEqual(run.panel.ppms_field_scan_status_var.get(), expected)
                 self.assertFalse(run.panel.ppms_field_scan_running)
                 failed = outcome is not None and not isinstance(outcome, app.PPMSScanCancelled)

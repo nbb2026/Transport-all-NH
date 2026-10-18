@@ -628,8 +628,14 @@ class LabOneDotNetAdapter:
                 f"Failed to load the LabOne .NET DLL ({api_dll}): {error}"
             ) from error
 
-        self._daq = Activator.CreateInstance(api_type)
-        enum_level = Enum.ToObject(enum_type, int(api_level))
+        try:
+            self._daq = Activator.CreateInstance(api_type)
+            enum_level = Enum.ToObject(enum_type, int(api_level))
+        except BaseException as error:
+            # The DLL-directory handle is closed here too: it leaked when
+            # CreateInstance failed (review, 2026-10-18).
+            self._close_dll_directory()
+            raise RuntimeError(f"Failed to create the LabOne .NET API object ({api_dll}): {error}") from error
         try:
             # Use the overload that explicitly permits version mismatch.  When
             # the loaded DLL and Data Server both come from LabOne 18.12 they
@@ -686,6 +692,7 @@ class LabOneDotNetAdapter:
             )
         checked: list[str] = []
         seen: set[str] = set()
+        problems: list[str] = []
         for candidate in candidates:
             key = str(candidate).casefold()
             if key in seen:
@@ -698,15 +705,20 @@ class LabOneDotNetAdapter:
                         f"ziDotNETCore-{suffix}.dll"
                     )
                     if not core_dll.is_file():
-                        raise RuntimeError(
-                            f"Found {candidate.name}, but {core_dll.name} is missing from the same directory"
+                        # A bad candidate no longer ends the search: a later
+                        # one may be complete (review, 2026-10-18).
+                        problems.append(
+                            f"found {candidate}, but {core_dll.name} is missing from the same directory"
                         )
+                        continue
                     return candidate.parent, candidate
             except OSError:
                 continue
         raise RuntimeError(
             "No matching-version .NET API bundled with LabOne was found. Please confirm that the full "
-            "LabOne (including API/DotNet) is installed. Checked: " + "; ".join(checked)
+            "LabOne (including API/DotNet) is installed. "
+            + ("".join(f"{problem[:1].upper()}{problem[1:]}. " for problem in problems))
+            + "Checked: " + "; ".join(checked)
         )
 
     def _close_dll_directory(self) -> None:
@@ -1690,6 +1702,10 @@ PPMS_ZURICH_LOCK_READS = 3
 PPMS_HARMONIC_MODE_ORDERS = PPMS_ZURICH_MODE_ORDERS
 PPMS_HARMONIC_CHOICES = (1, 2, 3, "1+2", "1+2+3")
 NONLOCAL_MFLI_API_LEVEL = 5
+# What NonLocalACController calls on its MFLI session (mfli_daq) once it is
+# connected: an adapter without one of them is not used (review, 2026-10-18).
+NONLOCAL_MFLI_DAQ_METHODS = ("setInt", "getInt", "setDouble", "getDouble", "sync", "getSample", "getString",
+                             "connectDevice", "disconnect")
 NONLOCAL_MFLI_DEMODULATOR = 0
 NONLOCAL_MFLI_EXTREF_DEMODULATOR = 1
 NONLOCAL_MFLI_EXTREF_CHANNEL = 0
@@ -3620,6 +3636,10 @@ class STFMRPNAFMRController:
             )
             manager = None
             instrument = None
+            # OUTP OFF goes only to a device identified as a PNA: on any
+            # failure before that, nothing but *IDN? was sent to it (review,
+            # 2026-10-18: an unidentified device got OUTP OFF).
+            identified = False
             try:
                 manager = acquire_shared_visa_manager()
                 instrument = manager.open_resource(resource_name)
@@ -3634,6 +3654,7 @@ class STFMRPNAFMRController:
                     raise RuntimeError(
                         f"The device returned by {resource_name} is not a supported Keysight PNA: {identity}"
                     )
+                identified = True
                 # Fail closed on connection, then choose deterministic ASCII
                 # transfer for the one-point FMR reads.
                 instrument.write("OUTP OFF")
@@ -3646,10 +3667,11 @@ class STFMRPNAFMRController:
                 return identity
             except BaseException:
                 if instrument is not None:
-                    try:
-                        instrument.write("OUTP OFF")
-                    except BaseException:
-                        pass
+                    if identified:
+                        try:
+                            instrument.write("OUTP OFF")
+                        except BaseException:
+                            pass
                     try:
                         instrument.close()
                     except BaseException:
@@ -9489,6 +9511,21 @@ class NonLocalACController:
                      "current-python-labone-dotnet"),
                 )
                 for adapter_label, adapter_class, connection_name in native_adapters:
+                    # Only an adapter with every method configure_mfli,
+                    # read_mfli and the rest of this controller call: the two
+                    # native ones have no setDouble / getDouble, so connected
+                    # first they made every later configure fail.  They are
+                    # skipped, with a note, before anything is loaded, and
+                    # zhinst.core or the 18.12 bridge connects (review,
+                    # 2026-10-18; the lab PC connects that way today).
+                    missing = [name for name in NONLOCAL_MFLI_DAQ_METHODS
+                               if not callable(getattr(adapter_class, name, None))]
+                    if missing:
+                        note = (f"{adapter_label}: skipped, it has no {', '.join(missing)} (the MFLI set-up and "
+                                "reads need them)")
+                        direct_errors.append(note)
+                        self.logger(f"Zurich MFLI {note}")
+                        continue
                     for server_host, server_port in reachable_servers:
                         daq = None
                         try:
@@ -12226,6 +12263,14 @@ class CameraFrame:
 # Margin on a frame's exposure start (the frame's arrival less its exposure):
 # readout and transfer make the true start earlier, never later.
 CAMERA_EXPOSURE_START_MARGIN_S = 0.05
+# Camera Disconnect / close (review, 2026-10-18): how long the Tk thread waits
+# for the acquisition thread to let the camera go, and the slice its frame wait
+# is cut into where pco allows, so that a Stop is seen within about a second
+# even at a 10 s exposure.  A thread still running after the wait is shown as
+# "still releasing", and Connect is refused until it ends.
+CAMERA_STOP_JOIN_S = 3.0
+CAMERA_WAIT_SLICE_S = 1.0
+CAMERA_RELEASE_POLL_MS = 500
 
 
 class CameraVideoRecorder:
@@ -12437,10 +12482,47 @@ class CameraAcquisitionWorker:
     def start(self) -> None:
         self.thread.start()
 
-    def stop(self) -> None:
+    def stop(self) -> bool:
+        """Ask the thread to stop and wait for it, at most
+        CAMERA_STOP_JOIN_S.  False while it still holds the camera (review,
+        2026-10-18): a frame's wait can last a whole exposure, up to 10 s,
+        where pco cannot bound it (_wait_for_new_image)."""
         self.stop_event.set()
         if self.thread.is_alive():
-            self.thread.join(timeout=3.0)
+            self.thread.join(timeout=CAMERA_STOP_JOIN_S)
+        return not self.releasing
+
+    @property
+    def releasing(self) -> bool:
+        """The thread was started and has not ended: it may still hold the camera."""
+        return self.thread.ident is not None and self.thread.is_alive()
+
+    def _wait_for_new_image(self, camera) -> bool:
+        """pco's wait for the next frame, bounded to CAMERA_WAIT_SLICE_S when
+        this pco's wait_for_new_image takes a timeout (review, 2026-10-18):
+        False when the slice ran out with no frame, so that the loop sees a
+        Stop within a slice, not after an exposure of up to 10 s.  A pco
+        without the timeout waits as before."""
+        supported = self.__dict__.get("_wait_timeout_supported")
+        if supported is None:
+            import inspect
+            try:
+                supported = "timeout" in inspect.signature(camera.wait_for_new_image).parameters
+            except (TypeError, ValueError):
+                supported = False
+            self._wait_timeout_supported = supported
+        if not supported:
+            camera.wait_for_new_image()
+            return True
+        try:
+            camera.wait_for_new_image(timeout=CAMERA_WAIT_SLICE_S)
+        except Exception as error:
+            # pco raises TimeoutError; a pco timeout of its own class is
+            # recognised by its name.  Anything else is a camera error.
+            if isinstance(error, TimeoutError) or "timeout" in type(error).__name__.lower():
+                return False
+            raise
+        return True
 
     def toggle_contrast(self) -> bool:
         with self.settings_lock:
@@ -12785,7 +12867,8 @@ class CameraAcquisitionWorker:
                             "Camera exposure updated: "
                             f"{requested_exposure * 1000.0:g} ms; the difference background will be recaptured"
                         )
-                camera.wait_for_new_image()
+                if not self._wait_for_new_image(camera):
+                    continue        # no frame within the slice: Stop and the exposure are checked again
                 image_raw, _metadata = camera.image(0xFFFFFFFF)
                 # When this frame began its exposure, at the latest.
                 exposure_start = (
@@ -18654,7 +18737,9 @@ class CombinedControlApp:
             return
         ownership = self._newmark_stage_ownership()
         try:
-            ownership.claim("STFMR")
+            # With the motor: an unconfirmed stop of either page is kept
+            # across this Connect (SHV area, review, 2026-10-18).
+            ownership.claim("STFMR", motor)
         except RuntimeError as error:
             messagebox.showerror("STFMR motor", str(error), parent=self.root)
             return
@@ -18699,7 +18784,9 @@ class CombinedControlApp:
                 self._update_stfmr_lockin_ui()
                 messagebox.showerror("STFMR motor connection", str(error), parent=self.root)
                 return
-            self._show_stfmr_lockin_motor_state(None if state is None else state.get("angle_deg"))
+            self._show_stfmr_lockin_motor_state(None if state is None else state.get("angle_deg"),
+                                                # A stop not confirmed before this Connect (SHV area, 2026-10-18).
+                                                text="CHECK STAGE" if motor.motion_may_run else None)
             self._update_stfmr_lockin_ui()
 
         future.add_done_callback(lambda _future: self.post_ui(finished))
@@ -27308,6 +27395,15 @@ class CombinedControlApp:
         """Create the PCO worker only after an explicit operator request."""
         if self.camera_window is not None:
             return
+        if self._camera_still_releasing():
+            # The last camera's thread still holds it (review, 2026-10-18).
+            messagebox.showwarning(
+                "Camera connection",
+                "The camera is still being released: its last acquisition thread waits for the frame it is "
+                "exposing (up to 10 s). Connect again once the Camera status says \"Camera not connected\".",
+                parent=self.root,
+            )
+            return
         self.camera_connected = False
         self.camera_window_visible = False
         self.camera_window_status_var.set("Connecting to the PCO camera and waiting for the first frame…")
@@ -27387,6 +27483,7 @@ class CombinedControlApp:
                 failed_camera.close()
             except BaseException:
                 pass
+            self._watch_camera_release(failed_camera, announce=False)
         self.camera_window_status_var.set(
             f"Camera start failed: {short_status_error(error, 100)}"
         )
@@ -27462,8 +27559,49 @@ class CombinedControlApp:
         self._set_camera_dependent_controls(False)
         self.clear_camera_roi()
         self.difference_status_var.set("Camera not connected")
-        self.camera_window_status_var.set("Camera not connected")
+        # Not "not connected" while its thread still holds the camera
+        # (review, 2026-10-18): the wait for a frame can outlast the close.
+        self.camera_window_status_var.set(
+            "Camera still releasing (waiting for its last frame)…"
+            if self._watch_camera_release(camera) else "Camera not connected"
+        )
         self._update_camera_launcher_controls()
+
+    def _camera_still_releasing(self) -> bool:
+        worker = self.__dict__.get("camera_releasing_worker")
+        return worker is not None and worker.releasing
+
+    def _watch_camera_release(self, camera, announce: bool = True) -> bool:
+        """After a camera's close: True while its acquisition thread still
+        holds the camera, and then it is watched every CAMERA_RELEASE_POLL_MS
+        until it ends; the Camera status then says "Camera not connected"
+        (``announce``) and Connect is accepted again (review, 2026-10-18)."""
+        worker = getattr(camera, "worker", None)
+        if worker is None or not getattr(worker, "releasing", False):
+            return False
+        self.camera_releasing_worker = worker
+        self.append_log("Camera: its acquisition thread still holds the camera (a frame is being exposed); "
+                        "Connect waits until it has let go")
+
+        def check() -> None:
+            if self.closing or self.__dict__.get("camera_releasing_worker") is not worker:
+                return
+            if worker.releasing:
+                try:
+                    self.root.after(CAMERA_RELEASE_POLL_MS, check)
+                except tk.TclError:
+                    pass
+                return
+            self.camera_releasing_worker = None
+            self.append_log("Camera released by its acquisition thread")
+            if announce and self.camera_window is None:
+                self.camera_window_status_var.set("Camera not connected")
+            self._update_camera_launcher_controls()
+        try:
+            self.root.after(CAMERA_RELEASE_POLL_MS, check)
+        except tk.TclError:
+            pass
+        return True
 
     def _on_notebook_tab_changed(self, _event=None) -> None:
         """Redraw only the page that just became visible."""
@@ -46486,15 +46624,28 @@ class NewmarkStageOwnership:
     is refused before anything is sent.  Each page keeps its own
     NewmarkNSCA1Controller on its own worker thread.  The stage zero (PX=0)
     lives in the NSC-A1 and survives a USB reconnect, so a zero set on the
-    RT-E page holds after a Connect on the STFMR page."""
+    RT-E page holds after a Connect on the STFMR page.
+
+    ``unconfirmed_stop`` (review, 2026-10-18): why the stage's last stop was
+    not confirmed ("" once one was).  It lives here, not in a page's session,
+    so that it survives a Disconnect and a Connect on either page: a stage
+    left turning stays "may be turning" for both pages until a STOP sequence
+    sees it stopped (Stop stage).  Each page's controller reads it through
+    motion_may_run, so every guard of both pages that refuses after an
+    unconfirmed stop also refuses after a reconnect."""
 
     def __init__(self):
         self.owner = None
+        self.unconfirmed_stop = ""
 
-    def claim(self, page):
+    def claim(self, page, stage=None):
+        """``stage``: the page's NewmarkNSCA1Controller, which from now on
+        keeps its unconfirmed stop here (review, 2026-10-18)."""
         if self.owner not in (None, page):
             raise RuntimeError(f"The motor is connected on the {self.owner} page: disconnect it there first.")
         self.owner = page
+        if stage is not None:
+            stage.share_stop_record(self)
 
     def release(self, page):
         if self.owner == page:
@@ -46773,7 +46924,7 @@ class NewmarkNSCA1Controller:
 
     label = "Newmark NSC-A1"
 
-    def __init__(self, logger, owner_scope="SHV", loader=None):
+    def __init__(self, logger, owner_scope="SHV", loader=None, ownership=None):
         self.logger = logger
         self.owner_scope = str(owner_scope)     # the log lines' prefix: "RT-E" or "STFMR"
         self._loader = loader           # None: newmark_load_performax, looked up when connecting
@@ -46783,6 +46934,14 @@ class NewmarkNSCA1Controller:
         self.handle = None
         self._thread_id = None
         self._no_flush_said = False
+        # Where an unconfirmed stop is kept across a reconnect (review,
+        # 2026-10-18): the program's NewmarkStageOwnership once a page claims
+        # the device (or one is given here), else one of this controller's
+        # own, so that a page without the main app keeps it too.
+        self.ownership = None
+        self._own_stop_record = NewmarkStageOwnership()
+        if ownership is not None:
+            self.share_stop_record(ownership)
         self._reset_session()
 
     def _reset_session(self):
@@ -46795,6 +46954,7 @@ class NewmarkNSCA1Controller:
         self.need_resync = False
         self.motion_may_run = False     # a move command was sent and it has not been seen stopped since
         self.stop_finished = False      # a stop sequence ran to its end (stopped or not)
+        self.stop_aborted = False       # the last stop sequence sent ABORT (STOP did not stop it)
         self.in_move = False            # move_to_deg is running: its own loop watches the stop event
         # The last read_state() of this session, with the wall-clock time it
         # was read: an SHV Angle Start logs it as where the stage was, from
@@ -46804,6 +46964,54 @@ class NewmarkNSCA1Controller:
     @property
     def connected(self) -> bool:
         return self.handle is not None
+
+    # ---- an unconfirmed stop, kept across a reconnect (review, 2026-10-18) ----
+    @property
+    def motion_may_run(self) -> bool:
+        """True while a move may still run: one was sent in this session and
+        not seen stopped since, or a stop was not confirmed, in this session
+        or an earlier one on either page (unconfirmed_stop).  A Disconnect
+        and a Connect used to clear it without the stage ever being seen
+        stopped; now only a STOP sequence that sees it stopped does."""
+        return self._motion_may_run or bool(self.unconfirmed_stop)
+
+    @motion_may_run.setter
+    def motion_may_run(self, value):
+        self._motion_may_run = bool(value)
+
+    @property
+    def stop_record(self) -> "NewmarkStageOwnership":
+        return self.ownership if self.ownership is not None else self._own_stop_record
+
+    @property
+    def unconfirmed_stop(self) -> str:
+        """Why the stage's last stop was not confirmed, "" when it was."""
+        return self.stop_record.unconfirmed_stop
+
+    def share_stop_record(self, ownership):
+        """Keep the unconfirmed stop in the program's NewmarkStageOwnership,
+        which both pages see (NewmarkStageOwnership.claim); one this
+        controller already had is carried over."""
+        if ownership is self.ownership:
+            return
+        own = self.stop_record.unconfirmed_stop
+        self.ownership = ownership
+        if own and not ownership.unconfirmed_stop:
+            ownership.unconfirmed_stop = own
+
+    def _note_unconfirmed_stop(self):
+        when = datetime_module.datetime.now().astimezone().isoformat(timespec="seconds")
+        self.stop_record.unconfirmed_stop = (f"STOP and ABORT sent on the {self.owner_scope} page at {when}; "
+                                             "not confirmed stopped")
+
+    def _confirm_stopped(self, how):
+        """A STOP sequence saw the stage stopped: an earlier unconfirmed stop
+        is cleared, and the log says so."""
+        earlier = self.stop_record.unconfirmed_stop
+        if earlier:
+            self.stop_record.unconfirmed_stop = ""
+            self.logger(f"{self.owner_scope} {self.label}: {how} confirmed the stage stopped; the earlier unconfirmed "
+                        f"stop ({earlier}) is cleared")
 
     # ---- the DLL, from one thread only ------------------------------------
     def _check_thread(self):
@@ -46995,6 +47203,11 @@ class NewmarkNSCA1Controller:
             raise
         self.resource_name, self.identity, self.version = chosen, identity, version
         self.logger(f"{self.owner_scope} {self.label} connected ({identity}, {version}): {self.scale_text()}")
+        if self.unconfirmed_stop:
+            # Kept across the reconnect (review, 2026-10-18): every move,
+            # Start and fix stays refused until Stop stage sees it stopped.
+            self.logger(f"{self.owner_scope} {self.label}: its last stop was not confirmed ({self.unconfirmed_stop}), "
+                        "so it may still be turning: press Stop stage before any move (check the stage)")
         return identity
 
     def scale_text(self):
@@ -47004,19 +47217,27 @@ class NewmarkNSCA1Controller:
                 "fixed in the program)")
 
     def disconnect(self):
-        """STOP first if the stage is moving (bounded), then close the handle."""
+        """STOP first if the stage is moving (bounded), then close the handle.
+
+        MST unreadable: STOP too whenever a move may still run (motion_may_run,
+        an earlier unconfirmed stop included), and raise unless that STOP is
+        seen stopped (review, 2026-10-18: after an unconfirmed stop it closed
+        silently, as its stop sequence had "finished")."""
         if self.handle is None:
             self._reset_session()
             return
         self._check_thread()
-        outcome, failure = None, None
+        outcome, failure, aborted = None, None, False
         try:
             try:
                 moving = bool(self.status() & NEWMARK_MOVING)
             except Exception:
-                moving = self.motion_may_run and not self.stop_finished
+                moving = self.motion_may_run
             if moving:
                 outcome = self._stop_motion()
+                aborted = self.stop_aborted
+                if outcome[0]:
+                    self._confirm_stopped("the STOP before closing")
         except Exception as error:
             failure = error
         finally:
@@ -47030,8 +47251,8 @@ class NewmarkNSCA1Controller:
         if failure is not None:
             raise failure
         if outcome is not None:
-            self.logger(f"{self.owner_scope} {self.label}: stopped before closing, at "
-                        f"{newmark_angle_text(outcome[1], spd)}")
+            self.logger(f"{self.owner_scope} {self.label}: stopped before closing"
+                        f"{' (STOP, then ABORT)' if aborted else ''}, at {newmark_angle_text(outcome[1], spd)}")
 
     # ---- reads ---------------------------------------------------------------
     def read_state(self):
@@ -47056,7 +47277,12 @@ class NewmarkNSCA1Controller:
         2026-10-17).  A limit input on at rest is checked before the latched
         error: it is a polarity problem (the RM-5-110 has no limit switches),
         CLR cannot fix it, so it stays a plain refusal and CLR is never
-        offered while it is on."""
+        offered while it is on.
+
+        An unconfirmed stop, of this session or kept across a reconnect,
+        refuses too, before anything is read (review, 2026-10-18): the pages
+        refuse first, so this is the last line of defence."""
+        self._refuse_if_may_run()
         mst = self.status()
         if mst & NEWMARK_MOVING:
             raise NewmarkRefused(f"the stage is moving (MST {mst}: {newmark_describe_status(mst)}); stop it first")
@@ -47070,6 +47296,11 @@ class NewmarkNSCA1Controller:
         if eo != 1:
             raise NewmarkDriverOff(eo)
         return mst
+
+    def _refuse_if_may_run(self):
+        if self.motion_may_run:
+            raise NewmarkRefused(f"the {self.label}'s last stop was not confirmed, so it may still be turning: press "
+                                 "Stop stage first (check the stage); nothing was sent")
 
     def check_ready(self):
         """The before-move checks alone (MST, then EO), nothing sent to move:
@@ -47163,6 +47394,7 @@ class NewmarkNSCA1Controller:
         if not math.isfinite(target_deg) or abs(target_deg) > NEWMARK_CABLE_LIMIT_DEG:
             raise NewmarkRefused(f"the stage target {target_deg:g}° is beyond ±{NEWMARK_CABLE_LIMIT_DEG:g}° of the "
                                  "zero (the sample wires); nothing moved")
+        self._refuse_if_may_run()       # before anything is sent (review, 2026-10-18)
         self.in_move = True
         try:
             if stop_event is not None and stop_event.is_set():
@@ -47195,7 +47427,8 @@ class NewmarkNSCA1Controller:
                     # move by hand as for a scan's, as the reviewed script does
                     # after any failure once a move was sent (user, 2026-10-13).
                     stopped, px, notes = self._stop_motion()
-                    where = (f"STOP sent; stopped at {newmark_angle_text(px, spd)}" if stopped else
+                    sent = "STOP and ABORT sent" if self.stop_aborted else "STOP sent"
+                    where = (f"{sent}; stopped at {newmark_angle_text(px, spd)}" if stopped else
                              "STOP and ABORT sent, but it could not be confirmed stopped: CHECK THE STAGE (switch "
                              "the NSC-A1's 24 V off if it still turns)")
                     raise NewmarkMotionError(f"{error}; the move may have started: {where}"
@@ -47258,7 +47491,8 @@ class NewmarkNSCA1Controller:
             raise NewmarkStopRequested(stopped, px, notes, spd)
         if reason is not None:
             stopped, px, notes = self._stop_motion()
-            where = (f"stopped (STOP) at {newmark_angle_text(px, spd)}" if stopped else
+            how = "STOP, then ABORT" if self.stop_aborted else "STOP"     # review, 2026-10-18
+            where = (f"stopped ({how}) at {newmark_angle_text(px, spd)}" if stopped else
                      "and it could not be confirmed stopped (STOP, then ABORT): CHECK THE STAGE (switch the "
                      "NSC-A1's 24 V off if it still turns)")
             raise NewmarkMotionError(f"{reason}, {where}" + (f" ({'; '.join(notes)})" if notes else ""),
@@ -47308,27 +47542,40 @@ class NewmarkNSCA1Controller:
 
     def _stop_motion(self, wait_s=NEWMARK_STOP_WAIT_S):
         """STOP (decelerated); wait until it is not moving; ABORT if STOP did not
-        stop it.  Returns (stopped, PX, notes); every step is tried."""
-        self.stop_finished = False
+        stop it.  Returns (stopped, PX, notes); every step is tried.
+
+        An ABORT that stopped it is in the notes and stop_aborted, so no text
+        calls it stopped by STOP (review, 2026-10-18).  Not confirmed stopped:
+        kept in stop_record across a reconnect (review, 2026-10-18)."""
+        self.stop_finished = self.stop_aborted = False
         notes = []
         self._send_stop("STOP", notes)
         stopped, px = self._wait_until_still(wait_s, notes)
         if not stopped:
             self.logger(f"{self.owner_scope} {self.label}: not stopped after STOP; ABORT")
+            self.stop_aborted = True
             self._send_stop("ABORT", notes)
             stopped, px = self._wait_until_still(NEWMARK_ABORT_WAIT_S, notes)
+            if stopped:
+                notes.append("ABORT sent: STOP did not stop it")
+        if not stopped:
+            self._note_unconfirmed_stop()
         self.stop_finished = True
         return stopped, px, notes
 
     def stop(self):
         """Stop stage outside a move of this program: STOP, wait, ABORT if STOP
-        did not stop it, read PX.  Returns {stopped, px, angle_deg, notes}."""
+        did not stop it, read PX.  Returns {stopped, px, angle_deg, notes,
+        aborted}.  Seen stopped, it clears an unconfirmed stop kept across a
+        reconnect (review, 2026-10-18)."""
         self._require_open()
         self.motion_may_run = True      # whatever turns it
         stopped, px, notes = self._stop_motion()
+        if stopped:
+            self._confirm_stopped("Stop stage")
         spd = self.steps_per_degree
         return {"stopped": stopped, "px": px, "notes": notes, "steps_per_degree": spd,
-                "angle_deg": px / spd if px is not None and spd else None}
+                "angle_deg": px / spd if px is not None and spd else None, "aborted": self.stop_aborted}
 
     def set_zero(self):
         """PX=0 here (runtime only: lost when the NSC-A1 is powered off, kept
@@ -47401,6 +47648,17 @@ def rte_outputs_text(results, check=True):
         six = results.get("6221", "")
         results = {"6221": six if six == "zeroed" else "zero FAILED", "KEPCO": results.get("kepco", "")}
     return scan_end_outputs_text(results, ("6221", "KEPCO"), check=check, together="KEPCO and 6221")
+
+
+# SHV's red "Set stage 0°" (user, 2026-10-18), as the program's red buttons
+# (bg #c62828, white text, #8e0000 while pressed); grey while it is locked, so
+# that a disabled button looks disabled (on red, only its text would grey).
+RTE_RED_BUTTON_COLORS = {
+    'normal': dict(bg='#c62828', fg='white', activebackground='#8e0000', activeforeground='white',
+                   disabledforeground='#9e9e9e'),
+    'disabled': dict(bg='#e0e0e0', fg='#9e9e9e', activebackground='#e0e0e0', activeforeground='#9e9e9e',
+                     disabledforeground='#9e9e9e'),
+}
 
 
 # The RT-E scan box's note by mode: what Start, End and Step are and where
@@ -47480,12 +47738,16 @@ class RTEPanel(PPMSPanel):
 
     def __init__(self, parent, tab):
         self.rte_closed = False
+        # The page's own thread_log, not the main app's, so that the
+        # controllers' lines are also a running scan's run-log notes, as the
+        # 6221's and the lock-ins' are (review, 2026-10-18).  It is looked up
+        # when they log, after this constructor.
         self.rte_controllers = {
-            'kepco': STFMRKepco4886Controller(parent.thread_log),
-            'gauss': STFMRGauss475Controller(parent.thread_log),
+            'kepco': STFMRKepco4886Controller(self.thread_log),
+            'gauss': STFMRGauss475Controller(self.thread_log),
             # The rotation stage of the Angle scan (user, 2026-10-13).  Its DLL
             # is loaded on Connect, never here.
-            'newmark': NewmarkNSCA1Controller(parent.thread_log),
+            'newmark': NewmarkNSCA1Controller(self.thread_log),
         }
         # Stop stage sets this; a manual move watches it, and an Angle scan's
         # moves watch it beside the scan's own stop event.
@@ -47505,6 +47767,9 @@ class RTEPanel(PPMSPanel):
         self.rte_controllers['gauss'].owner_scope = 'SHV'
         self.rte_controllers['kepco'].owner_scope = 'SHV'
         self.rte_controllers['newmark'].owner_scope = 'SHV'
+        # An unconfirmed stop is the program's, seen by both pages across a
+        # reconnect (review, 2026-10-18); Connect's claim shares it again.
+        self.rte_controllers['newmark'].share_stop_record(self._newmark_stage_ownership())
         self.ppms_plot_frame.configure(text='SHV: X, Y, phase vs measured field / excitation current / sample angle')
         # SHV start-up defaults (the user's figures, 2026-10-07 and
         # 2026-10-18): 6221 1 mA RMS at 317.3 Hz, and the Zurich alone
@@ -47766,7 +48031,30 @@ class RTEPanel(PPMSPanel):
         self.rte_stage_stop_button.grid(row=0, column=3, padx=2, sticky='ew')
         zero = ttk.Button(stage_box, text='Set stage 0°', width=11, style='Inline.TButton',
                           command=self._rte_stage_set_zero)
-        zero.grid(row=1, column=0, columnspan=2, sticky='ew')
+        if laid_out:
+            # Red (user, 2026-10-18: "make the set angle zero button in SHV
+            # module also red"), as the program's red buttons: a tk.Button,
+            # bg #c62828, white text, #8e0000 when pressed.  A tk.Button
+            # asks for another size than the Inline ttk one, so it fills a
+            # frame of exactly the ttk button's requested size, which takes
+            # its place: the stage block and every pair keep their layout.
+            # Locked and released as before (rte_edit_widgets); grey while
+            # disabled (_rte_paint_red_buttons).  The offline tests' stand-in
+            # widgets keep the ttk button.
+            size = dict(width=zero.winfo_reqwidth(), height=zero.winfo_reqheight())
+            zero.destroy()
+            holder = ttk.Frame(stage_box, **size)
+            holder.grid(row=1, column=0, columnspan=2, sticky='ew')
+            holder.grid_propagate(False)
+            holder.columnconfigure(0, weight=1)
+            holder.rowconfigure(0, weight=1)
+            zero = tk.Button(holder, text='Set stage 0°', command=self._rte_stage_set_zero, font='TkDefaultFont',
+                             padx=0, pady=0, **RTE_RED_BUTTON_COLORS['normal'])
+            zero.grid(row=0, column=0, sticky='nsew')
+            self.rte_red_buttons = [zero]
+        else:
+            zero.grid(row=1, column=0, columnspan=2, sticky='ew')
+        self.rte_stage_zero_button = zero
         # Move stage and Set stage 0° are edit widgets (locked while busy);
         # Stop stage stays usable whenever the stage is connected, even
         # during a move or scan (_update_ppms_control_ui).
@@ -47995,6 +48283,7 @@ class RTEPanel(PPMSPanel):
                 or self.__dict__.get('rte_stage_prompt_open', False))
         for widget, state in self.rte_edit_widgets + self.ppms_lockin_choice_widgets:
             widget.configure(state='disabled' if busy else state)
+        self._rte_paint_red_buttons()
         self.rte_start_button.configure(state='normal' if not busy and self.ppms_control_safety_var.get() else 'disabled')
         self.ppms_field_scan_stop_button.configure(state='normal' if self.ppms_field_scan_running else 'disabled')
         self.ppms_field_scan_save_button.configure(state='normal' if self.ppms_field_scan_rows and not busy else 'disabled')
@@ -48020,6 +48309,13 @@ class RTEPanel(PPMSPanel):
         if 'zurich_connect_button' in self.__dict__:
             self._set_zurich_busy(self.zurich_busy)
 
+    def _rte_paint_red_buttons(self):
+        """The red Set stage 0° in its colours for its state: red while it
+        can be pressed, grey while it is locked (user, 2026-10-18)."""
+        for button in self.__dict__.get('rte_red_buttons', ()):
+            disabled = str(button.cget('state')) == 'disabled'
+            button.configure(**RTE_RED_BUTTON_COLORS['disabled' if disabled else 'normal'])
+
     def _require_ppms_control_ready(self):
         if self.rte_closed or self.closing:
             raise RuntimeError('SHV is closing')
@@ -48027,6 +48323,23 @@ class RTEPanel(PPMSPanel):
             raise RuntimeError('Tick the SHV rack safety confirmation first')
         if self.ppms_field_scan_running or self.ppms_environment_busy:
             raise RuntimeError('SHV is busy; wait or stop the scan first')
+
+    def _rte_dialog(self, title, text, show=None):
+        """An error dialog from the Tk event loop, not inside drain_ui_queue,
+        where it would hold every page's post_ui callbacks until it closed
+        (the README's 2026-10-14 rule; review, 2026-10-18): a scan's finish
+        and failure dialogs, its run-folder and run-log dialogs, an Angle
+        Start that did not start, and a worker job's failure.  Not opened
+        once the page is closing."""
+        show = show or messagebox.showerror
+
+        def open_dialog():
+            if not self.rte_closed and not self.closing:
+                show(title, text, parent=self.root)
+        try:
+            self.root.after(0, open_dialog)
+        except tk.TclError:
+            pass        # the window is being destroyed: no dialog
 
     def _rte_submit(self, operation, done=None, then=None, stage_fix=None, failed=None):
         """``operation`` on the RT-E worker, with the rack busy meanwhile;
@@ -48057,7 +48370,7 @@ class RTEPanel(PPMSPanel):
                     if not self.rte_closed and not self.closing:
                         if failed is not None:
                             failed(error)
-                        messagebox.showerror('SHV', str(error), parent=self.root)
+                        self._rte_dialog('SHV', str(error))     # out of drain_ui_queue (review, 2026-10-18)
             finally:
                 self.ppms_environment_busy = False
                 if not self.rte_closed and not self.closing:
@@ -48088,7 +48401,9 @@ class RTEPanel(PPMSPanel):
             # page has it is refused before anything is sent.
             ownership = self._newmark_stage_ownership()
             try:
-                ownership.claim('SHV')
+                # With the stage: an unconfirmed stop of either page is kept
+                # across this Connect (review, 2026-10-18).
+                ownership.claim('SHV', stage)
             except RuntimeError as error:
                 messagebox.showerror('SHV motor', str(error), parent=self.root)
                 return
@@ -48097,7 +48412,7 @@ class RTEPanel(PPMSPanel):
             def connect_stage():
                 stage.connect(resource)
                 try:
-                    return newmark_stage_text(stage.read_state())
+                    return self._rte_stage_display(stage, stage.read_state())
                 except Exception as error:
                     # Connected all the same (the handle is open, so the lamp,
                     # Stop stage and Disconnect say so), and the stage line
@@ -48154,6 +48469,17 @@ class RTEPanel(PPMSPanel):
                          lambda _: self.rte_connections[key].set('Not connected'))
 
     # ---- the Newmark stage, by hand (user, 2026-10-13) -------------------------
+    @staticmethod
+    def _rte_stage_display(stage, state):
+        """The stage line for a reading: newmark_stage_text, and while the
+        last stop is not confirmed (kept across a reconnect, on either page)
+        what to do about it, until Stop stage sees it stopped (review,
+        2026-10-18).  Up to three lines of the line's box."""
+        if not stage.in_move and stage.motion_may_run:
+            return (f"Stage: {newmark_angle_text(state.get('px'), state.get('steps_per_degree'))}; last stop NOT "
+                    "confirmed: press Stop stage")
+        return newmark_stage_text(state)
+
     def _rte_stage_progress(self, _px, degrees):
         """A move's position, from the RT-E worker: shown on the Tk thread."""
         def show():
@@ -48167,6 +48493,11 @@ class RTEPanel(PPMSPanel):
             stage = self.rte_controllers['newmark']
             if not stage.connected:
                 raise RuntimeError(f'Connect the {stage.label} first')
+            if stage.motion_may_run:
+                # Also after a reconnect, on either page, until Stop stage sees
+                # it stopped (review, 2026-10-18); the controller refuses too.
+                raise RuntimeError(f'The {stage.label}\'s last stop was not confirmed, so it may still be turning: '
+                                   'press Stop stage first (check the stage)')
             target = float(self.rte_stage_target.get())
             if not math.isfinite(target) or abs(target) > NEWMARK_CABLE_LIMIT_DEG:
                 raise ValueError(f'The stage angle must be within ±{NEWMARK_CABLE_LIMIT_DEG:g}° of the stage zero '
@@ -48190,7 +48521,9 @@ class RTEPanel(PPMSPanel):
                     raise
                 where = ('not moved' if stopped.before else
                          f'stopped at {newmark_angle_text(stopped.px, stage.steps_per_degree)}')
-                return f"Stage: {where} ({'Stop' if self.rte_stage_stop_event.is_set() else 'OFF'})"
+                # ABORT, when STOP did not stop it (review, 2026-10-18).
+                return (f"Stage: {where} ({'Stop' if self.rte_stage_stop_event.is_set() else 'OFF'}"
+                        f"{', ABORT' if not stopped.before and stage.stop_aborted is True else ''})")
             return newmark_stage_text(state)
         # A latched limit error or the driver off: asked Yes/No, and on Yes
         # fixed (CLR / EO=1, read back) and moved, on the worker (user, 2026-10-17).
@@ -48351,7 +48684,15 @@ class RTEPanel(PPMSPanel):
         scan running, STOP is queued on the worker too, so a stage left
         turning (an unconfirmed stop) can be stopped."""
         self.rte_stage_stop_event.set()
-        self._rte_log('stop_requested', button='Stop stage')     # a running scan's log (user, 2026-10-18)
+        try:
+            self._rte_stage_stop_queue()
+        finally:
+            # A running scan's log (user, 2026-10-18), after the event and
+            # the STOP, so a slow disk never delays them (review, 2026-10-18).
+            self._rte_log('stop_requested', button='Stop stage')
+
+    def _rte_stage_stop_queue(self):
+        """Stop stage's STOP on the worker, with no move or scan running."""
         stage = self.rte_controllers.get('newmark')
         if self.rte_closed or self.closing or stage is None or not stage.connected:
             return
@@ -48374,8 +48715,10 @@ class RTEPanel(PPMSPanel):
             else:
                 if result['stopped']:
                     where = newmark_angle_text(result['px'], result['steps_per_degree'])
-                    self.rte_stage_live.set(f'Stage: stopped at {where}')
-                    self.thread_log(f'SHV {stage.label}: Stop stage: stopped at {where}')
+                    # STOP did not stop it and ABORT did: said so (review, 2026-10-18).
+                    how = ' (STOP, then ABORT)' if result.get('aborted') else ''
+                    self.rte_stage_live.set(f'Stage: stopped at {where}{" (ABORT)" if how else ""}')
+                    self.thread_log(f'SHV {stage.label}: Stop stage: stopped{how} at {where}')
                     return
                 self.rte_stage_live.set('Stage: STOP not confirmed: CHECK THE STAGE')
                 notes = result.get('notes') or []
@@ -48387,7 +48730,7 @@ class RTEPanel(PPMSPanel):
             # keep the warning, as for every other unconfirmed stop (review,
             # 2026-10-14).
             self.thread_log(f'SHV {stage.label}: {problem}')
-            messagebox.showerror('SHV stage', problem, parent=self.root)
+            self._rte_dialog('SHV stage', problem)      # out of drain_ui_queue (review, 2026-10-18)
         future.add_done_callback(lambda _: self.post_ui(finished))
 
     def _rte_stage_set_zero(self):
@@ -48405,7 +48748,7 @@ class RTEPanel(PPMSPanel):
         def zero():
             stage.set_zero()
             return stage.read_state()
-        self._rte_submit(zero, lambda state: self.rte_stage_live.set(newmark_stage_text(state)))
+        self._rte_submit(zero, lambda state: self.rte_stage_live.set(self._rte_stage_display(stage, state)))
 
     def connect_ppms_device(self, key):
         resource = self.ppms_resource_vars[key].get().strip()
@@ -48446,23 +48789,28 @@ class RTEPanel(PPMSPanel):
                          lambda _: self.rte_drive_live.set(f'KEPCO programmed: {target:+g} A / limit {limit:g} V'))
 
     def _rte_zero(self):
-        self._rte_log('stop_requested', button='KEPCO Zero / OFF')     # a running scan's log (user, 2026-10-18)
         self.ppms_field_scan_stop_event.set()
-        if self.rte_closed:
-            return
-        # Single executor: OFF follows any in-flight command; scan observes cancellation.
-        # force_output_off: an explicit operator request acts even on an
-        # output switched on elsewhere (LabVIEW, front panel, a crash), as
-        # on the STFMR page; zero_output only undoes this program's own
-        # (review, 2026-10-09: the button could do nothing and say "sent").
-        future = self.ppms_executor.submit(self.rte_controllers['kepco'].force_output_off)
-        def finished():
-            try:
-                future.result()
-                self.rte_drive_live.set('KEPCO: zeroed and output OFF')
-            except Exception as error:
-                self.rte_drive_live.set(f'KEPCO OFF not confirmed: {error}')
-        future.add_done_callback(lambda _: self.post_ui(finished))
+        try:
+            if self.rte_closed:
+                return
+            # Single executor: OFF follows any in-flight command; scan observes cancellation.
+            # force_output_off: an explicit operator request acts even on an
+            # output switched on elsewhere (LabVIEW, front panel, a crash), as
+            # on the STFMR page; zero_output only undoes this program's own
+            # (review, 2026-10-09: the button could do nothing and say "sent").
+            future = self.ppms_executor.submit(self.rte_controllers['kepco'].force_output_off)
+            def finished():
+                try:
+                    future.result()
+                    self.rte_drive_live.set('KEPCO: zeroed and output OFF')
+                except Exception as error:
+                    self.rte_drive_live.set(f'KEPCO OFF not confirmed: {error}')
+            future.add_done_callback(lambda _: self.post_ui(finished))
+        finally:
+            # A running scan's log (user, 2026-10-18), after the stop event
+            # and the queued OFF, so a slow disk never delays them (review,
+            # 2026-10-18).
+            self._rte_log('stop_requested', button='KEPCO Zero / OFF')
 
     def _rte_capture_zurich(self):
         if self.zurich_busy:
@@ -48535,7 +48883,7 @@ class RTEPanel(PPMSPanel):
         stage, stage_display = self.rte_controllers.get('newmark'), None
         if stage is not None and stage.connected:
             try:
-                stage_display = newmark_stage_text(stage.read_state())
+                stage_display = self._rte_stage_display(stage, stage.read_state())
             except Exception as error:
                 stage_display = f'Stage read failed: {short_status_error(error, 60)}'
         references = {}
@@ -48715,11 +49063,14 @@ class RTEPanel(PPMSPanel):
             # ...), with <stem>.csv and <stem>.log (user, 2026-10-18); if
             # they cannot be made, or the log's first entry cannot be
             # written, no scan starts.
+            # begin() runs inside drain_ui_queue for Angle (after the stage
+            # check), so its dialogs open from the Tk event loop (review,
+            # 2026-10-18).
             try:
                 recorder = SHVScanRecorder(Path(folder), stem)
             except OSError as error:
-                messagebox.showerror('SHV run folder', 'Could not create the run folder and its files; the scan '
-                                     f'was not started: {error}', parent=self.root)
+                self._rte_dialog('SHV run folder', 'Could not create the run folder and its files; the scan '
+                                 f'was not started: {error}')
                 return
             prepared = dict(run_settings, run_folder=str(recorder.directory), csv_path=str(recorder.csv_path),
                             log_path=str(recorder.log_path))
@@ -48734,8 +49085,7 @@ class RTEPanel(PPMSPanel):
             if not recorder.event('run_prepared', **prepared):
                 problem = recorder.failure
                 recorder.close('not_started', error=str(problem))
-                messagebox.showerror('SHV run folder', 'Could not write the run log; the scan was not started: '
-                                     f'{problem}', parent=self.root)
+                self._rte_dialog('SHV run folder', f'Could not write the run log; the scan was not started: {problem}')
                 return
             self.rte_recorder, self.rte_run_folder = recorder, recorder.directory
             path = recorder.csv_path
@@ -48821,13 +49171,16 @@ class RTEPanel(PPMSPanel):
                 zeroing = ('At the end: ' + '; '.join(f'{name} {results[key]}' for name, key in
                                                       (('6221', '6221'), ('KEPCO', 'kepco')))
                            if results else 'At the end: the 6221 and the KEPCO were not confirmed zeroed')
+                # The finish runs inside drain_ui_queue: its dialogs open
+                # from the Tk event loop, after the page is idle again
+                # (review, 2026-10-18; the README's 2026-10-14 rule).
                 if not self.closing and not self.rte_closed:
                     if outcome == 'error':
                         detail = error_text + (f'\n\n{where[:1].upper()}{where[1:]}' if where else '')
-                        messagebox.showerror('SHV scan', f'{detail}\n\n{zeroing}', parent=self.root)
+                        self._rte_dialog('SHV scan', f'{detail}\n\n{zeroing}')
                     elif not results or 'FAILED' in f"{results['6221']} {results['kepco']}":
-                        messagebox.showerror('SHV outputs', f'The scan {outcome}, but an output was not '
-                                             f'confirmed at zero: CHECK IT.\n\n{zeroing}', parent=self.root)
+                        self._rte_dialog('SHV outputs', f'The scan {outcome}, but an output was not confirmed at '
+                                         f'zero: CHECK IT.\n\n{zeroing}')
                 self.ppms_field_scan_running = False
                 if not self.closing and not self.rte_closed:
                     self.ppms_field_scan_status_var.set(status)
@@ -48840,7 +49193,7 @@ class RTEPanel(PPMSPanel):
                 self.ppms_field_scan_running = False
                 self._rte_close_recorder('not_started', error=str(error), points_saved=0)
                 self._update_ppms_control_ui()
-                messagebox.showerror('SHV scan not started', str(error), parent=self.root)
+                self._rte_dialog('SHV scan not started', str(error))
                 return
             self.rte_scan_future = future
             future.add_done_callback(lambda f: self.post_ui(lambda: finished(f)))
@@ -48872,7 +49225,7 @@ class RTEPanel(PPMSPanel):
                     raise RuntimeError(f'Connect the {stage.label} first')
             except Exception as error:
                 not_started(error)
-                messagebox.showerror('SHV scan not started', str(error), parent=self.root)
+                self._rte_dialog('SHV scan not started', str(error))      # out of drain_ui_queue
                 return
             if self.ppms_field_scan_stop_event.is_set() or self.rte_stage_stop_event.is_set():
                 pressed = 'Stop stage' if self.rte_stage_stop_event.is_set() else 'an OFF button'
@@ -49002,8 +49355,8 @@ class RTEPanel(PPMSPanel):
             problem = '; '.join(errors)
             self.thread_log(f'SHV run log: {problem}')
             if not self.closing and not self.rte_closed:
-                messagebox.showerror('SHV run log', f'The run log was not closed cleanly: {problem}\n\nThe live '
-                                     f'CSV keeps every saved point: {recorder.csv_path}', parent=self.root)
+                self._rte_dialog('SHV run log', f'The run log was not closed cleanly: {problem}\n\nThe live CSV '
+                                 f'keeps every saved point: {recorder.csv_path}')
 
     def thread_log(self, message):
         """The page's log line, and while a scan's log is open also its
@@ -49012,9 +49365,12 @@ class RTEPanel(PPMSPanel):
         self._rte_log('note', text=message)
 
     def ppms_sources_off(self):
-        # A Stop of a running scan, in its log (user, 2026-10-18).
-        self._rte_log('stop_requested', button='6221 / 2400 OFF')
-        super().ppms_sources_off()
+        try:
+            super().ppms_sources_off()
+        finally:
+            # A Stop of a running scan, in its log (user, 2026-10-18), after
+            # the stop event and the queued OFF (review, 2026-10-18).
+            self._rte_log('stop_requested', button='6221 / 2400 OFF')
 
     def _rte_harmonic_scan_worker(self, mode, plan, passes, limit, stable, duration, field_current=None):
         # Every ending of a scan, completed, stopped or failed, zeroes the
@@ -49293,7 +49649,9 @@ class RTEPanel(PPMSPanel):
             if not stopped.stopped:
                 raise       # STOP not confirmed: a failure, not a clean stop
             if not stopped.before:
-                self.rte_stage_where = f'stage stopped at {newmark_angle_text(stopped.px, stage.steps_per_degree)}'
+                # ABORT, when STOP did not stop it (review, 2026-10-18).
+                self.rte_stage_where = (f'stage stopped at {newmark_angle_text(stopped.px, stage.steps_per_degree)}'
+                                        + (' (ABORT)' if getattr(stage, 'stop_aborted', False) is True else ''))
             raise PPMSScanCancelled(f"SHV stopped at a stage move; {self.rte_stage_where or 'stage not moved'}") from stopped
         self.rte_stage_where = f"stage at {state['angle_deg']:+.3f}°"
         # The last progress update may have come during the deceleration, and
@@ -49316,8 +49674,10 @@ class RTEPanel(PPMSPanel):
             else:
                 result = stage.stop()
                 stopped, px = result['stopped'], result['px']
-            self.rte_stage_where = (f'stage stopped at {newmark_angle_text(px, stage.steps_per_degree)}' if stopped
-                                    else 'stage NOT confirmed stopped: CHECK THE STAGE')
+            # ABORT, when STOP did not stop it (review, 2026-10-18).
+            aborted = ' (ABORT)' if getattr(stage, 'stop_aborted', False) is True else ''
+            self.rte_stage_where = (f'stage stopped at {newmark_angle_text(px, stage.steps_per_degree)}{aborted}'
+                                    if stopped else 'stage NOT confirmed stopped: CHECK THE STAGE')
         except Exception as stop_error:
             self.rte_stage_where = 'stage NOT confirmed stopped: CHECK THE STAGE'
             self.thread_log(f'SHV stage STOP after the failure failed: {stop_error}')
@@ -49347,8 +49707,10 @@ class RTEPanel(PPMSPanel):
 
     def stop_ppms_field_scan(self):
         if self.ppms_field_scan_running:
-            self._rte_log('stop_requested', button='Stop')
             self.ppms_field_scan_stop_event.set()
+            # The log after the event (review, 2026-10-18): a slow disk never
+            # delays the Stop.
+            self._rte_log('stop_requested', button='Stop')
             self.ppms_field_scan_status_var.set('Stopping; completed CSV points kept; KEPCO and 6221 zeroed next')
             self.ppms_field_scan_stop_button.configure(state='disabled')
 
@@ -49417,11 +49779,14 @@ class RTEPanel(PPMSPanel):
     def safe_close_ppms(self):
         if self.rte_closed:
             return
-        self._rte_log('stop_requested', button='the program closing')     # a running scan's log (user, 2026-10-18)
         self.rte_closed = self.ppms_closed = self.zurich_closed = True
         self.ppms_field_scan_stop_event.set()
         # A stage move by hand watches this one too (and the scan's); it sends STOP itself.
         self.rte_stage_stop_event.set()
+        # A running scan's log (user, 2026-10-18), after the stop events
+        # (review, 2026-10-18) and before the clean-up job is queued, which
+        # closes the log once the scan has ended.
+        self._rte_log('stop_requested', button='the program closing')
         for name in ('ppms_poll_after_id', 'zurich_after_id'):
             timer = self.__dict__.get(name)
             if timer is not None:
