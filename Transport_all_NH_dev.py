@@ -13994,7 +13994,7 @@ def make_scan_run_folder(parent: Path, stem: str) -> Path:
 
 def scan_log_line(name: str, details: dict) -> str:
     """One line of a scan's run log, JSON: {timestamp, event, ...details};
-    STFMRScanRecorder's format, shared with SHVScanRecorder (2026-10-18)."""
+    STFMR's format, shared by every ScanRunRecorder (2026-10-18)."""
     record = {
         "timestamp": datetime_module.datetime.now().astimezone().isoformat(timespec="milliseconds"),
         "event": name,
@@ -14003,12 +14003,207 @@ def scan_log_line(name: str, details: dict) -> str:
     return json.dumps(record, ensure_ascii=False, default=str) + "\n"
 
 
-class STFMRScanRecorder:
-    """Append-only, per-run files; called on the GUI acquisition path only.
+# How every scan page saves and ends a run: PPMS, SHV, ST-FMR, FMR, Non-local
+# 2400-IV / 6221-IV / Gate-VI / |R| vs time, CIDWM, MOKE magnet and MOKE-24
+# (user, 2026-10-18: "make the operation logic and save logic and files in
+# different module like the same as possible").  The save side is shared,
+# here; a page keeps only its own operation logic.  SHV's run is the model.
+#
+# 1. Start, on the Tk thread: the inputs are read and checked (a refusal is
+#    shown and nothing is made) -> the page's Yes/No -> begin_scan_run(): the
+#    folder dialog, then the optional file name, then the recorder -> the run
+#    on the page's worker.  None from begin_scan_run (a dialog cancelled, the
+#    name refused, or the folder or its files not made, which it shows)
+#    starts nothing and touches no output.
+# 2. The files: <folder>/<name>/ holds <name>.csv, the live CSV, and
+#    <name>.log (a blank name: <PAGE>_<date>_<time>; a name in use: _01, _02
+#    ...).  Nothing is ever overwritten.  Each write opens, fsyncs and closes
+#    its file, so no handle is held and the lab PC (Windows) can copy the
+#    folder mid-scan.
+# 3. Every point: append_row(row) on the worker, before the next instrument
+#    step.  The header is the first row's keys.  A later row's missing cells
+#    are left blank; a key the header lacks raises, so the columns never
+#    shift and the scan ends through its failure path.
+# 4. The log, JSON lines {timestamp, event, ...}.  Every page writes:
+#    run_prepared (by begin_scan_run: the program, the file name, the paths,
+#    and the page's settings under "settings"), scan_started, point_saved
+#    (after each row), note (every page log line while the scan runs:
+#    note(text)), stop_requested (button=...), outputs_zeroed (each output's
+#    result) and run_finished (close(outcome, points_saved=..., status=...,
+#    outputs=..., error=..., stop_reason=...); outcome is completed, stopped,
+#    error or not_started).  A page may add its own events between them.
+#    event() and note() never raise, from either thread.  The worker calls
+#    check() between instrument steps, so a failed write ends the scan
+#    through its failure path, never midway through a step.
+# 5. Every ending (completed, stopped or failed): on the page's worker, after
+#    the scan's own clean-up, zero_scan_outputs() zeroes every source the
+#    page drives.  Each output is tried whatever the others did, and read back
+#    where the instrument allows; outputs_zeroed logs the results.  The PPMS
+#    temperature and magnet field are never touched.
+# 6. The finish, on the Tk thread: the status is "Completed; " or "Stopped; "
+#    + scan_end_outputs_text(results); "Failed: ..." keeps the error and its
+#    dialog says how each output ended.  close() comes before any dialog.  A
+#    dialog says CHECK IT when an output was not confirmed at zero.
+# 7. Save CSV as opens in the last run folder (initialdir=recorder.directory).
+class ScanRunRecorder:
+    """A scan's run folder, live CSV and JSON-lines log, for every scan page
+    (user, 2026-10-18); SHV's recorder generalised.
 
-    A point is flushed and fsynced before advancing current.  These files do
-    not depend on the optional PNG/Pillow export or on a normal scan ending.
-    """
+    <parent>/<stem>/ (or <stem>_01, ... when taken) holds <stem>.csv and
+    <stem>.log, made empty here and opened "x".  The stem is the typed name,
+    or <page>_<date>_<time> when it is blank.  With settings, the log's first
+    line, run_prepared, is written here.  If it cannot be written, the run is
+    closed not_started and the error raised, so nothing starts.  The folder
+    and any file made stay, as evidence.
+
+    The worker and the Tk thread both write, so every write and the close
+    hold one lock.  A log write never raises: the STOP and the zeroing of a
+    failure must never be skipped for a bad disk.  The first failure is kept
+    instead and check() raises it on the worker.  A CSV row that cannot be
+    written raises, as the PPMS live CSV does.  close() is best effort and
+    runs once.
+
+    directory, csv_path, log_path and rows_written are for the page to read;
+    fieldnames is the CSV header (None until the first row)."""
+
+    # A fixed header, written when the files are made (STFMR's columns); None:
+    # the first row's keys.
+    FIELDNAMES: tuple[str, ...] | None = None
+
+    def __init__(self, parent: Path, page: str, name: str = "", settings: dict | None = None, *,
+                 label: str | None = None) -> None:
+        # page: the blank name's <page>_<date>_<time>; label: the page's name
+        # in messages (the page by default).
+        self.page, self.label = page, label or page
+        stem = name or self._default_stem()
+        if scan_file_stem(stem) != stem:
+            raise ValueError(f"{stem!r} is not a valid file name for the run folder")
+        self.directory = make_scan_run_folder(Path(parent), stem)
+        stem = self.directory.name
+        self.csv_path = self.directory / f"{stem}.csv"
+        self.log_path = self.directory / f"{stem}.log"
+        self.lock = threading.Lock()
+        self.failure: BaseException | None = None
+        self.closed = False
+        self.rows_written = 0
+        self.fieldnames = None if self.FIELDNAMES is None else list(self.FIELDNAMES)
+        try:
+            # The CSV first: one already there (another program) stops
+            # everything before a log is made.
+            for path, encoding in ((self.csv_path, "utf-8-sig"), (self.log_path, "utf-8")):
+                with path.open("x", encoding=encoding, newline=""):
+                    pass
+            if self.fieldnames is not None:
+                with self.csv_path.open("a", newline="", encoding="utf-8-sig") as handle:
+                    csv.DictWriter(handle, fieldnames=self.fieldnames).writeheader()
+                    self._sync(handle)
+            if settings is not None:
+                self.event("run_prepared", **self._prepared_details(name, settings))
+                failure = self.failure
+                if failure is not None:
+                    self.close("not_started", error=str(failure))
+                    raise failure
+        except BaseException:
+            # The folder and any file made stay, as evidence; nothing starts.
+            self.closed = True
+            raise
+
+    def _default_stem(self) -> str:
+        return f"{self.page}_{time.strftime('%Y%m%d_%H%M%S')}"
+
+    def _prepared_details(self, name: str, settings: dict) -> dict:
+        """run_prepared's fields; the page's own settings stay under "settings"
+        so that none of them can replace the timestamp or the event name."""
+        return dict(program=Path(__file__).name, app_version=APP_VERSION, python_version=sys.version,
+                    file_name=name, run_folder=str(self.directory), csv_path=str(self.csv_path),
+                    log_path=str(self.log_path), settings=settings)
+
+    @staticmethod
+    def _sync(handle) -> None:
+        handle.flush()
+        os.fsync(handle.fileno())
+
+    def _append(self, text: str) -> None:
+        """One record onto the log, opened for it and closed again."""
+        with self.log_path.open("a", encoding="utf-8") as handle:
+            handle.write(text)
+            self._sync(handle)
+
+    def event(self, name: str, /, **details) -> bool:
+        """Write one record, from either thread; False when it was not
+        written (the log closed, or the write failed: then kept for check())."""
+        with self.lock:
+            if self.closed:
+                return False
+            try:
+                self._append(scan_log_line(name, details))
+                return True
+            except Exception as error:
+                if self.failure is None:
+                    self.failure = error
+                return False
+
+    def note(self, text: str) -> bool:
+        """A page log line of the running scan, as a "note" record."""
+        return self.event("note", text=str(text))
+
+    def check(self) -> None:
+        """On the worker, between instrument steps: a failed write ends the scan."""
+        error = self.failure
+        if error is not None:
+            raise RuntimeError(f"The {self.label} log could not be written ({error}); the scan stopped") from error
+
+    def append_row(self, row: dict) -> None:
+        """One row onto the live CSV, opened for it and closed again, flushed
+        and fsynced before it returns.  The first row's keys are the header.
+        A later row's missing cells are left blank; a key the header lacks
+        raises before anything is written, so the columns never shift.  A
+        failure raises, to end the scan through the page's failure path."""
+        with self.lock:
+            if self.closed:
+                raise RuntimeError(f"The {self.label} live CSV is closed")
+            first = self.fieldnames is None
+            fields = list(row) if first else self.fieldnames
+            known = set(fields)
+            extra = [str(key) for key in row if key not in known]
+            if extra:
+                raise ValueError(f"The {self.label} live CSV has no column for {', '.join(extra)}; the row was not "
+                                 "written, so that the columns do not shift")
+            with self.csv_path.open("a", newline="", encoding="utf-8-sig") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fields, restval="")
+                if first:
+                    writer.writeheader()
+                writer.writerow(row)
+                self._sync(handle)
+            self.fieldnames = fields
+            self.rows_written += 1
+
+    def close(self, outcome: str, /, **details) -> list[str]:
+        """run_finished, then closed for good; best effort, once (the later
+        calls do nothing).  The errors are returned for the page to show."""
+        with self.lock:
+            if self.closed:
+                return []
+            self.closed = True
+            try:
+                self._append(scan_log_line("run_finished", dict(outcome=outcome, **details)))
+            except Exception as error:
+                return [f"Failed to write the closing log entry: {error}"]
+            return []
+
+
+class STFMRScanRecorder(ScanRunRecorder):
+    """The STFMR page's run files, on the shared recorder since 2026-10-18
+    with the same files, columns and log lines.  Called on the GUI
+    acquisition path only.  A point is flushed and fsynced before advancing
+    current.  These files do not depend on the optional PNG/Pillow export or
+    on a normal scan ending.
+
+    STFMR keeps its own ways, unlike the shared recorder: a fixed header
+    written with the files, a log write that raises (the page then ends its
+    sweep), its own run_prepared and saved_points, and a blank name's
+    STFMR_field_scan_<date>_<time>_<microseconds>.  Since 2026-10-18 it
+    holds no handle between writes, as SHV's log and live CSV."""
 
     FIELDNAMES = (
         "index", "frequency_index", "loop", "point_in_loop", "elapsed_s",
@@ -14041,159 +14236,121 @@ class STFMRScanRecorder:
         # makes <parent>/<name>/ (or <name>_01, ... when taken, the files
         # named as the folder); blank keeps the timestamped default.  The
         # columns, events and everything else are the same either way.
-        if name:
-            self.directory = make_scan_run_folder(Path(parent), name)
-            stem = self.directory.name
-        else:
-            stamp = datetime_module.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            stem = f"STFMR_field_scan_{stamp}"
-            self.directory = Path(parent) / stem
-        self.csv_path = self.directory / f"{stem}.csv"
-        self.log_path = self.directory / f"{stem}.log"
-        self.csv_handle = None
-        self.log_handle = None
-        self.rows_written = 0
-        self.closed = False
-        if not name:
-            # No exist_ok: a name collision must never overwrite another run.
-            self.directory.mkdir()
-        try:
-            self.log_handle = self.log_path.open("x", encoding="utf-8")
-            self.csv_handle = self.csv_path.open("x", newline="", encoding="utf-8-sig")
-            self.writer = csv.DictWriter(self.csv_handle, fieldnames=self.FIELDNAMES)
-            self.writer.writeheader()
-            self._sync(self.csv_handle)
-            self.event("run_prepared", csv_path=str(self.csv_path), settings=settings)
-        except BaseException:
-            # Retain any partially created files as evidence, but release all
-            # handles.  The caller must not enable hardware after this failure.
-            for handle in (self.csv_handle, self.log_handle):
-                if handle is not None:
-                    try:
-                        handle.close()
-                    except BaseException:
-                        pass
-            self.closed = True
-            raise
+        super().__init__(parent, "STFMR", name, settings)
 
-    @staticmethod
-    def _sync(handle) -> None:
-        handle.flush()
-        os.fsync(handle.fileno())
+    def _default_stem(self) -> str:
+        return "STFMR_field_scan_" + datetime_module.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
-    def event(self, name: str, **details) -> None:
-        if self.closed:
-            raise RuntimeError("STFMR log is closed")
-        self.log_handle.write(scan_log_line(name, details))
-        self._sync(self.log_handle)
+    def _prepared_details(self, name: str, settings: dict) -> dict:
+        return dict(csv_path=str(self.csv_path), settings=settings)
+
+    def event(self, name: str, /, **details) -> bool:
+        # A failed write raises: _stfmr_lockin_log_event then ends the sweep.
+        with self.lock:
+            if self.closed:
+                raise RuntimeError("STFMR log is closed")
+            self._append(scan_log_line(name, details))
+            return True
 
     def append_point(self, row: dict[str, object]) -> None:
-        if self.closed:
-            raise RuntimeError("STFMR live CSV is closed")
-        self.writer.writerow(row)
-        self._sync(self.csv_handle)
-        self.rows_written += 1
+        self.append_row(row)
 
-    def close(self, outcome: str, **details) -> list[str]:
-        """Best-effort close; a bad log/disk must not skip the other handle."""
-        if self.closed:
-            return []
-        errors = []
-        try:
-            self.event("run_finished", outcome=outcome, saved_points=self.rows_written, **details)
-        except BaseException as error:
-            errors.append(f"Failed to write the closing log entry: {error}")
-        self.closed = True
-        for name, handle in (("CSV", self.csv_handle), ("log", self.log_handle)):
-            if handle is not None:
-                try:
-                    self._sync(handle)
-                except BaseException as error:
-                    errors.append(f"Failed to flush {name}: {error}")
-                finally:
-                    try:
-                        handle.close()
-                    except BaseException as error:
-                        errors.append(f"Failed to close {name}: {error}")
-        return errors
+    def close(self, outcome: str, /, **details) -> list[str]:
+        """Best effort; run_finished counts the saved points itself."""
+        return super().close(outcome, saved_points=self.rows_written, **details)
 
 
-class SHVScanRecorder:
-    """An SHV scan's run folder and its log (user, 2026-10-18: "like ST-FMR,
-    pls also write a log of SHV and save results in a folder").
+class SHVScanRecorder(ScanRunRecorder):
+    """An SHV scan's run folder and log (user, 2026-10-18: "like ST-FMR, pls
+    also write a log of SHV and save results in a folder"), on the shared
+    recorder with the same files and log lines.
 
-    <folder>/<stem>/ (or <stem>_01, ... when taken) holds <stem>.csv, the
-    live CSV, made empty here and still appended row by row, each fsynced, by
-    _append_ppms_live_csv with its columns unchanged, and <stem>.log, JSON
-    lines as STFMRScanRecorder's: {timestamp, event, ...details}, each
-    flushed and fsynced.  Both are made "x": nothing is ever overwritten.
-    As the live CSV, the log is opened for each record and closed again, so
-    no handle is held between records: on the lab PC (Windows) the folder
-    can be copied, and a test's folder removed, while a scan runs or after
-    one that never finished.
-
-    The rte-control worker and the Tk thread both write (a Stop, a log line
-    of either), so every write and the close hold one lock.  A write never
-    raises: the STOP, the 6221 off and the KEPCO off of a failure must never
-    be skipped for a bad disk.  The first failure is kept instead, and the
-    worker raises it at its next check(), outside any instrument step, so the
-    scan ends through the normal failure path, as when a live-CSV row cannot
-    be written.  close() is best effort and returns what went wrong."""
+    The page passes the stem (the typed name, or SHV_<date>_<time>) and
+    writes run_prepared itself, with its settings at the top level.  The live
+    CSV, made empty here, is still appended row by row by
+    _append_ppms_live_csv, with its columns unchanged."""
 
     def __init__(self, parent: Path, stem: str) -> None:
-        self.directory = make_scan_run_folder(Path(parent), stem)
-        name = self.directory.name
-        self.csv_path = self.directory / f"{name}.csv"
-        self.log_path = self.directory / f"{name}.log"
-        self.lock = threading.Lock()
-        self.failure: BaseException | None = None
-        self.closed = False
+        super().__init__(parent, "SHV", stem)
+
+
+def begin_scan_run(parent, page_label: str, folder_title: str, initial_dir, settings: dict, *,
+                   prefix: str | None = None) -> ScanRunRecorder | None:
+    """A scan Start's save step on the Tk thread, after the page's Yes/No
+    (user, 2026-10-18).  It runs the folder dialog (folder_title, opening at
+    initial_dir when given), then the optional file name ("<page_label> file
+    name"), then makes the run folder and its files and writes run_prepared
+    with settings.  It returns the recorder, or None when nothing may start:
+    a dialog cancelled or the name refused (nothing is made), or the folder,
+    its files or the log's first line not made (shown as "<page_label> run
+    folder").  prefix: the blank name's <prefix>_<date>_<time>; page_label
+    by default, so a label that is not a valid file name ("|R| vs time")
+    needs one."""
+    where = {"initialdir": str(initial_dir)} if initial_dir else {}
+    folder = filedialog.askdirectory(parent=parent, title=folder_title, **where)
+    if not folder:
+        return None
+    typed = ask_scan_file_stem(parent, f"{page_label} file name")
+    if typed is None:
+        return None
+    try:
+        return ScanRunRecorder(Path(folder), prefix or page_label, typed, settings, label=page_label)
+    except Exception as error:
+        messagebox.showerror(f"{page_label} run folder", "Could not create the run folder and its files; the "
+                             f"scan was not started: {error}", parent=parent)
+        return None
+
+
+def zero_scan_outputs(steps) -> dict[str, str]:
+    """A scan's end on the page's worker (user, 2026-10-18: every scan page
+    zeroes its sources at every end, as SHV).  steps: (label, zero) pairs in
+    order.  Each zero() is tried whatever the others did.  zero() raises when
+    its output is not confirmed at zero (read back where the instrument
+    allows), or returns "not connected" when there is nothing to zero.  It
+    never raises and returns {label: "zeroed" | "not connected" | "zero
+    FAILED: <error>"}, for outputs_zeroed and scan_end_outputs_text."""
+    results = {}
+    for label, zero in steps:
         try:
-            for path, encoding in ((self.csv_path, "utf-8-sig"), (self.log_path, "utf-8")):
-                with path.open("x", encoding=encoding, newline=""):
-                    pass
-        except BaseException:
-            # The folder and any file made stay, as evidence; nothing starts.
-            self.closed = True
-            raise
+            results[label] = "not connected" if zero() == "not connected" else "zeroed"
+        except Exception as error:
+            results[label] = f"zero FAILED: {error}"
+    return results
 
-    def _append(self, text: str) -> None:
-        with self.log_path.open("a", encoding="utf-8") as handle:
-            handle.write(text)
-            STFMRScanRecorder._sync(handle)
 
-    def event(self, name: str, **details) -> bool:
-        """Write one record, from either thread; False when it was not
-        written (the log closed, or the write failed: then kept for check())."""
-        with self.lock:
-            if self.closed:
-                return False
-            try:
-                self._append(scan_log_line(name, details))
-                return True
-            except Exception as error:
-                if self.failure is None:
-                    self.failure = error
-                return False
+def scan_end_outputs_text(results, outputs=(), check: bool = True, together: str = "") -> str:
+    """The outputs part of a scan's finish status, from zero_scan_outputs'
+    results in zeroing order, generalised from SHV's (user, 2026-10-18):
+    "<all> zeroed"; "<all> not confirmed zeroed: check them" when there are
+    no results (the zeroing never reported); "zero FAILED: A and B: check
+    them" when every one failed; otherwise each in turn, "A zeroed; B zero
+    FAILED: check it" ("not connected" is no failure).  outputs: the labels
+    in zeroing order, for missing results (a label without one counts as
+    failed).  together: how all of them are named at once, "A and B" (or "A,
+    B and C") by default.  check=False leaves out ": check it" / ": check
+    them" for a status line with more after it; the dialog and the log say
+    it in full."""
+    def joined(names):
+        return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
-    def check(self) -> None:
-        """On the worker, between instrument steps: a failed write ends the scan."""
-        error = self.failure
-        if error is not None:
-            raise RuntimeError(f"The SHV log could not be written ({error}); the scan stopped") from error
-
-    def close(self, outcome: str, **details) -> list[str]:
-        """run_finished, then closed for good; best effort, once (the later
-        calls do nothing).  The errors are returned for the page to show."""
-        with self.lock:
-            if self.closed:
-                return []
-            self.closed = True
-            try:
-                self._append(scan_log_line("run_finished", dict(outcome=outcome, **details)))
-            except Exception as error:
-                return [f"Failed to write the closing log entry: {error}"]
-            return []
+    results = dict(results or {})
+    names = list(outputs) + [name for name in results if name not in outputs]
+    together = together or (joined(names) if names else "the outputs")
+    if not results:
+        return f"{together} not confirmed zeroed" + ((": check it" if len(names) == 1 else ": check them")
+                                                     if check else "")
+    states = [results.get(name, "") for name in names]
+    if all(state == "zeroed" for state in states):
+        return f"{together} zeroed"
+    failed = [name for name, state in zip(names, states) if state not in ("zeroed", "not connected")]
+    if len(names) > 1 and len(failed) == len(names):
+        text = "zero FAILED: " + joined(failed)
+    else:
+        text = "; ".join(f"{name} {state}" if state in ("zeroed", "not connected") else f"{name} zero FAILED"
+                         for name, state in zip(names, states))
+    if check and failed:
+        text += ": check it" if len(failed) == 1 else ": check them"
+    return text
 
 
 # Side-by-side/stacked flips of one pair, within a second at one window
@@ -46698,19 +46855,16 @@ def rte_outputs_text(results, check=True):
     zeroing (user, 2026-10-18): "KEPCO and 6221 zeroed", or each output's
     result, "zero FAILED" in capitals.  ": check it" is left out when the
     stage's place follows (Angle), to keep the line on one line; the dialog
-    and the log say it in full."""
-    if not results:
-        return "KEPCO and 6221 not confirmed zeroed" + (": check them" if check else "")
-    six, kepco = results.get("6221", ""), results.get("kepco", "")
-    six_ok, kepco_ok = six == "zeroed", kepco in ("zeroed", "not connected")
-    if six_ok and kepco == "zeroed":
-        return "KEPCO and 6221 zeroed"
-    if not six_ok and not kepco_ok:
-        return "zero FAILED: 6221 and KEPCO" + (": check them" if check else "")
-    text = (("6221 zeroed" if six_ok else "6221 zero FAILED") + "; "
-            + ("KEPCO zeroed" if kepco == "zeroed" else "KEPCO not connected" if kepco == "not connected"
-               else "KEPCO zero FAILED"))
-    return text + (": check it" if check and not (six_ok and kepco_ok) else "")
+    and the log say it in full.
+
+    The shared scan_end_outputs_text since 2026-10-18, with SHV's names,
+    order and "KEPCO and 6221", so every text is as before: CI measures
+    their widths.  An SHV scan always drives the 6221, so only "zeroed" is
+    fine for it."""
+    if results:
+        six = results.get("6221", "")
+        results = {"6221": six if six == "zeroed" else "zero FAILED", "KEPCO": results.get("kepco", "")}
+    return scan_end_outputs_text(results, ("6221", "KEPCO"), check=check, together="KEPCO and 6221")
 
 
 # The RT-E scan box's note by mode: what Start, End and Step are and where
@@ -48385,22 +48539,14 @@ class RTEPanel(PPMSPanel):
         tried whatever the other did, as the failure clean-up does.  Never
         raises: returns each output's result, "zeroed", "not connected" (a
         Current scan needs no KEPCO) or "zero FAILED: <error>"; the log
-        has them (user, 2026-10-18)."""
-        results = {}
-        try:
-            self._rte_zero_6221_after_scan()
-            results['6221'] = 'zeroed'
-        except Exception as error:
-            results['6221'] = f'zero FAILED: {error}'
-        kepco = self.rte_controllers.get('kepco')
-        try:
+        has them (user, 2026-10-18).  The steps run through the shared
+        zero_scan_outputs, which every scan page's end uses (2026-10-18)."""
+        def kepco_off():
+            kepco = self.rte_controllers.get('kepco')
             if kepco is None or not kepco.connected:
-                results['kepco'] = 'not connected'
-            else:
-                kepco.force_output_off()
-                results['kepco'] = 'zeroed'
-        except Exception as error:
-            results['kepco'] = f'zero FAILED: {error}'
+                return 'not connected'
+            kepco.force_output_off()
+        results = zero_scan_outputs((('6221', self._rte_zero_6221_after_scan), ('kepco', kepco_off)))
         self._rte_log('outputs_zeroed', **{'6221': results['6221'], 'kepco': results['kepco']})
         self.thread_log(f"SHV scan end: 6221 {results['6221']}; KEPCO {results['kepco']}")
 
