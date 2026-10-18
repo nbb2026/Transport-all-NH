@@ -166,17 +166,24 @@ class OvpMarginTests(unittest.TestCase):
                     self.assertNotIn("OVP", text)
 
     def test_the_user_can_still_start(self):
-        # Yes goes on past the confirmation: the next check (image saving
-        # ticked without a folder) is reached, so nothing is refused for
-        # the margin and nothing is sent before that check.
+        # Yes goes on past the confirmation: the next step (the run folder,
+        # user 2026-10-18; cancelled here) is reached, so nothing is refused
+        # for the margin and nothing is sent before that step.  (Until then
+        # the next step was the image folder's check, which now comes before
+        # the Yes/No with the other input checks.)
         dialogs = mock_dialogs(self, askyesno=True)
         a = scan_page("2410", "0", "200")
-        a.keithley_save_images_var = Var(True)
-        a.start_keithley_scan()
+        a.camera_scan_parameter_snapshot = lambda roi: {"camera.roi": roi}  # the run's settings
+        a.keithley_csv_directory = app.KEITHLEY_RESULTS_DIRECTORY
+        with mock.patch.object(app, "begin_scan_run", return_value=None) as begin:
+            a.start_keithley_scan()
         self.assertIn("Near the hardware OVP", dialogs["askyesno"].call_args.args[1])
-        dialogs["showwarning"].assert_called_once()
-        self.assertIn("save folder", dialogs["showwarning"].call_args.args[1])
+        begin.assert_called_once()
+        self.assertEqual(begin.call_args.args[1], "MOKE-24")
+        self.assertEqual(begin.call_args.kwargs["prefix"], "MOKE24")
+        dialogs["showwarning"].assert_not_called()
         self.assertEqual(a.keithley_controller.instrument.commands, [])
+        self.assertFalse(a.keithley_scan_running)
         # The limit and OVP are unchanged.
         self.assertEqual(a.keithley_controller.max_abs_voltage_v, 200.0)
         self.assertEqual(a.keithley_controller.source_ovp_v, 200.0)

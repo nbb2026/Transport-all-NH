@@ -29,6 +29,40 @@ def bind(target, *names):
         setattr(target, name, types.MethodType(getattr(C, name), target))
 
 
+def run_dialogs_now(a):
+    """A finish's dialog opens from root.after(0, ...), not inside
+    drain_ui_queue (M5, review, 2026-10-18); here it opens at once."""
+    root = getattr(a, "root", None)
+    if root is None:
+        a.root = root = types.SimpleNamespace()
+    root.after = lambda _delay, callback: callback()
+    a.closing = False
+    bind(a, "_dialog_after_drain")
+
+
+def scan_end(a, writes=None):
+    """What a magnet scan's end needs (user, 2026-10-18: both KEPCOs to 0 A
+    at every end): the two BOPs (0 A writes recorded in ``writes``), the
+    page's boxes and the real zeroing and log methods."""
+    writes = [] if writes is None else writes
+    a.zero_writes = writes
+    a.magnet_channels = {
+        key: types.SimpleNamespace(bop=types.SimpleNamespace(
+            connected=True, set_current=lambda value, key=key: writes.append((key, value))))
+        for key in ("OUT", "IN")
+    }
+    a.magnet_last_currents = {"OUT": None, "IN": None}
+    a.magnet_target_vars = {"OUT": Var("1.500"), "IN": Var("0.000")}
+    a.magnet_current_vars = {"OUT": Var(), "IN": Var()}
+    a.magnet_status_var = Var()
+    a.logged = []
+    a.thread_log = a.logged.append
+    a._magnet_kepco_labels = C._magnet_kepco_labels
+    bind(a, "_magnet_scan_points", "_magnet_zero_outputs_after_scan", "_magnet_scan_zero_readback",
+         "_scan_log", "_scan_page_log")
+    return a
+
+
 class Var:
     def __init__(self, value=None):
         self.value = value
@@ -102,6 +136,7 @@ def magnet_app(executor=None):
     a._selected_magnet_switch_key.return_value = "OUT"
     bind(a, "_submit_magnet_task", "_finish_magnet_task", "zero_both_magnets",
          "_write_and_verify_magnet_current", "_require_magnet_bop", "set_magnet_current")
+    run_dialogs_now(a)
     return a
 
 
@@ -195,6 +230,8 @@ def scan_app(frame):
     a.roi_live_last_sample_time = time.monotonic()
     a._roi_live_settings = lambda: (3600.0, 10)
     bind(a, "ingest_moke_roi_sample", "_magnet_scan_worker", "_query_gauss_with_recovery")
+    a._magnet_log = lambda text: None
+    scan_end(a)
     return a
 
 

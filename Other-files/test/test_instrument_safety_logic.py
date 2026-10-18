@@ -1667,6 +1667,8 @@ class InstrumentSafetyTests(unittest.TestCase):
         }
         harness.magnet_field_zero_stop_event = NeverStop()
         harness.magnet_thread_log = lambda _message: None
+        # The zeroing's notices go to the page log since 2026-10-18 (M2).
+        harness.thread_log = lambda _message: None
         harness._write_and_verify_magnet_current = (
             lambda _key, value: setattr(bop, "current", float(value))
             or bop.current
@@ -1712,6 +1714,8 @@ class InstrumentSafetyTests(unittest.TestCase):
         }
         harness.magnet_field_zero_stop_event = NeverStop()
         harness.magnet_thread_log = lambda _message: None
+        # The zeroing's notices go to the page log since 2026-10-18 (M2).
+        harness.thread_log = lambda _message: None
         harness._write_and_verify_magnet_current = (
             lambda _key, value: setattr(bop, "current", float(value))
             or bop.current

@@ -33,7 +33,9 @@ def page():
     a.keithley_stop_event = threading.Event()
     a.keithley_executor = Now()
     a.post_ui = lambda callback: callback()
-    a.closing, a.root = True, None
+    # A finish's dialog opens from root.after(0, ...) (M5, review,
+    # 2026-10-18); here at once.
+    a.closing, a.root = True, types.SimpleNamespace(after=lambda _delay, callback: callback())
     a.instrument_connection_indicators = {}
     a.active_file_exports = {}
     a.keithley_step_rows = []
