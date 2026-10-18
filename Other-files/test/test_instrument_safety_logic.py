@@ -949,11 +949,17 @@ class InstrumentSafetyTests(unittest.TestCase):
                 self.sequence.append(command)
                 if command.startswith(":POW "):
                     self.level = command.split()[1]
+                elif command.startswith("LFO:FREQ "):
+                    self.lfo = command.split()[1]
+                elif command.startswith("FREQ "):
+                    self.carrier = f"{float(command[5:-3]) * 1e9:.12g}"
 
             def query(self, command):
-                if command == ":POW?":
+                # The level, and since 2026-10-18 the LFO and the carrier.
+                answers = {":POW?": "level", "LFO:FREQ?": "lfo", "FREQ?": "carrier"}
+                if command in answers:
                     self.sequence.append(command)
-                    return self.level
+                    return getattr(self, answers[command])
                 return super().query(command)
 
         controller = app.STFMRSMB100AController(lambda _message: None)
@@ -963,7 +969,8 @@ class InstrumentSafetyTests(unittest.TestCase):
         # The first power is read back right after it is sent, before the
         # carrier and the RF are switched on (review, 2026-10-14); the
         # writes are the trace's, in its order.
-        self.assertEqual(fake.sequence[3:6], [":POW 10", ":POW?", "FREQ 5GHz"])
+        self.assertEqual(fake.sequence[2:8], ["LFO:FREQ 317.3 Hz", "LFO:FREQ?", ":POW 10", ":POW?",
+                                              "FREQ 5GHz", "FREQ?"])
         self.assertEqual(fake.commands, [
             ":AM:DEPT:LIN 1.0E+2",
             "LFO:VOLT 0.50 V",
@@ -974,8 +981,9 @@ class InstrumentSafetyTests(unittest.TestCase):
             "OUTPUT ON",
             "AM:STAT ON",
         ])
-        controller.set_frequency(6.0)
+        self.assertEqual(controller.set_frequency(6.0), 6e9)
         self.assertEqual(fake.commands[-1], "FREQ 6GHz")
+        self.assertEqual(fake.sequence[-1], "FREQ?", "read back (review, 2026-10-18)")
         controller.rf_off()
         self.assertEqual(
             fake.commands[-3:], ["AM:STAT OFF", "LFO OFF", "OUTPUT OFF"]
@@ -1085,24 +1093,49 @@ class InstrumentSafetyTests(unittest.TestCase):
         self.assertTrue(second["measurement_valid"])
 
     def test_stfmr_normal_completion_turns_off_smb100a(self):
+        # Every end zeroes the 4886 as its Zero / OFF does and switches the
+        # SMB100A RF off with OUTP? read back, on the page's worker (user,
+        # 2026-10-18).
         class FakeKepco:
+            connected = True
+
             def __init__(self):
                 self.zero_calls = 0
 
-            def zero_output(self):
+            def force_output_off(self):
                 self.zero_calls += 1
 
         class FakeSmb:
+            connected = True
+
             def __init__(self):
                 self.off_calls = 0
 
-            def rf_off(self):
+            def rf_off_read_back(self):
                 self.off_calls += 1
+
+        class Worker:
+            def __init__(self):
+                self.jobs = 0
+
+            def submit(self, operation):
+                from concurrent.futures import Future
+                self.jobs += 1
+                future = Future()
+                future.set_result(operation())
+                return future
 
         harness = object.__new__(app.CombinedControlApp)
         kepco = FakeKepco()
         smb = FakeSmb()
         harness.stfmr_lockin_running = True
+        harness.stfmr_lockin_closed = False
+        harness.stfmr_lockin_recorder = None
+        harness.stfmr_lockin_after_id = None
+        harness.stfmr_lockin_stop_event = __import__("threading").Event()
+        harness.stfmr_lockin_executor = worker = Worker()
+        harness.post_ui = lambda callback: callback()
+        harness.thread_log = lambda _text: None
         harness.stfmr_lockin_controllers = {"kepco": kepco, "smb": smb}
         harness.stfmr_lockin_rows = [{"field_g": 0.0}]
         harness.stfmr_lockin_frequencies_ghz = [5.0]
@@ -1112,9 +1145,12 @@ class InstrumentSafetyTests(unittest.TestCase):
 
         harness._finish_stfmr_lockin_scan()
 
+        self.assertEqual(worker.jobs, 1, "zeroed on the page's worker")
         self.assertEqual(kepco.zero_calls, 1)
         self.assertEqual(smb.off_calls, 1)
-        self.assertIn("SMB100A outputs OFF", harness.stfmr_lockin_status_var.get())
+        self.assertFalse(harness.stfmr_lockin_running)
+        self.assertEqual(harness.stfmr_lockin_status_var.get(),
+                         "Completed; 4886 and RF zeroed; 1 point saved; 1 frequency")
 
     def test_stfmr_pna_displays_and_triggers_all_selected_traces_once(self):
         class FakePNA:

@@ -109,12 +109,12 @@ class StfmrTests(unittest.TestCase):
         a.stfmr_controllers = {"kepco": kepco}
         a.stfmr_fmr_running, a.stfmr_frequency_running = True, False
         order = []
-        a.stop_stfmr_fmr_scan = lambda: order.append("stop")
+        a.stop_stfmr_fmr_scan = lambda button=None: order.append(("stop", button))
         kepco.force_output_off.side_effect = lambda: order.append("off") or {}
         a._apply_stfmr_kepco_readback = lambda result: None
         a.stfmr_status_var = Var()
         a.zero_stfmr_kepco_output()
-        self.assertEqual(order, ["stop", "off"])
+        self.assertEqual(order, [("stop", "KEPCO Zero / OFF"), "off"])
 
 
 class PpmsTests(unittest.TestCase):

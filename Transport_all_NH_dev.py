@@ -2150,6 +2150,16 @@ STFMR_SMB100A_MAX_POWER_DBM = 25.0
 # range at this carrier, say) and is still at the old one (user, 2026-10-14;
 # configure() too: review, 2026-10-14).
 STFMR_SMB100A_POWER_READBACK_TOLERANCE_DB = 0.01
+# The carrier and the LFO are read back too (FREQ?, LFO:FREQ?) after each
+# FREQ and LFO:FREQ, and a reply further than this from the value sent is
+# refused (review, 2026-10-18: a frequency the generator did not take kept
+# the old one under the new label).  The carrier is set to 0.01 Hz, so 1 Hz
+# only allows for the reply's float format; neighbouring carriers are at
+# least a step of MHz apart.  The LFO's setting resolution is 0.1 Hz (data
+# sheet), so 0.05 Hz accepts its rounding of a typed 117.35 Hz, while the
+# prime modulation frequencies are at least 1 Hz apart.
+STFMR_SMB100A_FREQUENCY_READBACK_TOLERANCE_HZ = 1.0
+STFMR_SMB100A_LFO_READBACK_TOLERANCE_HZ = 0.05
 # The SMB100A's level resolution.  Every power of the list is rounded to it
 # and repeats are merged, so each pass is a level the generator can really
 # set and its label is the level that was sent (review, 2026-10-14).
@@ -3231,6 +3241,7 @@ class STFMRSR830Controller(SafeVisaIdentityController):
         if time_constant_code not in STFMR_LOCKIN_SR830_TIME_CONSTANTS.values():
             raise ValueError(f"SR830 time constant code {time_constant_code!r} is not an 'SR830 TC' choice")
         time_constant_code = int(time_constant_code)
+        auto_range = bool(auto_range)
         with self.lock:
             if self.instrument is None:
                 raise RuntimeError("SR830 is not connected")
@@ -3244,7 +3255,11 @@ class STFMRSR830Controller(SafeVisaIdentityController):
                 "ICPL 0",
                 "ILIN 0",      # disable both line notch filters
                 "SYNC 0",      # disable optional synchronous filter
-                f"SENS {STFMR_LOCKIN_SR830_SENSITIVITY_CODE}",
+                # With 'SR830 autorange' unticked the front-panel range is
+                # kept: no SENS is sent, and SENS? below records it (user,
+                # 2026-10-18: "Keep my front-panel range").  With it ticked
+                # the sweep starts from SENS 13, as before.
+                *((f"SENS {STFMR_LOCKIN_SR830_SENSITIVITY_CODE}",) if auto_range else ()),
                 f"OFLT {time_constant_code}",
                 "OFSL 1",
                 "RMOD 1",
@@ -3281,12 +3296,16 @@ class STFMRSR830Controller(SafeVisaIdentityController):
                     f"FMOD={actual_reference_mode}, "
                     f"RSLP={actual_reference_slope}, HARM={actual_harmonic}"
                 )
-            if actual_sensitivity != STFMR_LOCKIN_SR830_SENSITIVITY_CODE:
+            if auto_range and actual_sensitivity != STFMR_LOCKIN_SR830_SENSITIVITY_CODE:
                 raise RuntimeError(
                     "SR830 initial sensitivity readback mismatch: "
                     f"requested SENS {STFMR_LOCKIN_SR830_SENSITIVITY_CODE}, "
                     f"readback {actual_sensitivity}"
                 )
+            if not 0 <= actual_sensitivity < len(NONLOCAL_SR830_FULL_SCALE_V):
+                # The front panel's range, kept: it must be one of the
+                # SR830's 27, as every row records its full scale.
+                raise RuntimeError(f"SR830 SENS? read back {actual_sensitivity}, not a sensitivity index (0-26)")
             if actual_time_constant != time_constant_code:
                 raise RuntimeError(
                     "SR830 time constant readback mismatch: "
@@ -3295,7 +3314,7 @@ class STFMRSR830Controller(SafeVisaIdentityController):
                 )
             self.reference_input = reference_input
             self.sensitivity_index = actual_sensitivity
-            self.auto_range_enabled = bool(auto_range)
+            self.auto_range_enabled = auto_range
             self.low_range_count = 0
             self.range_cooldown = 0
             self.lias_clear_pending = True
@@ -3492,9 +3511,11 @@ class STFMRSMB100AController(SafeVisaIdentityController):
         refused (a typo, a front-panel :POW:LIM, below its minimum) raises
         there, so the sweep ends with nothing switched on rather than with
         the RF on at the previous level and the run labelled with the new
-        one (review, 2026-10-14).  Every write and its order are those of
-        the supplied LabVIEW trace; the query is the only addition.  Returns
-        the read-back in dBm."""
+        one (review, 2026-10-14).  The LFO and the carrier are read back the
+        same way ("LFO:FREQ?" and "FREQ?" right after each, also before
+        "LFO ON" / "OUTPUT ON"; review, 2026-10-18).  Every write and its
+        order are those of the supplied LabVIEW trace; the queries are the
+        only addition.  Returns the power's read-back in dBm."""
         frequency_ghz = float(frequency_ghz)
         power_dbm = float(power_dbm)
         lfo_hz = float(lfo_hz)
@@ -3505,6 +3526,8 @@ class STFMRSMB100AController(SafeVisaIdentityController):
         if power_dbm > STFMR_SMB100A_MAX_POWER_DBM:
             raise ValueError("SMB100A power software limit is 25 dBm")
         power_command = f":POW {power_dbm:.6g}"
+        lfo_command = f"LFO:FREQ {lfo_hz:.7g} Hz"
+        frequency_command = f"FREQ {frequency_ghz:.9g}GHz"
         readback = math.nan
         with self.lock:
             if self.instrument is None:
@@ -3513,9 +3536,9 @@ class STFMRSMB100AController(SafeVisaIdentityController):
             for command in (
                 ":AM:DEPT:LIN 1.0E+2",
                 "LFO:VOLT 0.50 V",
-                f"LFO:FREQ {lfo_hz:.7g} Hz",
+                lfo_command,
                 power_command,
-                f"FREQ {frequency_ghz:.9g}GHz",
+                frequency_command,
                 "LFO ON",
                 "OUTPUT ON",
                 "AM:STAT ON",
@@ -3523,29 +3546,63 @@ class STFMRSMB100AController(SafeVisaIdentityController):
                 self.instrument.write(command)
                 if command == power_command:
                     readback = self._read_back_power(power_command, power_dbm)
+                elif command == lfo_command:
+                    self._read_back_frequency(lfo_command, "LFO:FREQ?", lfo_hz,
+                                              STFMR_SMB100A_LFO_READBACK_TOLERANCE_HZ, "modulation frequency")
+                elif command == frequency_command:
+                    self._read_back_frequency(frequency_command, "FREQ?", frequency_ghz * 1.0e9,
+                                              STFMR_SMB100A_FREQUENCY_READBACK_TOLERANCE_HZ, "carrier frequency")
         return readback
 
-    def set_frequency(self, frequency_ghz: float) -> None:
-        """Change only the carrier frequency while AM/LFO/RF remain enabled."""
+    def set_frequency(self, frequency_ghz: float) -> float:
+        """Change only the carrier frequency while AM/LFO/RF remain enabled,
+        then read it back ("FREQ?"), as set_power reads its level (review,
+        2026-10-18).  Returns the read-back in Hz."""
         frequency_ghz = float(frequency_ghz)
         if not math.isfinite(frequency_ghz) or frequency_ghz <= 0.0:
             raise ValueError("SMB100A microwave frequency must be a finite positive number")
         with self.lock:
             if self.instrument is None:
                 raise RuntimeError("SMB100A is not connected")
-            self.instrument.write(f"FREQ {frequency_ghz:.9g}GHz")
+            command = f"FREQ {frequency_ghz:.9g}GHz"
+            self.instrument.write(command)
+            return self._read_back_frequency(command, "FREQ?", frequency_ghz * 1.0e9,
+                                             STFMR_SMB100A_FREQUENCY_READBACK_TOLERANCE_HZ, "carrier frequency")
 
-    def set_modulation_frequency(self, lfo_hz: float) -> None:
+    def set_modulation_frequency(self, lfo_hz: float) -> float:
         """Change only the LFO (modulation) frequency, with the command
         configure() sends, while AM/LFO/RF remain enabled: a sweep over
-        several modulation frequencies (user, 2026-10-13)."""
+        several modulation frequencies (user, 2026-10-13).  Then read back
+        ("LFO:FREQ?"; review, 2026-10-18).  Returns the read-back in Hz."""
         lfo_hz = float(lfo_hz)
         if not math.isfinite(lfo_hz) or lfo_hz <= 0.0:
             raise ValueError("SMB100A low-frequency modulation frequency must be a finite positive number")
         with self.lock:
             if self.instrument is None:
                 raise RuntimeError("SMB100A is not connected")
-            self.instrument.write(f"LFO:FREQ {lfo_hz:.7g} Hz")
+            command = f"LFO:FREQ {lfo_hz:.7g} Hz"
+            self.instrument.write(command)
+            return self._read_back_frequency(command, "LFO:FREQ?", lfo_hz,
+                                             STFMR_SMB100A_LFO_READBACK_TOLERANCE_HZ, "modulation frequency")
+
+    def _read_back_frequency(self, command: str, query: str, hz: float, tolerance_hz: float, what: str) -> float:
+        """Query ``query`` after command set ``hz``, and raise unless the
+        reply is a number within tolerance_hz of it: the generator keeps the
+        old frequency when it does not take a new one, which must not be
+        recorded under the new label (review, 2026-10-18; the carrier and the
+        LFO had no read-back, while the level had _read_back_power).  The
+        caller holds the lock.  Returns the read-back in Hz."""
+        reply = str(self.instrument.query(query)).strip()
+        try:
+            readback = float(reply)
+        except ValueError:
+            readback = math.nan
+        if not (math.isfinite(readback) and abs(readback - hz) <= tolerance_hz + 1e-9):
+            raise RuntimeError(
+                f"SMB100A did not take the new {what}: sent {command!r}, {query} read back {reply!r} "
+                f"(more than {tolerance_hz:g} Hz from {hz:.12g} Hz)"
+            )
+        return readback
 
     def set_power(self, power_dbm: float) -> float:
         """Change only the RF level, with the command configure() sends,
@@ -3598,6 +3655,22 @@ class STFMRSMB100AController(SafeVisaIdentityController):
 
     def rf_off(self) -> None:
         self.safe_output_off()
+
+    def rf_off_read_back(self) -> None:
+        """A scan's end (user, 2026-10-18: every scan ends with its sources
+        zeroed): AM, LFO and RF off (rf_off), then "OUTP?" read back as 0,
+        or an error.  The page checks the session first."""
+        with self.lock:
+            if self.instrument is None:
+                raise RuntimeError("SMB100A is not connected")
+            self.rf_off()
+            reply = str(self.instrument.query("OUTP?")).strip()
+            try:
+                state = int(round(float(reply)))
+            except ValueError:
+                state = None
+            if state != 0:
+                raise RuntimeError(f"the SMB100A RF did not read back OFF (OUTP? {reply!r})")
 
 
 class STFMRPNAFMRController:
@@ -3825,6 +3898,20 @@ class STFMRPNAFMRController:
         with self.lock:
             if self.instrument is not None:
                 self._write("OUTP OFF")
+
+    def rf_off_read_back(self) -> None:
+        """An FMR scan's end (user, 2026-10-18: every scan ends with its
+        sources zeroed): OUTP OFF, then "OUTP?" read back as 0, or an error.
+        The page checks the session first."""
+        with self.lock:
+            self._write("OUTP OFF")
+            reply = self._query("OUTP?")
+            try:
+                state = int(round(float(reply)))
+            except ValueError:
+                state = None
+            if state != 0:
+                raise RuntimeError(f"the PNA RF did not read back OFF (OUTP? {reply!r})")
 
     def disconnect(self) -> None:
         with self.lock:
@@ -6187,6 +6274,27 @@ def stfmr_angle_move_seconds(angles, from_deg=0.0) -> float:
         total += abs(float(angle) - here)
         here = float(angle)
     return total / NEWMARK_SPEED_DEG_S
+
+
+def stfmr_end_outputs_text(results, rf_label: str, check: bool = True) -> str:
+    """The outputs part of an FMR or STFMR scan's finish status (user,
+    2026-10-18: every scan ends with its sources zeroed), from
+    zero_scan_outputs' results under "4886" and rf_label ("PNA RF" or
+    "SMB100A RF"): the shared scan_end_outputs_text with the RF named
+    "RF", the page's only RF source, so that "Completed; 4886 and RF
+    zeroed; 12345 points saved" fits the status label; the dialog and the
+    log name the source in full."""
+    names = {"4886": "4886", rf_label: "RF"}
+    short = {names[label]: state for label, state in (results or {}).items() if label in names}
+    return scan_end_outputs_text(short, ("4886", "RF"), check=check, together="4886 and RF")
+
+
+def stfmr_end_outputs_lines(results, order) -> str:
+    """Each output's end in full, for a scan's dialog and log line: "4886
+    zeroed; SMB100A RF zero FAILED: <error>" (user, 2026-10-18).  An output
+    without a result was never reported: not confirmed zeroed."""
+    results = results or {}
+    return "; ".join(f"{label} {results.get(label) or 'not confirmed zeroed'}" for label in order)
 
 
 def shade_color(color: str, fraction: float) -> str:
@@ -14307,10 +14415,15 @@ class STFMRScanRecorder(ScanRunRecorder):
     on a normal scan ending.
 
     STFMR keeps its own ways, unlike the shared recorder: a fixed header
-    written with the files, a log write that raises (the page then ends its
-    sweep), its own run_prepared and saved_points, and a blank name's
-    STFMR_field_scan_<date>_<time>_<microseconds>.  Since 2026-10-18 it
-    holds no handle between writes, as SHV's log and live CSV."""
+    written with the files, its own run_prepared and saved_points, and a
+    blank name's STFMR_field_scan_<date>_<time>_<microseconds>, which the
+    user's ST-FMR tools look for (raw/<sample>/STFMR_field_scan_*).  Since
+    2026-10-18 it holds no handle between writes, as SHV's log and live
+    CSV, and is made by begin_scan_run (make=).  Since the convention
+    (user, 2026-10-18) a log write no longer raises: it is kept for check(),
+    which the page calls after every record (_stfmr_lockin_log_event), so a
+    failed write still ends the sweep there; a late note() from either
+    thread never raises."""
 
     FIELDNAMES = (
         "index", "frequency_index", "loop", "point_in_loop", "elapsed_s",
@@ -14351,14 +14464,6 @@ class STFMRScanRecorder(ScanRunRecorder):
     def _prepared_details(self, name: str, settings: dict) -> dict:
         return dict(csv_path=str(self.csv_path), settings=settings)
 
-    def event(self, name: str, /, **details) -> bool:
-        # A failed write raises: _stfmr_lockin_log_event then ends the sweep.
-        with self.lock:
-            if self.closed:
-                raise RuntimeError("STFMR log is closed")
-            self._append(scan_log_line(name, details))
-            return True
-
     def append_point(self, row: dict[str, object]) -> None:
         self.append_row(row)
 
@@ -14382,7 +14487,7 @@ class SHVScanRecorder(ScanRunRecorder):
 
 
 def begin_scan_run(parent, page_label: str, folder_title: str, initial_dir, settings: dict, *,
-                   prefix: str | None = None) -> ScanRunRecorder | None:
+                   prefix: str | None = None, make=None) -> ScanRunRecorder | None:
     """A scan Start's save step on the Tk thread, after the page's Yes/No
     (user, 2026-10-18).  It runs the folder dialog (folder_title, opening at
     initial_dir when given), then the optional file name ("<page_label> file
@@ -14392,7 +14497,9 @@ def begin_scan_run(parent, page_label: str, folder_title: str, initial_dir, sett
     its files or the log's first line not made (shown as "<page_label> run
     folder").  prefix: the blank name's <prefix>_<date>_<time>; page_label
     by default, so a label that is not a valid file name ("|R| vs time")
-    needs one."""
+    needs one.  make: make(folder, typed name) -> the page's own subclass
+    of ScanRunRecorder, which writes run_prepared itself (STFMR's, whose
+    files the user's tools read; 2026-10-18); ScanRunRecorder by default."""
     where = {"initialdir": str(initial_dir)} if initial_dir else {}
     folder = filedialog.askdirectory(parent=parent, title=folder_title, **where)
     if not folder:
@@ -14401,6 +14508,8 @@ def begin_scan_run(parent, page_label: str, folder_title: str, initial_dir, sett
     if typed is None:
         return None
     try:
+        if make is not None:
+            return make(Path(folder), typed)
         return ScanRunRecorder(Path(folder), prefix or page_label, typed, settings, label=page_label)
     except Exception as error:
         messagebox.showerror(f"{page_label} run folder", "Could not create the run folder and its files; the "
@@ -15219,7 +15328,13 @@ class CombinedControlApp:
         self.stfmr_fmr_step_current_var = tk.StringVar(value="0.05")
         self.stfmr_fmr_voltage_limit_var = tk.StringVar(value="5")
         self.stfmr_fmr_settle_var = tk.StringVar(value="0.2")
-        self.stfmr_fmr_rf_off_var = tk.BooleanVar(value=True)
+        # The FMR scans' run folders (user, 2026-10-18): the parent last
+        # chosen, and each scan's last run folder, where Save CSV + PNG opens.
+        self.stfmr_fmr_save_directory: Path | None = None
+        self.stfmr_fmr_recorder: ScanRunRecorder | None = None
+        self.stfmr_fmr_run_directory: Path | None = None
+        self.stfmr_frequency_recorder: ScanRunRecorder | None = None
+        self.stfmr_frequency_run_directory: Path | None = None
         self.stfmr_fmr_sparam_vars = {
             name: tk.BooleanVar(value=(name == "S21"))
             for name in STFMR_S_PARAMETERS
@@ -15384,7 +15499,12 @@ class CombinedControlApp:
         self.stfmr_lockin_recorder: STFMRScanRecorder | None = None
         self.stfmr_lockin_save_directory = Path(__file__).resolve().parent
         self.stfmr_lockin_save_path_var = tk.StringVar(value="Save folder is chosen when the sweep starts")
+        # The last run's folder, where Save CSV opens (user, 2026-10-18).
+        self.stfmr_lockin_run_directory: Path | None = None
         self.stfmr_lockin_starting = False
+        # From a sweep's end until its outputs are zeroed on the worker
+        # (_finish_stfmr_lockin_scan; user, 2026-10-18).
+        self.stfmr_lockin_ending = False
         self.stfmr_lockin_live_rows: list[dict[str, float | str]] = []
         self.stfmr_lockin_live_started = time.monotonic()
         self.stfmr_lockin_live_after_id = None
@@ -17390,11 +17510,8 @@ class CombinedControlApp:
                 text=name,
                 variable=self.stfmr_fmr_sparam_vars[name],
             ).grid(row=0, column=index, padx=3, sticky="w")
-        ttk.Checkbutton(
-            scan_controls,
-            text="PNA RF off at end",
-            variable=self.stfmr_fmr_rf_off_var,
-        ).grid(row=0, column=5, padx=(8, 3), sticky="w")
+        # No "PNA RF off at end" tick since every scan ends with the PNA RF
+        # off and the 4886 zeroed (user, 2026-10-18).
         sweep_buttons = ttk.Frame(scan)
         sweep_buttons.grid(row=3, column=0, columnspan=15, sticky="w", pady=(4, 0))
         self.stfmr_fmr_start_button = ttk.Button(
@@ -18212,6 +18329,14 @@ class CombinedControlApp:
             return self.stfmr_lockin_mfli_controller.mfli_connected
         return self.stfmr_lockin_controllers[key].connected
 
+    def _stfmr_lockin_rows_locked(self) -> bool:
+        """The instrument rows' Connect / Disconnect and addresses are
+        locked while a sweep runs, and also from Start until the sweep runs
+        or does not: through its dialogs and its stage check, an instrument
+        disconnected meanwhile was only found mid-start (review, 2026-10-18)."""
+        return bool(self.stfmr_lockin_running or self.__dict__.get("stfmr_lockin_starting", False)
+                    or self.__dict__.get("stfmr_lockin_motor_check_pending", False))
+
     def _set_stfmr_lockin_device_ui(self, key: str, connected: bool) -> None:
         self._set_connection_indicator(f"stfmr_lockin_{key}", connected)
         self.stfmr_lockin_connection_vars[key].set(
@@ -18223,15 +18348,16 @@ class CombinedControlApp:
             self._set_stfmr_lockin_reference_state(None)
         if key == "mfli" and not connected:
             self._set_stfmr_lockin_overload_state(None)
+        locked = self._stfmr_lockin_rows_locked()
         self.stfmr_lockin_connect_buttons[key].configure(
-            state="disabled" if connected or self.stfmr_lockin_running else "normal"
+            state="disabled" if connected or locked else "normal"
         )
         self.stfmr_lockin_disconnect_buttons[key].configure(
-            state="normal" if connected and not self.stfmr_lockin_running else "disabled"
+            state="normal" if connected and not locked else "disabled"
         )
         widget = self.stfmr_lockin_resource_widgets[key]
         widget.configure(
-            state="disabled" if connected or self.stfmr_lockin_running
+            state="disabled" if connected or locked
             else widget_idle_state(widget)
         )
         self._update_stfmr_lockin_ui()
@@ -18345,21 +18471,23 @@ class CombinedControlApp:
         # re-checked them, so during a sweep the unused lock-in's Connect (and
         # every Disconnect) stayed enabled (audit, 2026-10-13).  A row still
         # connecting or disconnecting keeps the disabled buttons its Connect
-        # or Disconnect gave it (review, 2026-10-13).
+        # or Disconnect gave it (review, 2026-10-13).  Locked from Start too,
+        # through its dialogs and stage check (review, 2026-10-18).
+        rows_locked = self._stfmr_lockin_rows_locked()
         for key, connect_button in self.stfmr_lockin_connect_buttons.items():
             status = self.stfmr_lockin_connection_vars[key].get()
             if status in ("Connecting…", "Disconnecting…"):
                 continue
             connected = status == "Connected"
             connect_button.configure(
-                state="disabled" if connected or self.stfmr_lockin_running else "normal"
+                state="disabled" if connected or rows_locked else "normal"
             )
             self.stfmr_lockin_disconnect_buttons[key].configure(
-                state="normal" if connected and not self.stfmr_lockin_running else "disabled"
+                state="normal" if connected and not rows_locked else "disabled"
             )
             widget = self.stfmr_lockin_resource_widgets[key]
             widget.configure(
-                state="disabled" if connected or self.stfmr_lockin_running
+                state="disabled" if connected or rows_locked
                 else widget_idle_state(widget)
             )
         meter_keys = self._stfmr_lockin_meter_keys(self.stfmr_lockin_meter_var.get())
@@ -18394,13 +18522,34 @@ class CombinedControlApp:
             kepco_connected = self._stfmr_lockin_connected("kepco")
             # A running sweep owns the supply, so manual set-points wait; the
             # red Zero / OFF stays live whenever the KEPCO is connected.
-            manual = "normal" if kepco_connected and not self.stfmr_lockin_running else "disabled"
-            self.stfmr_lockin_apply_output_button.configure(state=manual)
-            self.stfmr_lockin_read_output_button.configure(state=manual)
+            self._update_stfmr_lockin_apply_button()
+            self.stfmr_lockin_read_output_button.configure(
+                state="normal" if kepco_connected and not self.stfmr_lockin_running else "disabled"
+            )
             self.stfmr_lockin_zero_output_button.configure(
                 state="normal" if kepco_connected else "disabled"
             )
             self._show_stfmr_lockin_kepco_state()
+
+    def _update_stfmr_lockin_apply_button(self) -> None:
+        """Apply output: only with the 4886 connected, no sweep running and
+        nothing of _stfmr_lockin_manual_output_held pending: the magnet must
+        not come on while the stage turns the sample (user, 2026-10-18:
+        "Refuse: zero it first").  Also from the Motor row's updates, which
+        every stage job makes."""
+        button = self.__dict__.get("stfmr_lockin_apply_output_button")
+        if button is None:
+            return
+        button.configure(state="normal" if self._stfmr_lockin_connected("kepco") and not self.stfmr_lockin_running
+                         and not self._stfmr_lockin_manual_output_held() else "disabled")
+
+    def _stfmr_lockin_manual_output_held(self) -> bool:
+        """Apply output waits while a stage job of the Motor row (Connect,
+        Disconnect, Set motor 0°, a hand move or its STOP), a hand move's
+        question, a Start or its stage check is pending (user, 2026-10-18:
+        a hand move is refused while the 4886 is on, so the 4886 must not
+        come on during one)."""
+        return bool(self._stfmr_lockin_stage_job_pending() or self.__dict__.get("stfmr_lockin_starting", False))
 
     def _on_stfmr_lockin_manual_mode_changed(self, _event=None) -> None:
         if self.stfmr_lockin_manual_mode_var.get() == "Voltage":
@@ -18441,6 +18590,15 @@ class CombinedControlApp:
             messagebox.showwarning(
                 "STFMR KEPCO",
                 "A sweep is running and owns the KEPCO. Stop the sweep first.",
+                parent=self.root,
+            )
+            return
+        if self._stfmr_lockin_manual_output_held():
+            # The button is locked then; this is the guard behind it (user,
+            # 2026-10-18).
+            messagebox.showwarning(
+                "STFMR KEPCO",
+                "A stage job or a sweep start is pending: the 4886 stays as it is until it ends.",
                 parent=self.root,
             )
             return
@@ -18508,7 +18666,7 @@ class CombinedControlApp:
         if self.stfmr_lockin_running:
             # The emergency control stays live during a sweep: stop it first.
             # If that ends the sweep here, its own zero/OFF path has run.
-            self.stop_stfmr_lockin_scan()
+            self.stop_stfmr_lockin_scan(button="KEPCO Zero / OFF")
             if not self.stfmr_lockin_running:
                 self._show_stfmr_lockin_kepco_state()
                 return
@@ -18555,8 +18713,9 @@ class CombinedControlApp:
     def connect_stfmr_lockin_device(self, key: str) -> None:
         # As Disconnect: not during a sweep.  Connecting the unused lock-in
         # switched the Meter selector, which left the live X/Y/theta plots
-        # blank for the rest of the sweep (audit, 2026-10-13).
-        if self.stfmr_lockin_running:
+        # blank for the rest of the sweep (audit, 2026-10-13).  Nor from
+        # Start until the sweep runs or does not (review, 2026-10-18).
+        if self._stfmr_lockin_rows_locked():
             return
         resource = self.stfmr_lockin_resource_vars[key].get().strip()
         self.stfmr_lockin_connect_buttons[key].configure(state="disabled")
@@ -18600,10 +18759,12 @@ class CombinedControlApp:
                 return
             self._set_stfmr_lockin_device_ui(key, True)
             # A connect pressed just before Start may finish during the
-            # sweep, whose meter must not change (audit, 2026-10-13).
+            # sweep, whose meter must not change (audit, 2026-10-13), or
+            # during Start's dialogs or stage check, which have read it
+            # already (review, 2026-10-18).
             if (
                 key in ("830", "mfli")
-                and not self.stfmr_lockin_running
+                and not self._stfmr_lockin_rows_locked()
                 and self.stfmr_lockin_meter_var.get() != "MFLI + SR830"
             ):
                 self.stfmr_lockin_meter_var.set(
@@ -18614,7 +18775,9 @@ class CombinedControlApp:
         future.add_done_callback(lambda _future: self.post_ui(finished))
 
     def disconnect_stfmr_lockin_device(self, key: str) -> None:
-        if self.stfmr_lockin_running:
+        # Not during a sweep, nor from Start until it runs or does not: the
+        # sweep would find the instrument gone (review, 2026-10-18).
+        if self._stfmr_lockin_rows_locked():
             return
         self.stfmr_lockin_disconnect_buttons[key].configure(state="disabled")
         if key == "kepco":
@@ -18699,6 +18862,8 @@ class CombinedControlApp:
             stop.configure(state="normal" if connected and not self.closing and not self.stfmr_lockin_closed
                            and not self.__dict__.get("stfmr_lockin_motor_disconnect_pending", False)
                            else "disabled")
+        # The 4886's Apply output follows the stage jobs (user, 2026-10-18).
+        self._update_stfmr_lockin_apply_button()
 
     def _show_stfmr_lockin_motor_state(self, angle_deg=None, text=None) -> None:
         """The Motor row's status, rte_connections-style: "Not connected",
@@ -18792,6 +18957,18 @@ class CombinedControlApp:
         future.add_done_callback(lambda _future: self.post_ui(finished))
 
     # ---- the stage by hand: Move stage and Stop stage (user, 2026-10-17) --------
+    def _stfmr_lockin_require_4886_off(self) -> None:
+        """A hand move turns the sample in the magnet's gap, so it is refused
+        while this page's 4886 output is on, or not confirmed off after a
+        failed Zero / OFF or Disconnect (user, 2026-10-18: "Refuse: zero it
+        first").  The 4886 cannot be read back, so "on" is what this program
+        sent (output_owned).  A sweep's own moves zero the 4886 before each
+        move instead."""
+        kepco = self.stfmr_lockin_controllers["kepco"]
+        if getattr(kepco, "output_owned", False):
+            raise RuntimeError("The KEPCO 4886 output is on (or not confirmed off): Zero the 4886 first "
+                               "(Zero / OFF), then move the stage")
+
     def move_stfmr_lockin_stage(self) -> None:
         """Move stage (user, 2026-10-17: "also add Move stage button for the
         motor in ST-FMR"), as RT-E's: the target from the stage zero, within
@@ -18824,6 +19001,7 @@ class CombinedControlApp:
             if not math.isfinite(target) or abs(target) > NEWMARK_CABLE_LIMIT_DEG:
                 raise ValueError(f"The stage angle must be within ±{NEWMARK_CABLE_LIMIT_DEG:g}° of the stage zero "
                                  "(the sample wires)")
+            self._stfmr_lockin_require_4886_off()
         except Exception as error:
             messagebox.showerror("STFMR stage", str(error), parent=self.root)
             return
@@ -18963,6 +19141,8 @@ class CombinedControlApp:
         if (self.stfmr_lockin_running or self.__dict__.get("stfmr_lockin_starting", False)
                 or self.__dict__.get("stfmr_lockin_motor_check_pending", False)):
             raise RuntimeError("An STFMR sweep is running or starting; wait or stop it first")
+        # The hand move behind the CLR / EO=1 too (user, 2026-10-18).
+        self._stfmr_lockin_require_4886_off()
         if not self.stfmr_lockin_manual_safety_var.get():
             raise RuntimeError("Please tick the safety confirmation in the KEPCO 4886 field output panel first")
         if not motor.connected:
@@ -19035,8 +19215,8 @@ class CombinedControlApp:
         if self.closing or self.stfmr_lockin_closed or motor is None or not motor.connected:
             return
         if self.stfmr_lockin_running:
-            self.thread_log(f"STFMR {motor.label}: Stop stage during the sweep: the sweep stops")
-            self.stop_stfmr_lockin_scan()
+            self._stfmr_lockin_note(f"STFMR {motor.label}: Stop stage during the sweep: the sweep stops")
+            self.stop_stfmr_lockin_scan(button="Stop stage")
             return
         if motor.in_move or self.__dict__.get("stfmr_lockin_stage_move_pending", False):
             self._show_stfmr_lockin_motor_state(text="Stopping…")
@@ -19808,6 +19988,19 @@ class CombinedControlApp:
             settle_s, acquire_s, meter,
         )
 
+    def _stfmr_lockin_require_instruments(self, meter: str) -> None:
+        """Every instrument the sweep uses still connected, and none of
+        their rows connecting or disconnecting: checked at the top of the
+        Start's second half (after the stage check) and after its folder and
+        name dialogs, before any file or output (review, 2026-10-18: an
+        instrument disconnected during the stage check was not seen)."""
+        names = {"kepco": "KEPCO 4886", "gauss": "LS475", "smb": "SMB100A", "830": "SR830", "mfli": "MFLI"}
+        states = self.__dict__.get("stfmr_lockin_connection_vars", {})
+        for key in ("kepco", "gauss", "smb", *self._stfmr_lockin_meter_keys(meter)):
+            state = states[key].get() if key in states else ""
+            if not self._stfmr_lockin_connected(key) or state in ("Connecting…", "Disconnecting…"):
+                raise RuntimeError(f"The {names[key]} is no longer connected; the sweep was not started")
+
     def start_stfmr_lockin_scan(self) -> None:
         # Also not while Start's stage check or its question is pending
         # (user, 2026-10-17).
@@ -19944,21 +20137,11 @@ class CombinedControlApp:
         def begin() -> None:
             # The rest of the Start: at once without the motor, as before;
             # with it, once Start's stage check has passed (user,
-            # 2026-10-17).
-            folder = self.select_csv_save_directory(
-                "Select the folder for the STFMR live CSV and log",
-                self.stfmr_lockin_save_directory,
-            )
-            if folder is None or self.closing or self.stfmr_lockin_closed:
-                return
-            # The file-name step, SHV's (user, 2026-10-18: "also add the
-            # name file step in STFMR save process"): a typed name is the run
-            # folder's and its files' name, blank keeps the timestamped
-            # STFMR_field_scan_<stamp>.  Cancel or a refused name starts
-            # nothing and makes nothing, as Cancel in the folder dialog.
-            file_stem = ask_scan_file_stem(self.root, "STFMR file name")
-            if file_stem is None or self.closing or self.stfmr_lockin_closed:
-                return
+            # 2026-10-17).  Every instrument the sweep uses is checked again
+            # first: with the motor the check came between (review,
+            # 2026-10-18).  Then, in the shared order (user, 2026-10-18):
+            # the Yes/No, then begin_scan_run's folder and file-name dialogs.
+            self._stfmr_lockin_require_instruments(meter)
             # The whole f x A sweep runs once per modulation frequency
             # (user, 2026-10-13) and, inside it, once per power (user,
             # 2026-10-14), so every count below is per pass, one pass per
@@ -20016,7 +20199,7 @@ class CombinedControlApp:
                 + f"about {estimated_saved} points saved\n"
                 + (
                     f"SR830 REF IN: {sr830_reference_input}; "
-                    f"Autorange: {'on' if sr830_auto_range else 'off'}\n"
+                    f"Autorange: {'on' if sr830_auto_range else 'off (front-panel range kept)'}\n"
                     if meter == "SR830"
                     else f"MFLI autorange: {'on' if mfli_auto_range else 'off'}\n"
                 )
@@ -20027,7 +20210,10 @@ class CombinedControlApp:
                 + (f" + {move_s:.0f} s of stage moves at {NEWMARK_SPEED_DEG_S:g}°/s"
                    if angle_plan["used"] else "")
                 + f"{estimate_scale}).\n"
-                + f"Live CSV / log saved to: {folder}\n"
+                # Every scan page zeroes its sources at every end (user,
+                # 2026-10-18); the run folder and its name come after this.
+                + "At the end (completed, stopped or failed) the 4886 is zeroed and the SMB100A RF "
+                "switched off. The run folder and file name are asked next.\n"
                 + ("Start now, turn the stage and enable the 4886 and SMB100A outputs?"
                    if angle_plan["used"] else "Start now and enable the 4886 and SMB100A outputs?"),
                 parent=self.root,
@@ -20051,8 +20237,9 @@ class CombinedControlApp:
             settings = {
                 "program": Path(__file__).name,
                 "python_version": sys.version,
-                # The file-name step's name, "" when left blank (user, 2026-10-18).
-                "file_name": file_stem,
+                # The file-name step's name, "" when left blank (user,
+                # 2026-10-18); begin_scan_run's name step fills it in (make).
+                "file_name": "",
                 "resources": captured["resources"],
                 "connected": {key: self._stfmr_lockin_connected(key) for key in self.stfmr_lockin_resource_vars},
                 # Two Zurich lock-ins exist, so record which one took the data.
@@ -20089,7 +20276,12 @@ class CombinedControlApp:
                 "expected_saved_points": estimated_saved,
                 "sr830_ref_in": sr830_reference_input,
                 "sr830_auto_range": sr830_auto_range,
-                "sr830_initial_sensitivity_index": STFMR_LOCKIN_SR830_SENSITIVITY_CODE,
+                # SENS 13 is sent at the start only with autorange; without
+                # it the front panel's range is kept, None here, and the
+                # SR830's SENS? goes to frequency_ready (user, 2026-10-18).
+                "sr830_initial_sensitivity_index": (
+                    STFMR_LOCKIN_SR830_SENSITIVITY_CODE if sr830_auto_range else None),
+                "sr830_front_panel_range_kept": not sr830_auto_range,
                 "sr830_time_constant_index": sr830_time_constant_code,
                 "sr830_time_constant_s": SR830_TIME_CONSTANTS_S[sr830_time_constant_code],
                 "mfli_timeconstant_s": mfli_timeconstant_s,
@@ -20115,15 +20307,35 @@ class CombinedControlApp:
                 "motor_angle_at_start_deg": known_deg,
                 "stage_moves_s_estimate": move_s,
             }
-            try:
-                recorder = STFMRScanRecorder(Path(folder), settings, name=file_stem)
-            except BaseException as error:
-                messagebox.showerror(
-                    "STFMR save path", f"Could not create the live data files; scan not started: {error}", parent=self.root
-                )
+            # The save step every scan page shares (user, 2026-10-18): the
+            # folder dialog, the file-name step (a typed name names the run
+            # folder and its files; blank keeps STFMR_field_scan_<stamp>),
+            # then the files and run_prepared.  None: cancelled, refused or
+            # not made (begin_scan_run has said why); nothing starts and no
+            # output is touched.
+            def make(parent, name):
+                return STFMRScanRecorder(parent, dict(settings, file_name=name), name=name)
+
+            recorder = begin_scan_run(
+                self.root, "STFMR", "Select the folder for the STFMR run folder (live CSV and log)",
+                self.stfmr_lockin_save_directory, settings, make=make,
+            )
+            if recorder is None:
                 return
+            if self.closing or self.stfmr_lockin_closed:
+                recorder.close("not_started", error="STFMR is closing")
+                return
+            try:
+                # The dialogs ran Tk's event loop: a Disconnect queued before
+                # Start may have ended meanwhile (review, 2026-10-18).
+                self._stfmr_lockin_require_instruments(meter)
+            except Exception as error:
+                recorder.close("not_started", error=str(error))
+                raise
             self.stfmr_lockin_recorder = recorder
-            self.stfmr_lockin_save_directory = Path(folder)
+            self.stfmr_lockin_save_directory = recorder.directory.parent
+            # Save CSV opens here (user, 2026-10-18).
+            self.stfmr_lockin_run_directory = recorder.directory
             self.stfmr_lockin_save_path_var.set(str(recorder.directory))
             self.stfmr_lockin_reference_source = reference_source
             self.stfmr_lockin_rows.clear()
@@ -20170,6 +20382,10 @@ class CombinedControlApp:
                 if angles_deg else "Configuring the SMB100A and lock-in…"
             )
             self._update_stfmr_lockin_ui()
+            # The convention's scan_started (user, 2026-10-18).
+            if not self._stfmr_lockin_log_event("scan_started", total_points=total_points,
+                                                expected_saved_points=estimated_saved):
+                return
             self._configure_stfmr_lockin_frequency(initial=True)
 
         if not angle_plan["used"]:
@@ -20440,15 +20656,33 @@ class CombinedControlApp:
         self._stfmr_lockin_check_motor(begin, fix=(command, function), fixed=tuple(fixed) + (kind,))
 
     def _stfmr_lockin_log_event(self, name: str, **details) -> bool:
+        """One record of the run log on the Tk thread, between instrument
+        steps; then the recorder's check(), so a failed write (kept by the
+        shared recorder, which never raises) ends the sweep here, through
+        its output-off path, as STFMR's raising log did (2026-10-18)."""
         try:
             recorder = self.stfmr_lockin_recorder
             if recorder is None:
                 raise RuntimeError("STFMR live recording files are not open")
             recorder.event(name, **details)
+            recorder.check()
             return True
         except BaseException as error:
             self._finish_stfmr_lockin_scan(error=error)
             return False
+
+    def _stfmr_lockin_note(self, text: str) -> None:
+        """A page log line, and, while a run's files are open, the same line
+        as a "note" of its log (the convention, user, 2026-10-18), from
+        either thread.  note() never raises; a failed write is raised by
+        the next check()."""
+        self.thread_log(text)
+        recorder = self.__dict__.get("stfmr_lockin_recorder")
+        if recorder is not None:
+            try:
+                recorder.note(text)
+            except Exception:
+                pass        # the line is in the page log; check() reports the log
 
     def _close_stfmr_lockin_recording(self, outcome: str, **details) -> list[str]:
         recorder = getattr(self, "stfmr_lockin_recorder", None)
@@ -20609,6 +20843,10 @@ class CombinedControlApp:
         # The SMB100A's read-back of the first or a changed power, for the
         # run log.
         power_readback = {}
+        # The SMB100A's carrier and LFO read back where they changed, and the
+        # SR830's range at its set-up (SENS?, the front panel's without
+        # autorange), for the run log (review and user, 2026-10-18).
+        readbacks = {}
         # The stage's state read back after this pass's move (user,
         # 2026-10-17).
         moved = {}
@@ -20627,9 +20865,18 @@ class CombinedControlApp:
                 # (the manual panel's included); a failure ends the sweep here,
                 # with nothing switched on.
                 if angle_target is not None:
+                    # Without a session zero_output() sends nothing at all,
+                    # which must not be logged as zeroed (review, 2026-10-18):
+                    # the sweep cannot run without the 4886 anyway.
+                    kepco = self.stfmr_lockin_controllers["kepco"]
+                    if not kepco.connected:
+                        raise RuntimeError("The KEPCO 4886 is not connected; the sweep stopped before the stage moved")
+                    was_on = getattr(kepco, "output_owned", True)
                     with visa_operation("KEPCO 4886", "zeroing before the first stage move"):
-                        self.stfmr_lockin_controllers["kepco"].zero_output()
-                    self.thread_log("STFMR sweep: 4886 zeroed before the first stage move")
+                        kepco.zero_output()
+                    self._stfmr_lockin_note("STFMR sweep: 4886 zeroed before the first stage move" if was_on else
+                                            "STFMR sweep: 4886 output not on before the first stage move; "
+                                            "nothing to zero")
                     moved["state"] = self._stfmr_lockin_move_stage(angle_target)
                     if moved["state"] is None:
                         return
@@ -20646,11 +20893,13 @@ class CombinedControlApp:
                     )
                 if meter in ("SR830", "MFLI + SR830"):
                     with visa_operation("SR830", "lock-in setup"):
-                        self.stfmr_lockin_controllers["830"].configure(
+                        sr830_setup = self.stfmr_lockin_controllers["830"].configure(
                             self.stfmr_lockin_sr830_reference_input,
                             self.stfmr_lockin_sr830_auto_range,
                             self.stfmr_lockin_sr830_time_constant_code,
                         )
+                    if isinstance(sr830_setup, dict):
+                        readbacks["sr830_sensitivity_index"] = sr830_setup.get("sensitivity_index")
                     with visa_operation("SR830", "waiting for the reference to lock"):
                         self.stfmr_lockin_controllers["830"].wait_for_reference(
                             self.stfmr_lockin_expected_hz,
@@ -20678,9 +20927,9 @@ class CombinedControlApp:
                         return
                 if modulation_change:
                     with visa_operation("SMB100A", "modulation frequency change"):
-                        self.stfmr_lockin_controllers["smb"].set_modulation_frequency(
-                            expected_hz
-                        )
+                        readbacks["modulation_readback_hz"] = self.stfmr_lockin_controllers[
+                            "smb"
+                        ].set_modulation_frequency(expected_hz)
                 # Only the level, with the RF still on; a level the SMB100A
                 # did not take raises here, before the 4886 comes back on,
                 # and the sweep ends with the 4886 at zero and the RF off.
@@ -20690,9 +20939,9 @@ class CombinedControlApp:
                             "smb"
                         ].set_power(power_dbm)
                 with visa_operation("SMB100A", "carrier frequency change"):
-                    self.stfmr_lockin_controllers["smb"].set_frequency(
-                        frequency_ghz
-                    )
+                    readbacks["frequency_readback_hz"] = self.stfmr_lockin_controllers[
+                        "smb"
+                    ].set_frequency(frequency_ghz)
                 # The SR830 follows the LFO by itself (external reference);
                 # it is the reference wait of the start, with the new
                 # frequency, that shows it locked before the 4886 comes back
@@ -20753,6 +21002,8 @@ class CombinedControlApp:
             # The first power is read back too (review, 2026-10-14).
             if initial or power_change:
                 ready["power_readback_dbm"] = power_readback.get("dbm")
+            # And the carrier, the LFO and the SR830's range (2026-10-18).
+            ready.update({key: value for key, value in readbacks.items() if value is not None})
             if not self._stfmr_lockin_log_event(
                 "frequency_ready", frequency_ghz=frequency_ghz,
                 modulation_frequency_hz=expected_hz, **ready,
@@ -20812,14 +21063,15 @@ class CombinedControlApp:
                 # STOP, then ABORT, sent, but the stage was not seen still:
                 # a failure, not a clean stop.
                 self.stfmr_lockin_stage_where = "stage NOT confirmed stopped: CHECK THE STAGE"
-                self.thread_log(f"STFMR sweep, after the Stop during a stage move: {self.stfmr_lockin_stage_where}")
+                self._stfmr_lockin_note(f"STFMR sweep, after the Stop during a stage move: "
+                                        f"{self.stfmr_lockin_stage_where}")
                 self._stfmr_lockin_post_motor_text("CHECK STAGE")
                 raise
             if not stopped.before:
                 where = newmark_angle_text(stopped.px, spd)
                 self.stfmr_lockin_stage_where = f"stage stopped at {where}"
                 self._stfmr_lockin_post_motor_text(where)
-            self.thread_log(f"STFMR sweep stopped at a stage move; {self.stfmr_lockin_stage_where}")
+            self._stfmr_lockin_note(f"STFMR sweep stopped at a stage move; {self.stfmr_lockin_stage_where}")
             return None
         except Exception as error:
             self._stfmr_lockin_stop_stage_after_failure(error)
@@ -20846,7 +21098,7 @@ class CombinedControlApp:
                 stopped, px = result["stopped"], result["px"]
         except Exception as stop_error:
             stopped = False
-            self.thread_log(f"STFMR stage STOP after the failure failed: {stop_error}")
+            self._stfmr_lockin_note(f"STFMR stage STOP after the failure failed: {stop_error}")
         if stopped is None:
             where, text = "stage not connected", "Not connected"
         elif stopped:
@@ -20856,7 +21108,7 @@ class CombinedControlApp:
         self.stfmr_lockin_stage_where = where
         self._stfmr_lockin_post_motor_text(text)
         # Always logged, so an unconfirmed stop is never only worked out.
-        self.thread_log(f"STFMR sweep, after the stage failure: {where}")
+        self._stfmr_lockin_note(f"STFMR sweep, after the stage failure: {where}")
 
     def _stfmr_retry_read(self, label: str, operation, attempts: int = 3):
         """Repeat a timed-out instrument read before giving up on the scan.
@@ -20877,7 +21129,7 @@ class CombinedControlApp:
                         f"({short_status_error(error, 80)}). Check its GPIB "
                         "address, cabling and that no other program holds it."
                     ) from error
-                self.thread_log(
+                self._stfmr_lockin_note(
                     f"STFMR {label} read timed out, attempt {attempt} of {attempts}; retrying"
                 )
 
@@ -21489,6 +21741,15 @@ class CombinedControlApp:
                 self._finish_stfmr_lockin_scan(error=error)
                 return
             self.stfmr_lockin_rows.extend(pair)
+            # The convention's point_saved, after the row(s) (user,
+            # 2026-10-18); a failed write ends the sweep here, before the
+            # next current.
+            if not self._stfmr_lockin_log_event(
+                "point_saved", index=row["index"], meters=[item["meter"] for item in pair],
+                frequency_ghz=frequency_ghz, current_a=current, field_g=field_g,
+                rows_saved=self.stfmr_lockin_recorder.rows_written,
+            ):
+                return
             # The angle only with the motor, so a sweep without it calls
             # this as before (user, 2026-10-17).
             angle_live = {} if stage_angle is None else {"stage_angle_deg": stage_angle}
@@ -21727,7 +21988,12 @@ class CombinedControlApp:
             self._read_next_stfmr_lockin_point,
         )
 
-    def stop_stfmr_lockin_scan(self) -> None:
+    def stop_stfmr_lockin_scan(self, button: str = "Stop / zero") -> None:
+        """Stop / zero, and the stop of the KEPCO Zero / OFF and of Stop
+        stage during a sweep (button: which, for the run log's
+        stop_requested; user, 2026-10-18): the stop event first, then the
+        log.  The sweep ends at its next safe point, where the 4886 is
+        zeroed and the SMB100A RF switched off (_finish_stfmr_lockin_scan)."""
         self.stfmr_lockin_stop_event.set()
         if not self.stfmr_lockin_running and self.__dict__.get("stfmr_lockin_motor_check_pending", False):
             # During Start's stage check or behind its question's Yes: the
@@ -21735,7 +22001,17 @@ class CombinedControlApp:
             # (user, 2026-10-17).  Nothing is on yet.
             self.stfmr_lockin_status_var.set("Stop / zero pressed: the sweep will not start")
             return
-        self.stfmr_lockin_status_var.set("Stopping and turning outputs off…")
+        if self.__dict__.get("stfmr_lockin_ending", False):
+            return      # the sweep is ending already: its outputs are being zeroed
+        if self.stfmr_lockin_running:
+            recorder = self.__dict__.get("stfmr_lockin_recorder")
+            if recorder is not None:
+                try:
+                    recorder.event("stop_requested", button=button)
+                except Exception:
+                    pass    # the stop must never wait on the log
+        # Within the 52-character status label (user, 2026-10-18).
+        self.stfmr_lockin_status_var.set("Stopping; zeroing the 4886, SMB100A RF off next…")
         if self.stfmr_lockin_after_id is not None:
             try:
                 self.root.after_cancel(self.stfmr_lockin_after_id)
@@ -21744,92 +22020,155 @@ class CombinedControlApp:
             self.stfmr_lockin_after_id = None
             self._finish_stfmr_lockin_scan(stopped=True)
 
+    def _stfmr_lockin_zero_outputs(self) -> dict[str, str]:
+        """Every end of a sweep, completed, stopped or failed (user,
+        2026-10-18: every scan page zeroes its sources at every end, as
+        SHV), on the page's worker after the sweep's own clean-up (a stage
+        move ends inside its job): the 4886 as its Zero / OFF button zeroes
+        it (force_output_off: zero and OUTP OFF, whoever switched it on; the
+        4886 is write-only, so nothing can be read back), then the SMB100A's
+        AM, LFO and RF off with OUTP? read back as 0 (rf_off_read_back).
+        Each is tried whatever the other did, through the shared
+        zero_scan_outputs; never raises."""
+        def kepco_off():
+            kepco = self.stfmr_lockin_controllers["kepco"]
+            if not kepco.connected:
+                return "not connected"
+            kepco.force_output_off()
+
+        def rf_off():
+            smb = self.stfmr_lockin_controllers["smb"]
+            if not smb.connected:
+                return "not connected"
+            smb.rf_off_read_back()
+
+        return zero_scan_outputs((("4886", kepco_off), ("SMB100A RF", rf_off)))
+
     def _finish_stfmr_lockin_scan(
         self, *, error: BaseException | None = None, stopped: bool = False
     ) -> None:
-        if not self.stfmr_lockin_running:
+        """A sweep's end, completed, stopped or failed: nothing more of the
+        sweep runs, then its outputs are zeroed on the page's worker
+        (_stfmr_lockin_zero_outputs, behind nothing: the sweep's jobs have
+        all returned when it ends), then _end_stfmr_lockin_scan on the Tk
+        thread (user, 2026-10-18).  The sweep counts as running until then,
+        so Start, the rows and Apply output stay locked."""
+        if not self.stfmr_lockin_running or self.__dict__.get("stfmr_lockin_ending", False):
+            return
+        self.stfmr_lockin_ending = True
+        self.stfmr_lockin_acquisition = None
+        if self.__dict__.get("stfmr_lockin_after_id") is not None:
+            try:
+                self.root.after_cancel(self.stfmr_lockin_after_id)
+            except tk.TclError:
+                pass
+            self.stfmr_lockin_after_id = None
+        # A callback of the sweep that still came would stop, not go on.
+        self.stfmr_lockin_stop_event.set()
+        self.stfmr_lockin_status_var.set("Ending; zeroing the 4886, SMB100A RF off…")
+        try:
+            future = self.stfmr_lockin_executor.submit(self._stfmr_lockin_zero_outputs)
+        except BaseException:
+            # The worker is gone (the page is closing): here, at once.
+            self._end_stfmr_lockin_scan(self._stfmr_lockin_zero_outputs(), error=error, stopped=stopped)
+            return
+
+        def zeroed(done) -> None:
+            results = {} if done.cancelled() or done.exception() is not None else done.result()
+            self.post_ui(lambda: self._end_stfmr_lockin_scan(results, error=error, stopped=stopped))
+
+        future.add_done_callback(zeroed)
+
+    def _end_stfmr_lockin_scan(self, results: dict[str, str], *, error: BaseException | None = None,
+                               stopped: bool = False) -> None:
+        """The rest of a sweep's end, on the Tk thread, once its outputs
+        were zeroed: outputs_zeroed and run_finished in the run log, the
+        status ("Completed; " / "Stopped; " + the outputs, "Failed: ..."),
+        and a dialog from the Tk event loop, after the files are closed: the
+        error with how each output ended, or CHECK IT when an output was not
+        confirmed at zero (user, 2026-10-18)."""
+        self.stfmr_lockin_ending = False
+        if self.stfmr_lockin_closed or not self.stfmr_lockin_running:
+            # The page closed meanwhile: its close zeroed the outputs and
+            # closed the files itself.
             return
         self.stfmr_lockin_running = False
-        self.stfmr_lockin_acquisition = None
-        shutdown_errors = []
-        try:
-            self.stfmr_lockin_controllers["kepco"].zero_output()
-        except BaseException as shutdown_error:
-            shutdown_errors.append(f"4886: {shutdown_error}")
-            if error is None:
-                error = shutdown_error
-        try:
-            self.stfmr_lockin_controllers["smb"].rf_off()
-        except BaseException as shutdown_error:
-            shutdown_errors.append(f"SMB100A: {shutdown_error}")
-            if error is None:
-                error = shutdown_error
+        order = ("4886", "SMB100A RF")
+        failed = [label for label in order if results.get(label) not in ("zeroed", "not connected")]
+        lines = stfmr_end_outputs_lines(results, order)
+        recorder = self.__dict__.get("stfmr_lockin_recorder")
+        if recorder is not None:
+            try:
+                recorder.event("outputs_zeroed", **{label: results.get(label, "not reported") for label in order})
+            except Exception:
+                pass    # the close below reports a log that cannot be written
+        self._stfmr_lockin_note(f"STFMR sweep end: {lines}")
         # Where the stage is, with the motor (user, 2026-10-17): in the run
         # log's last line, the error dialog and a stop's status line.  The
         # stage needs nothing here: a move ends inside its job, before this.
         motor_used = bool(getattr(self, "stfmr_lockin_angles_deg", None))
         where = (getattr(self, "stfmr_lockin_stage_where", "") or "stage not moved") if motor_used else ""
-        recording_errors = self._close_stfmr_lockin_recording(
-            "error" if error is not None else "stopped" if stopped else "completed",
-            error=str(error) if error is not None else None,
-            shutdown_errors=shutdown_errors,
-            outputs_off=not shutdown_errors,
-            **({"stage": where} if motor_used else {}),
-        )
-        if recording_errors:
-            error = RuntimeError("; ".join(([str(error)] if error else []) + recording_errors))
-        self._update_stfmr_lockin_ui()
+        saved = len(self.stfmr_lockin_rows)
         if error is not None:
-            self.stfmr_lockin_status_var.set(f"Scan failed (zero/output-off attempted): {error}")
-            if motor_used:
-                self.thread_log(f"STFMR sweep failed; {where}")
-            if not self.closing:
-                messagebox.showerror(
-                    "STFMR scan",
-                    str(error) + (f"\n\n{where[:1].upper()}{where[1:]}" if motor_used else ""),
-                    parent=self.root,
-                )
+            status = f"Failed: {short_status_error(error, 44)}"
         elif stopped:
-            # With the motor, where the stage stopped first ("Stopped; stage
-            # stopped at +12.345°; 120 saved; outputs OFF"), within the
-            # 52-character status label (user, 2026-10-17).
-            self.stfmr_lockin_status_var.set(
-                f"Stopped; {where.replace('stage stopped at', 'stage at')}; "
-                f"{len(self.stfmr_lockin_rows)} saved; outputs OFF" if motor_used
-                else f"Scan stopped; {len(self.stfmr_lockin_rows)} points saved; outputs OFF"
+            # With the motor, where the stage stopped follows the outputs, as
+            # on SHV: "Stopped; 4886 and RF zeroed; stage at +12.345°; 120
+            # saved", within the 52-character status label (user, 2026-10-17
+            # and 2026-10-18); a failed zero leaves ": check it" to the dialog.
+            status = (
+                f"Stopped; {stfmr_end_outputs_text(results, 'SMB100A RF', check=False)}; "
+                f"{where.replace('stage stopped at', 'stage at')}; {saved} saved" if motor_used
+                else f"Stopped; {stfmr_end_outputs_text(results, 'SMB100A RF')}; {saved} point{'' if saved == 1 else 's'} saved"
             )
         else:
             modulations = len(getattr(self, "stfmr_lockin_modulation_frequencies_hz", ()))
             powers = len(getattr(self, "stfmr_lockin_powers_dbm", ()))
             angles = len(getattr(self, "stfmr_lockin_angles_deg", None) or ())
             carriers = len(self.stfmr_lockin_frequencies_ghz)
-            saved = len(self.stfmr_lockin_rows)
-            if modulations > 1 or powers > 1 or angles > 1:
-                # The point count first: after "Multi-frequency scan
-                # complete: 2 frequencies, 3 powers, " it fell past the end
-                # of the 52-character status label, and with several
-                # modulation frequencies it already did.  The modulation
-                # frequencies and powers are named only when there were
-                # several (user, 2026-10-13 and 2026-10-14; review,
-                # 2026-10-14).
-                swept = [f"{carriers} frequenc{'y' if carriers == 1 else 'ies'}"]
-                if modulations > 1:
-                    swept.append(f"{modulations} modulation frequencies")
-                if powers > 1:
-                    swept.append(f"{powers} powers")
-                # And the angles, when there were several (user, 2026-10-17).
-                if angles > 1:
-                    swept.append(f"{angles} angles")
-                self.stfmr_lockin_status_var.set(
-                    f"Scan complete: {saved} points saved; {', '.join(swept)}; "
-                    "outputs OFF; CSV saved"
-                )
-            else:
-                # One modulation frequency and one power: as before.
-                self.stfmr_lockin_status_var.set(
-                    f"Multi-frequency scan complete: {carriers} frequencies, "
-                    f"{saved} points saved; 4886/SMB100A outputs OFF; CSV saved"
-                )
+            # The outputs and the point count first, within the 52-character
+            # status label; what was swept follows, and only it may be cut
+            # (user, 2026-10-13, 2026-10-14 and 2026-10-18).
+            swept = [f"{carriers} frequenc{'y' if carriers == 1 else 'ies'}"]
+            if modulations > 1:
+                swept.append(f"{modulations} modulation frequencies")
+            if powers > 1:
+                swept.append(f"{powers} powers")
+            if angles > 1:
+                swept.append(f"{angles} angles")
+            status = (f"Completed; {stfmr_end_outputs_text(results, 'SMB100A RF')}; {saved} "
+                      f"point{'' if saved == 1 else 's'} saved; "
+                      + ", ".join(swept))
+        outcome = "error" if error is not None else "stopped" if stopped else "completed"
+        shutdown_errors = [f"{label}: {results.get(label, 'not reported')}" for label in failed]
+        recording_errors = self._close_stfmr_lockin_recording(
+            outcome,
+            error=str(error) if error is not None else None,
+            shutdown_errors=shutdown_errors,
+            outputs_off=not failed,
+            outputs=dict(results),
+            points_saved=saved,
+            status=status,
+            **({"stop_reason": "stopped by the user"} if stopped and error is None else {}),
+            **({"stage": where} if motor_used else {}),
+        )
+        if recording_errors:
+            error = RuntimeError("; ".join(([str(error)] if error else []) + recording_errors))
+            status = f"Failed: {short_status_error(error, 44)}"
+        self._update_stfmr_lockin_ui()
+        self.stfmr_lockin_status_var.set(status)
+        if motor_used and error is not None:
+            self._stfmr_lockin_note(f"STFMR sweep failed; {where}")
+        if self.closing:
+            return
+        stage_line = f"\n{where[:1].upper()}{where[1:]}" if motor_used else ""
+        check = "\n\nCHECK IT: " + ", ".join(failed) + " not confirmed at zero." if failed else ""
+        if error is not None:
+            message = f"{error}\n\nAt the end: {lines}{stage_line}{check}"
+            self._stfmr_lockin_after_drain(lambda: messagebox.showerror("STFMR scan", message, parent=self.root))
+        elif failed:
+            message = f"The sweep {outcome}.\n\nAt the end: {lines}{stage_line}{check}"
+            self._stfmr_lockin_after_drain(lambda: messagebox.showerror("STFMR outputs", message, parent=self.root))
 
     def _redraw_stfmr_lockin_plot(self) -> None:
         canvas = self.stfmr_lockin_canvas
@@ -22400,9 +22739,11 @@ class CombinedControlApp:
     def save_stfmr_lockin_results(self) -> None:
         if not self.stfmr_lockin_rows:
             return
+        # In the last run's folder (user, 2026-10-18: Save CSV as opens in
+        # the run folder, on every scan page).
         folder = filedialog.askdirectory(
             title="Select the folder for the STFMR CSV and PNG figures", parent=self.root,
-            initialdir=str(self.stfmr_lockin_save_directory),
+            initialdir=str(self.__dict__.get("stfmr_lockin_run_directory") or self.stfmr_lockin_save_directory),
         )
         if not folder:
             return
@@ -22675,59 +23016,157 @@ class CombinedControlApp:
         except tk.TclError:
             pass
 
-    def _prepare_stfmr_fmr_live_csv(self) -> bool:
-        folder = filedialog.askdirectory(parent=self.root, title="Select the folder for the FMR live CSV")
-        if not folder:
-            return False
-        default_stem = time.strftime("FMR_field_%Y%m%d_%H%M%S")
-        while True:
-            requested = simpledialog.askstring(
-                "FMR file name",
-                f"Folder: {folder}\nEnter a file name (.csv may be omitted):\n"
-                f"Leave empty for the default name: {default_stem}.csv\nAn existing name gets a number appended, nothing is overwritten.",
-                parent=self.root,
-            )
-            if requested is None:
-                return False
-            stem = requested.strip() or default_stem
-            if stem.lower().endswith(".csv"):
-                stem = stem[:-4]
-            reserved = stem.split(".")[0].upper()
-            if (not stem or stem.endswith((".", " "))
-                    or re.search(r'[<>:"/\\|?*\x00-\x1f]', stem)
-                    or reserved in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}):
-                messagebox.showerror("Invalid file name", "Enter a valid file name without a path or characters forbidden in Windows file names.", parent=self.root)
-                continue
-            break
-        try:
-            suffix = 0
-            while True:
-                path = Path(folder) / (f"{stem}_{suffix:02d}.csv" if suffix else f"{stem}.csv")
-                try:
-                    with path.open("x", newline="", encoding="utf-8-sig") as handle:
-                        csv.writer(handle).writerow(self._stfmr_fmr_csv_fields())
-                        handle.flush()
-                        os.fsync(handle.fileno())
-                    break
-                except FileExistsError:
-                    suffix += 1
-        except OSError as error:
-            messagebox.showerror("Failed to create the live CSV", str(error), parent=self.root)
-            return False
-        self.stfmr_fmr_live_csv_path = path
-        return True
-
     @staticmethod
     def _stfmr_fmr_csv_fields():
         return ("index", "elapsed_s", "current_setpoint_a", "pna_frequency_hz",
                 "pna_power_dbm", "pna_actual_power_dbm", "field_raw", "field_raw_unit",
                 "measured_field_g", *STFMR_S_PARAMETERS)
 
-    def _append_stfmr_fmr_live_csv(self, row) -> None:
-        with self.stfmr_fmr_live_csv_path.open("a", newline="", encoding="utf-8-sig") as handle:
-            csv.DictWriter(handle, fieldnames=self._stfmr_fmr_csv_fields()).writerow(row)
-            handle.flush()
-            os.fsync(handle.fileno())
+    @staticmethod
+    def _stfmr_frequency_csv_fields():
+        return ("index", "elapsed_s", "target_field_g", "measured_field_g",
+                "current_setpoint_a", "pna_frequency_hz", "pna_power_dbm",
+                "pna_actual_power_dbm", *STFMR_S_PARAMETERS)
+
+    # ---- the FMR page's run files and scan ends (user, 2026-10-18) ---------------
+    # Both FMR scans save as every scan page does (user, 2026-10-18: "every
+    # scan page", which supersedes "no live CSV" for the fixed-field
+    # frequency sweep): after the Yes/No, begin_scan_run's folder and name
+    # dialogs make <folder>/<name>/ with the live CSV (one fsynced row per
+    # point, the columns of Save CSV + PNG) and the JSON-lines log
+    # (FMR_field_<date>_<time> or FMR_frequency_<date>_<time> when the name
+    # is blank).  Every end zeroes the 4886 and switches the PNA RF off.
+    # The FMR page's 4886 session is used from the Tk thread only (its
+    # Connect's rule), and its scans run their steps from it, so the end
+    # zeroes there too.
+    def _stfmr_fmr_scan_recorder(self, kind: str):
+        """The open run of the field scan ("fmr") or the frequency sweep
+        ("frequency"), or None."""
+        return self.__dict__.get(f"stfmr_{kind}_recorder")
+
+    def _stfmr_fmr_scan_log(self, kind: str, name: str, **details) -> None:
+        """One record of a running FMR scan's log, then check(): a failed
+        write raises here, between instrument steps, and the caller ends the
+        scan through its failure path (the convention, user, 2026-10-18)."""
+        recorder = self._stfmr_fmr_scan_recorder(kind)
+        if recorder is None:
+            raise RuntimeError("The FMR run log is not open")
+        recorder.event(name, **details)
+        recorder.check()
+
+    def _stfmr_fmr_settings(self, kind: str, selected, frequencies, power_dbm, voltage_limit, **details) -> dict:
+        """run_prepared's settings of an FMR scan, as validated at Start."""
+        return {
+            "scan": "field sweep" if kind == "fmr" else "fixed-field frequency sweep",
+            "s_parameters": list(selected),
+            "pna_frequencies_hz": list(frequencies),
+            "pna_power_dbm": power_dbm,
+            "voltage_limit_v": voltage_limit,
+            **details,
+            "resources": {key: var.get() for key, var in self.stfmr_resource_vars.items()},
+            "safety_confirmed": bool(self.stfmr_safety_var.get()),
+            "outputs_zeroed_at_end": ["4886", "PNA RF"],
+        }
+
+    def _begin_stfmr_fmr_run(self, kind: str, settings: dict):
+        """The save step after the Yes/No (user, 2026-10-18): the folder
+        dialog, the file name and the run's files, or None (begin_scan_run
+        has said why; nothing is started)."""
+        what = "FMR field scan" if kind == "fmr" else "FMR frequency sweep"
+        recorder = begin_scan_run(
+            self.root, "FMR", f"Select the folder for the {what}'s run folder (live CSV and log)",
+            self.__dict__.get("stfmr_fmr_save_directory"), settings,
+            prefix="FMR_field" if kind == "fmr" else "FMR_frequency",
+        )
+        if recorder is not None:
+            setattr(self, f"stfmr_{kind}_recorder", recorder)
+            self.stfmr_fmr_save_directory = recorder.directory.parent
+            # Save CSV + PNG opens here (user, 2026-10-18).
+            setattr(self, f"stfmr_{kind}_run_directory", recorder.directory)
+        return recorder
+
+    def _stfmr_fmr_zero_outputs(self) -> dict[str, str]:
+        """An FMR scan's end, completed, stopped or failed (user,
+        2026-10-18: every scan page zeroes its sources at every end, as
+        SHV): the 4886 as its Zero / OFF button zeroes it (force_output_off:
+        zero and OUTP OFF, whoever switched it on; write-only, so nothing
+        can be read back, and the readout shows what was sent), then the PNA
+        RF off with OUTP? read back as 0.  Each is tried whatever the other
+        did, through the shared zero_scan_outputs; never raises."""
+        def kepco_off():
+            kepco = self.stfmr_controllers["kepco"]
+            if not kepco.connected:
+                return "not connected"
+            try:
+                result = kepco.force_output_off()
+            except BaseException:
+                self._flag_stfmr_kepco_off_unconfirmed()
+                raise
+            self._apply_stfmr_kepco_readback(result)
+
+        def rf_off():
+            pna = self.stfmr_controllers["vna"]
+            if not pna.connected:
+                return "not connected"
+            pna.rf_off_read_back()
+
+        return zero_scan_outputs((("4886", kepco_off), ("PNA RF", rf_off)))
+
+    def _end_stfmr_fmr_run(self, kind: str, results, *, error, stopped: bool, points: int, total: int) -> str:
+        """The log and the status of an FMR scan's end, once its outputs
+        were zeroed: outputs_zeroed, then run_finished, then the dialog from
+        the Tk event loop (after the files are closed): the error with how
+        each output ended, or CHECK IT when an output was not confirmed at
+        zero.  Returns the status, within the 48-character label: "Completed;
+        4886 and RF zeroed; 120 points saved", "Stopped; ...", "Failed: ..."
+        (user, 2026-10-18)."""
+        order = ("4886", "PNA RF")
+        failed = [label for label in order if results.get(label) not in ("zeroed", "not connected")]
+        lines = stfmr_end_outputs_lines(results, order)
+        outputs = stfmr_end_outputs_text(results, "PNA RF")
+        if error is not None:
+            status = f"Failed: {short_status_error(error, 40)}"
+        elif stopped:
+            status = f"Stopped; {outputs}; {points} point{'' if points == 1 else 's'} saved"
+        else:
+            status = f"Completed; {outputs}; {points} point{'' if points == 1 else 's'} saved"
+        outcome = "error" if error is not None else "stopped" if stopped else "completed"
+        recorder = self._stfmr_fmr_scan_recorder(kind)
+        setattr(self, f"stfmr_{kind}_recorder", None)
+        problems = []
+        if recorder is not None:
+            recorder.event("outputs_zeroed", **{label: results.get(label, "not reported") for label in order})
+            problems = recorder.close(
+                outcome, points_saved=points, points_planned=total, status=status, outputs=dict(results),
+                error=str(error) if error is not None else None,
+                **({"stop_reason": "stopped by the user"} if stopped and error is None else {}),
+            )
+        try:
+            self.thread_log(f"FMR scan end: {lines}")
+        except Exception:
+            pass
+        if self.closing:
+            return status
+        title = "STFMR FMR" if kind == "fmr" else "STFMR fixed-field frequency sweep"
+        check = "\n\nCHECK IT: " + ", ".join(failed) + " not confirmed at zero." if failed else ""
+        log_note = ("\n\nThe run log's last entry was not written: " + "; ".join(problems)) if problems else ""
+        if error is not None:
+            message = f"{error}\n\nAt the end: {lines}{check}{log_note}"
+            self._stfmr_fmr_after_drain(lambda: messagebox.showerror(title, message, parent=self.root))
+        elif failed or problems:
+            message = f"The scan {outcome}.\n\nAt the end: {lines}{check}{log_note}"
+            self._stfmr_fmr_after_drain(lambda: messagebox.showerror(f"{title} outputs", message,
+                                                                     parent=self.root))
+        return status
+
+    def _stfmr_fmr_after_drain(self, dialog) -> None:
+        """A scan's dialog from the Tk event loop, never inside
+        drain_ui_queue, where it would hold every page's callbacks (the rule
+        of 2026-10-14)."""
+        try:
+            self.root.after(0, dialog)
+        except (AttributeError, tk.TclError):
+            pass
 
     def start_stfmr_fmr_scan(self) -> None:
         if self.stfmr_fmr_running or self.stfmr_frequency_running:
@@ -22763,12 +23202,19 @@ class CombinedControlApp:
                 f"PNA stimulus power: {power_dbm:g} dBm\n"
                 f"Current: {currents[0]:g} → {currents[-1]:g} A, {len(currents)} points\n"
                 f"S-parameters: {', '.join(selected)}\nEstimated at least: {estimated:.1f} s"
-                f"{source_note}\n\nThe 4886 output is zeroed and turned off on completion, stop or error."
+                f"{source_note}\n\nAt the end (completed, stopped or failed) the 4886 is zeroed and turned off "
+                "and the PNA RF switched off. The run folder and file name are asked next."
             ),
             parent=self.root,
         ):
             return
-        if not self._prepare_stfmr_fmr_live_csv():
+        settings = self._stfmr_fmr_settings(
+            "fmr", selected, frequencies, power_dbm, limit,
+            currents_a=list(currents), current_start_a=currents[0], current_stop_a=currents[-1],
+            current_step_a=self.stfmr_fmr_step_current_var.get(), wait_s=settle,
+            total_points=total_points, estimated_s=estimated,
+        )
+        if self._begin_stfmr_fmr_run("fmr", settings) is None:
             return
         self.stfmr_fmr_rows.clear()
         self.stfmr_fmr_selected = selected
@@ -22796,6 +23242,11 @@ class CombinedControlApp:
         self.stfmr_fmr_status_var.set(
             f"Configuring PNA; 0/{total_points} points; estimated at least {estimated:.1f} s"
         )
+        try:
+            self._stfmr_fmr_scan_log("fmr", "scan_started", total_points=total_points)
+        except BaseException as error:
+            self._finish_stfmr_fmr_scan(error=error)
+            return
         self._configure_stfmr_fmr_frequency()
 
     def _configure_stfmr_fmr_frequency(self) -> None:
@@ -22820,15 +23271,24 @@ class CombinedControlApp:
         def configured() -> None:
             future = self.stfmr_fmr_future
             self.stfmr_fmr_future = None
+            # The stop first, in every callback: a Zero / OFF during the job
+            # must end the scan here, not after its result (review,
+            # 2026-10-18).
+            if self.stfmr_fmr_stop_event.is_set():
+                self._finish_stfmr_fmr_scan(stopped=True)
+                return
             try:
                 if future is not None:
                     actual_powers = future.result()
                     self.stfmr_fmr_actual_power_by_port = dict(actual_powers)
+                self._stfmr_fmr_scan_log(
+                    "fmr", "pna_configured", frequency_hz=frequency_hz,
+                    frequency_index=self.stfmr_fmr_frequency_index + 1,
+                    actual_power_dbm={str(port): actual for port, actual in
+                                      self.stfmr_fmr_actual_power_by_port.items()},
+                )
             except BaseException as error:
                 self._finish_stfmr_fmr_scan(error=error)
-                return
-            if self.stfmr_fmr_stop_event.is_set():
-                self._finish_stfmr_fmr_scan(stopped=True)
                 return
             configured_text = ", ".join(
                 f"port {port} {actual:g} dBm"
@@ -22925,14 +23385,15 @@ class CombinedControlApp:
         def field_read() -> None:
             future = self.stfmr_fmr_future
             self.stfmr_fmr_future = None
+            # The stop first (review, 2026-10-18).
+            if self.stfmr_fmr_stop_event.is_set():
+                self._finish_stfmr_fmr_scan(stopped=True)
+                return
             try:
                 field_result = future.result()
                 field_g = STFMRGauss475Controller.value_in_gauss(field_result)
             except BaseException as error:
                 self._finish_stfmr_fmr_scan(error=error)
-                return
-            if self.stfmr_fmr_stop_event.is_set():
-                self._finish_stfmr_fmr_scan(stopped=True)
                 return
             self.stfmr_fmr_field_settle_samples.append(field_g)
             self.stfmr_gauss_field_var.set(
@@ -23009,6 +23470,12 @@ class CombinedControlApp:
         def measured() -> None:
             future = self.stfmr_fmr_future
             self.stfmr_fmr_future = None
+            # The stop first: a Zero / OFF during the reads zeroed the 4886
+            # under them, so the point is not saved (review, 2026-10-18: a
+            # mixed last row).
+            if self.stfmr_fmr_stop_event.is_set():
+                self._finish_stfmr_fmr_scan(stopped=True)
+                return
             try:
                 field_result, s_values = future.result()
                 field_g = STFMRGauss475Controller.value_in_gauss(field_result)
@@ -23043,8 +23510,12 @@ class CombinedControlApp:
             }
             self.stfmr_fmr_rows.append(row)
             try:
-                self._append_stfmr_fmr_live_csv(row)
-            except OSError as error:
+                # The live CSV row, fsynced, then point_saved, before the
+                # next current (the convention, user, 2026-10-18).
+                self.stfmr_fmr_recorder.append_row(row)
+                self._stfmr_fmr_scan_log("fmr", "point_saved", index=index + 1, current_a=current,
+                                         frequency_hz=frequency_hz, field_g=field_g)
+            except BaseException as error:
                 self._finish_stfmr_fmr_scan(error=error)
                 return
             self._set_stfmr_progress(
@@ -23075,14 +23546,21 @@ class CombinedControlApp:
             lambda _future: self.post_ui(measured)
         )
 
-    def stop_stfmr_fmr_scan(self) -> None:
+    def stop_stfmr_fmr_scan(self, button: str = "Stop / zero") -> None:
+        """Stop / zero, also for the 4886's Zero / OFF during a scan
+        (button, for the log's stop_requested): the stop event first, then
+        the log; the scan ends at its next safe point, where the 4886 is
+        zeroed and the PNA RF switched off (user, 2026-10-18)."""
         if self.stfmr_frequency_running:
-            self.stop_stfmr_frequency_scan()
+            self.stop_stfmr_frequency_scan(button=button)
             return
         if not self.stfmr_fmr_running:
             return
         self.stfmr_fmr_stop_event.set()
-        self.stfmr_fmr_status_var.set("Stopping; zeroing the 4886 once a safe point is reached…")
+        recorder = self._stfmr_fmr_scan_recorder("fmr")
+        if recorder is not None:
+            recorder.event("stop_requested", button=button)
+        self.stfmr_fmr_status_var.set("Stopping; the 4886 and PNA RF are zeroed next…")
         self.stfmr_fmr_stop_button.configure(state="disabled")
         if self.stfmr_fmr_after_id is not None:
             try:
@@ -23104,58 +23582,19 @@ class CombinedControlApp:
             except tk.TclError:
                 pass
             self.stfmr_fmr_after_id = None
-        shutdown_errors = []
-        kepco_off_text = "4886 zeroed/OFF"
-        try:
-            result = self.stfmr_controllers["kepco"].zero_output()
-            if self.stfmr_controllers["kepco"].last_command:
-                self._apply_stfmr_kepco_readback(result)
-            else:
-                # Ended before anything was sent to the 4886 (stopped or
-                # failed while the PNA was being set up): its state is
-                # unknown, so no made-up "0 A, OFF" (review, 2026-10-13).
-                kepco_off_text = "4886 not used"
-                self.read_stfmr_kepco_once()
-        except BaseException as shutdown_error:
-            self._flag_stfmr_kepco_off_unconfirmed()
-            # Nor may the status line below report an OFF that failed
-            # (review, 2026-10-13).
-            kepco_off_text = "4886 zero/OFF NOT CONFIRMED"
-            shutdown_errors.append(f"4886 zeroing failed: {shutdown_error}")
-        if self.stfmr_fmr_rf_off_var.get():
-            try:
-                self.stfmr_controllers["vna"].rf_off()
-            except BaseException as shutdown_error:
-                shutdown_errors.append(f"PNA RF OFF failed: {shutdown_error}")
+        # Every end zeroes the 4886 and switches the PNA RF off, completed,
+        # stopped or failed (user, 2026-10-18); "PNA RF off at end" is gone.
+        results = self._stfmr_fmr_zero_outputs()
         self._set_stfmr_scan_busy(False)
         self.stfmr_fmr_save_button.configure(
             state="normal" if self.stfmr_fmr_rows else "disabled"
         )
-        if error is not None:
-            self.stfmr_fmr_status_var.set(
-                f"Scan failed, zeroing attempted: {short_status_error(error, 120)}"
-            )
-            if not self.closing:
-                messagebox.showerror("STFMR FMR", str(error), parent=self.root)
-        elif stopped:
-            self.stfmr_fmr_status_var.set(
-                f"Scan stopped; {len(self.stfmr_fmr_rows)} points acquired, {kepco_off_text}"
-            )
-        else:
-            self._set_stfmr_progress(
-                self.stfmr_fmr_progress,
-                len(self.stfmr_fmr_frequencies) * len(self.stfmr_fmr_currents),
-                len(self.stfmr_fmr_frequencies) * len(self.stfmr_fmr_currents),
-            )
-            self.stfmr_fmr_status_var.set(
-                f"Scan complete: {len(self.stfmr_fmr_rows)} points, {kepco_off_text}"
-            )
-        if shutdown_errors and not self.closing:
-            messagebox.showwarning(
-                "STFMR safe-close warning",
-                "\n".join(shutdown_errors),
-                parent=self.root,
-            )
+        total = len(self.stfmr_fmr_frequencies) * len(self.stfmr_fmr_currents)
+        if error is None and not stopped:
+            self._set_stfmr_progress(self.stfmr_fmr_progress, total, total)
+        self.stfmr_fmr_status_var.set(self._end_stfmr_fmr_run(
+            "fmr", results, error=error, stopped=stopped, points=len(self.stfmr_fmr_rows), total=total,
+        ))
 
     def start_stfmr_frequency_scan(self) -> None:
         if self.stfmr_fmr_running or self.stfmr_frequency_running:
@@ -23185,11 +23624,19 @@ class CombinedControlApp:
                 f"PNA stimulus power: {power_dbm:g} dBm\n"
                 f"S-parameters: {', '.join(selected)}\n"
                 f"Estimated at most about: {estimated:.1f} s\n\n"
-                "The program adjusts the 4886 current in small steps using 475 feedback. The 4886 output is "
-                "zeroed and turned off on stop, error or completion."
+                "The program adjusts the 4886 current in small steps using 475 feedback. At the end "
+                "(completed, stopped or failed) the 4886 is zeroed and turned off and the PNA RF switched "
+                "off. The run folder and file name are asked next."
             ),
             parent=self.root,
         ):
+            return
+        settings = self._stfmr_fmr_settings(
+            "frequency", selected, frequencies, power_dbm, voltage_limit,
+            target_field_g=target_field, field_tolerance_g=tolerance, feedback_wait_s=settle,
+            feedback_max_corrections=STFMR_FIELD_FEEDBACK_MAX_ITERATIONS, estimated_max_s=estimated,
+        )
+        if self._begin_stfmr_fmr_run("frequency", settings) is None:
             return
         self.stfmr_frequency_rows.clear()
         self.stfmr_frequency_points = frequencies
@@ -23212,6 +23659,7 @@ class CombinedControlApp:
         self._set_stfmr_scan_busy(True)
         self._redraw_stfmr_frequency_plot()
         try:
+            self._stfmr_fmr_scan_log("frequency", "scan_started", total_points=len(frequencies))
             result = self.stfmr_controllers["kepco"].set_output(
                 "CURR", 0.0, voltage_limit
             )
@@ -23242,6 +23690,9 @@ class CombinedControlApp:
         self.stfmr_frequency_after_id = None
         if not self.stfmr_frequency_running:
             return
+        if self.stfmr_frequency_stop_event.is_set():
+            self._finish_stfmr_frequency_scan(stopped=True)
+            return
         self.stfmr_frequency_future = self.stfmr_executor.submit(
             self.stfmr_controllers["gauss"].read_field
         )
@@ -23249,6 +23700,10 @@ class CombinedControlApp:
         def measured() -> None:
             future = self.stfmr_frequency_future
             self.stfmr_frequency_future = None
+            # The stop first (review, 2026-10-18).
+            if self.stfmr_frequency_stop_event.is_set():
+                self._finish_stfmr_frequency_scan(stopped=True)
+                return
             try:
                 field_result = future.result()
                 field_g = STFMRGauss475Controller.value_in_gauss(field_result)
@@ -23261,7 +23716,14 @@ class CombinedControlApp:
             current = float(self.stfmr_frequency_feedback_current)
             self.stfmr_frequency_feedback_points.append((current, field_g))
             error_g = self.stfmr_frequency_target_field_g - field_g
-            if abs(error_g) <= self.stfmr_frequency_tolerance_g:
+            reached = abs(error_g) <= self.stfmr_frequency_tolerance_g
+            try:
+                self._stfmr_fmr_scan_log("frequency", "field_feedback", current_a=current, field_g=field_g,
+                                         step=len(self.stfmr_frequency_feedback_points), reached=reached)
+            except BaseException as error:
+                self._finish_stfmr_frequency_scan(error=error)
+                return
+            if reached:
                 self.stfmr_frequency_status_var.set(
                     f"Field settled: I={current:+.4g} A, B={field_g:+.5g} G; ready to sweep frequency"
                 )
@@ -23377,6 +23839,11 @@ class CombinedControlApp:
         def measured() -> None:
             future = self.stfmr_frequency_future
             self.stfmr_frequency_future = None
+            # The stop first: a Zero / OFF during the reads zeroed the 4886
+            # under them, which read as a field drift (review, 2026-10-18).
+            if self.stfmr_frequency_stop_event.is_set():
+                self._finish_stfmr_frequency_scan(stopped=True)
+                return
             try:
                 actual_powers, field_result, s_values = future.result()
                 field_g = STFMRGauss475Controller.value_in_gauss(field_result)
@@ -23413,6 +23880,16 @@ class CombinedControlApp:
                 },
             }
             self.stfmr_frequency_rows.append(row)
+            try:
+                # The live CSV row and point_saved (user, 2026-10-18: "every
+                # scan page"; this sweep had no live CSV).
+                self.stfmr_frequency_recorder.append_row(row)
+                self._stfmr_fmr_scan_log("frequency", "point_saved", index=row["index"],
+                                         frequency_hz=frequency_hz, field_g=field_g,
+                                         current_a=row["current_setpoint_a"])
+            except BaseException as error:
+                self._finish_stfmr_frequency_scan(error=error)
+                return
             self.stfmr_gauss_field_var.set(
                 f"{float(field_result['field']):+.8g} {field_result['unit']}"
             )
@@ -23439,11 +23916,14 @@ class CombinedControlApp:
             lambda _future: self.post_ui(measured)
         )
 
-    def stop_stfmr_frequency_scan(self) -> None:
+    def stop_stfmr_frequency_scan(self, button: str = "Stop / zero") -> None:
         if not self.stfmr_frequency_running:
             return
         self.stfmr_frequency_stop_event.set()
-        self.stfmr_frequency_status_var.set("Stopping; zeroing the 4886 once a safe point is reached…")
+        recorder = self._stfmr_fmr_scan_recorder("frequency")
+        if recorder is not None:
+            recorder.event("stop_requested", button=button)
+        self.stfmr_frequency_status_var.set("Stopping; the 4886 and PNA RF are zeroed next…")
         self.stfmr_fmr_stop_button.configure(state="disabled")
         if self.stfmr_frequency_after_id is not None:
             try:
@@ -23465,58 +23945,20 @@ class CombinedControlApp:
             except tk.TclError:
                 pass
             self.stfmr_frequency_after_id = None
-        shutdown_errors = []
-        kepco_off_text = "4886 zeroed/OFF"
-        try:
-            result = self.stfmr_controllers["kepco"].zero_output()
-            if self.stfmr_controllers["kepco"].last_command:
-                self._apply_stfmr_kepco_readback(result)
-            else:
-                # Ended before anything was sent to the 4886 (stopped or
-                # failed while the PNA was being set up): its state is
-                # unknown, so no made-up "0 A, OFF" (review, 2026-10-13).
-                kepco_off_text = "4886 not used"
-                self.read_stfmr_kepco_once()
-        except BaseException as shutdown_error:
-            self._flag_stfmr_kepco_off_unconfirmed()
-            # Nor may the status line below report an OFF that failed
-            # (review, 2026-10-13).
-            kepco_off_text = "4886 zero/OFF NOT CONFIRMED"
-            shutdown_errors.append(f"4886 zeroing failed: {shutdown_error}")
-        if self.stfmr_fmr_rf_off_var.get():
-            try:
-                self.stfmr_controllers["vna"].rf_off()
-            except BaseException as shutdown_error:
-                shutdown_errors.append(f"PNA RF OFF failed: {shutdown_error}")
+        # Every end zeroes the 4886 and switches the PNA RF off (user,
+        # 2026-10-18), as the field scan's.
+        results = self._stfmr_fmr_zero_outputs()
         self._set_stfmr_scan_busy(False)
         self.stfmr_frequency_save_button.configure(
             state="normal" if self.stfmr_frequency_rows else "disabled"
         )
-        if error is not None:
-            self.stfmr_frequency_status_var.set(
-                f"Sweep failed, zeroing attempted: {short_status_error(error, 110)}"
-            )
-            if not self.closing:
-                messagebox.showerror("STFMR fixed-field frequency sweep", str(error), parent=self.root)
-        elif stopped:
-            self.stfmr_frequency_status_var.set(
-                f"Sweep stopped; {len(self.stfmr_frequency_rows)} points acquired, {kepco_off_text}"
-            )
-        else:
-            self._set_stfmr_progress(
-                self.stfmr_frequency_progress,
-                len(self.stfmr_frequency_points),
-                len(self.stfmr_frequency_points),
-            )
-            self.stfmr_frequency_status_var.set(
-                f"Sweep complete: {len(self.stfmr_frequency_rows)} points, {kepco_off_text}"
-            )
-        if shutdown_errors and not self.closing:
-            messagebox.showwarning(
-                "STFMR safe-close warning",
-                "\n".join(shutdown_errors),
-                parent=self.root,
-            )
+        total = len(self.stfmr_frequency_points)
+        if error is None and not stopped:
+            self._set_stfmr_progress(self.stfmr_frequency_progress, total, total)
+        self.stfmr_frequency_status_var.set(self._end_stfmr_fmr_run(
+            "frequency", results, error=error, stopped=stopped, points=len(self.stfmr_frequency_rows),
+            total=total,
+        ))
 
     def _redraw_stfmr_fmr_plot(self) -> None:
         canvas = self.stfmr_fmr_canvas
@@ -23788,29 +24230,21 @@ class CombinedControlApp:
     def save_stfmr_fmr_results(self) -> None:
         if not self.stfmr_fmr_rows:
             return
+        # In the last run's folder (user, 2026-10-18).
+        where = self.__dict__.get("stfmr_fmr_run_directory")
         selected = filedialog.asksaveasfilename(
             parent=self.root,
             title="Save STFMR FMR CSV",
             defaultextension=".csv",
             initialfile=time.strftime("STFMR_FMR_%Y%m%d_%H%M%S.csv"),
             filetypes=(("CSV", "*.csv"),),
+            **({"initialdir": str(where)} if where else {}),
         )
         if not selected:
             return
         csv_path = Path(selected)
         png_path = csv_path.with_suffix(".png")
-        fields = (
-            "index",
-            "elapsed_s",
-            "current_setpoint_a",
-            "pna_frequency_hz",
-            "pna_power_dbm",
-            "pna_actual_power_dbm",
-            "field_raw",
-            "field_raw_unit",
-            "measured_field_g",
-            *STFMR_S_PARAMETERS,
-        )
+        fields = self._stfmr_fmr_csv_fields()
         try:
             with csv_path.open("w", newline="", encoding="utf-8-sig") as handle:
                 writer = csv.DictWriter(handle, fieldnames=fields)
@@ -23828,6 +24262,8 @@ class CombinedControlApp:
     def save_stfmr_frequency_results(self) -> None:
         if not self.stfmr_frequency_rows:
             return
+        # In the last run's folder (user, 2026-10-18).
+        where = self.__dict__.get("stfmr_frequency_run_directory")
         selected = filedialog.asksaveasfilename(
             parent=self.root,
             title="Save STFMR fixed-field frequency sweep CSV",
@@ -23836,22 +24272,13 @@ class CombinedControlApp:
                 "STFMR_frequency_sweep_%Y%m%d_%H%M%S.csv"
             ),
             filetypes=(("CSV", "*.csv"),),
+            **({"initialdir": str(where)} if where else {}),
         )
         if not selected:
             return
         csv_path = Path(selected)
         png_path = csv_path.with_suffix(".png")
-        fields = (
-            "index",
-            "elapsed_s",
-            "target_field_g",
-            "measured_field_g",
-            "current_setpoint_a",
-            "pna_frequency_hz",
-            "pna_power_dbm",
-            "pna_actual_power_dbm",
-            *STFMR_S_PARAMETERS,
-        )
+        fields = self._stfmr_frequency_csv_fields()
         try:
             with csv_path.open("w", newline="", encoding="utf-8-sig") as handle:
                 writer = csv.DictWriter(handle, fieldnames=fields)
@@ -24126,7 +24553,7 @@ class CombinedControlApp:
         # A running FMR or frequency scan is stopped first: otherwise its
         # next frequency switched the KEPCO back on (review, 2026-10-09).
         if self.stfmr_fmr_running or self.stfmr_frequency_running:
-            self.stop_stfmr_fmr_scan()
+            self.stop_stfmr_fmr_scan(button="KEPCO Zero / OFF")
         self.stfmr_status_var.set("Zeroing and turning the KEPCO output off…")
         try:
             # Explicit operator request: act even on an output this page did
@@ -43926,10 +44353,27 @@ class CombinedControlApp:
                 pass
             self.stfmr_frequency_after_id = None
         # 4886 shutdown remains a direct, main-thread write-only operation.
-        try:
-            self.stfmr_controllers["kepco"].zero_output()
-        except BaseException:
-            pass
+        scans = [kind for kind in ("fmr", "frequency") if getattr(self, f"stfmr_{kind}_running", False)]
+        if scans:
+            # A scan running as the program closes ends here, as at every
+            # end: the 4886 zeroed, the PNA RF off, and its run log closed
+            # (user, 2026-10-18).
+            for kind in scans:
+                setattr(self, f"stfmr_{kind}_running", False)
+            results = self._stfmr_fmr_zero_outputs()
+            for kind in scans:
+                recorder = self.__dict__.get(f"stfmr_{kind}_recorder")
+                setattr(self, f"stfmr_{kind}_recorder", None)
+                if recorder is not None:
+                    recorder.event("stop_requested", button="program closing")
+                    recorder.event("outputs_zeroed", **results)
+                    recorder.close("closed", outputs=dict(results),
+                                   points_saved=len(getattr(self, f"stfmr_{kind}_rows", ())))
+        else:
+            try:
+                self.stfmr_controllers["kepco"].zero_output()
+            except BaseException:
+                pass
         if self.stfmr_poll_after_id is not None:
             try:
                 self.root.after_cancel(self.stfmr_poll_after_id)
@@ -43958,6 +44402,9 @@ class CombinedControlApp:
         if self.stfmr_lockin_closed:
             return
         self.stfmr_lockin_closed = True
+        # A sweep running (or ending) as the program closes ends here: its
+        # outputs zeroed as at every end, and its log says so (2026-10-18).
+        sweep_running = bool(self.stfmr_lockin_running)
         self.stfmr_lockin_running = False
         self.stfmr_lockin_stop_event.set()
         # A hand move of the stage watches this one too (and the sweep's);
@@ -43981,16 +44428,29 @@ class CombinedControlApp:
         errors = []
         # The legacy 4886 is deliberately handled synchronously: write-only,
         # no query/clear/terminator, followed by closing the VISA session.
-        try:
-            self.stfmr_lockin_controllers["kepco"].zero_output()
-        except BaseException as error:
-            errors.append(f"4886: {error}")
-        try:
-            self.stfmr_lockin_controllers["smb"].rf_off()
-        except BaseException as error:
-            errors.append(f"SMB100A: {error}")
+        results = None
+        if sweep_running:
+            # The sweep's end, as at every end (user, 2026-10-18), here on
+            # the Tk thread: the worker is shut down below.
+            results = self._stfmr_lockin_zero_outputs()
+            errors.extend(f"{label}: {state}" for label, state in results.items()
+                          if state not in ("zeroed", "not connected"))
+            recorder = self.__dict__.get("stfmr_lockin_recorder")
+            if recorder is not None:
+                recorder.event("stop_requested", button="program closing")
+                recorder.event("outputs_zeroed", **results)
+        else:
+            try:
+                self.stfmr_lockin_controllers["kepco"].zero_output()
+            except BaseException as error:
+                errors.append(f"4886: {error}")
+            try:
+                self.stfmr_lockin_controllers["smb"].rf_off()
+            except BaseException as error:
+                errors.append(f"SMB100A: {error}")
         errors.extend(self._close_stfmr_lockin_recording(
             "closed", shutdown_errors=list(errors), outputs_off=not errors,
+            **({"outputs": results} if results is not None else {}),
         ))
         try:
             self.stfmr_lockin_mfli_controller.disconnect_mfli()

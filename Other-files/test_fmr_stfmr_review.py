@@ -4,6 +4,7 @@ No Tk and no instrument: the real methods run on a bare app with stand-ins
 (a fake clock and after() queue, synchronous futures, a fake 4886 card, a
 fake SR830 and a fake 475 that follow what was written to them)."""
 from concurrent.futures import Future
+import tempfile
 import threading
 import types
 import unittest
@@ -181,6 +182,12 @@ class FixedFieldFeedbackTests(unittest.TestCase):
         a.stfmr_frequency_tolerance_g = 10.0
         a._measure_next_stfmr_frequency_point = mock.Mock()
         a._finish_stfmr_frequency_scan = mock.Mock()
+        # The sweep's run log (user, 2026-10-18): every feedback read is a
+        # field_feedback record.
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        a.stfmr_frequency_recorder = app.ScanRunRecorder(app.Path(folder.name), "FMR_frequency", "", {})
+        self.addCleanup(a.stfmr_frequency_recorder.close, "test")
         a._schedule_stfmr_frequency_feedback_read()
         a.root.run(lambda: a._measure_next_stfmr_frequency_point.called
                    or a._finish_stfmr_frequency_scan.called)
@@ -390,16 +397,23 @@ class FmrKepcoReadoutTests(unittest.TestCase):
                 setattr(a, f"stfmr_{kind}_rows", [])
                 setattr(a, f"stfmr_{kind}_status_var", Var())
                 setattr(a, f"stfmr_{kind}_save_button", mock.Mock())
-                a.stfmr_fmr_rf_off_var = Var(False)
+                a.stfmr_fmr_frequencies = a.stfmr_fmr_currents = a.stfmr_frequency_points = [1.0]
+                a.stfmr_controllers["vna"] = types.SimpleNamespace(connected=False)
+                a.root = Root(Clock())
                 a._set_stfmr_scan_busy = lambda busy: None
                 finish = getattr(a, f"_finish_stfmr_{kind}_scan")
-                with mock.patch.object(app.messagebox, "showwarning") as warning:
+                # Every end zeroes the 4886 (user, 2026-10-18): a failed zero
+                # is said in the status and in a CHECK IT dialog, from the Tk
+                # event loop, never as "zeroed".
+                with mock.patch.object(app.messagebox, "showerror") as error:
                     finish(stopped=True)
-                warning.assert_called_once()
+                    error.assert_not_called()
+                    a.root.run(lambda: False)
+                error.assert_called_once()
+                self.assertIn("CHECK IT: 4886 not confirmed at zero", error.call_args.args[1])
                 self.assertEqual(a.stfmr_kepco_output_var.get(), "OUTP: NOT CONFIRMED OFF")
                 status = getattr(a, f"stfmr_{kind}_status_var").get()
-                self.assertIn("NOT CONFIRMED", status)
-                self.assertNotIn("zeroed/OFF", status)
+                self.assertEqual(status, "Stopped; 4886 zero FAILED; RF not connected: check it; 0 points saved")
 
 
 if __name__ == "__main__":

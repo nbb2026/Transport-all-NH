@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import Transport_all_NH_dev as app
-from test_stfmr_realtime_recording import harness, events, read_csv
+from test_stfmr_realtime_recording import answer_folder_dialog, harness, events, read_csv
 
 
 class ControllerTests(unittest.TestCase):
@@ -104,6 +104,7 @@ class ScanTests(unittest.TestCase):
         # Start's file-name step (2026-10-18), left blank: the timestamped default.
         patch.object(app.simpledialog, 'askstring', return_value='').start()
         self.addCleanup(patch.stopall)
+        answer_folder_dialog(self)
 
     def start(self, enabled=True):
         h = harness(self.tmp.name)

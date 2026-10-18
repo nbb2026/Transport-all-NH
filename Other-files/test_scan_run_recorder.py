@@ -630,8 +630,15 @@ class UnchangedOutputTests(Folder):
                 answers.append(recorder.rows_written)
                 answers.append(recorder.close("completed", error=None, shutdown_errors=[], outputs_off=True))
                 answers.append(recorder.close("again"))
-                with self.assertRaisesRegex(RuntimeError, "STFMR log is closed"):
-                    recorder.event("late")
+                # Changed on purpose (2026-10-18, the convention): a log write
+                # no longer raises; a late one is refused (False), a failed
+                # one kept for check(), which the page calls after each record.
+                if make is OldSTFMRScanRecorder:
+                    with self.assertRaisesRegex(RuntimeError, "STFMR log is closed"):
+                        recorder.event("late")
+                else:
+                    self.assertFalse(recorder.event("late"))
+                    self.assertFalse(recorder.note("late"))
             return answers
         script.old, script.new = OldSTFMRScanRecorder, app.STFMRScanRecorder
         files = self.run_both(script)

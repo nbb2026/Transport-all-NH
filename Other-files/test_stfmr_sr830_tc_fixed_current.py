@@ -32,7 +32,7 @@ _HERE = Path(__file__).resolve().parent
 for _path in (_HERE / "test", _HERE.parent):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
-from test_stfmr_realtime_recording import Root, Variable, app, events, harness, read_csv
+from test_stfmr_realtime_recording import Root, Variable, app, events, folder_dialog, harness, read_csv
 
 App = app.CombinedControlApp
 
@@ -210,8 +210,12 @@ class NoWindows(unittest.TestCase):
         for name in ("showwarning", "showinfo", "askokcancel", "askyesnocancel",
                      "askquestion", "askretrycancel"):
             patches.append(mock.patch.object(tkinter.messagebox, name, unexpected))
-        for name in ("askdirectory", "asksaveasfilename", "askopenfilename", "askopenfilenames"):
+        for name in ("asksaveasfilename", "askopenfilename", "askopenfilenames"):
             patches.append(mock.patch.object(tkinter.filedialog, name, unexpected))
+        # The Start's folder dialog, begin_scan_run's since 2026-10-18: it
+        # asks the harness's select_csv_save_directory stand-in.
+        self.folder_dialog = mock.Mock(side_effect=folder_dialog)
+        patches.append(mock.patch.object(tkinter.filedialog, "askdirectory", self.folder_dialog))
         # Start's file-name step (user, 2026-10-18): left blank, the
         # timestamped STFMR_field_scan_<stamp> default these tests expect.
         self.file_name = mock.Mock(return_value="")

@@ -148,6 +148,103 @@
     (`test_pair_layout_loop`), the ABORT status line
     (`RTEStatusRowTests`) and the unconfirmed-stop stage line.
 
+## FMR and ST-FMR: every scan saves as the others and ends with the 4886 and the RF zeroed; audit fixes (2026-10-18)
+
+- **Save (user: "every scan page"):** every scan on both pages now goes
+  Yes/No → `begin_scan_run` (folder, then "<page> file name") → the run.
+  - **ST-FMR lock-in sweep:** keeps `STFMRScanRecorder`, so the files, the
+    columns, `run_prepared`'s settings, `saved_points` and the blank name
+    `STFMR_field_scan_<stamp>` (the ST-FMR tools look for it) are as
+    before. `begin_scan_run` makes it through a new keyword, `make=`. The
+    Yes/No now comes before the folder and name dialogs; it no longer
+    names the folder.
+  - **FMR field scan:** its old live CSV becomes a run folder:
+    `<folder>/<name>/<name>.csv + .log`. A blank name gives
+    `FMR_field_<date>_<time>`. The columns are unchanged.
+  - **FMR fixed-field frequency sweep:** it now has a live CSV and a log
+    (`FMR_frequency_<date>_<time>`), with Save CSV + PNG's columns. This
+    supersedes the earlier "no live CSV" for this sweep.
+  - **Log events:** `run_prepared`, `scan_started`, `point_saved` (one per
+    saved point), `stop_requested` (`button`: Stop / zero, KEPCO Zero / OFF,
+    Stop stage, program closing), `outputs_zeroed` and `run_finished`
+    (`outcome`, `points_saved`, `status`, `outputs`, `error`,
+    `stop_reason`).
+    - ST-FMR also writes `note` (its sweep log lines) and keeps its own
+      events.
+    - FMR adds `pna_configured` and `field_feedback`.
+  - **A log write that fails:** `STFMRScanRecorder.event` no longer raises.
+    The failure is kept, and the page's `check()` after each record ends
+    the sweep at once.
+  - **Save CSV (+ PNG)** opens in the last run folder.
+- **Zero at every end (completed, stopped, failed, program closing):**
+  - Both pages: `zero_scan_outputs` zeroes the 4886 as its Zero / OFF does
+    (`force_output_off`: zero and OUTP OFF). It is write-only, so it cannot
+    be read back.
+  - The RF goes off and is read back as OFF (`OUTP?` 0):
+    - ST-FMR: AM, LFO and RF off (`rf_off_read_back`);
+    - FMR: the PNA's `rf_off_read_back`.
+  - Each output is tried whatever the other did.
+  - **ST-FMR zeroes on its worker.** The sweep counts as running until the
+    zero reports, so Start, the rows and Apply stay locked.
+  - **FMR zeroes on the Tk thread**, the only thread its 4886 session is
+    used from.
+  - **Status texts:**
+    - "Completed; 4886 and RF zeroed; 6 points saved; 2 frequencies";
+    - "Stopped; 4886 and RF zeroed; stage at +12.345°; 2 saved";
+    - "Failed: …".
+    The texts come from `stfmr_end_outputs_text`, which calls
+    `scan_end_outputs_text` with the RF called "RF", so they fit the 52 and
+    48 character labels.
+  - **Dialogs** (from `root.after(0)`, after the files are closed): an
+    error dialog says how each output ended. A zero that fails keeps the
+    outcome (completed or stopped) and shows a "… outputs" dialog with
+    CHECK IT. (ST-FMR had turned such a zero into a failure.)
+  - **FMR's "PNA RF off at end" tick is removed**, because the RF is
+    always switched off now. "4886 not used" is gone too: an FMR scan
+    that ends before its first write still sends the zero and OUTP OFF.
+  - The Yes/No and Stop texts now say this.
+- **Audit fixes:**
+  - **S1:** Move stage, and its CLR / EO=1, are refused while the 4886
+    output is on: "Zero the 4886 first (Zero / OFF)". Apply output is
+    locked (and refused) while a stage job, its question, a Start or its
+    stage check is pending.
+  - **S2:** a lock-in Connect that finishes during Start's dialogs or stage
+    check no longer switches the Meter.
+  - **S3:**
+    - The instrument rows are locked from Start until the sweep runs.
+    - `begin()` checks every instrument the sweep uses again, at its top
+      and after the folder and name dialogs; a row still connecting or
+      disconnecting counts as gone. Such a run closes as `not_started`.
+    - The zero before the first stage move refuses a 4886 with no
+      session, and says when there was nothing to zero.
+  - **S4:** the SMB100A reads back `LFO:FREQ?` after every LFO:FREQ (to
+    0.05 Hz) and `FREQ?` after every FREQ (to 1 Hz). A mismatch is
+    refused before LFO ON / OUTPUT ON. The read-backs go to
+    `frequency_ready`.
+  - **S5:** every FMR callback checks Stop first. A Zero / OFF during a read
+    now ends the scan as stopped: no mixed row, no false drift.
+  - **C1-4 (user: "Keep my front-panel range"):** with 'SR830 autorange'
+    off, no SENS 13 is sent. SENS? is read into `sensitivity_index` and
+    logged in `frequency_ready`. The settings record
+    `sr830_initial_sensitivity_index` None and
+    `sr830_front_panel_range_kept`. The Yes/No says "Autorange: off
+    (front-panel range kept)".
+- **Tests (window-free):**
+  - New: `test_fmr_scan_run` and `test_stfmr_scan_convention`.
+  - The shared STFMR harness answers `begin_scan_run`'s folder dialog
+    with each test's own `select_csv_save_directory` stand-in.
+  - The stand-in instruments have the new read-backs.
+  - **Expectations changed on purpose:**
+    - the end status texts;
+    - the dialog order (Yes/No first);
+    - the SMB100A query sequences;
+    - FMR scans before the first 4886 write (now zeroed);
+    - a failed zero at the end keeps the outcome;
+    - `test_scan_run_recorder`'s frozen STFMR comparison: the files are
+      still byte for byte the same, and only a late `event()` returns
+      False instead of raising;
+    - `test_fmr_live_save` is on the run folder.
+
 ## One run folder, live CSV and log for every scan page: the shared base (2026-10-18)
 
 - **Request (user: "make the operation logic and save logic and files in

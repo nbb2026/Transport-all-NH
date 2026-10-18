@@ -26,7 +26,7 @@ _HERE = Path(__file__).resolve().parent
 for _path in (_HERE / "test", _HERE.parent):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
-from test_stfmr_realtime_recording import app, events, harness, read_csv
+from test_stfmr_realtime_recording import app, events, folder_dialog, harness, read_csv
 
 
 class Folder(unittest.TestCase):
@@ -209,6 +209,7 @@ class STFMRNameStepTests(Folder):
             order.append(("name", title, prompt))
             return typed
         with mock.patch.object(app.simpledialog, "askstring", side_effect=ask), \
+                mock.patch.object(app.filedialog, "askdirectory", side_effect=folder_dialog), \
                 mock.patch.object(app.messagebox, "askyesno", return_value=True) as confirm, \
                 mock.patch.object(app.messagebox, "showerror") as error:
             h.start_stfmr_lockin_scan()
@@ -221,7 +222,7 @@ class STFMRNameStepTests(Folder):
         h, recorder, order, confirm, error = self.start("sweep A.csv")
         error.assert_not_called()
         self.assertEqual(order, ["folder", ("name", "STFMR file name", app.SCAN_FILE_NAME_PROMPT)],
-                         "the name after the folder, before the confirmation")
+                         "the name after the folder; both after the confirmation (the shared order, 2026-10-18)")
         confirm.assert_called_once()
         self.assertEqual(recorder.directory, self.folder / "sweep A")
         self.assertEqual((recorder.csv_path.name, recorder.log_path.name), ("sweep A.csv", "sweep A.log"))
@@ -262,7 +263,8 @@ class STFMRNameStepTests(Folder):
                 self.assertIsNone(recorder)
                 error.assert_called_once_with("STFMR file name", "Use a valid Windows file name without a path.",
                                               parent=h.root)
-                confirm.assert_not_called()
+                # The Yes/No comes first since the shared order (2026-10-18).
+                confirm.assert_called_once()
                 self.assertFalse(h.stfmr_lockin_running)
                 self.assertTrue(all(not device.calls for device in h.stfmr_lockin_controllers.values()),
                                 "no instrument was touched")
@@ -272,7 +274,7 @@ class STFMRNameStepTests(Folder):
         h, recorder, _order, confirm, error = self.start(None)
         self.assertIsNone(recorder)
         error.assert_not_called()
-        confirm.assert_not_called()
+        confirm.assert_called_once()        # before the folder and the name (2026-10-18)
         self.assertFalse(h.stfmr_lockin_running)
         self.assertTrue(all(not device.calls for device in h.stfmr_lockin_controllers.values()))
         self.assertEqual(list(self.folder.iterdir()), [])

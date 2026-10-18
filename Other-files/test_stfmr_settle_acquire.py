@@ -458,8 +458,13 @@ class RangeAndFailureTests(Sweeps):
                    and h.stfmr_lockin_after_id is not None):
             h.root.step()
         h.stop_stfmr_lockin_scan()
-        self.assertFalse(h.stfmr_lockin_running, "stopped at once, not after the window")
+        # Stopped at once, not after the window: no reading is scheduled and
+        # the end is zeroing the outputs (on the worker, then the Tk thread's
+        # finish; user, 2026-10-18).
+        self.assertIsNone(h.stfmr_lockin_after_id, "stopped at once, not after the window")
+        self.assertTrue(h.stfmr_lockin_ending)
         h.root.drain()
+        self.assertFalse(h.stfmr_lockin_running)
         self.assertEqual(read_csv(recorder.csv_path), [])
         end = events(recorder)[-1]
         self.assertEqual((end["outcome"], end["outputs_off"]), ("stopped", True))

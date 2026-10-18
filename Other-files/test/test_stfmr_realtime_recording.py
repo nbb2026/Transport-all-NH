@@ -122,8 +122,17 @@ class Device:
         if self.zero_error:
             raise RuntimeError('zero failed')
 
+    def force_output_off(self):
+        # A sweep's end zeroes the 4886 as its Zero / OFF button does since
+        # 2026-10-18 (force_output_off): recorded as the zero it is.
+        return self.zero_output()
+
     def rf_off(self):
         self.calls.append(('rf_off',))
+
+    def rf_off_read_back(self):
+        # The end's RF off, OUTP? read back as 0 (2026-10-18).
+        self.rf_off()
 
     def read_field(self):
         return {'field': 123.4, 'unit': 'G', 'unit_code': 1}
@@ -164,8 +173,28 @@ class Device:
         self.disconnect()
 
 
+# The STFMR Start's folder dialog is begin_scan_run's since 2026-10-18 (the
+# shared save step).  answer_folder_dialog(test) patches it for one test: it
+# asks the last harness's select_csv_save_directory stand-in, so each test
+# keeps its own folder, its Cancel (None) or its re-entrant Start.
+_HARNESSES = []
+
+
+def folder_dialog(*_args, title='', initialdir=None, **_kwargs):
+    folder = _HARNESSES[-1].select_csv_save_directory(title, initialdir)
+    return '' if folder is None else str(folder)
+
+
+def answer_folder_dialog(case):
+    patcher = patch.object(app.filedialog, 'askdirectory', side_effect=folder_dialog)
+    dialog = patcher.start()
+    case.addCleanup(patcher.stop)
+    return dialog
+
+
 def harness(folder, meter='MFLI', stop='6', end_current='1'):
     h = object.__new__(app.CombinedControlApp)
+    _HARNESSES[:] = [h]
     h.root = Root()
     h.closing = h.stfmr_lockin_closed = h.stfmr_lockin_running = False
     h.stfmr_lockin_starting = False
@@ -243,6 +272,7 @@ class StreamingTests(unittest.TestCase):
         # Start's file-name step (2026-10-18), left blank: the timestamped default.
         self.file_name = patch.object(app.simpledialog, 'askstring', return_value='').start()
         self.addCleanup(patch.stopall)
+        self.folder_dialog = answer_folder_dialog(self)
 
     def start(self, **kwargs):
         h = harness(self.tmp.name, **kwargs)
@@ -261,7 +291,10 @@ class StreamingTests(unittest.TestCase):
         h.start_stfmr_lockin_scan()
         self.assertEqual(h.stfmr_lockin_rows, [{'old': 1}])
         self.assertFalse(h.stfmr_lockin_starting)
-        self.confirm.assert_not_called()
+        # The shared order since 2026-10-18: the Yes/No, then the folder.
+        self.confirm.assert_called_once()
+        self.folder_dialog.assert_called_once()
+        self.file_name.assert_not_called()
         self.assertFalse(h.stfmr_lockin_controllers['smb'].calls)
         self.assertFalse(list(Path(self.tmp.name).iterdir()))
 
@@ -357,7 +390,9 @@ class StreamingTests(unittest.TestCase):
         self.assertNotIn('auto_png_paths', end)
         self.assertTrue(end['outputs_off'])
         self.assertEqual(len(read_csv(recorder.csv_path)), 6)
-        self.assertIn('CSV saved', h.stfmr_lockin_status_var.get())
+        # The convention's finish line (user, 2026-10-18).
+        self.assertEqual(h.stfmr_lockin_status_var.get(),
+                         'Completed; 4886 and RF zeroed; 6 points saved; 2 frequencies')
         h._finish_stfmr_lockin_scan()
         h._export_stfmr_lockin_data_pngs.assert_not_called()
 
@@ -517,14 +552,26 @@ class StreamingTests(unittest.TestCase):
         self.error.assert_called_once()
 
     def test_shutdown_error_is_logged_without_claiming_outputs_off(self):
+        # A zero that fails no longer turns a completed sweep into a failed
+        # one: it stays completed, as on SHV, its outputs say so, and a
+        # dialog says CHECK IT (user, 2026-10-18; it was outcome "error").
         h, recorder = self.start(stop='5')
         h.stfmr_lockin_controllers['kepco'].zero_error = True
         h.root.drain()
-        end = events(recorder)[-1]
-        self.assertEqual(end['outcome'], 'error')
+        history = events(recorder)
+        end = history[-1]
+        self.assertEqual(end['outcome'], 'completed')
         self.assertFalse(end['outputs_off'])
         self.assertTrue(end['shutdown_errors'])
+        self.assertEqual(end['outputs'], {'4886': 'zero FAILED: zero failed', 'SMB100A RF': 'zeroed'})
+        self.assertEqual([e['event'] for e in history[-3:]], ['outputs_zeroed', 'note', 'run_finished'])
+        self.assertEqual(history[-2]['text'], 'STFMR sweep end: 4886 zero FAILED: zero failed; SMB100A RF zeroed')
         self.assertIn(('rf_off',), h.stfmr_lockin_controllers['smb'].calls)
+        self.assertEqual(h.stfmr_lockin_status_var.get(),
+                         'Completed; 4886 zero FAILED; RF zeroed: check it; 3 points saved; 1 frequency')
+        self.error.assert_called_once()
+        self.assertEqual(self.error.call_args.args[0], 'STFMR outputs')
+        self.assertIn('CHECK IT: 4886 not confirmed at zero', self.error.call_args.args[1])
 
 
 if __name__ == '__main__':
