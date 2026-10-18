@@ -990,7 +990,9 @@ class SHVUnchangedTests(unittest.TestCase):
     def test_the_shv_page_keeps_its_own_modes_and_methods(self):
         import inspect
         source = inspect.getsource(app.RTEPanel)
-        self.assertIn("values=('Field', 'Current', 'Angle')", source)
+        # Its own modes, Angle+Field and Angle+Current since 2026-10-18 (user).
+        self.assertIn("values=RTE_SCAN_MODES", source)
+        self.assertEqual(app.RTE_SCAN_MODES, ("Field", "Current", "Angle", "Angle+Field", "Angle+Current"))
         for name in ("Frequency", "PPMS_SCAN_MODES", "_ppms_frequency_scan_block", "_ppms_set_up_frequency",
                      "_ppms_wait_zurich_reference", "reference_timeout_s", "frequency_settle_s"):
             self.assertNotIn(name, source.replace("RTE_TRANSPORT_FREQUENCY_HZ", "").replace("Frequency Hz", ""))

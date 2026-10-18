@@ -56,10 +56,11 @@ class PanelDefaultTests(unittest.TestCase):
         # The PPMS page keeps its own excitation.
         self.assertEqual(self.app.ppms_panel.ppms_transport_frequency_var.get(), "317.3")
         # The start-up scan (user's figure, 2026-10-18): Angle, 0 to -360 deg
-        # in 5 deg steps, round trip, Settle s 0.5, Acquire s 2, Loops 1.
+        # in 5 deg steps, Settle s 0.5, Acquire s 2, Loops 1; round trip off
+        # since 2026-10-18 (user: "default not click Round trip").
         self.assertEqual(panel.ppms_simple_mode.get(), "Angle")
         self.assertEqual([v.get() for v in panel.ppms_simple_range], ["0", "-360", "5"])
-        self.assertIs(panel.rte_round_trip.get(), True)
+        self.assertIs(panel.rte_round_trip.get(), False)
         self.assertEqual((panel.ppms_field_scan_stable_var.get(), panel.ppms_acquisition_time_var.get(),
                           int(panel.ppms_field_scan_loop_var.get())), ("0.5", "2", 1))
         self.assertEqual(panel.rte_scan_units.get(), "Stage °")
