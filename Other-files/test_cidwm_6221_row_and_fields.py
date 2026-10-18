@@ -30,13 +30,15 @@ class FailedPulseRowTests(unittest.TestCase):
         controller = app.Keithley6221Controller(lambda _message: None)
         controller.instrument = instrument
         a = scan_page(controller)
-        folder = Path(self.enterContext(tempfile.TemporaryDirectory())) / "run"
-        folder.mkdir()
-        return a, folder
+        # The run folder through the shared recorder (user, 2026-10-18).
+        recorder = app.ScanRunRecorder(Path(self.enterContext(tempfile.TemporaryDirectory())), "CIDWM",
+                                       "run", {})
+        self.addCleanup(recorder.close, "test")
+        return a, recorder
 
     @staticmethod
-    def rows(folder):
-        with (folder / "run.csv").open(encoding="utf-8-sig") as file:
+    def rows(recorder):
+        with recorder.csv_path.open(encoding="utf-8-sig") as file:
             return list(csv.DictReader(file))
 
     def test_a_failed_check_after_init_has_its_row(self):

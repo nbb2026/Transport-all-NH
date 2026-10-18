@@ -1198,6 +1198,12 @@ MAGNET_CURRENT_LIMIT_A = 10.0
 # at most two averaging blocks plus this long for one, then records NaN
 # (review, 2026-10-13).
 MAGNET_SCAN_FRAME_TIMEOUT_S = 10.0
+# The magnet current scan's columns: Save CSV's, and since 2026-10-18 (user:
+# "live CSV like CIDWM") also the run folder's live CSV, in this order.
+MAGNET_SCAN_CSV_COLUMNS = (
+    "elapsed_s", "loop", "point_in_loop", "points_per_loop", "target_current_A", "read_current_A",
+    "measured_field_GS", "mean_roi_intensity", "std_roi_intensity", "sample_count",
+)
 # The two magnet commands "Zero both now" must know about while they are
 # queued or running (audit/review, 2026-10-13).
 MAGNET_ZERO_BOTH_LABEL = "Zero both magnets (not a power-off)"
@@ -1379,6 +1385,9 @@ KEITHLEY_RES_NPLC = 1.0
 KEITHLEY_RESULTS_DIRECTORY = (
     Path(__file__).resolve().parent / f"{Path(__file__).stem}_2410_Results"
 )
+# The MOKE-24 voltage scan's columns: Save CSV's, and since 2026-10-18 (user:
+# "live CSV like CIDWM") also the run folder's live CSV, in this order.
+KEITHLEY_SCAN_CSV_COLUMNS = ("set_voltage_V", "mean_roi_intensity", "std_roi_intensity", "sample_count")
 
 # Keithley 6221 pulsed-current defaults.  The source program used the 6221
 # waveform generator; here a 50% duty unipolar square wave is used so the
@@ -1435,6 +1444,21 @@ CIDWM_SCAN_FRAME_TIMEOUT_S = 10.0
 CIDWM_SCAN_DISPLAY_TIMEOUT_S = 3.0
 CIDWM_SCAN_DIRECTORY = (
     Path(__file__).resolve().parent / f"{Path(__file__).stem}_CIDWM_Results"
+)
+# The pulse sign scan's CSV columns per pulse source, unchanged since the run
+# folder's live CSV moved to the shared recorder (user, 2026-10-18).
+# in_compliance_at_readback: the 6221's condition when read just after INIT
+# (a µs pulse may have ended by then); the Avtech's amplitude and width are
+# read back before the pulse, overload_tripped is its output protection after
+# it; note: why a pulse that was applied has no images.
+CIDWM_SCAN_6221_COLUMNS = (
+    "pulse", "sign", "set_current_mA", "current_mA", "pulse_width_us", "compliance_V", "elapsed_s",
+    "in_compliance_at_readback", "roi_mean_processed", "processing", "raw_tiff", "processed_tiff",
+    "display_png", "note",
+)
+CIDWM_SCAN_AVTECH_COLUMNS = (
+    "pulse", "sign", "set_amplitude_V", "amplitude_V", "pulse_width_ns", "elapsed_s", "overload_tripped",
+    "roi_mean_processed", "processing", "raw_tiff", "processed_tiff", "display_png", "note",
 )
 K6221_PULSE_READBACK_INTERVAL_S = 0.25
 K6221_READBACK_MAX_POINTS = 2000
@@ -7018,6 +7042,35 @@ class Keithley2410Controller:
             self.last_set_voltage = 0.0
             if errors:
                 raise RuntimeError(f"{self.model} failed to turn output off: " + "; ".join(errors))
+
+    def output_off_read_back(self) -> None:
+        """The end of every MOKE-24 scan (user, 2026-10-18: zero the sources
+        at every scan end, read back where the instrument allows): 0 V (0 A
+        in current mode) and OUTP OFF as output_off, then :OUTP? and the
+        source level read back.  The readback decides: a failed write whose
+        readback is 0 and OFF is logged, not raised; anything else raises,
+        so the page says to check the source."""
+        with self.lock:
+            if self.instrument is None:
+                raise RuntimeError(f"Keithley {self.model} is not connected; its output state is unknown")
+            failure = None
+            try:
+                self.output_off()
+            except BaseException as error:
+                failure = error
+            after = f" (after: {failure})" if failure is not None else ""
+            level_query = ":SOUR:CURR?" if self.source_mode == "CURR" else ":SOUR:VOLT?"
+            try:
+                state = int(round(float(self.instrument.query(":OUTP?").strip())))
+                level = float(self.instrument.query(level_query).strip())
+            except BaseException as error:
+                raise RuntimeError(f"{self.model} output could not be read back: {error}{after}") from error
+            if state != 0 or not math.isfinite(level) or abs(level) > 1e-6:
+                raise RuntimeError(
+                    f"{self.model} did not read back 0 and OFF (:OUTP? {state}, {level_query} {level:g}){after}"
+                )
+            if failure is not None:
+                self.logger(f"Keithley {self.model}: read back 0 and OFF{after}")
 
     def disconnect(self) -> None:
         with self.lock:
@@ -13601,7 +13654,11 @@ class TkCameraWindow:
                     self.app.ingest_moke_roi_sample(
                         mean_value, getattr(frame, "window_start_monotonic", math.nan)
                     )
-                    self.app.ingest_2410_roi_sample(mean_value)
+                    # The MOKE-24 scan too keeps only frames begun after its
+                    # voltage step (C2-2, review, 2026-10-18).
+                    self.app.ingest_2410_roi_sample(
+                        mean_value, getattr(frame, "window_start_monotonic", math.nan)
+                    )
             else:
                 label = "ROI outside image"
         return label
@@ -14579,6 +14636,13 @@ class CombinedControlApp:
         self.magnet_scan_image_session_dir: Path | None = None
         self.magnet_csv_directory = MAGNET_SCAN_RESULTS_DIRECTORY
         self.magnet_scan_settings: dict[str, object] = {}
+        # The running scan's run folder, live CSV and log, how its end left
+        # the KEPCOs, and the last run folder, where Save CSV opens and whose
+        # parent the next Start's folder dialog opens at (user, 2026-10-18).
+        self.magnet_scan_recorder: ScanRunRecorder | None = None
+        self.magnet_scan_outputs: dict[str, str] | None = None
+        self.magnet_scan_run_directory: Path | None = None
+        self.magnet_scan_stop_reason = ""
         self.moke_roi = None
         self.moke_roi_var = tk.StringVar(value="ROI: none selected")
         self.moke_roi_mean_var = tk.StringVar(value="ROI mean: --")
@@ -14645,6 +14709,14 @@ class CombinedControlApp:
         self.keithley_scan_image_session_dir: Path | None = None
         self.keithley_csv_directory = KEITHLEY_RESULTS_DIRECTORY
         self.keithley_scan_settings: dict[str, object] = {}
+        # As the magnet scan's (user, 2026-10-18).  keithley_point_set_monotonic:
+        # when the point's set_voltage returned; ROI samples from frames begun
+        # earlier are not kept (C2-2, review, 2026-10-18).
+        self.keithley_scan_recorder: ScanRunRecorder | None = None
+        self.keithley_scan_outputs: dict[str, str] | None = None
+        self.keithley_scan_run_directory: Path | None = None
+        self.keithley_scan_stop_reason = ""
+        self.keithley_point_set_monotonic = math.inf
         self.keithley_resource_var = tk.StringVar(value=KEITHLEY_DEFAULT_RESOURCE)
         self.keithley_model_var = tk.StringVar(value=KEITHLEY_DEFAULT_MODEL)
         self.keithley_hazard_var = tk.StringVar()
@@ -14711,6 +14783,10 @@ class CombinedControlApp:
         self.cidwm_scan_status_var = tk.StringVar(value="Pulse sign scan: not started")
         self.cidwm_scan_directory = CIDWM_SCAN_DIRECTORY
         self.cidwm_image_directory = CIDWM_SCAN_DIRECTORY
+        # As the magnet scan's (user, 2026-10-18).
+        self.cidwm_scan_recorder: ScanRunRecorder | None = None
+        self.cidwm_scan_outputs: dict[str, str] | None = None
+        self.cidwm_scan_stop_reason = ""
         self.k6221_roi_var = tk.StringVar(value="ROI: none selected")
         self.k6221_roi_mean_var = tk.StringVar(value="ROI mean: --")
         self.k6221_safety_var = tk.BooleanVar(value=False)
@@ -14722,6 +14798,10 @@ class CombinedControlApp:
         self.avtech_busy = False
         self.avtech_closed = False
         self.k6221_output_unknown = False  # set when a 6221 off failed
+        # Set when an Avtech off failed; the 6221 does not pulse until an off
+        # succeeds, as k6221_output_unknown holds the Avtech (M4, review,
+        # 2026-10-18).
+        self.avtech_output_unknown = False
         self.avtech_resource_var = tk.StringVar(value=AVTECH_DEFAULT_RESOURCE)
         self.avtech_amplitude_var = tk.StringVar(value=f"{AVTECH_DEFAULT_AMPLITUDE_V:g}")
         self.avtech_width_var = tk.StringVar(value=f"{AVTECH_DEFAULT_WIDTH_NS:g}")
@@ -25076,8 +25156,10 @@ class CombinedControlApp:
         ).grid(row=0, column=1, sticky="e")
         scan_path_label = ttk.Label(
             scan_box,
+            # Every ending zeroes the KEPCOs (user, 2026-10-18); no longer
+            # the stop and error only.
             text=(
-                "Path: start→end→start; returns to start on completion, zeroed on stop/error."
+                "Path: start→end→start; both KEPCOs to 0 A at every end (done, stop, error)."
             ),
             foreground="#9a4d00",
             wraplength=420,
@@ -25439,7 +25521,8 @@ class CombinedControlApp:
         self.keithley_off_button = tk.Button(
             output,
             text=f"{self.keithley_model_var.get()} zero / output off",
-            command=self.stop_keithley_scan,
+            # Named in a running scan's log (user, 2026-10-18).
+            command=lambda: self.stop_keithley_scan("zero / output off"),
             bg="#d70018",
             fg="white",
             activebackground="#a80012",
@@ -27318,7 +27401,7 @@ class CombinedControlApp:
                 int(self.difference_spatial_binning_var.get()),
                 int(self.difference_mean_filter_var.get()),
             )
-        except (TypeError, ValueError, tk.TclError):
+        except (TypeError, ValueError, OverflowError, tk.TclError):  # "1e400" (M6, 2026-10-18)
             self._restore_difference_display_average_vars()
         try:
             exposure_ms = float(self.camera_exposure_ms_var.get().strip())
@@ -27352,14 +27435,18 @@ class CombinedControlApp:
 
     def camera_start_failed(self, error: BaseException) -> None:
         # A running MOKE scan has no images any more: stop it (review,
-        # 2026-10-09; it went on driving the magnet or Keithley).
-        for running, event in (
-            (self.magnet_scan_running, self.magnet_scan_stop_event),
-            (self.keithley_scan_running, self.keithley_stop_event),
-            (self.k6221_scan_running, self.k6221_stop_event),
+        # 2026-10-09; it went on driving the magnet or Keithley), in its log
+        # too (user, 2026-10-18).
+        for running, event, page in (
+            (self.magnet_scan_running, self.magnet_scan_stop_event, "magnet"),
+            (self.keithley_scan_running, self.keithley_stop_event, "keithley"),
+            (self.k6221_scan_running, self.k6221_stop_event, "cidwm"),
         ):
             if running:
                 event.set()
+                if not self.__dict__.get(f"{page}_scan_stop_reason"):
+                    setattr(self, f"{page}_scan_stop_reason", "the camera failing")
+                self._scan_log(f"{page}_scan_recorder", "stop_requested", button="the camera failing")
         failed_camera = self.camera_window
         self.camera_window = None
         self.camera_connected = False
@@ -27935,17 +28022,15 @@ class CombinedControlApp:
 
         def failed(error: BaseException) -> None:
             self.operation_var.set(f"{source} display image save failed")
-            messagebox.showerror(
-                "Save display image failed", str(error), parent=self.root
-            )
+            self._dialog_after_drain("showerror", "Save display image failed", str(error))
 
         def saved(path: Path) -> None:
             self.operation_var.set(f"{source} display image saved")
-            messagebox.showinfo(
+            self._dialog_after_drain(
+                "showinfo",
                 "Save display image",
                 "Saved the current Camera Live 8-bit display image (no overlays):\n"
                 f"{path}",
-                parent=self.root,
             )
 
         self.submit_file_export(export_key, camera, work, saved, failed)
@@ -27984,17 +28069,15 @@ class CombinedControlApp:
 
         def failed(error: BaseException) -> None:
             self.operation_var.set(f"{source} {image_label} save failed")
-            messagebox.showerror(
-                f"Save {image_label} failed", str(error), parent=self.root
-            )
+            self._dialog_after_drain("showerror", f"Save {image_label} failed", str(error))
 
         def saved(path: Path) -> None:
             self.operation_var.set(f"{source} float32 {image_label} saved")
-            messagebox.showinfo(
+            self._dialog_after_drain(
+                "showinfo",
                 f"Save {image_label}",
                 "Saved the difference → temporal average → binning → mean-filter processed image:\n"
                 f"{path}",
-                parent=self.root,
             )
 
         self.submit_file_export(
@@ -28037,14 +28120,14 @@ class CombinedControlApp:
 
         def failed(error: BaseException) -> None:
             self.operation_var.set(f"{source} 16-bit image save failed")
-            messagebox.showerror("Save 16-bit image failed", str(error), parent=self.root)
+            self._dialog_after_drain("showerror", "Save 16-bit image failed", str(error))
 
         def saved(path: Path) -> None:
             self.operation_var.set(f"{source} 16-bit image saved")
-            messagebox.showinfo(
+            self._dialog_after_drain(
+                "showinfo",
                 "Save current image",
                 f"Saved the 16-bit raw image:\n{path}",
-                parent=self.root,
             )
 
         self.submit_file_export(
@@ -28278,7 +28361,7 @@ class CombinedControlApp:
                 spatial_binning,
                 mean_filter_size,
             )
-        except (TypeError, ValueError, tk.TclError) as error:
+        except (TypeError, ValueError, OverflowError, tk.TclError) as error:  # "1e400" (M6, 2026-10-18)
             self._restore_difference_display_average_vars()
             messagebox.showerror("Difference processing", str(error), parent=self.root)
             return
@@ -28710,7 +28793,7 @@ class CombinedControlApp:
                 stats = future.result()
             except BaseException as error:
                 self.camera_video_status_var.set("Recording save failed")
-                messagebox.showerror("Camera Live recording", str(error), parent=self.root)
+                self._dialog_after_drain("showerror", "Camera Live recording", str(error))
                 return
             path = Path(stats["path"])
             self.camera_video_status_var.set(
@@ -28777,6 +28860,99 @@ class CombinedControlApp:
     # KEPCO electromagnets and Gauss meters in the MOKE tab
     # ------------------------------------------------------------------
 
+    # ---- The MOKE, MOKE-24 and CIDWM scans' run files and endings ----------
+    # Each follows the convention above ScanRunRecorder (user, 2026-10-18):
+    # begin_scan_run after the Yes/No, a row and point_saved per point, the
+    # sources zeroed on the worker at every ending, the close before any
+    # dialog, and the finish's dialogs from the Tk event loop.
+
+    def _dialog_after_drain(self, kind: str, title: str, message: str, **options) -> None:
+        """messagebox.<kind>(title, message) opened from the Tk event loop
+        (root.after(0, ...)), not inside drain_ui_queue, where a dialog holds
+        every page's post_ui callbacks until it closes (the README's
+        2026-10-14 rule; M5, review, 2026-10-18).  The finishes, task ends
+        and saves of the MOKE, MOKE-24, CIDWM, stage and camera pages open
+        theirs here.  Nothing opens once the program is closing."""
+        def open_dialog() -> None:
+            if not self.closing:
+                getattr(messagebox, kind)(title, message, parent=self.root, **options)
+
+        if self.closing:
+            return
+        try:
+            self.root.after(0, open_dialog)
+        except tk.TclError:
+            pass  # the window is being destroyed: nothing is shown
+
+    @staticmethod
+    def _scan_run_parent(last_run: Path | None, fallback) -> Path:
+        """Where a Start's folder dialog opens: beside the last run folder (so
+        runs are not nested in each other), else the page's results folder."""
+        return Path(last_run).parent if last_run is not None else Path(fallback)
+
+    def _scan_log(self, attribute: str, name: str, /, **details) -> None:
+        """One event in the page's running scan log (self.<attribute>), from
+        either thread; never raises (the recorder keeps a failure for check())."""
+        recorder = self.__dict__.get(attribute)
+        if recorder is not None:
+            recorder.event(name, **details)
+
+    def _scan_page_log(self, attribute: str, text: str) -> None:
+        """A page log line, and while the scan's log is open also its "note"."""
+        self.thread_log(text)
+        self._scan_log(attribute, "note", text=str(text))
+
+    def _close_scan_recorder(self, attribute: str, outcome: str, /, **details) -> None:
+        """run_finished and the close of self.<attribute>, best effort, once;
+        what went wrong is in the page log."""
+        recorder = self.__dict__.get(attribute)
+        setattr(self, attribute, None)
+        if recorder is None or recorder.closed:
+            return
+        for problem in recorder.close(outcome, **details):
+            self.thread_log(f"{recorder.label} run folder {recorder.directory}: {problem}")
+
+    @staticmethod
+    def _scan_outputs_detail(results, labels) -> str:
+        """The dialog's line on how each output ended, in zeroing order."""
+        if not results:
+            names = list(labels)
+            joined = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+            return f"At the end: {joined} not confirmed zeroed"
+        names = list(labels) + [name for name in results if name not in labels]
+        return "At the end: " + "; ".join(f"{name} {results.get(name, 'not confirmed zeroed')}" for name in names)
+
+    def _finish_scan_run(self, attribute: str, *, page: str, title: str, error, stopped: bool, results,
+                         labels, together: str = "", points: int = 0, stop_reason: str = "",
+                         **details) -> str:
+        """A scan's finish on the Tk thread: the status ("Completed; " or
+        "Stopped; " + how the outputs ended, or "Failed: <error>"), the log's
+        run_finished and close, then the dialog: the error with how each
+        output ended, or CHECK IT when an output was not confirmed at zero.
+        Returns the status."""
+        outputs = scan_end_outputs_text(results, labels, together=together)
+        if error is not None:
+            outcome, status = "error", f"Failed: {short_status_error(error, 100)}"
+        elif stopped:
+            outcome, status = "stopped", f"Stopped; {outputs}"
+        else:
+            outcome, status = "completed", f"Completed; {outputs}"
+        self._close_scan_recorder(
+            attribute, outcome, points_saved=int(points), status=status, outputs=results,
+            error="" if error is None else str(error),
+            **({"stop_reason": stop_reason} if outcome == "stopped" and stop_reason else {}), **details,
+        )
+        detail = self._scan_outputs_detail(results, labels)
+        failed = not results or any(results.get(name) not in ("zeroed", "not connected") for name in labels)
+        if error is not None:
+            self._dialog_after_drain("showerror", title, f"{error}\n\n{detail}")
+        elif failed:
+            self._dialog_after_drain(
+                "showerror", f"{page} outputs",
+                f"The scan {outcome}, but an output was not confirmed at zero: CHECK IT.\n\n{detail}",
+            )
+        return status
+
     def refresh_magnet_ports(self) -> None:
         ports = [] if list_ports is None else [item.device for item in list_ports.comports()]
         values = sorted(set(ports + list(MAGNET_DEFAULT_PORTS.values())))
@@ -28803,6 +28979,17 @@ class CombinedControlApp:
             for channel in self.magnet_channels.values()
         )
 
+    def _magnet_bop_connected(self, key: str) -> bool:
+        bop = self.magnet_channels[key].bop
+        return bool(bop is not None and bop.connected)
+
+    def _magnet_any_device_connected(self) -> bool:
+        return any(
+            device is not None and device.connected
+            for channel in self.magnet_channels.values()
+            for device in (channel.bop, channel.gauss)
+        )
+
     def _update_magnet_connection_indicators(self) -> None:
         devices = {
             "OUT_BOP": self.magnet_channels["OUT"].bop,
@@ -28826,7 +29013,19 @@ class CombinedControlApp:
     def _refresh_magnet_connection_summary(self) -> None:
         self._update_magnet_connection_indicators()
         if not self._magnet_devices_ready():
-            self.magnet_connection_var.set("Not connected")
+            # A gaussmeter (or a BOP) that dropped leaves the others open:
+            # Zero, Zero both and Disconnect still work then (M1, review,
+            # 2026-10-18), so the line says what is still open.
+            missing = [
+                f"{MAGNET_CHANNEL_LABELS[key].lower()} {name}"
+                for key, channel in self.magnet_channels.items()
+                for name, device in (("KEPCO", channel.bop), ("gaussmeter", channel.gauss))
+                if device is None or not device.connected
+            ]
+            self.magnet_connection_var.set(
+                "Not connected" if not self._magnet_any_device_connected()
+                else "Partly connected (no " + ", ".join(missing) + "): press Connect again"
+            )
             return
         selected = self._selected_magnet_switch_key()
         switch_text = (
@@ -28935,18 +29134,22 @@ class CombinedControlApp:
         control_idle = not self.magnet_busy and not running
         armed = self._magnet_bops_armed()
         safety_ok = bool(self.magnet_safety_var.get())
+        # Zero, Zero both and Disconnect need only the BOPs (Disconnect any
+        # open device): a gaussmeter that dropped locked all three while a
+        # KEPCO could still be driving the magnet (M1, review, 2026-10-18).
+        bop_open = {key: self._magnet_bop_connected(key) for key in self.magnet_channels}
         self.magnet_connect_button.configure(
             state="disabled" if connected or self.magnet_busy or running else "normal"
         )
         self.magnet_disconnect_button.configure(
             state=(
                 "normal"
-                if connected and not self.magnet_busy and not running
+                if self._magnet_any_device_connected() and not self.magnet_busy and not running
                 else "disabled"
             )
         )
         self.magnet_zero_button.configure(
-            state="normal" if connected else "disabled"
+            state="normal" if any(bop_open.values()) else "disabled"
         )
         if hasattr(self, "magnet_initialize_button"):
             self.magnet_initialize_button.configure(
@@ -28983,7 +29186,7 @@ class CombinedControlApp:
             widgets["down"].configure(state=action_state)
             widgets["up"].configure(state=action_state)
             widgets["zero"].configure(
-                state="normal" if active else "disabled"
+                state="normal" if bop_open.get(key) and selected == key and control_idle else "disabled"
             )
             widgets["field_zero"].configure(state=action_state)
         for combo in self.magnet_port_combos.values():
@@ -29131,7 +29334,7 @@ class CombinedControlApp:
                     )
             elif not self.closing:
                 self.magnet_status_var.set(f"{label} failed: {error}")
-                messagebox.showerror("MOKE magnet control", str(error), parent=self.root)
+                self._dialog_after_drain("showerror", "MOKE magnet control", str(error))
         else:
             if is_poll:
                 self.magnet_poll_failures = 0
@@ -29157,7 +29360,12 @@ class CombinedControlApp:
             messagebox.showerror("MOKE serial settings", str(error), parent=self.root)
             return
 
-        def worker() -> dict[str, tuple[float | None, float | None]]:
+        def worker():
+            # 0 A to every connected, armed BOP before its port is closed and
+            # opened again: Connect pressed while a gaussmeter had dropped
+            # closed a KEPCO that could still drive the magnet (M1, review,
+            # 2026-10-18).  A failed write is reported, not hidden.
+            warnings = self._magnet_zero_armed_bops()
             for channel in self.magnet_channels.values():
                 channel.close()
             try:
@@ -29187,13 +29395,19 @@ class CombinedControlApp:
                 # Open its serial handles for a later switch, but do not make
                 # an inactive BOP reply a condition for connecting the active
                 # path.  Only the selected BOP/Gauss pair is validated here.
-                return self._read_all_magnets_worker(selected)
-            except BaseException:
+                return self._read_all_magnets_worker(selected), warnings
+            except BaseException as error:
                 for channel in self.magnet_channels.values():
                     channel.close()
+                if warnings:
+                    raise RuntimeError(
+                        f"{error}; before reconnecting, 0 A could not be written to "
+                        + "; ".join(warnings) + ": check the KEPCO output"
+                    ) from error
                 raise
 
-        def success(readings) -> None:
+        def success(result) -> None:
+            readings, warnings = result
             self._show_magnet_readings(readings, selected)
             for key in ("OUT", "IN"):
                 if key != selected:
@@ -29204,10 +29418,30 @@ class CombinedControlApp:
                 f"{MAGNET_SWITCH_KEY_TO_LABEL[selected]} path BOP/gaussmeter communication verified; "
                 "that BOP is in remote (output not enabled); the inactive path only has its ports opened, unverified. "
                 "KEPCO not yet enabled; click \"Enable/zero active path\" first"
+                + ("; before reconnecting, 0 A could not be written to " + "; ".join(warnings)
+                   + ": check the KEPCO output" if warnings else "")
             )
+            if warnings:
+                self.append_log("MOKE: " + self.magnet_status_var.get())
+                self._dialog_after_drain("showwarning", "Magnet", self.magnet_status_var.get())
             self.magnet_auto_poll_var.set(True)
 
         self._submit_magnet_task("Connect the four magnet devices", worker, success)
+
+    def _magnet_zero_armed_bops(self, *, armed_only: bool = True) -> list[str]:
+        """0 A written (not read back) to every connected BOP, only to the
+        enabled ones unless armed_only is False; the failures, as
+        "<path>: <error>".  On the magnet worker."""
+        warnings = []
+        for key, channel in self.magnet_channels.items():
+            bop = channel.bop
+            if bop is None or not bop.connected or (armed_only and not bop.output_armed):
+                continue
+            try:
+                bop.set_current(0.0)
+            except BaseException as error:
+                warnings.append(f"{MAGNET_CHANNEL_LABELS[key]}: {error}")
+        return warnings
 
     def disconnect_magnets(self) -> None:
         self.magnet_auto_poll_var.set(False)
@@ -29216,13 +29450,7 @@ class CombinedControlApp:
             # 0 A to every connected BOP first, as on exit (review,
             # 2026-10-09: Disconnect used to leave the magnet energised, and
             # exit then skipped the closed channels).
-            warnings = []
-            for key, channel in self.magnet_channels.items():
-                if channel.bop is not None and channel.bop.connected:
-                    try:
-                        channel.bop.set_current(0.0)
-                    except BaseException as error:
-                        warnings.append(f"{MAGNET_CHANNEL_LABELS[key]}: {error}")
+            warnings = self._magnet_zero_armed_bops(armed_only=False)
             for channel in self.magnet_channels.values():
                 channel.close()
             return warnings
@@ -29235,10 +29463,9 @@ class CombinedControlApp:
                 "Disconnected, but 0 A could not be written to "
                 + "; ".join(warnings) + ": check the KEPCO output"
             )
-            if warnings and not self.closing:
-                messagebox.showwarning(
-                    "Magnet", self.magnet_status_var.get(), parent=self.root
-                )
+            if warnings:
+                self.append_log("MOKE: " + self.magnet_status_var.get())
+                self._dialog_after_drain("showwarning", "Magnet", self.magnet_status_var.get())
             self.magnet_poll_failures = 0
             self.magnet_safety_var.set(False)
             self.magnet_last_currents = {"OUT": None, "IN": None}
@@ -29254,6 +29481,13 @@ class CombinedControlApp:
         self.magnet_disconnect_pending = True
         if not self._submit_magnet_task(MAGNET_DISCONNECT_LABEL, worker, success):
             self.magnet_disconnect_pending = False
+
+    def _magnet_log(self, text: str) -> None:
+        """A magnet notice (a recovery, a zero that failed, a field-zero
+        step) in the page log, and while a scan runs in its log as a note.
+        They went to magnet_thread_log, which drops the devices' high-rate
+        TX/RX lines, so none was ever seen (M2, review, 2026-10-18)."""
+        self._scan_page_log("magnet_scan_recorder", f"MOKE: {text}")
 
     def _require_magnet_bop(self, key: str) -> MagnetKepcoBOP:
         bop = self.magnet_channels[key].bop
@@ -29282,7 +29516,7 @@ class CombinedControlApp:
                 f"{MAGNET_CHANNEL_LABELS[key]} KEPCO/BOP serial object has not been created"
             )
         label = MAGNET_CHANNEL_LABELS[key]
-        self.magnet_thread_log(
+        self._magnet_log(
             f"{label} BOP not responding: reopening {bop.port} and zeroing safely first"
         )
         bop.close()
@@ -29297,7 +29531,7 @@ class CombinedControlApp:
             time.sleep(MAGNET_COMMAND_SETTLE_S)
             readback = bop.query_current()
         self.magnet_last_currents[key] = readback
-        self.magnet_thread_log(
+        self._magnet_log(
             f"{label} BOP recovered, zero readback {readback:+.3f} A"
         )
         return readback
@@ -29307,7 +29541,7 @@ class CombinedControlApp:
         try:
             return bop.initialize_at_zero()
         except BaseException as first_error:
-            self.magnet_thread_log(
+            self._magnet_log(
                 f"{MAGNET_CHANNEL_LABELS[key]} BOP first initialisation failed: "
                 f"{first_error}; performing one reconnect recovery"
             )
@@ -29318,7 +29552,7 @@ class CombinedControlApp:
         try:
             return meter.query_field()
         except BaseException as first_error:
-            self.magnet_thread_log(
+            self._magnet_log(
                 f"{MAGNET_CHANNEL_LABELS[key]} Gauss first read failed: "
                 f"{first_error}; retrying after reopening {meter.port}"
             )
@@ -29527,12 +29761,16 @@ class CombinedControlApp:
             raise RuntimeError("The active-path BOP is not enabled; click \"Enable/zero active path\" first")
 
         def safe_current_zero() -> float | None:
+            """The 0 A readback, or None when 0 A was not confirmed: then the
+            current is unknown, never shown or kept as 0 A (M2, review,
+            2026-10-18: a failed zero was reported as 0 A)."""
             try:
                 return self._write_and_verify_magnet_current(key, 0.0)
             except BaseException as zero_error:
-                self.magnet_thread_log(
-                    f"{MAGNET_CHANNEL_LABELS[key]} zeroing the current after a field-zero error failed: "
-                    f"{zero_error}"
+                self.magnet_last_currents[key] = None
+                self._magnet_log(
+                    f"{MAGNET_CHANNEL_LABELS[key]} zeroing the current after a field-zero stop or error failed "
+                    f"(0 A not confirmed): {zero_error}"
                 )
                 return None
 
@@ -29544,7 +29782,7 @@ class CombinedControlApp:
             field = float(self._query_gauss_with_recovery(key))
             if not math.isfinite(current) or not math.isfinite(field):
                 raise MagnetProtocolError("Current or field readback is not a finite value")
-            self.magnet_thread_log(
+            self._magnet_log(
                 f"{MAGNET_CHANNEL_LABELS[key]} field-zero starting point: "
                 f"I={current:+.3f} A, B={field:+.2f} GS"
             )
@@ -29567,7 +29805,7 @@ class CombinedControlApp:
             ):
                 zero_readback = safe_current_zero()
                 return {
-                    "current": 0.0 if zero_readback is None else zero_readback,
+                    "current": zero_readback,
                     "field": float(self._query_gauss_with_recovery(key)),
                     "iterations": 0,
                     "cancelled": True,
@@ -29599,7 +29837,7 @@ class CombinedControlApp:
                 if self.magnet_field_zero_stop_event.is_set():
                     zero_readback = safe_current_zero()
                     return {
-                        "current": 0.0 if zero_readback is None else zero_readback,
+                        "current": zero_readback,
                         "field": float(self._query_gauss_with_recovery(key)),
                         "iterations": iteration,
                         "cancelled": True,
@@ -29628,7 +29866,7 @@ class CombinedControlApp:
                 ):
                     zero_readback = safe_current_zero()
                     return {
-                        "current": 0.0 if zero_readback is None else zero_readback,
+                        "current": zero_readback,
                         "field": float(self._query_gauss_with_recovery(key)),
                         "iterations": iteration,
                         "cancelled": True,
@@ -29646,7 +29884,7 @@ class CombinedControlApp:
                         and 0.2 <= abs(new_slope / slope) <= 5.0
                     ):
                         slope = new_slope
-                self.magnet_thread_log(
+                self._magnet_log(
                     f"{MAGNET_CHANNEL_LABELS[key]} field-zero step {iteration}: "
                     f"I={current:+.3f} A, B={field:+.2f} GS"
                 )
@@ -29655,8 +29893,11 @@ class CombinedControlApp:
                 f"Still {field:+.2f} GS after {MAGNET_FIELD_ZERO_MAX_ITERATIONS} corrections "
                 f"(tolerance ±{MAGNET_FIELD_ZERO_TOLERANCE_GS:g} GS)"
             )
-        except BaseException:
-            safe_current_zero()
+        except BaseException as error:
+            if safe_current_zero() is None:
+                raise MagnetProtocolError(
+                    f"{error}; then 0 A could not be confirmed: check the KEPCO output"
+                ) from error
             raise
 
     def zero_magnet_field(self, key: str) -> None:
@@ -29687,11 +29928,26 @@ class CombinedControlApp:
                 self.magnet_field_zero_active = False
 
         def success(result) -> None:
-            current = float(result["current"])
             field = float(result["field"])
+            self.magnet_field_vars[key].set(f"{field:+.2f} GS")
+            if result["current"] is None:
+                # Stopped, and 0 A was not confirmed: the current is unknown
+                # (M2, review, 2026-10-18).
+                self.magnet_target_vars[key].set("0.000")
+                self.magnet_current_vars[key].set("0 A not confirmed")
+                self.magnet_last_currents[key] = None
+                self.magnet_status_var.set(
+                    f"{MAGNET_CHANNEL_LABELS[key]} field zeroing stopped; 0 A NOT confirmed: "
+                    f"check the KEPCO output (field {field:+.2f} GS)"
+                )
+                self.append_log("MOKE: " + self.magnet_status_var.get())
+                self._dialog_after_drain("showwarning", "MOKE field zeroing", self.magnet_status_var.get())
+                self.magnet_poll_failures = 0
+                self.magnet_auto_poll_var.set(True)
+                return
+            current = float(result["current"])
             self.magnet_target_vars[key].set(f"{current:.3f}")
             self.magnet_current_vars[key].set(f"{current:+.3f} A")
-            self.magnet_field_vars[key].set(f"{field:+.2f} GS")
             self.magnet_last_currents[key] = current
             if result["cancelled"]:
                 self.magnet_status_var.set(
@@ -29720,7 +29976,7 @@ class CombinedControlApp:
             )
             return
         if self.magnet_scan_running:
-            self.stop_magnet_scan()
+            self.stop_magnet_scan("Zero both now")
             return
         # Disconnect writes 0 A to every connected BOP before it closes the
         # ports; a zero queued behind it found them closed and showed a false
@@ -29754,52 +30010,79 @@ class CombinedControlApp:
         if self.magnet_busy:
             self.magnet_abort_event.set()
 
-        def worker() -> dict[str, float]:
+        def worker() -> dict[str, dict[str, object]]:
             # The single worker runs this only after the aborted command has
             # returned.
             self.magnet_abort_event.clear()
             # Send T 0 to every open BOP as a best-effort emergency action, but
             # require and verify a reply only from the physical selector's
             # active path.  The inactive BOP is electrically isolated and may
-            # correctly remain silent.
-            bops = {
-                key: self._require_magnet_bop(key) for key in ("OUT", "IN")
-            }
-            for key, bop in bops.items():
+            # correctly remain silent.  A BOP that is not open is skipped and
+            # named (M1: a dropped device locked this button), and a failed
+            # write is reported, no longer dropped (M2, review, 2026-10-18).
+            notes: dict[str, str] = {}
+            for key in ("OUT", "IN"):
+                bop = self.magnet_channels[key].bop
+                if bop is None or not bop.connected:
+                    notes[key] = "not connected"
+                    continue
                 try:
                     bop.set_current(0.0)
                 except BaseException as error:
-                    self.magnet_thread_log(
-                        f"{MAGNET_CHANNEL_LABELS[key]} BOP zero-write notice failed: {error}"
-                    )
+                    notes[key] = f"0 A write failed ({error})"
+                    self._magnet_log(f"{MAGNET_CHANNEL_LABELS[key]} BOP 0 A write failed: {error}")
             time.sleep(MAGNET_COMMAND_SETTLE_S)
-
+            bop = self.magnet_channels[selected].bop
+            if bop is None or not bop.connected:
+                others = "; ".join(f"{MAGNET_CHANNEL_LABELS[key]}: {note}" for key, note in notes.items()
+                                   if key != selected)
+                raise RuntimeError(
+                    f"The {MAGNET_CHANNEL_LABELS[selected]} KEPCO/BOP (the active path) is not connected, so "
+                    "0 A could not be sent or read back there" + (f"; {others}" if others else "")
+                    + ": check the KEPCO output"
+                )
             try:
-                readback = bops[selected].query_current()
+                readback = bop.query_current()
             except BaseException:
                 readback = self._recover_magnet_bop_at_zero(
                     selected,
-                    rearm=bool(bops[selected].output_armed),
+                    rearm=bool(bop.output_armed),
                 )
-            return {selected: readback}
+            return {"readings": {selected: readback}, "notes": notes}
 
-        def success(readings) -> None:
+        def success(result) -> None:
+            readings, notes = result["readings"], result["notes"]
             for key in ("OUT", "IN"):
                 self.magnet_target_vars[key].set("0.000")
                 if key not in readings and key != selected:
-                    self.magnet_current_vars[key].set("-- A (inactive path)")
+                    self.magnet_current_vars[key].set(
+                        "-- A (inactive path)" if key not in notes else f"-- A ({notes[key].split(' (')[0]})"
+                    )
+            problems = []
             for key, value in readings.items():
                 self.magnet_current_vars[key].set(f"{value:+.3f} A")
                 self.magnet_last_currents[key] = value
+                if not abs(float(value)) <= MAGNET_CURRENT_READBACK_TOLERANCE_A:
+                    problems.append(f"the {MAGNET_CHANNEL_LABELS[key].lower()} path reads back "
+                                    f"{value:+.3f} A, NOT 0 A")
+            problems += [f"{MAGNET_CHANNEL_LABELS[key]}: {note}" for key, note in notes.items()
+                         if key not in readings]
             selected_label = (
                 MAGNET_SWITCH_KEY_TO_LABEL[selected]
                 if selected is not None
                 else "active"
             )
+            if not problems:
+                self.magnet_status_var.set(
+                    f"0 A sent to both paths; the {selected_label} path was verified by readback. "
+                    "Note: this is not a hardware power-off"
+                )
+                return
             self.magnet_status_var.set(
-                f"0 A sent to both paths; the {selected_label} path was verified by readback. "
-                "Note: this is not a hardware power-off"
+                "Zero both: 0 A sent; " + "; ".join(problems) + ": check the KEPCO output"
             )
+            self.append_log("MOKE: " + self.magnet_status_var.get())
+            self._dialog_after_drain("showwarning", "MOKE magnet zero", self.magnet_status_var.get())
 
         self.magnet_zero_pending = True
         if not self._submit_magnet_task(
@@ -29985,13 +30268,18 @@ class CombinedControlApp:
         self._redraw_live_intensity_plots()
 
     def _roi_live_settings(self) -> tuple[float, int]:
+        # "1e400" in the IntVar box raised OverflowError and "inf"/"nan" in
+        # the interval box passed, from every camera frame's ROI sample and
+        # every redraw (M6, review, 2026-10-18): the defaults instead.
         try:
             interval_s = float(self.roi_live_interval_var.get())
-        except (ValueError, TypeError, tk.TclError):
+        except (ValueError, TypeError, OverflowError, tk.TclError):
+            interval_s = ROI_LIVE_DEFAULT_INTERVAL_S
+        if not math.isfinite(interval_s):
             interval_s = ROI_LIVE_DEFAULT_INTERVAL_S
         try:
             max_points = int(self.roi_live_max_points_var.get())
-        except (ValueError, TypeError, tk.TclError):
+        except (ValueError, TypeError, OverflowError, tk.TclError):
             max_points = ROI_LIVE_DEFAULT_MAX_POINTS
         return min(max(interval_s, 0.05), 3600.0), min(
             max(max_points, 10), 10000
@@ -30001,7 +30289,7 @@ class CombinedControlApp:
         try:
             interval_s = float(self.roi_live_interval_var.get())
             max_points = int(self.roi_live_max_points_var.get())
-        except (ValueError, TypeError, tk.TclError):
+        except (ValueError, TypeError, OverflowError, tk.TclError):  # "1e400" (M6, 2026-10-18)
             messagebox.showerror(
                 "ROI live curve settings",
                 "Refresh interval and maximum points must be valid numbers.",
@@ -30246,7 +30534,9 @@ class CombinedControlApp:
             loops = int(self.magnet_scan_loop_var.get())
             settle_s = float(self.magnet_scan_settle_var.get())
             collect_s = float(self.magnet_scan_collect_var.get())
-        except (ValueError, TypeError, tk.TclError) as error:
+        # OverflowError: "1e400" in the Loop box; Start had already paused
+        # the continuous read, which then stayed off (M6, review, 2026-10-18).
+        except (ValueError, TypeError, OverflowError, tk.TclError) as error:
             raise ValueError("All magnet current scan parameters must be valid numbers") from error
         if not all(
             math.isfinite(value)
@@ -30386,21 +30676,9 @@ class CombinedControlApp:
             camera_average_block_s(getattr(self.camera_window, "latest_frame", None)),
         ) + 0.5
         estimated_total_seconds = len(sequence) * point_seconds
-        summary = (
-            f"Scan channel: {label}\n"
-            f"Current: {sequence[0][3]:g} A → {end_current:g} A → "
-            f"{sequence[-1][3]:g} A\n"
-            f"Loops: {loops}; total points: {len(sequence)}\n"
-            f"Settle {settle_s:g} s per point, ROI acquisition {collect_s:g} s\n"
-            f"Estimated duration: {self._format_scan_duration(estimated_total_seconds)}"
-        )
-        if not messagebox.askyesno(
-            "MOKE current scan", summary, icon="warning", parent=self.root
-        ):
-            abort_scan_preparation("Magnet current scan cancelled; continuous reading resumed")
-            return
-
-        image_session = None
+        # The image folder's checks come before the Yes/No, as every input's
+        # (user, 2026-10-18: the convention above ScanRunRecorder); the
+        # images' session folder is made after the run folder.
         if self.magnet_save_images_var.get():
             if self.magnet_image_directory is None:
                 abort_scan_preparation("Scan not started; continuous reading resumed")
@@ -30412,18 +30690,30 @@ class CombinedControlApp:
                 return
             try:
                 self.latest_processed_image_snapshot()
-                image_session = self.create_scan_image_session(
-                    self.magnet_image_directory, "MOKE_field_scan"
-                )
             except BaseException as error:
                 abort_scan_preparation("Scan image preparation failed; continuous reading resumed")
                 messagebox.showerror("MOKE scan images", str(error), parent=self.root)
                 return
-        self.magnet_scan_image_session_dir = image_session
-        if image_session is not None:
-            self.magnet_image_directory_var.set(f"Scan images for this run: {image_session}")
+        other_label = MAGNET_CHANNEL_LABELS["IN" if key == "OUT" else "OUT"]
+        summary = (
+            f"Scan channel: {label}\n"
+            f"Current: {sequence[0][3]:g} A → {end_current:g} A → "
+            f"{sequence[-1][3]:g} A\n"
+            f"Loops: {loops}; total points: {len(sequence)}\n"
+            f"Settle {settle_s:g} s per point, ROI acquisition {collect_s:g} s\n"
+            f"Estimated duration: {self._format_scan_duration(estimated_total_seconds)}\n\n"
+            # Every ending zeroes the KEPCOs (user, 2026-10-18).
+            f"At every end (completed, stopped or failed) the {label.lower()} KEPCO is set to 0 A and read "
+            f"back, and the {other_label.lower()} KEPCO is sent 0 A.\n"
+            "Next: the folder for the run (its live CSV and log), then an optional file name."
+        )
+        if not messagebox.askyesno(
+            "MOKE current scan", summary, icon="warning", parent=self.root
+        ):
+            abort_scan_preparation("Magnet current scan cancelled; continuous reading resumed")
+            return
 
-        self.magnet_scan_settings = {
+        settings = {
             "software.version": APP_VERSION,
             "scan.started_local": datetime_module.datetime.now().isoformat(
                 timespec="seconds"
@@ -30453,7 +30743,6 @@ class CombinedControlApp:
             "scan.sync_processed_images": bool(
                 self.magnet_save_images_var.get()
             ),
-            "scan.image_session": image_session,
             "magnet.physical_selector_confirmation": self.magnet_switch_var.get(),
             "magnet.output_armed": bool(self._magnet_bops_armed()),
             # Log metadata only: the safe read, so text in the "Interval s"
@@ -30465,10 +30754,54 @@ class CombinedControlApp:
             "magnet.IN_BOP_port": self.magnet_port_vars["IN_BOP"].get(),
             "magnet.IN_GAUSS_port": self.magnet_port_vars["IN_GAUSS"].get(),
         }
-        self.magnet_scan_settings.update(
+        settings.update(
             self.camera_scan_parameter_snapshot(self.moke_roi)
         )
+        # The run folder <folder>/<name>/ with its live CSV and log, after the
+        # Yes/No (user, 2026-10-18: "live CSV like CIDWM", through the shared
+        # recorder); None: cancelled, refused or not made, and nothing starts.
+        recorder = begin_scan_run(
+            self.root, "MOKE", "Select the folder for the MOKE current scan run (live CSV and log)",
+            self._scan_run_parent(self.__dict__.get("magnet_scan_run_directory"), self.magnet_csv_directory),
+            settings, prefix="MOKE",
+        )
+        if recorder is None:
+            abort_scan_preparation("Scan not started; continuous reading resumed")
+            return
+        # The page may have changed while the dialogs were open.
+        if (
+            self.magnet_scan_running
+            or self.magnet_busy
+            or not self._magnet_devices_ready()
+            or not self._magnet_bops_armed()
+        ):
+            recorder.close("not_started", error="the magnet page changed while the dialogs were open",
+                           points_saved=0)
+            abort_scan_preparation("Scan not started: the magnet page changed while the dialogs were open")
+            return
 
+        image_session = None
+        if self.magnet_save_images_var.get():
+            try:
+                image_session = self.create_scan_image_session(
+                    self.magnet_image_directory, "MOKE_field_scan"
+                )
+            except BaseException as error:
+                recorder.close("not_started", error=f"scan images: {error}", points_saved=0)
+                abort_scan_preparation("Scan image preparation failed; continuous reading resumed")
+                messagebox.showerror("MOKE scan images", str(error), parent=self.root)
+                return
+        self.magnet_scan_image_session_dir = image_session
+        if image_session is not None:
+            self.magnet_image_directory_var.set(f"Scan images for this run: {image_session}")
+
+        self.magnet_scan_settings = dict(settings)
+        self.magnet_scan_settings["scan.image_session"] = image_session
+        self.magnet_scan_settings["scan.run_folder"] = str(recorder.directory)
+        self.magnet_scan_recorder = recorder
+        self.magnet_scan_run_directory = recorder.directory
+        self.magnet_scan_outputs = None
+        self.magnet_scan_stop_reason = ""
         self.magnet_scan_stop_event.clear()
         with self.magnet_scan_data_lock:
             self.magnet_scan_running = True
@@ -30507,17 +30840,34 @@ class CombinedControlApp:
             if self.magnet_poll_inflight
             else "Starting the magnet current scan…"
         )
+        self._scan_page_log(
+            "magnet_scan_recorder",
+            f"MOKE current scan, {label}: {len(sequence)} points; run folder {recorder.directory} "
+            f"({recorder.csv_path.name} and {recorder.log_path.name})",
+        )
         self._update_magnet_controls()
         self._update_keithley_controls()
         self._update_k6221_controls()
-        future = self.magnet_executor.submit(
-            self._magnet_scan_worker,
-            sequence,
-            settle_s,
-            collect_s,
-            key,
-            image_session,
-        )
+        try:
+            future = self.magnet_executor.submit(
+                self._magnet_scan_worker,
+                sequence,
+                settle_s,
+                collect_s,
+                key,
+                image_session,
+            )
+        except BaseException as error:
+            with self.magnet_scan_data_lock:
+                self.magnet_scan_running = False
+                self.magnet_scan_active_key = None
+            self._close_scan_recorder("magnet_scan_recorder", "not_started", error=str(error), points_saved=0)
+            abort_scan_preparation(f"Scan not started: {error}")
+            self._update_magnet_controls()
+            self._update_keithley_controls()
+            self._update_k6221_controls()
+            messagebox.showerror("MOKE current scan", f"The scan was not started: {error}", parent=self.root)
+            return
 
         def done(completed) -> None:
             try:
@@ -30537,161 +30887,233 @@ class CombinedControlApp:
         key: str,
         image_session: Path | None,
     ) -> None:
+        # Every ending, completed, stopped or failed, zeroes both KEPCOs here
+        # on the worker once the scan's own clean-up has run, each tried
+        # whatever the other did (user, 2026-10-18: every scan page zeroes
+        # its sources at every end, as SHV).  Until then a Stop or a failure
+        # wrote 0 A to the scanned path without reading it back.  The results
+        # are for the finish, the log and the dialog.
+        self.magnet_scan_outputs = None
+        try:
+            self._magnet_scan_points(sequence, settle_s, collect_s, key, image_session)
+        finally:
+            with self.magnet_scan_data_lock:
+                self.magnet_scan_collecting = False
+            self.magnet_scan_outputs = self._magnet_zero_outputs_after_scan(key)
+
+    def _magnet_scan_points(
+        self,
+        sequence,
+        settle_s: float,
+        collect_s: float,
+        key: str,
+        image_session: Path | None,
+    ) -> None:
+        """The scan's points, each row onto the live CSV before the next
+        current step (user, 2026-10-18).  The KEPCOs' zeroing follows in
+        _magnet_scan_worker."""
+        recorder = self.__dict__.get("magnet_scan_recorder")
         # Refuse before the first write when the gaussmeter is not connected.
         self._require_gauss_meter(key)
-        try:
-            for (
+        self._scan_log(
+            "magnet_scan_recorder", "scan_started", channel=MAGNET_CHANNEL_LABELS[key], points=len(sequence),
+            settle_s=settle_s, collect_s=collect_s,
+            image_session=None if image_session is None else str(image_session),
+        )
+        for (
+            loop_index,
+            point_index,
+            points_per_loop,
+            target_current,
+        ) in sequence:
+            if recorder is not None:
+                recorder.check()  # a failed log write ends the scan here
+            if self.magnet_scan_stop_event.is_set():
+                break
+            self.post_ui(
+                lambda loop=loop_index, point=point_index, total=points_per_loop,
+                current=target_current: self.magnet_status_var.set(
+                    f"Loop {loop} · point {point}/{total}: "
+                    f"writing {current:+.4f} A…"
+                )
+            )
+            read_current = self._write_and_verify_magnet_current(
+                key, target_current
+            )
+            # Frames that began exposing before this may show the
+            # previous point's current (review, 2026-10-13).
+            point_set = time.monotonic()
+            self.post_ui(
+                lambda loop=loop_index, point=point_index, total=points_per_loop,
+                current=target_current: self.magnet_status_var.set(
+                    f"Loop {loop} · point {point}/{total}: "
+                    f"set {current:+.4f} A, settling…"
+                )
+            )
+            if self.magnet_scan_stop_event.wait(settle_s):
+                break
+            with self.magnet_scan_data_lock:
+                self.magnet_scan_current_samples = []
+                self.magnet_scan_point_set_monotonic = point_set
+                self.magnet_scan_collecting = True
+            self.post_ui(
+                lambda loop=loop_index, point=point_index, total=points_per_loop:
+                self.magnet_status_var.set(
+                    f"Loop {loop} · point {point}/{total}: acquiring ROI…"
+                )
+            )
+            # Only samples whose average began after point_set count
+            # (ingest_moke_roi_sample).  With a short Settle/Acquire none
+            # may have come yet, so keep acquiring until one does, as the
+            # CIDWM scan waits for a frame newer than its pulse; no
+            # camera window, no wait (review, 2026-10-13).
+            camera = getattr(self, "camera_window", None)
+            block_s = camera_average_block_s(getattr(camera, "latest_frame", None))
+            deadline = (
+                time.monotonic() + collect_s + block_s + MAGNET_SCAN_FRAME_TIMEOUT_S
+            )
+            stopped = self.magnet_scan_stop_event.wait(collect_s)
+            while not stopped and camera is not None:
+                with self.magnet_scan_data_lock:
+                    have_sample = bool(self.magnet_scan_current_samples)
+                if have_sample or time.monotonic() >= deadline:
+                    break
+                stopped = self.magnet_scan_stop_event.wait(0.05)
+            with self.magnet_scan_data_lock:
+                samples = list(self.magnet_scan_current_samples)
+                self.magnet_scan_collecting = False
+            if stopped:
+                break
+            # ``_write_and_verify_magnet_current`` already obtained and
+            # tolerance-checked this point's BOP readback.  The scan owns
+            # the single magnet executor for its whole run, so no other
+            # command can change the current during settle/collection.
+            # Querying IQ a second time here only duplicated serial work
+            # and, on adapters that need retries, added several seconds to
+            # every point without improving the recorded value.
+            # The field read reopens the gaussmeter once on a missed
+            # reply, as every other field read does; one FTDI timeout
+            # aborted the whole scan (audit, 2026-10-13).
+            actual_field = self._query_gauss_with_recovery(key)
+            if samples:
+                array = np.asarray(samples, dtype=np.float64)
+                mean_value = float(np.mean(array))
+                std_value = float(np.std(array))
+                count = int(array.size)
+            else:
+                mean_value = float("nan")
+                std_value = float("nan")
+                count = 0
+            if image_session is not None:
+                snapshot, image_settings = self.latest_processed_image_snapshot()
+                processing_suffix = self.processed_image_settings_suffix(
+                    image_settings
+                )
+                image_timestamp = datetime_module.datetime.now().strftime(
+                    "%Y%m%d_%H%M%S_%f"
+                )
+                filename = (
+                    f"MOKE_L{loop_index:03d}_P{point_index:04d}_"
+                    f"Iset_{target_current:+.6f}A_"
+                    f"Iread_{read_current:+.6f}A_"
+                    f"Field_{actual_field:+.6f}GS_"
+                    f"{processing_suffix}_float32_"
+                    f"{image_timestamp}.tiff"
+                )
+                save_processed_f32_tiff(snapshot, image_session / filename)
+            elapsed = time.time() - self.magnet_scan_start_time
+            row = (
+                elapsed,
                 loop_index,
                 point_index,
                 points_per_loop,
                 target_current,
-            ) in sequence:
-                if self.magnet_scan_stop_event.is_set():
-                    break
-                self.post_ui(
-                    lambda loop=loop_index, point=point_index, total=points_per_loop,
-                    current=target_current: self.magnet_status_var.set(
-                        f"Loop {loop} · point {point}/{total}: "
-                        f"writing {current:+.4f} A…"
-                    )
-                )
-                read_current = self._write_and_verify_magnet_current(
-                    key, target_current
-                )
-                # Frames that began exposing before this may show the
-                # previous point's current (review, 2026-10-13).
-                point_set = time.monotonic()
-                self.post_ui(
-                    lambda loop=loop_index, point=point_index, total=points_per_loop,
-                    current=target_current: self.magnet_status_var.set(
-                        f"Loop {loop} · point {point}/{total}: "
-                        f"set {current:+.4f} A, settling…"
-                    )
-                )
-                if self.magnet_scan_stop_event.wait(settle_s):
-                    break
-                with self.magnet_scan_data_lock:
-                    self.magnet_scan_current_samples = []
-                    self.magnet_scan_point_set_monotonic = point_set
-                    self.magnet_scan_collecting = True
-                self.post_ui(
-                    lambda loop=loop_index, point=point_index, total=points_per_loop:
-                    self.magnet_status_var.set(
-                        f"Loop {loop} · point {point}/{total}: acquiring ROI…"
-                    )
-                )
-                # Only samples whose average began after point_set count
-                # (ingest_moke_roi_sample).  With a short Settle/Acquire none
-                # may have come yet, so keep acquiring until one does, as the
-                # CIDWM scan waits for a frame newer than its pulse; no
-                # camera window, no wait (review, 2026-10-13).
-                camera = getattr(self, "camera_window", None)
-                block_s = camera_average_block_s(getattr(camera, "latest_frame", None))
-                deadline = (
-                    time.monotonic() + collect_s + block_s + MAGNET_SCAN_FRAME_TIMEOUT_S
-                )
-                stopped = self.magnet_scan_stop_event.wait(collect_s)
-                while not stopped and camera is not None:
-                    with self.magnet_scan_data_lock:
-                        have_sample = bool(self.magnet_scan_current_samples)
-                    if have_sample or time.monotonic() >= deadline:
-                        break
-                    stopped = self.magnet_scan_stop_event.wait(0.05)
-                with self.magnet_scan_data_lock:
-                    samples = list(self.magnet_scan_current_samples)
-                    self.magnet_scan_collecting = False
-                if stopped:
-                    break
-                # ``_write_and_verify_magnet_current`` already obtained and
-                # tolerance-checked this point's BOP readback.  The scan owns
-                # the single magnet executor for its whole run, so no other
-                # command can change the current during settle/collection.
-                # Querying IQ a second time here only duplicated serial work
-                # and, on adapters that need retries, added several seconds to
-                # every point without improving the recorded value.
-                # The field read reopens the gaussmeter once on a missed
-                # reply, as every other field read does; one FTDI timeout
-                # aborted the whole scan (audit, 2026-10-13).
-                actual_field = self._query_gauss_with_recovery(key)
-                if samples:
-                    array = np.asarray(samples, dtype=np.float64)
-                    mean_value = float(np.mean(array))
-                    std_value = float(np.std(array))
-                    count = int(array.size)
-                else:
-                    mean_value = float("nan")
-                    std_value = float("nan")
-                    count = 0
-                if image_session is not None:
-                    snapshot, image_settings = self.latest_processed_image_snapshot()
-                    processing_suffix = self.processed_image_settings_suffix(
-                        image_settings
-                    )
-                    image_timestamp = datetime_module.datetime.now().strftime(
-                        "%Y%m%d_%H%M%S_%f"
-                    )
-                    filename = (
-                        f"MOKE_L{loop_index:03d}_P{point_index:04d}_"
-                        f"Iset_{target_current:+.6f}A_"
-                        f"Iread_{read_current:+.6f}A_"
-                        f"Field_{actual_field:+.6f}GS_"
-                        f"{processing_suffix}_float32_"
-                        f"{image_timestamp}.tiff"
-                    )
-                    save_processed_f32_tiff(snapshot, image_session / filename)
-                elapsed = time.time() - self.magnet_scan_start_time
-                row = (
-                    elapsed,
-                    loop_index,
-                    point_index,
-                    points_per_loop,
-                    target_current,
-                    read_current,
-                    actual_field,
-                    mean_value,
-                    std_value,
-                    count,
-                )
-                with self.magnet_scan_data_lock:
-                    self.magnet_scan_rows.append(row)
-                self.post_ui(
-                    lambda values=row, selected=key: (
-                        self._append_magnet_scan_point(selected, values)
-                    )
-                )
-            if not self.magnet_scan_stop_event.is_set():
-                # Keep executor ownership until the selected supply is zeroed.
-                # This is cleanup, not an additional hysteresis measurement.
-                self.post_ui(lambda: self.magnet_status_var.set(
-                    "Loop acquisition complete; zeroing the selected magnet current…"
-                ))
-                zero_readback = self._write_and_verify_magnet_current(key, 0.0)
-                self.post_ui(lambda selected=key, current=zero_readback:
-                             self._magnet_scan_zero_readback(selected, current))
-        except BaseException:
-            try:
-                self._require_magnet_bop(key).set_current(0.0)
-            except BaseException:
-                pass
-            else:
-                # 0 A written: the Target box shows it, as after a finished
-                # scan.  Up/Down/Flip start from that box, so after Stop or
-                # an error they stepped from the pre-scan target (Flip of
-                # 1.500 wrote -1.5 A).  The readback box is left alone: this
-                # 0 A was not read back (audit, 2026-10-13).
-                self.post_ui(lambda: self.magnet_target_vars[key].set("0.000"))
-            raise
-        finally:
+                read_current,
+                actual_field,
+                mean_value,
+                std_value,
+                count,
+            )
             with self.magnet_scan_data_lock:
-                self.magnet_scan_collecting = False
-            if self.magnet_scan_stop_event.is_set():
+                self.magnet_scan_rows.append(row)
+            if recorder is not None:
+                # The live CSV, before the next current step (user,
+                # 2026-10-18); Save CSV's columns.
+                recorder.append_row(dict(zip(MAGNET_SCAN_CSV_COLUMNS, row)))
+                recorder.event(
+                    "point_saved", index=recorder.rows_written, loop=loop_index, point=point_index,
+                    target_current_A=target_current, read_current_A=read_current,
+                    field_GS=actual_field, roi_samples=count,
+                )
+            self.post_ui(
+                lambda values=row, selected=key: (
+                    self._append_magnet_scan_point(selected, values)
+                )
+            )
+
+    @staticmethod
+    def _magnet_kepco_labels(key: str | None) -> tuple[str, str]:
+        """The two KEPCOs as a scan's end names them, the scanned path first."""
+        first = key if key in MAGNET_CHANNEL_LABELS else "OUT"
+        other = "IN" if first == "OUT" else "OUT"
+        return f"{MAGNET_CHANNEL_LABELS[first]} KEPCO", f"{MAGNET_CHANNEL_LABELS[other]} KEPCO"
+
+    def _magnet_zero_outputs_after_scan(self, key: str) -> dict[str, str]:
+        """At a scan's end, on the magnet worker (user, 2026-10-18): the
+        scanned path's KEPCO to 0 A and read back (the verified write, with
+        its retries and one reconnect), then the other path's KEPCO sent 0 A
+        without a readback (the physical selector isolates it, so it may
+        rightly stay silent, as for "Zero both now").  Each is tried whatever
+        the other did.  A scanned path whose port is no longer open has an
+        unknown current: a failure, never "not connected".  Never raises:
+        returns zero_scan_outputs' results; the log has them."""
+        other = "IN" if key == "OUT" else "OUT"
+        scanned_label, other_label = self._magnet_kepco_labels(key)
+        self.post_ui(lambda: self.magnet_status_var.set("Scan ended; setting both KEPCOs to 0 A…"))
+
+        def zero_scanned():
+            bop = self.magnet_channels[key].bop
+            if bop is None or not bop.connected:
+                self.magnet_last_currents[key] = None
+                raise RuntimeError("its port is not open, so its current is unknown")
+            try:
+                readback = self._write_and_verify_magnet_current(key, 0.0)
+            except BaseException:
+                # Not confirmed: the current is unknown, never kept as 0 A
+                # (M2, review, 2026-10-18).  One more plain 0 A, as before.
+                self.magnet_last_currents[key] = None
+                written = False
                 try:
-                    self._require_magnet_bop(key).set_current(0.0)
+                    bop.set_current(0.0)
+                    written = True
                 except BaseException:
                     pass
-                else:
-                    # As above: the Target box shows the 0 A just written.
-                    self.post_ui(lambda: self.magnet_target_vars[key].set("0.000"))
+
+                def unconfirmed() -> None:
+                    # Up/Down/Flip start from the Target box: 0.000 only when
+                    # 0 A was at least written (audit, 2026-10-13).
+                    if written:
+                        self.magnet_target_vars[key].set("0.000")
+                    self.magnet_current_vars[key].set("0 A not confirmed")
+
+                self.post_ui(unconfirmed)
+                raise
+            self.post_ui(lambda current=readback: self._magnet_scan_zero_readback(key, current))
+
+        def zero_other():
+            bop = self.magnet_channels[other].bop
+            if bop is None or not bop.connected:
+                return "not connected"
+            bop.set_current(0.0)
+            self.post_ui(lambda: self.magnet_target_vars[other].set("0.000"))
+
+        results = zero_scan_outputs(((scanned_label, zero_scanned), (other_label, zero_other)))
+        self._scan_log("magnet_scan_recorder", "outputs_zeroed", **results)
+        self._scan_page_log(
+            "magnet_scan_recorder",
+            "MOKE current scan end: " + "; ".join(f"{name} {state}" for name, state in results.items()),
+        )
+        return results
 
     def _magnet_scan_zero_readback(self, key: str, current: float) -> None:
         self.magnet_last_currents[key] = current
@@ -30762,33 +31184,38 @@ class CombinedControlApp:
 
     def _finish_magnet_scan(self, error) -> None:
         stopped = self.magnet_scan_stop_event.is_set()
+        key = self.magnet_scan_active_key
         with self.magnet_scan_data_lock:
             self.magnet_scan_running = False
             self.magnet_scan_collecting = False
             self.magnet_scan_active_key = None
         self.magnet_auto_poll_var.set(True)
+        # Every ending zeroed the KEPCOs on the worker (user, 2026-10-18):
+        # the status says how; the log's run_finished and its close come
+        # before any dialog, which opens from the Tk event loop.
+        status = self._finish_scan_run(
+            "magnet_scan_recorder", page="MOKE", title="MOKE current scan", error=error, stopped=stopped,
+            results=self.__dict__.get("magnet_scan_outputs"), labels=self._magnet_kepco_labels(key),
+            together="both KEPCOs", points=len(self.magnet_scan_rows),
+            stop_reason=self.__dict__.get("magnet_scan_stop_reason", ""),
+        )
         if error is not None:
             self.magnet_scan_eta_var.set(
                 f"Scan aborted · {self.magnet_scan_completed_points}/"
                 f"{self.magnet_scan_total_points} points done"
             )
-            self.magnet_status_var.set(f"Scan error; magnet zeroing attempted: {error}")
-            if not self.closing:
-                messagebox.showerror("MOKE current scan", str(error), parent=self.root)
         elif stopped:
             self.magnet_scan_eta_var.set(
                 f"Scan stopped · {self.magnet_scan_completed_points}/"
                 f"{self.magnet_scan_total_points} points done"
             )
-            self.magnet_status_var.set("Current scan stopped; the selected magnet was written to 0 A")
         else:
             self.magnet_scan_eta_var.set(
                 f"Scan complete · {self.magnet_scan_completed_points}/"
                 f"{self.magnet_scan_total_points} points"
             )
-            self.magnet_status_var.set(
-                "Current scan complete; the selected magnet was written to 0 A and verified by current readback (not a hardware power-off)"
-            )
+        self.magnet_status_var.set(status)
+        self.append_log(f"MOKE current scan: {status}")
         self.magnet_scan_estimated_finish = None
         if self.magnet_scan_eta_after_id is not None:
             try:
@@ -30801,15 +31228,19 @@ class CombinedControlApp:
         self._update_k6221_controls()
         self._update_moke_roi_controls()
 
-    def stop_magnet_scan(self) -> None:
+    def stop_magnet_scan(self, button: str = "Stop/zero") -> None:
         if not self.magnet_scan_running:
             return
         self.magnet_scan_stop_event.set()
+        # The stop first, then its log line (user, 2026-10-18).
+        if not self.__dict__.get("magnet_scan_stop_reason"):
+            self.magnet_scan_stop_reason = button
+        self._scan_log("magnet_scan_recorder", "stop_requested", button=button)
         self.magnet_scan_eta_var.set(
             f"Stopping… · {self.magnet_scan_completed_points}/"
             f"{self.magnet_scan_total_points} points done"
         )
-        self.magnet_status_var.set("Stopping the current scan and writing 0 A to the selected magnet…")
+        self.magnet_status_var.set("Stopping the scan; both KEPCOs then go to 0 A…")
         self._update_magnet_scan_controls()
 
     def save_magnet_scan_csv(self) -> None:
@@ -30824,9 +31255,11 @@ class CombinedControlApp:
             self.resume_camera_rendering(camera)
             self.magnet_status_var.set("No current scan data to save")
             return
+        # Opens in the last run folder (user, 2026-10-18), whose live CSV
+        # already holds every point.
         save_directory = self.select_csv_save_directory(
             "Select the folder for the MOKE CSV and Current / Field–ROI plot snapshot",
-            self.magnet_csv_directory,
+            self.__dict__.get("magnet_scan_run_directory") or self.magnet_csv_directory,
         )
         if save_directory is None:
             self.resume_camera_rendering(camera)
@@ -30836,18 +31269,7 @@ class CombinedControlApp:
         save_directory.mkdir(parents=True, exist_ok=True)
         timestamp = datetime_module.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         path = save_directory / f"Current_Field_ROI_{timestamp}.csv"
-        header = [
-            "elapsed_s",
-            "loop",
-            "point_in_loop",
-            "points_per_loop",
-            "target_current_A",
-            "read_current_A",
-            "measured_field_GS",
-            "mean_roi_intensity",
-            "std_roi_intensity",
-            "sample_count",
-        ]
+        header = list(MAGNET_SCAN_CSV_COLUMNS)
         snapshot_path = (
             save_directory
             / f"Magnet_current_Field_vs_ROI_intensity_snapshot_{timestamp}.png"
@@ -30936,7 +31358,7 @@ class CombinedControlApp:
 
         def failed(error: BaseException) -> None:
             self.magnet_status_var.set(f"MOKE CSV/parameter log save failed: {error}")
-            messagebox.showerror("MOKE current scan", str(error), parent=self.root)
+            self._dialog_after_drain("showerror", "MOKE current scan", str(error))
 
         def snapshot_scan() -> None:
             self.moke_plot_override = scan_plot
@@ -30959,21 +31381,21 @@ class CombinedControlApp:
                 self.magnet_status_var.set(
                     f"CSV saved; Current / Field–ROI plot snapshot failed: {error}"
                 )
-                messagebox.showwarning(
+                self._dialog_after_drain(
+                    "showwarning",
                     "MOKE current scan",
                     f"CSV and parameter log saved:\n{path}\n{log_path}\n\n"
                     f"Current / Field–ROI plot snapshot failed:\n{error}",
-                    parent=self.root,
                 )
                 return
             self.magnet_status_var.set(
                 f"CSV, PNG and parameter log saved: {path.parent}"
             )
-            messagebox.showinfo(
+            self._dialog_after_drain(
+                "showinfo",
                 "MOKE current scan",
                 f"Saved:\n{path.name}\n{snapshot_path.name}\n{log_path.name}"
                 f"\n\nFolder:\n{path.parent}",
-                parent=self.root,
             )
 
         self.submit_file_export(
@@ -31298,12 +31720,14 @@ class CombinedControlApp:
                     ),
                     is_poll=True,
                 )
+        # "inf" or "1e400" in the Interval s box raised OverflowError here and
+        # ended this timer for good (M6, review, 2026-10-18); at most an hour.
         try:
-            interval_ms = max(
+            interval_ms = min(3_600_000, max(
                 200,
                 int(float(self.magnet_poll_interval_var.get()) * 1000),
-            )
-        except (ValueError, tk.TclError):
+            ))
+        except (ValueError, TypeError, OverflowError, tk.TclError):
             interval_ms = 500
         self.root.after(interval_ms, self._magnet_poll_timer)
 
@@ -31506,8 +31930,7 @@ class CombinedControlApp:
                 "Connected" if self.keithley_controller.connected else "Not connected"
             )
             self.keithley_status_var.set(f"Connection failed: {error}")
-            if not self.closing:
-                messagebox.showerror("MOKE-24", str(error), parent=self.root)
+            self._dialog_after_drain("showerror", "MOKE-24", str(error))
         else:
             self.keithley_connection_var.set("Connected")
             self.keithley_status_var.set(str(identity))
@@ -31555,6 +31978,16 @@ class CombinedControlApp:
             return
         with self.keithley_data_lock:
             current = float(self.keithley_current_voltage)
+        if not math.isfinite(current):
+            # An off that was not confirmed left the voltage unknown (M3,
+            # review, 2026-10-18): nothing to step from.
+            messagebox.showwarning(
+                "MOKE-24",
+                f"The {self._keithley_page_model()}'s voltage is unknown (its output off was not confirmed): "
+                "press the red zero / output off button first",
+                parent=self.root,
+            )
+            return
         target = current + (1.0 if direction > 0 else -1.0) * step
         self._submit_keithley_manual_voltage(
             target, "Up" if direction > 0 else "Down"
@@ -31615,8 +32048,7 @@ class CombinedControlApp:
         error = completed.exception()
         if error is not None:
             self.keithley_status_var.set(f"Manual voltage failed: {error}")
-            if not self.closing:
-                messagebox.showerror("MOKE-24", str(error), parent=self.root)
+            self._dialog_after_drain("showerror", "MOKE-24", str(error))
         elif completed.result() is None:
             # Zero with the output off: 0 V and OUTP OFF were sent.
             with self.keithley_data_lock:
@@ -31657,17 +32089,21 @@ class CombinedControlApp:
         self.keithley_collecting = False
         self.keithley_manual_busy = False
         self.keithley_connection_var.set("Not connected")
-        self.keithley_voltage_var.set("Output: 0 V")
-        with self.keithley_data_lock:
-            self.keithley_current_voltage = 0.0
-        self.keithley_manual_voltage_var.set("0")
         self.keithley_safety_var.set(False)
         if error is None:
+            self.keithley_voltage_var.set("Output: 0 V")
+            with self.keithley_data_lock:
+                self.keithley_current_voltage = 0.0
+            self.keithley_manual_voltage_var.set("0")
             self.keithley_status_var.set("Zeroed and disconnected")
         else:
+            # The off before closing failed: unknown, never "0 V" (M3,
+            # review, 2026-10-18).
+            self.keithley_voltage_var.set(f"Output: check the {self._keithley_page_model()}")
+            with self.keithley_data_lock:
+                self.keithley_current_voltage = math.nan
             self.keithley_status_var.set(f"Disconnect warning: {error}")
-            if not self.closing:
-                messagebox.showerror("MOKE-24", str(error), parent=self.root)
+            self._dialog_after_drain("showerror", "MOKE-24", str(error))
         self._update_keithley_controls()
         self._update_nonlocal_vi_controls()
 
@@ -31793,7 +32229,14 @@ class CombinedControlApp:
             return
         self.camera_window.edit_roi(action, steps)
 
-    def ingest_2410_roi_sample(self, mean_value: float) -> None:
+    def ingest_2410_roi_sample(self, mean_value: float, window_start: float = math.nan) -> None:
+        """One processed ROI mean for the MOKE-24 scan.  ``window_start`` is
+        when the oldest frame in the averaged image began exposing
+        (CameraFrame.window_start_monotonic).  A voltage point keeps a sample
+        only if that is after its set_voltage returned: the 4-frame average
+        and its cross-fade reach back about 0.7 s, so short Settle/Acquire
+        values averaged frames from before the voltage step (C2-2, review,
+        2026-10-18; the magnet scan's fix of 2026-10-13).  NaN is never kept."""
         with self.keithley_data_lock:
             if not self.keithley_scan_running or self.keithley_scan_start_time is None:
                 return
@@ -31804,7 +32247,10 @@ class CombinedControlApp:
             )
             if len(self.keithley_raw_rows) > 30000:
                 self.keithley_raw_rows = self.keithley_raw_rows[-30000:]
-            if self.keithley_collecting:
+            if (
+                self.keithley_collecting
+                and window_start > self.__dict__.get("keithley_point_set_monotonic", math.inf)
+            ):
                 self.keithley_current_samples.append(float(mean_value))
 
     def _parse_keithley_scan(self):
@@ -31881,10 +32327,31 @@ class CombinedControlApp:
         except ValueError as error:
             messagebox.showwarning("MOKE-24", str(error), parent=self.root)
             return
+        # The image folder's checks come before the Yes/No, as every input's
+        # (user, 2026-10-18: the convention above ScanRunRecorder); the
+        # images' session folder is made after the run folder.
+        if self.keithley_save_images_var.get():
+            if self.keithley_image_directory is None:
+                messagebox.showwarning(
+                    "MOKE-24 scan images",
+                    "Re-tick the image saving option and select the save folder.",
+                    parent=self.root,
+                )
+                return
+            try:
+                self.latest_processed_image_snapshot()
+            except BaseException as error:
+                messagebox.showerror("MOKE-24 scan images", str(error), parent=self.root)
+                return
+        model = self.keithley_controller.model
         summary = (
             f"About to run a round-trip scan over {len(sequence)} voltage points.\n"
             f"Range: {sequence[0]:g} V → {max(sequence):g}/{min(sequence):g} V → {sequence[-1]:g} V\n"
-            f"Settle {settle_s:g} s and acquire {collect_s:g} s per point.\n\nStart?"
+            f"Settle {settle_s:g} s and acquire {collect_s:g} s per point.\n"
+            # Every ending zeroes the source (user, 2026-10-18).
+            f"At every end (completed, stopped or failed) the {model} is set to 0 V and its output "
+            "switched off, both read back.\n"
+            "Next: the folder for the run (its live CSV and log), then an optional file name.\n\nStart?"
         )
         # The software limit equals the hardware OVP, and the OVP levels are
         # ±5 % (2400-series manual), so above 95 % of the OVP the source may
@@ -31912,28 +32379,7 @@ class CombinedControlApp:
         ):
             return
 
-        image_session = None
-        if self.keithley_save_images_var.get():
-            if self.keithley_image_directory is None:
-                messagebox.showwarning(
-                    "MOKE-24 scan images",
-                    "Re-tick the image saving option and select the save folder.",
-                    parent=self.root,
-                )
-                return
-            try:
-                self.latest_processed_image_snapshot()
-                image_session = self.create_scan_image_session(
-                    self.keithley_image_directory, f"Keithley{self.keithley_controller.model}_voltage_scan"
-                )
-            except BaseException as error:
-                messagebox.showerror("MOKE-24 scan images", str(error), parent=self.root)
-                return
-        self.keithley_scan_image_session_dir = image_session
-        if image_session is not None:
-            self.keithley_image_directory_var.set(f"Scan images for this run: {image_session}")
-
-        self.keithley_scan_settings = {
+        settings = {
             "software.version": APP_VERSION,
             "scan.started_local": datetime_module.datetime.now().isoformat(
                 timespec="seconds"
@@ -31949,9 +32395,8 @@ class CombinedControlApp:
             "scan.sync_processed_images": bool(
                 self.keithley_save_images_var.get()
             ),
-            "scan.image_session": image_session,
             "instrument.resource": self.keithley_resource_var.get(),
-            "instrument.model": self.keithley_controller.model,
+            "instrument.model": model,
             "instrument.identity": self.keithley_controller.identity,
             "instrument.current_compliance_A": float(
                 self.keithley_controller.compliance_a
@@ -31971,15 +32416,60 @@ class CombinedControlApp:
                 )
             ),
         }
-        self.keithley_scan_settings.update(
+        settings.update(
             self.camera_scan_parameter_snapshot(self.keithley_roi)
         )
+        # The run folder <folder>/<name>/ with its live CSV and log, after the
+        # Yes/No (user, 2026-10-18: "live CSV like CIDWM", through the shared
+        # recorder); None: cancelled, refused or not made, and nothing starts.
+        recorder = begin_scan_run(
+            self.root, "MOKE-24", "Select the folder for the MOKE-24 voltage scan run (live CSV and log)",
+            self._scan_run_parent(self.__dict__.get("keithley_scan_run_directory"), self.keithley_csv_directory),
+            settings, prefix="MOKE24",
+        )
+        if recorder is None:
+            return
+        # The page may have changed while the dialogs were open.
+        if (
+            self.keithley_scan_running
+            or self.keithley_manual_busy
+            or self.keithley_connecting
+            or self.magnet_scan_running
+            or self.k6221_scan_running
+            or not self.keithley_controller.connected
+        ):
+            recorder.close("not_started", error="the MOKE-24 page changed while the dialogs were open",
+                           points_saved=0)
+            self.keithley_status_var.set("Scan not started: the page changed while the dialogs were open")
+            return
 
+        image_session = None
+        if self.keithley_save_images_var.get():
+            try:
+                image_session = self.create_scan_image_session(
+                    self.keithley_image_directory, f"Keithley{model}_voltage_scan"
+                )
+            except BaseException as error:
+                recorder.close("not_started", error=f"scan images: {error}", points_saved=0)
+                messagebox.showerror("MOKE-24 scan images", str(error), parent=self.root)
+                return
+        self.keithley_scan_image_session_dir = image_session
+        if image_session is not None:
+            self.keithley_image_directory_var.set(f"Scan images for this run: {image_session}")
+
+        self.keithley_scan_settings = dict(settings)
+        self.keithley_scan_settings["scan.image_session"] = image_session
+        self.keithley_scan_settings["scan.run_folder"] = str(recorder.directory)
+        self.keithley_scan_recorder = recorder
+        self.keithley_scan_run_directory = recorder.directory
+        self.keithley_scan_outputs = None
+        self.keithley_scan_stop_reason = ""
         self.keithley_stop_event.clear()
         with self.keithley_data_lock:
             self.keithley_raw_rows = []
             self.keithley_step_rows = []
             self.keithley_current_samples = []
+            self.keithley_point_set_monotonic = math.inf
             self.keithley_scan_start_time = time.time()
             self.keithley_scan_running = True
             self.keithley_collecting = False
@@ -31990,7 +32480,12 @@ class CombinedControlApp:
             maximum=max(1, self.keithley_scan_total_points),
             value=0,
         )
-        initial_point_seconds = settle_s + collect_s + 0.25
+        # A point also waits for an ROI average begun after its voltage step
+        # (C2-2, review, 2026-10-18), as a magnet scan point does.
+        initial_point_seconds = max(
+            settle_s + collect_s,
+            camera_average_block_s(getattr(self.camera_window, "latest_frame", None)),
+        ) + 0.25
         self.keithley_scan_estimated_finish = (
             self.keithley_scan_start_monotonic
             + initial_point_seconds * self.keithley_scan_total_points
@@ -32004,15 +32499,30 @@ class CombinedControlApp:
         self._refresh_keithley_scan_eta()
         self._redraw_keithley_plot()
         self.keithley_status_var.set("Starting the scan…")
+        self._scan_page_log(
+            "keithley_scan_recorder",
+            f"MOKE-24 voltage scan ({model}): {len(sequence)} points; run folder {recorder.directory} "
+            f"({recorder.csv_path.name} and {recorder.log_path.name})",
+        )
         self._update_keithley_controls()
         self._update_k6221_controls()
-        future = self.keithley_executor.submit(
-            self._keithley_scan_worker,
-            sequence,
-            settle_s,
-            collect_s,
-            image_session,
-        )
+        try:
+            future = self.keithley_executor.submit(
+                self._keithley_scan_worker,
+                sequence,
+                settle_s,
+                collect_s,
+                image_session,
+            )
+        except BaseException as error:
+            with self.keithley_data_lock:
+                self.keithley_scan_running = False
+            self._close_scan_recorder("keithley_scan_recorder", "not_started", error=str(error), points_saved=0)
+            self.keithley_status_var.set(f"Scan not started: {error}")
+            self._update_keithley_controls()
+            self._update_k6221_controls()
+            messagebox.showerror("MOKE-24", f"The scan was not started: {error}", parent=self.root)
+            return
         future.add_done_callback(
             lambda completed: self.post_ui(
                 lambda: self._finish_keithley_scan(completed.exception())
@@ -32026,79 +32536,148 @@ class CombinedControlApp:
         collect_s: float,
         image_session: Path | None,
     ) -> None:
+        # Every ending, completed, stopped or failed, sets the 2410 to 0 V and
+        # its output OFF, read back, here on the worker once the scan's own
+        # clean-up has run (user, 2026-10-18: every scan page zeroes its
+        # sources at every end, as SHV).  Until then a failed off replaced the
+        # scan's own error and was shown as "0 V / OFF" (M3).
+        self.keithley_scan_outputs = None
         try:
-            self.keithley_controller.enable_output(
-                max(abs(float(voltage)) for voltage in sequence)
-            )
-            # As read back when this scan turned the output on, not before.
-            self.keithley_scan_settings["instrument.hardware_source_ovp_readback_V"] = (
-                self.keithley_controller.source_ovp_readback_v
-            )
-            for index, voltage in enumerate(sequence, start=1):
-                if self.keithley_stop_event.is_set():
-                    break
-                actual_voltage = self.keithley_controller.set_voltage(voltage)
-                with self.keithley_data_lock:
-                    self.keithley_current_voltage = actual_voltage
-                    self.keithley_collecting = False
-                self.post_ui(
-                    lambda i=index, total=len(sequence), v=actual_voltage: (
-                        self.keithley_voltage_var.set(f"Output: {v:.6g} V"),
-                        self.keithley_manual_voltage_var.set(f"{v:.9g}"),
-                        self.keithley_status_var.set(
-                            f"Voltage point {i}/{total}: settling {settle_s:g} s"
-                        ),
-                    )
-                )
-                if self.keithley_stop_event.wait(settle_s):
-                    break
-                with self.keithley_data_lock:
-                    self.keithley_current_samples = []
-                    self.keithley_collecting = True
-                self.post_ui(
-                    lambda i=index, total=len(sequence): self.keithley_status_var.set(
-                        f"Voltage point {i}/{total}: acquiring ROI {collect_s:g} s"
-                    )
-                )
-                if self.keithley_stop_event.wait(collect_s):
-                    break
-                with self.keithley_data_lock:
-                    samples = list(self.keithley_current_samples)
-                    self.keithley_collecting = False
-                if samples:
-                    array = np.asarray(samples, dtype=np.float64)
-                    mean_value = float(np.mean(array))
-                    std_value = float(np.std(array))
-                    count = int(array.size)
-                else:
-                    mean_value = float("nan")
-                    std_value = float("nan")
-                    count = 0
-                if image_session is not None:
-                    snapshot, image_settings = self.latest_processed_image_snapshot()
-                    processing_suffix = self.processed_image_settings_suffix(
-                        image_settings
-                    )
-                    image_timestamp = datetime_module.datetime.now().strftime(
-                        "%Y%m%d_%H%M%S_%f"
-                    )
-                    filename = (
-                        f"Keithley{self.keithley_controller.model}_P{index:04d}_"
-                        f"Vset_{float(voltage):+.6f}V_"
-                        f"Vactual_{float(actual_voltage):+.6f}V_"
-                        f"{processing_suffix}_float32_"
-                        f"{image_timestamp}.tiff"
-                    )
-                    save_processed_f32_tiff(snapshot, image_session / filename)
-                row = (float(voltage), mean_value, std_value, count)
-                with self.keithley_data_lock:
-                    self.keithley_step_rows.append(row)
-                self.post_ui(lambda values=row: self._append_keithley_step_row(values))
+            self._keithley_scan_points(sequence, settle_s, collect_s, image_session)
         finally:
             with self.keithley_data_lock:
                 self.keithley_collecting = False
-                self.keithley_current_voltage = 0.0
-            self.keithley_controller.output_off()
+            self.keithley_scan_outputs = self._keithley_zero_outputs_after_scan()
+
+    def _keithley_scan_points(
+        self,
+        sequence,
+        settle_s: float,
+        collect_s: float,
+        image_session: Path | None,
+    ) -> None:
+        """The scan's points, each row onto the live CSV before the next
+        voltage step (user, 2026-10-18).  The zeroing follows in
+        _keithley_scan_worker."""
+        recorder = self.__dict__.get("keithley_scan_recorder")
+        self._scan_log("keithley_scan_recorder", "scan_started", model=self.keithley_controller.model,
+                       points=len(sequence), settle_s=settle_s, collect_s=collect_s,
+                       image_session=None if image_session is None else str(image_session))
+        if recorder is not None:
+            recorder.check()
+        self.keithley_controller.enable_output(
+            max(abs(float(voltage)) for voltage in sequence)
+        )
+        # As read back when this scan turned the output on, not before.
+        self.keithley_scan_settings["instrument.hardware_source_ovp_readback_V"] = (
+            self.keithley_controller.source_ovp_readback_v
+        )
+        for index, voltage in enumerate(sequence, start=1):
+            if recorder is not None:
+                recorder.check()  # a failed log write ends the scan here
+            if self.keithley_stop_event.is_set():
+                break
+            actual_voltage = self.keithley_controller.set_voltage(voltage)
+            # Frames that began exposing before this may show the previous
+            # voltage (C2-2, review, 2026-10-18).
+            point_set = time.monotonic()
+            with self.keithley_data_lock:
+                self.keithley_current_voltage = actual_voltage
+                self.keithley_collecting = False
+                self.keithley_point_set_monotonic = point_set
+            self.post_ui(
+                lambda i=index, total=len(sequence), v=actual_voltage: (
+                    self.keithley_voltage_var.set(f"Output: {v:.6g} V"),
+                    self.keithley_manual_voltage_var.set(f"{v:.9g}"),
+                    self.keithley_status_var.set(
+                        f"Voltage point {i}/{total}: settling {settle_s:g} s"
+                    ),
+                )
+            )
+            if self.keithley_stop_event.wait(settle_s):
+                break
+            with self.keithley_data_lock:
+                self.keithley_current_samples = []
+                self.keithley_collecting = True
+            self.post_ui(
+                lambda i=index, total=len(sequence): self.keithley_status_var.set(
+                    f"Voltage point {i}/{total}: acquiring ROI {collect_s:g} s"
+                )
+            )
+            # Only samples whose average began after point_set count
+            # (ingest_2410_roi_sample).  With a short Settle/Acquire none may
+            # have come yet, so keep acquiring until one does, as the magnet
+            # scan does; no camera window, no wait (C2-2, review, 2026-10-18).
+            camera = getattr(self, "camera_window", None)
+            block_s = camera_average_block_s(getattr(camera, "latest_frame", None))
+            deadline = time.monotonic() + collect_s + block_s + MAGNET_SCAN_FRAME_TIMEOUT_S
+            stopped = self.keithley_stop_event.wait(collect_s)
+            while not stopped and camera is not None:
+                with self.keithley_data_lock:
+                    have_sample = bool(self.keithley_current_samples)
+                if have_sample or time.monotonic() >= deadline:
+                    break
+                stopped = self.keithley_stop_event.wait(0.05)
+            with self.keithley_data_lock:
+                samples = list(self.keithley_current_samples)
+                self.keithley_collecting = False
+            if stopped:
+                break
+            if samples:
+                array = np.asarray(samples, dtype=np.float64)
+                mean_value = float(np.mean(array))
+                std_value = float(np.std(array))
+                count = int(array.size)
+            else:
+                mean_value = float("nan")
+                std_value = float("nan")
+                count = 0
+            if image_session is not None:
+                snapshot, image_settings = self.latest_processed_image_snapshot()
+                processing_suffix = self.processed_image_settings_suffix(
+                    image_settings
+                )
+                image_timestamp = datetime_module.datetime.now().strftime(
+                    "%Y%m%d_%H%M%S_%f"
+                )
+                filename = (
+                    f"Keithley{self.keithley_controller.model}_P{index:04d}_"
+                    f"Vset_{float(voltage):+.6f}V_"
+                    f"Vactual_{float(actual_voltage):+.6f}V_"
+                    f"{processing_suffix}_float32_"
+                    f"{image_timestamp}.tiff"
+                )
+                save_processed_f32_tiff(snapshot, image_session / filename)
+            row = (float(voltage), mean_value, std_value, count)
+            with self.keithley_data_lock:
+                self.keithley_step_rows.append(row)
+            if recorder is not None:
+                # The live CSV, before the next voltage step (user,
+                # 2026-10-18); Save CSV's columns.
+                recorder.append_row(dict(zip(KEITHLEY_SCAN_CSV_COLUMNS, row)))
+                recorder.event("point_saved", index=index, set_voltage_V=float(voltage),
+                               read_voltage_V=float(actual_voltage), roi_samples=count)
+            self.post_ui(lambda values=row: self._append_keithley_step_row(values))
+
+    def _keithley_zero_outputs_after_scan(self) -> dict[str, str]:
+        """At a scan's end, on the 2410 worker (user, 2026-10-18): 0 V and
+        OUTP OFF, read back (output_off_read_back).  Never raises: returns
+        zero_scan_outputs' results, under the model's name; the log has them."""
+        controller = self.keithley_controller
+        label = controller.model
+
+        def zero():
+            if not controller.connected:
+                return "not connected"
+            controller.output_off_read_back()
+
+        results = zero_scan_outputs(((label, zero),))
+        with self.keithley_data_lock:
+            # 0 V only when read back; otherwise unknown (M3, review, 2026-10-18).
+            self.keithley_current_voltage = 0.0 if results[label] == "zeroed" else math.nan
+        self._scan_log("keithley_scan_recorder", "outputs_zeroed", **results)
+        self._scan_page_log("keithley_scan_recorder", f"MOKE-24 scan end: {label} {results[label]}")
+        return results
 
     def _append_keithley_step_row(self, row) -> None:
         self.keithley_scan_completed_points = min(
@@ -32228,29 +32807,41 @@ class CombinedControlApp:
         with self.keithley_data_lock:
             self.keithley_scan_running = False
             self.keithley_collecting = False
-            self.keithley_current_voltage = 0.0
-        self.keithley_voltage_var.set("Output: 0 V / OFF")
-        self.keithley_manual_voltage_var.set("0")
+        # Every ending set the 2410 to 0 V and OFF on the worker, read back
+        # (user, 2026-10-18); "0 V / OFF" only when it read back so, else the
+        # voltage is unknown (M3, review, 2026-10-18).
+        results = self.__dict__.get("keithley_scan_outputs")
+        model = self.keithley_scan_settings.get("instrument.model", self.keithley_controller.model)
+        state = (results or {}).get(model)
+        if state == "zeroed":
+            self.keithley_voltage_var.set("Output: 0 V / OFF")
+            self.keithley_manual_voltage_var.set("0")
+        elif state != "not connected":
+            with self.keithley_data_lock:
+                self.keithley_current_voltage = math.nan
+            self.keithley_voltage_var.set(f"Output: check the {model}")
+        status = self._finish_scan_run(
+            "keithley_scan_recorder", page="MOKE-24", title="MOKE-24", error=error, stopped=stopped,
+            results=results, labels=(model,), points=len(self.keithley_step_rows),
+            stop_reason=self.__dict__.get("keithley_scan_stop_reason", ""),
+        )
         if error is not None:
             self.keithley_scan_eta_var.set(
                 f"Scan aborted · {self.keithley_scan_completed_points}/"
                 f"{self.keithley_scan_total_points} points done"
             )
-            self.keithley_status_var.set(f"Scan error, output off: {error}")
-            if not self.closing:
-                messagebox.showerror("MOKE-24", str(error), parent=self.root)
         elif stopped:
             self.keithley_scan_eta_var.set(
                 f"Scan stopped · {self.keithley_scan_completed_points}/"
                 f"{self.keithley_scan_total_points} points done"
             )
-            self.keithley_status_var.set("Scan stopped; voltage zeroed and output off")
         else:
             self.keithley_scan_eta_var.set(
                 f"Scan complete · {self.keithley_scan_completed_points}/"
                 f"{self.keithley_scan_total_points} points"
             )
-            self.keithley_status_var.set("Scan complete; voltage zeroed and output off")
+        self.keithley_status_var.set(status)
+        self.append_log(f"MOKE-24 scan: {status}")
         self.keithley_scan_estimated_finish = None
         if self.keithley_scan_eta_after_id is not None:
             try:
@@ -32261,11 +32852,15 @@ class CombinedControlApp:
         self._update_keithley_controls()
         self._update_k6221_controls()
 
-    def stop_keithley_scan(self) -> None:
+    def stop_keithley_scan(self, button: str = "Stop scan") -> None:
         if not self.keithley_controller.connected:
             return
         self.keithley_stop_event.set()
         if self.keithley_scan_running:
+            # The stop first, then its log line (user, 2026-10-18).
+            if not self.__dict__.get("keithley_scan_stop_reason"):
+                self.keithley_scan_stop_reason = button
+            self._scan_log("keithley_scan_recorder", "stop_requested", button=button)
             self.keithley_scan_eta_var.set(
                 f"Stopping… · {self.keithley_scan_completed_points}/"
                 f"{self.keithley_scan_total_points} points done"
@@ -32282,16 +32877,20 @@ class CombinedControlApp:
             )
 
     def _finish_keithley_output_off(self, error) -> None:
-        self.keithley_voltage_var.set("Output: 0 V / OFF")
-        with self.keithley_data_lock:
-            self.keithley_current_voltage = 0.0
-        self.keithley_manual_voltage_var.set("0")
         if error is None:
+            self.keithley_voltage_var.set("Output: 0 V / OFF")
+            with self.keithley_data_lock:
+                self.keithley_current_voltage = 0.0
+            self.keithley_manual_voltage_var.set("0")
             self.keithley_status_var.set("Voltage zeroed, output off")
         else:
+            # Not confirmed off: the voltage is unknown, never shown as 0 V /
+            # OFF (M3, review, 2026-10-18), as on the 6221 and Avtech pages.
+            self.keithley_voltage_var.set(f"Output: check the {self._keithley_page_model()}")
+            with self.keithley_data_lock:
+                self.keithley_current_voltage = math.nan
             self.keithley_status_var.set(f"Output off failed: {error}")
-            if not self.closing:
-                messagebox.showerror("MOKE-24", str(error), parent=self.root)
+            self._dialog_after_drain("showerror", "MOKE-24", str(error))
         self._update_keithley_controls()
 
     def save_keithley_csv(self) -> None:
@@ -32308,9 +32907,11 @@ class CombinedControlApp:
             self.resume_camera_rendering(camera)
             self.keithley_status_var.set("No Voltage–ROI scan data to save")
             return
+        # Opens in the last run folder (user, 2026-10-18), whose live CSV
+        # already holds every point.
         save_directory = self.select_csv_save_directory(
             "Select the folder for the MOKE-24 Voltage–ROI CSV and PNG",
-            self.keithley_csv_directory,
+            self.__dict__.get("keithley_scan_run_directory") or self.keithley_csv_directory,
         )
         if save_directory is None:
             self.resume_camera_rendering(camera)
@@ -32332,12 +32933,7 @@ class CombinedControlApp:
         exports = (
             (
                 vi_path,
-                [
-                    "set_voltage_V",
-                    "mean_roi_intensity",
-                    "std_roi_intensity",
-                    "sample_count",
-                ],
+                list(KEITHLEY_SCAN_CSV_COLUMNS),
                 step_rows,
             ),
         )
@@ -32375,7 +32971,7 @@ class CombinedControlApp:
             self.keithley_status_var.set(
                 f"MOKE-24 CSV/parameter log save failed: {error}"
             )
-            messagebox.showerror("MOKE-24", str(error), parent=self.root)
+            self._dialog_after_drain("showerror", "MOKE-24", str(error))
 
         def saved(_result) -> None:
             try:
@@ -32387,23 +32983,23 @@ class CombinedControlApp:
                 self.keithley_status_var.set(
                     f"CSV saved; plot snapshot failed: {error}"
                 )
-                messagebox.showwarning(
+                self._dialog_after_drain(
+                    "showwarning",
                     "MOKE-24",
                     f"CSV and parameter log saved:\n{vi_path.name}\n"
                     f"{log_path.name}\n\n"
                     f"Plot snapshot save failed:\n{error}",
-                    parent=self.root,
                 )
                 return
             self.keithley_status_var.set(
                 f"Voltage–ROI CSV, PNG and parameter log saved: {save_directory}"
             )
-            messagebox.showinfo(
+            self._dialog_after_drain(
+                "showinfo",
                 "MOKE-24",
                 f"Saved:\n{vi_path.name}\n{voltage_snapshot_path.name}\n"
                 f"{log_path.name}"
                 f"\n\nFolder:\n{save_directory}",
-                parent=self.root,
             )
 
         self.submit_file_export(
@@ -32761,8 +33357,7 @@ class CombinedControlApp:
             self.k6221_connection_var.set("Not connected")
             self._reset_k6221_readback()
             self.k6221_status_var.set(f"Connection failed: {error}")
-            if not self.closing:
-                messagebox.showerror("Keithley 6221", str(error), parent=self.root)
+            self._dialog_after_drain("showerror", "Keithley 6221", str(error))
         else:
             self.k6221_output_unknown = False
             self.k6221_connection_var.set("Connected")
@@ -32801,8 +33396,7 @@ class CombinedControlApp:
             self.k6221_status_var.set("Output stopped, zeroed and disconnected")
         else:
             self.k6221_status_var.set(f"Disconnect warning: {error}")
-            if not self.closing:
-                messagebox.showerror("Keithley 6221", str(error), parent=self.root)
+            self._dialog_after_drain("showerror", "Keithley 6221", str(error))
         self._update_k6221_controls()
         self._update_nonlocal_vi_controls()
 
@@ -32815,6 +33409,15 @@ class CombinedControlApp:
             return
         if self.__dict__.get("avtech_busy", False):
             return  # the Avtech is pulsing (review, 2026-10-13)
+        if self.__dict__.get("avtech_output_unknown", False):
+            # As the 6221's unknown output holds the Avtech (M4, review,
+            # 2026-10-18).
+            messagebox.showwarning(
+                "Keithley 6221", "The Avtech's output state is unknown: switch it off first "
+                "(its red button) or reconnect it",
+                parent=self.root,
+            )
+            return
         if not self.k6221_safety_var.get():
             messagebox.showwarning("Keithley 6221", "Tick the 6221 safety confirmation first", parent=self.root)
             return
@@ -32945,8 +33548,7 @@ class CombinedControlApp:
             self.k6221_current_ma = 0.0
             self.k6221_output_var.set("Output: 0 mA / OFF" if off else "Output: check the 6221")
             self.k6221_status_var.set(f"Pulse output failed: {error}")
-            if not self.closing:
-                messagebox.showerror("Keithley 6221", str(error), parent=self.root)
+            self._dialog_after_drain("showerror", "Keithley 6221", str(error))
         else:
             current_ma = result["current_a"] * 1000.0
             width_us = result["pulse_width_s"] * 1_000_000.0
@@ -33031,7 +33633,7 @@ class CombinedControlApp:
         def failed(error: BaseException) -> None:
             self.k6221_status_var.set(f"Saving the images failed: {short_status_error(error)}")
             self._update_k6221_controls()
-            messagebox.showerror("Save images failed", str(error), parent=self.root)
+            self._dialog_after_drain("showerror", "Save images failed", str(error))
 
         def saved(written) -> None:
             self.k6221_status_var.set(
@@ -33139,7 +33741,8 @@ class CombinedControlApp:
             return False
         if source == "avtech":
             return self.avtech_controller.connected and not self.__dict__.get("k6221_output_unknown", False)
-        return self.k6221_controller.connected
+        # An Avtech whose off failed holds the 6221 (M4, review, 2026-10-18).
+        return self.k6221_controller.connected and not self.__dict__.get("avtech_output_unknown", False)
 
     def start_cidwm_pulse_scan(self) -> None:
         source = self._cidwm_scan_source()
@@ -33184,55 +33787,55 @@ class CombinedControlApp:
             "image holds only frames taken after the pulse; save its display (8-bit PNG), its raw "
             "16-bit TIFF and its processed (difference) TIFF\n"
             f"Estimated time: about {self._format_duration(estimate)}\n\n"
-            "The scan writes a run folder, with the images, a CSV and the parameter log, "
-            f"in the folder you choose next. The {name} is switched off after each pulse and at the end.",
+            "The scan makes a run folder, with the images, the live CSV and the log, in the folder "
+            f"you choose next (then an optional file name). The {name} is switched off after each pulse; "
+            "at every end (completed, stopped or failed) the 6221 and the Avtech are switched off, "
+            "read back.",
             icon="warning",
             parent=self.root,
         ):
             return
-        folder = filedialog.askdirectory(
-            parent=self.root,
-            title="Select the folder for the CIDWM pulse sign scan",
-            initialdir=str(
-                self.cidwm_scan_directory if Path(self.cidwm_scan_directory).is_dir()
-                else Path(__file__).resolve().parent
-            ),
+        parameters = {
+            "pulse_source": name,
+            "pulses": len(signs), "signs_pattern": settings["signs_text"],
+            "signs": "".join("+" if sign > 0 else "-" for sign in signs),
+        }
+        if source == "avtech":
+            parameters.update({
+                "pulse_amplitude_abs_V": settings["amplitude_v"],
+                "pulse_width_ns": settings["width_s"] * 1e9,
+                "avtech_resource": self.avtech_controller.resource_name,
+                "avtech_identity": self.avtech_controller.identity,
+            })
+        else:
+            parameters.update({
+                "pulse_current_abs_mA": settings["current_ma"],
+                "pulse_width_us": settings["width_s"] * 1e6,
+                "compliance_V": settings["compliance_v"],
+                "6221_resource": self.k6221_controller.resource_name,
+            })
+        parameters.update({"wait_after_pulse_s": settings["wait_s"], "roi": self.k6221_roi})
+        # The run folder <folder>/<name>/ with the images, the live CSV and
+        # the log (its run_prepared holds these parameters, which had a
+        # "_parameters.log" of their own), through the shared recorder (user,
+        # 2026-10-18); None: cancelled, refused or not made, and nothing starts.
+        recorder = begin_scan_run(
+            self.root, "CIDWM", "Select the folder for the CIDWM pulse sign scan",
+            self.cidwm_scan_directory if Path(self.cidwm_scan_directory).is_dir()
+            else Path(__file__).resolve().parent,
+            parameters, prefix="CIDWM",
         )
-        if not folder:
+        if recorder is None:
             return
         if not self._cidwm_source_ready(source) or self.k6221_scan_running:
+            recorder.close("not_started", error="the CIDWM page changed while the dialogs were open",
+                           points_saved=0)
             return
-        self.cidwm_scan_directory = Path(folder)
-        try:
-            run_directory = self.create_scan_image_session(Path(folder), "CIDWM_pulse_sign_scan")
-            parameters = {
-                "pulse_source": name,
-                "pulses": len(signs), "signs_pattern": settings["signs_text"],
-                "signs": "".join("+" if sign > 0 else "-" for sign in signs),
-            }
-            if source == "avtech":
-                parameters.update({
-                    "pulse_amplitude_abs_V": settings["amplitude_v"],
-                    "pulse_width_ns": settings["width_s"] * 1e9,
-                    "avtech_resource": self.avtech_controller.resource_name,
-                    "avtech_identity": self.avtech_controller.identity,
-                })
-            else:
-                parameters.update({
-                    "pulse_current_abs_mA": settings["current_ma"],
-                    "pulse_width_us": settings["width_s"] * 1e6,
-                    "compliance_V": settings["compliance_v"],
-                    "6221_resource": self.k6221_controller.resource_name,
-                })
-            parameters.update({"wait_after_pulse_s": settings["wait_s"], "roi": self.k6221_roi})
-            self.write_parameter_log(
-                run_directory / f"{run_directory.name}_parameters.log",
-                self.format_parameter_log("CIDWM pulse sign scan parameter log", parameters),
-            )
-        except OSError as error:
-            messagebox.showerror("CIDWM pulse sign scan", f"Cannot create the run folder: {error}",
-                                 parent=self.root)
-            return
+        self.cidwm_scan_directory = recorder.directory.parent
+        run_directory = recorder.directory
+        self.cidwm_scan_recorder = recorder
+        self.cidwm_scan_outputs = None
+        self.cidwm_scan_stop_reason = ""
         self.k6221_stop_event.clear()
         self.k6221_scan_running = True
         self.cidwm_scan_source = source
@@ -33240,11 +33843,26 @@ class CombinedControlApp:
             f"Pulse sign scan ({name}): {len(signs)} pulses; run folder {run_directory}"
         )
         self.k6221_status_var.set(f"CIDWM pulse sign scan running on the {name}")
+        self._scan_page_log(
+            "cidwm_scan_recorder",
+            f"CIDWM pulse sign scan ({name}): {len(signs)} pulses; run folder {run_directory} "
+            f"({recorder.csv_path.name} and {recorder.log_path.name})",
+        )
         self._update_k6221_controls()
         self._update_keithley_controls()
         self._update_magnet_scan_controls()
         executor = self.avtech_executor if source == "avtech" else self.k6221_executor
-        future = executor.submit(self._cidwm_pulse_scan_worker, settings, run_directory)
+        try:
+            future = executor.submit(self._cidwm_pulse_scan_worker, settings, recorder)
+        except BaseException as error:
+            self.k6221_scan_running = False
+            self._close_scan_recorder("cidwm_scan_recorder", "not_started", error=str(error), points_saved=0)
+            self.cidwm_scan_status_var.set(f"Pulse sign scan not started: {error}")
+            self._update_k6221_controls()
+            self._update_keithley_controls()
+            self._update_magnet_scan_controls()
+            messagebox.showerror("CIDWM pulse sign scan", f"The scan was not started: {error}", parent=self.root)
+            return
         future.add_done_callback(
             lambda completed: self.post_ui(lambda: self._finish_cidwm_pulse_scan(completed))
         )
@@ -33287,219 +33905,292 @@ class CombinedControlApp:
             if time.monotonic() >= deadline or self.k6221_stop_event.wait(0.05):
                 return None
 
-    def _cidwm_pulse_scan_worker(self, settings: dict, run_directory: Path) -> dict:
+    def _cidwm_pulse_scan_worker(self, settings: dict, recorder: ScanRunRecorder) -> dict:
         """Each pulse: |I| with its sign (one pulse, the pulse output's width
         and compliance), the 6221 off, Wait after pulse s, a camera frame
         newer than the pulse, then its raw 16-bit and processed float32
-        TIFFs and a CSV row.  The 6221 ends off whatever happens.  With
-        source "avtech" (user, 2026-10-13) each pulse is one Avtech pulse of
-        |V| with its sign; the Avtech ends off whatever happens."""
+        TIFFs in the run folder and a row on its live CSV.  With source
+        "avtech" (user, 2026-10-13) each pulse is one Avtech pulse of |V|
+        with its sign.  Every ending, completed, stopped or failed, switches
+        the 6221 and the Avtech off, read back, here on the worker once the
+        scan's own clean-up has run, each tried whatever the other did (user,
+        2026-10-18: every scan page zeroes its sources at every end, as SHV).
+        Until then a failed final off replaced the scan's own error."""
+        avtech = settings.get("source") == "avtech"
+        self.cidwm_scan_outputs = None
+        self.cidwm_scan_off_confirmed = False
+        try:
+            return self._cidwm_pulse_scan_pulses(settings, recorder)
+        finally:
+            results = self._cidwm_zero_outputs_after_scan(avtech)
+            self.cidwm_scan_outputs = results
+            # Read back as off, or the finish says to check it (review,
+            # 2026-10-12: it said "off" even when switching off had failed).
+            self.cidwm_scan_off_confirmed = results.get("Avtech" if avtech else "6221") == "zeroed"
+
+    def _cidwm_pulse_scan_pulses(self, settings: dict, recorder: ScanRunRecorder) -> dict:
+        """The pulses of _cidwm_pulse_scan_worker; its ending follows there."""
         avtech = settings.get("source") == "avtech"
         controller = self.avtech_controller if avtech else self.k6221_controller
         unit = "V" if avtech else "mA"
         signs = settings["signs"]
         done = 0
-        self.cidwm_scan_off_confirmed = False
-        csv_path = Path(run_directory) / f"{Path(run_directory).name}.csv"
+        run_directory = recorder.directory
         started = time.monotonic()
-        try:
-            with csv_path.open("x", newline="", encoding="utf-8-sig") as file:
-                writer = csv.writer(file)
-                # in_compliance_at_readback: the 6221's condition when read
-                # just after INIT (a µs pulse may have ended by then).  note:
-                # why a pulse that was applied has no images.
-                if avtech:
-                    # Avtech: the amplitude and width read back before the
-                    # pulse; overload_tripped: its output protection after it.
-                    writer.writerow((
-                        "pulse", "sign", "set_amplitude_V", "amplitude_V", "pulse_width_ns",
-                        "elapsed_s", "overload_tripped", "roi_mean_processed",
-                        "processing", "raw_tiff", "processed_tiff", "display_png", "note",
-                    ))
-                else:
-                    writer.writerow((
-                        "pulse", "sign", "set_current_mA", "current_mA", "pulse_width_us",
-                        "compliance_V", "elapsed_s", "in_compliance_at_readback", "roi_mean_processed",
-                        "processing", "raw_tiff", "processed_tiff", "display_png", "note",
-                    ))
-                file.flush()
-                for index, sign in enumerate(signs, 1):
-                    if self.k6221_stop_event.is_set():
-                        break
-                    set_value = sign * float(settings["amplitude_v" if avtech else "current_ma"])
-                    label = "+" if sign > 0 else "-"
-                    self.post_ui(
-                        lambda n=index, text=label, value=set_value: self.cidwm_scan_status_var.set(
-                            f"Pulse sign scan: pulse {n}/{len(signs)} ({text}), {value:+g} {unit}"
-                        )
-                    )
-                    actual = None
-                    if avtech:
-                        # One pulse; the Avtech is off again (read back) when
-                        # this returns, or it raises.
-                        try:
-                            actual = controller.single_pulse(set_value, settings["width_s"])
-                        except AvtechPulseError as error:
-                            if error.fired:
-                                # Every pulse applied has its row (review,
-                                # 2026-10-13: a failure after the trigger lost it).
-                                def shown(value, scale=1.0):
-                                    return f"{value * scale:.10g}" if math.isfinite(value) else ""
-                                writer.writerow((
-                                    index, label, f"{set_value:.10g}", shown(error.amplitude_v),
-                                    shown(error.width_s, 1e9), f"{time.monotonic() - started:.3f}",
-                                    "unknown" if error.overload is None else bool(error.overload),
-                                    "", "", "", "", "",
-                                    f"the scan stopped: {error}",
-                                ))
-                                file.flush()
-                            raise
-                        interrupted = False
-                        pulse_end = time.monotonic()
-                        self.post_ui(self._publish_avtech_off_state)
-                        actual_value = float(actual["amplitude_v"])
-                        middle = (f"{set_value:.10g}", f"{actual_value:.10g}",
-                                  f"{float(actual['width_s']) * 1e9:.10g}")
-                    else:
-                        try:
-                            try:
-                                actual = controller.set_dc_pulse(
-                                    set_value / 1000.0, settings["width_s"], settings["compliance_v"], 1
-                                )
-                                interrupted = self._wait_k6221_pulse_with_readback(actual)
-                            finally:
-                                controller.output_off()
-                        except BaseException as error:
-                            # Every pulse applied has its row (audit/review,
-                            # 2026-10-13): set_dc_pulse sends OUTP ON and INIT
-                            # before its readback checks, so a failed check, or
-                            # a failed off after the pulse, lost the row of a
-                            # pulse that may have fired.
-                            writer.writerow((
-                                index, label, f"{set_value:.10g}",
-                                "" if actual is None else f"{float(actual['current_a']) * 1000.0:.10g}",
-                                f"{settings['width_s'] * 1e6:.10g}", f"{settings['compliance_v']:.10g}",
-                                f"{time.monotonic() - started:.3f}",
-                                "" if actual is None else bool(actual.get("in_compliance")),
-                                "", "", "", "", "",
-                                (f"the scan stopped (the pulse may have fired): {error}" if actual is None
-                                 else f"the scan stopped after the pulse: {error}"),
-                            ))
-                            file.flush()
-                            raise
-                        pulse_end = time.monotonic()
-                        self.post_ui(self._publish_k6221_off_state)
-                        actual_value = float(actual["current_a"]) * 1000.0
-                        middle = (f"{set_value:.10g}", f"{actual_value:.10g}",
-                                  f"{settings['width_s'] * 1e6:.10g}", f"{settings['compliance_v']:.10g}")
+        # The columns of the live CSV, unchanged (CIDWM_SCAN_*_COLUMNS).
+        columns = CIDWM_SCAN_AVTECH_COLUMNS if avtech else CIDWM_SCAN_6221_COLUMNS
 
-                    def record(raw_name="", processed_name="", note="", roi_mean=math.nan,
-                               processing=None, display_name=""):
-                        # Every pulse applied has its row (review, 2026-10-12),
-                        # with or without its images.
-                        flag = actual.get("overload") if avtech else actual.get("in_compliance")
-                        writer.writerow((
-                            index, label, *middle,
-                            f"{time.monotonic() - started:.3f}", bool(flag),
-                            "" if not math.isfinite(roi_mean) else f"{roi_mean:.10g}",
-                            "" if processing is None else self.processed_image_settings_suffix(processing),
-                            raw_name, processed_name, display_name, note,
-                        ))
-                        file.flush()
+        def write_row(values) -> None:
+            # A row onto the live CSV, opened and closed for it and fsynced
+            # (user, 2026-10-18: the shared recorder), then point_saved.
+            recorder.append_row(dict(zip(columns, values)))
+            recorder.event("point_saved", index=recorder.rows_written, pulse=values[0], sign=values[1],
+                           note=values[-1])
 
-                    if avtech and actual.get("overload"):
-                        record(note="overload: the Avtech's output protection tripped; scan stopped")
-                        raise RuntimeError(
-                            "The Avtech's output protection tripped (overload: a short or too-low "
-                            "load impedance); the scan stopped with the output off"
-                        )
-
-                    if interrupted or self.k6221_stop_event.wait(float(settings["wait_s"])):
-                        record(note="stopped before the images were saved")
-                        break
-                    try:
-                        frame = self._cidwm_frame_after(pulse_end)
-                        if frame is None:
-                            record(note="stopped before the images were saved")
-                            break
-                        # The display of such a frame, and then that frame's
-                        # raw and processed images: all three from one frame.
-                        displayed = self._cidwm_display_after(pulse_end)
-                        if self.k6221_stop_event.is_set():
-                            record(note="stopped before the images were saved")
-                            break
-                        note = ""
-                        if displayed is not None:
-                            display = self._compose_display_snapshot(displayed[0], displayed[1])
-                            frame = displayed[2]
-                        else:
-                            display = None
-                            note = "display not saved: Camera Live did not draw a frame after the pulse"
-                        raw, processed, processing, roi_mean = self._cidwm_snapshot(frame)
-                        stem = f"CIDWM_pulse{index:05d}_{'pos' if sign > 0 else 'neg'}_{actual_value:+.6g}{unit}"
-                        raw_name = f"{stem}_raw16.tiff"
-                        processed_name = (
-                            f"{stem}_{self.processed_image_settings_suffix(processing)}_float32.tiff"
-                        )
-                        display_name = f"{stem}_display8.png" if display is not None else ""
-                        save_raw_u16_tiff(raw, Path(run_directory) / raw_name)
-                        save_processed_f32_tiff(processed, Path(run_directory) / processed_name)
-                        if display is not None:
-                            save_display_u8_png(display, Path(run_directory) / display_name)
-                    except BaseException as error:
-                        record(note=f"images not saved: {short_status_error(error)}")
-                        raise
-                    record(raw_name, processed_name, note, roi_mean=roi_mean, processing=processing,
-                           display_name=display_name)
-                    done = index
-                    self.post_ui(
-                        lambda n=index, text=label, mean=roi_mean: self.cidwm_scan_status_var.set(
-                            f"Pulse sign scan: pulse {n}/{len(signs)} ({text}) saved"
-                            + (f"; ROI mean {mean:.6g}" if math.isfinite(mean) else "")
-                        )
-                    )
-        finally:
-            # Read back as off, or the finish says to check the 6221 (review,
-            # 2026-10-12: it said "off" even when switching off had failed).
+        recorder.event("scan_started", source="Avtech" if avtech else "6221", pulses=len(signs))
+        recorder.check()
+        for index, sign in enumerate(signs, 1):
+            recorder.check()  # a failed log write ends the scan here
+            if self.k6221_stop_event.is_set():
+                break
+            set_value = sign * float(settings["amplitude_v" if avtech else "current_ma"])
+            label = "+" if sign > 0 else "-"
+            self.post_ui(
+                lambda n=index, text=label, value=set_value: self.cidwm_scan_status_var.set(
+                    f"Pulse sign scan: pulse {n}/{len(signs)} ({text}), {value:+g} {unit}"
+                )
+            )
+            actual = None
             if avtech:
-                controller.switch_off()
+                # One pulse; the Avtech is off again (read back) when
+                # this returns, or it raises.
+                try:
+                    actual = controller.single_pulse(set_value, settings["width_s"])
+                except AvtechPulseError as error:
+                    if error.fired:
+                        # Every pulse applied has its row (review,
+                        # 2026-10-13: a failure after the trigger lost it).
+                        def shown(value, scale=1.0):
+                            return f"{value * scale:.10g}" if math.isfinite(value) else ""
+                        write_row((
+                            index, label, f"{set_value:.10g}", shown(error.amplitude_v),
+                            shown(error.width_s, 1e9), f"{time.monotonic() - started:.3f}",
+                            "unknown" if error.overload is None else bool(error.overload),
+                            "", "", "", "", "",
+                            f"the scan stopped: {error}",
+                        ))
+                    raise
+                interrupted = False
+                pulse_end = time.monotonic()
+                self.post_ui(self._publish_avtech_off_state)
+                actual_value = float(actual["amplitude_v"])
+                middle = (f"{set_value:.10g}", f"{actual_value:.10g}",
+                          f"{float(actual['width_s']) * 1e9:.10g}")
             else:
-                controller.output_off()
-            self.cidwm_scan_off_confirmed = True
+                try:
+                    try:
+                        actual = controller.set_dc_pulse(
+                            set_value / 1000.0, settings["width_s"], settings["compliance_v"], 1
+                        )
+                        interrupted = self._wait_k6221_pulse_with_readback(actual)
+                    finally:
+                        controller.output_off()
+                except BaseException as error:
+                    # Every pulse applied has its row (audit/review,
+                    # 2026-10-13): set_dc_pulse sends OUTP ON and INIT
+                    # before its readback checks, so a failed check, or
+                    # a failed off after the pulse, lost the row of a
+                    # pulse that may have fired.
+                    write_row((
+                        index, label, f"{set_value:.10g}",
+                        "" if actual is None else f"{float(actual['current_a']) * 1000.0:.10g}",
+                        f"{settings['width_s'] * 1e6:.10g}", f"{settings['compliance_v']:.10g}",
+                        f"{time.monotonic() - started:.3f}",
+                        "" if actual is None else bool(actual.get("in_compliance")),
+                        "", "", "", "", "",
+                        (f"the scan stopped (the pulse may have fired): {error}" if actual is None
+                         else f"the scan stopped after the pulse: {error}"),
+                    ))
+                    raise
+                pulse_end = time.monotonic()
+                self.post_ui(self._publish_k6221_off_state)
+                actual_value = float(actual["current_a"]) * 1000.0
+                middle = (f"{set_value:.10g}", f"{actual_value:.10g}",
+                          f"{settings['width_s'] * 1e6:.10g}", f"{settings['compliance_v']:.10g}")
+
+            def record(raw_name="", processed_name="", note="", roi_mean=math.nan,
+                       processing=None, display_name=""):
+                # Every pulse applied has its row (review, 2026-10-12),
+                # with or without its images.
+                flag = actual.get("overload") if avtech else actual.get("in_compliance")
+                write_row((
+                    index, label, *middle,
+                    f"{time.monotonic() - started:.3f}", bool(flag),
+                    "" if not math.isfinite(roi_mean) else f"{roi_mean:.10g}",
+                    "" if processing is None else self.processed_image_settings_suffix(processing),
+                    raw_name, processed_name, display_name, note,
+                ))
+
+            if avtech and actual.get("overload"):
+                record(note="overload: the Avtech's output protection tripped; scan stopped")
+                raise RuntimeError(
+                    "The Avtech's output protection tripped (overload: a short or too-low "
+                    "load impedance); the scan stopped with the output off"
+                )
+
+            if interrupted or self.k6221_stop_event.wait(float(settings["wait_s"])):
+                record(note="stopped before the images were saved")
+                break
+            try:
+                frame = self._cidwm_frame_after(pulse_end)
+                if frame is None:
+                    record(note="stopped before the images were saved")
+                    break
+                # The display of such a frame, and then that frame's
+                # raw and processed images: all three from one frame.
+                displayed = self._cidwm_display_after(pulse_end)
+                if self.k6221_stop_event.is_set():
+                    record(note="stopped before the images were saved")
+                    break
+                note = ""
+                if displayed is not None:
+                    display = self._compose_display_snapshot(displayed[0], displayed[1])
+                    frame = displayed[2]
+                else:
+                    display = None
+                    note = "display not saved: Camera Live did not draw a frame after the pulse"
+                raw, processed, processing, roi_mean = self._cidwm_snapshot(frame)
+                stem = f"CIDWM_pulse{index:05d}_{'pos' if sign > 0 else 'neg'}_{actual_value:+.6g}{unit}"
+                raw_name = f"{stem}_raw16.tiff"
+                processed_name = (
+                    f"{stem}_{self.processed_image_settings_suffix(processing)}_float32.tiff"
+                )
+                display_name = f"{stem}_display8.png" if display is not None else ""
+                save_raw_u16_tiff(raw, Path(run_directory) / raw_name)
+                save_processed_f32_tiff(processed, Path(run_directory) / processed_name)
+                if display is not None:
+                    save_display_u8_png(display, Path(run_directory) / display_name)
+            except BaseException as error:
+                record(note=f"images not saved: {short_status_error(error)}")
+                raise
+            record(raw_name, processed_name, note, roi_mean=roi_mean, processing=processing,
+                   display_name=display_name)
+            done = index
+            self.post_ui(
+                lambda n=index, text=label, mean=roi_mean: self.cidwm_scan_status_var.set(
+                    f"Pulse sign scan: pulse {n}/{len(signs)} ({text}) saved"
+                    + (f"; ROI mean {mean:.6g}" if math.isfinite(mean) else "")
+                )
+            )
         return {"done": done, "total": len(signs), "directory": str(run_directory)}
+
+    @staticmethod
+    def _k6221_off_read_back(controller) -> None:
+        """The 6221 off as its red button (SOUR:WAVE:ABOR, CURR 0, OUTP OFF),
+        then OUTP? read back (user, 2026-10-18: every scan end reads back
+        where the instrument allows).  The readback decides: a failed write
+        whose OUTP? is 0 is logged, not raised; anything else raises.  Here,
+        not in Keithley6221Controller, whose code MS-fourState.py copies."""
+        with controller.lock:
+            failure = None
+            try:
+                controller.output_off()
+            except BaseException as error:
+                failure = error
+            after = f" (after: {failure})" if failure is not None else ""
+            try:
+                state = int(round(float(controller.instrument.query("OUTP?").strip())))
+            except BaseException as error:
+                raise RuntimeError(f"6221 output could not be read back: {error}{after}") from error
+            if state != 0:
+                raise RuntimeError(f"6221 output did not read back OFF (OUTP? {state}){after}")
+            if failure is not None:
+                controller.logger(f"Keithley 6221: OUTP? read back 0{after}")
+
+    def _cidwm_zero_outputs_after_scan(self, avtech_source: bool) -> dict[str, str]:
+        """At a pulse sign scan's end, on its worker (user, 2026-10-18): the
+        scan's source switched off and read back, then the page's other
+        source, each tried whatever the other did; one that is not connected
+        is skipped.  The 6221: SOUR:WAVE:ABOR, CURR 0, OUTP OFF and OUTP?
+        (_k6221_off_read_back); the Avtech: trigger on hold and output off,
+        read back (switch_off).  Never raises: returns zero_scan_outputs'
+        results ("6221", "Avtech"); the log has them.  The finish sets each
+        output_unknown interlock from its own result only, so zeroing one
+        never frees the other."""
+        def zero_6221():
+            controller = self.__dict__.get("k6221_controller")
+            if controller is None or not controller.connected:
+                return "not connected"
+            self._k6221_off_read_back(controller)
+
+        def zero_avtech():
+            controller = self.__dict__.get("avtech_controller")
+            if controller is None or not controller.connected:
+                return "not connected"
+            controller.switch_off()
+
+        steps = (("Avtech", zero_avtech), ("6221", zero_6221)) if avtech_source else (
+            ("6221", zero_6221), ("Avtech", zero_avtech))
+        results = zero_scan_outputs(steps)
+        self._scan_log("cidwm_scan_recorder", "outputs_zeroed", **results)
+        self._scan_page_log(
+            "cidwm_scan_recorder",
+            "CIDWM pulse sign scan end: " + "; ".join(f"{name} {state}" for name, state in results.items()),
+        )
+        return results
 
     def _finish_cidwm_pulse_scan(self, future) -> None:
         self.k6221_scan_running = False
-        off = bool(self.__dict__.get("cidwm_scan_off_confirmed"))
         avtech = self.__dict__.get("cidwm_scan_source") == "avtech"
-        name = "Avtech" if avtech else "6221"
-        if avtech:
-            self.avtech_output_var.set("Output: OFF" if off else "Output: check the Avtech")
-        else:
+        name, other = ("Avtech", "6221") if avtech else ("6221", "Avtech")
+        # Every ending switched the 6221 and the Avtech off on the worker,
+        # read back (user, 2026-10-18).  Each output and its interlock follow
+        # its own result only: a confirmed off clears it, a failed one keeps
+        # the other source waiting, "not connected" leaves it as it was.
+        results = self.__dict__.get("cidwm_scan_outputs") or {}
+        state_6221 = results.get("6221") if results else ("zero FAILED" if not avtech else None)
+        state_avtech = results.get("Avtech") if results else ("zero FAILED" if avtech else None)
+        if state_6221 == "zeroed":
             self.k6221_current_ma = 0.0
-            # A failed final off keeps the Avtech waiting (review, 2026-10-13).
-            self.k6221_output_unknown = not off
-            self.k6221_output_var.set("Output: 0 mA / OFF" if off else "Output: check the 6221")
+            self.k6221_output_unknown = False
+            self.k6221_output_var.set("Output: 0 mA / OFF")
             self._reset_k6221_readback()
+        elif state_6221 not in (None, "not connected"):
+            # A failed final off keeps the Avtech waiting (review, 2026-10-13).
+            self.k6221_output_unknown = True
+            self.k6221_output_var.set("Output: check the 6221")
+            self._reset_k6221_readback()
+        if state_avtech == "zeroed":
+            self.avtech_output_unknown = False
+            self.avtech_output_var.set("Output: OFF")
+        elif state_avtech not in (None, "not connected"):
+            # A failed off keeps the 6221 waiting (M4, review, 2026-10-18).
+            self.avtech_output_unknown = True
+            self.avtech_output_var.set("Output: check the Avtech")
+        error, result = None, None
         try:
             result = future.result()
-        except BaseException as error:
-            self.cidwm_scan_status_var.set(f"Pulse sign scan failed: {short_status_error(error)}")
-            self.k6221_status_var.set(
-                "Pulse sign scan stopped by an error; "
-                + (f"{name} output off" if off else f"switching the {name} off failed, check it")
-            )
-            if not self.closing:
-                messagebox.showerror("CIDWM pulse sign scan", str(error), parent=self.root)
-        else:
-            stopped = result["done"] < result["total"]
+        except BaseException as caught:
+            error = caught
+        stopped = result is not None and result["done"] < result["total"]
+        recorder = self.__dict__.get("cidwm_scan_recorder")
+        points = recorder.rows_written if recorder is not None else 0
+        directory = result["directory"] if result is not None else (
+            str(recorder.directory) if recorder is not None else "")
+        status = self._finish_scan_run(
+            "cidwm_scan_recorder", page="CIDWM", title="CIDWM pulse sign scan", error=error, stopped=stopped,
+            results=self.__dict__.get("cidwm_scan_outputs"), labels=(name, other), points=points,
+            stop_reason=self.__dict__.get("cidwm_scan_stop_reason", ""),
+            **({"pulses_saved": result["done"], "pulses": result["total"]} if result is not None else {}),
+        )
+        if result is not None:
             self.cidwm_scan_status_var.set(
-                f"Pulse sign scan {'stopped' if stopped else 'complete'}: "
-                f"{result['done']}/{result['total']} pulses saved in {result['directory']}"
+                f"{status}; {result['done']}/{result['total']} pulses saved in {directory}"
             )
-            self.k6221_status_var.set(
-                f"Pulse sign scan {'stopped' if stopped else 'complete'}; {name} output off"
-            )
+        else:
+            self.cidwm_scan_status_var.set(f"Pulse sign scan: {status}")
+        self.k6221_status_var.set(f"Pulse sign scan: {status}")
+        self.append_log(f"CIDWM pulse sign scan: {status}")
         self._update_k6221_controls()
         self._update_keithley_controls()
         self._update_magnet_scan_controls()
@@ -33546,12 +34237,14 @@ class CombinedControlApp:
         except BaseException as error:
             self.avtech_connection_var.set("Not connected")
             if "check the generator" in str(error):
+                # Its off failed: the 6221 waits (M4, review, 2026-10-18).
+                self.avtech_output_unknown = True
                 self.avtech_output_var.set("Output: check the Avtech")
             self.avtech_status_var.set(f"Avtech: connection failed: {short_status_error(error)}")
-            if not self.closing:
-                messagebox.showerror("Avtech", str(error), parent=self.root)
+            self._dialog_after_drain("showerror", "Avtech", str(error))
         else:
             self.avtech_connection_var.set("Connected")
+            self.avtech_output_unknown = False  # off, read back
             self.avtech_output_var.set("Output: OFF")
             self.avtech_safety_var.set(False)
             self.avtech_status_var.set(
@@ -33573,14 +34266,16 @@ class CombinedControlApp:
         self.avtech_busy = False
         self.avtech_connection_var.set("Not connected")
         self.avtech_safety_var.set(False)
+        # A failed off holds the 6221 until a reconnect reads it back off
+        # (M4, review, 2026-10-18).
+        self.avtech_output_unknown = error is not None
         if error is None:
             self.avtech_output_var.set("Output: OFF")
             self.avtech_status_var.set("Avtech: output off and disconnected")
         else:
             self.avtech_output_var.set("Output: check the Avtech")
             self.avtech_status_var.set(f"Avtech: disconnect warning: {short_status_error(error)}")
-            if not self.closing:
-                messagebox.showerror("Avtech", str(error), parent=self.root)
+            self._dialog_after_drain("showerror", "Avtech", str(error))
         self._update_avtech_controls()
         self._update_k6221_controls()
 
@@ -33624,15 +34319,18 @@ class CombinedControlApp:
         try:
             result = future.result()
         except BaseException as error:
-            self.avtech_output_var.set("Output: OFF" if "check the generator" not in str(error)
+            # Its off after the pulse not read back: the 6221 waits (M4,
+            # review, 2026-10-18).
+            self.avtech_output_unknown = "check the generator" in str(error)
+            self.avtech_output_var.set("Output: OFF" if not self.avtech_output_unknown
                                        else "Output: check the Avtech")
             fired = bool(getattr(error, "fired", False))
             text = f"Avtech: {'' if fired else 'pulse failed: '}{error}"
             self.avtech_status_var.set(text)
             self.append_log(text)
-            if not self.closing:
-                messagebox.showerror("Avtech pulse", str(error), parent=self.root)
+            self._dialog_after_drain("showerror", "Avtech pulse", str(error))
         else:
+            self.avtech_output_unknown = False  # off, read back
             self.avtech_output_var.set("Output: OFF")
             text = (f"Avtech: pulse {result['amplitude_v']:+g} V, {result['width_s'] * 1e9:g} ns "
                     "(read back); output off")
@@ -33640,8 +34338,8 @@ class CombinedControlApp:
                 text += " | OVERLOAD: output protection tripped (short or too-low load impedance)"
             self.avtech_status_var.set(text)
             self.append_log(text)
-            if result["overload"] and not self.closing:
-                messagebox.showwarning("Avtech pulse", text, parent=self.root)
+            if result["overload"]:
+                self._dialog_after_drain("showwarning", "Avtech pulse", text)
         self._update_k6221_controls()
 
     def avtech_output_off(self) -> None:
@@ -33652,6 +34350,7 @@ class CombinedControlApp:
             return
         if self.k6221_scan_running and self.cidwm_scan_source == "avtech":
             self.k6221_stop_event.set()
+            self._note_cidwm_stop("Avtech output off")
             self.avtech_status_var.set("Avtech: stopping the scan; the output goes off after this pulse")
             return
         if self.avtech_busy:
@@ -33666,26 +34365,38 @@ class CombinedControlApp:
 
     def _finish_avtech_off(self, error) -> None:
         self.avtech_busy = False
+        # Until an off succeeds, the 6221 does not pulse (M4, review, 2026-10-18).
+        self.avtech_output_unknown = error is not None
         if error is None:
             self.avtech_output_var.set("Output: OFF")
             self.avtech_status_var.set("Avtech: trigger on hold, output off (read back)")
         else:
             self.avtech_output_var.set("Output: check the Avtech")
             self.avtech_status_var.set(f"Avtech: {short_status_error(error)}")
-            if not self.closing:
-                messagebox.showerror("Avtech", str(error), parent=self.root)
+            self._dialog_after_drain("showerror", "Avtech", str(error))
         self._update_k6221_controls()
 
     def _publish_avtech_off_state(self) -> None:
         self.avtech_output_var.set("Output: OFF")
 
+    def _note_cidwm_stop(self, button: str) -> None:
+        """A running pulse sign scan's stop, in its log after the stop event
+        is set (user, 2026-10-18)."""
+        if not self.k6221_scan_running:
+            return
+        if not self.__dict__.get("cidwm_scan_stop_reason"):
+            self.cidwm_scan_stop_reason = button
+        self._scan_log("cidwm_scan_recorder", "stop_requested", button=button)
+
     def stop_cidwm_pulse_scan(self) -> None:
-        """Stop: the scan ends after the pulse in progress, its source off."""
+        """Stop: the scan ends after the pulse in progress; then the 6221 and
+        the Avtech are switched off (user, 2026-10-18)."""
         if self.k6221_scan_running and self.cidwm_scan_source == "avtech":
             self.k6221_stop_event.set()
+            self._note_cidwm_stop("Stop")
             self.cidwm_scan_status_var.set("Pulse sign scan: stopping after this pulse…")
             return
-        self.stop_k6221()
+        self.stop_k6221(button="Stop")
 
     def _update_avtech_controls(self) -> None:
         if "avtech_connect_button" not in self.__dict__:
@@ -33708,10 +34419,11 @@ class CombinedControlApp:
             state="normal" if scanning or (connected and not self.avtech_busy) else "disabled"
         )
 
-    def stop_k6221(self) -> None:
+    def stop_k6221(self, button: str = "6221 stop now / zero") -> None:
         if not self.k6221_controller.connected:
             return
         self.k6221_stop_event.set()
+        self._note_cidwm_stop(button)  # a running pulse sign scan's log (user, 2026-10-18)
         self.k6221_status_var.set("Stopping output, zeroing and switching off…")
         if self.k6221_busy:
             # The running 6221 job (a pulse train, a connect) switches the
@@ -33739,8 +34451,7 @@ class CombinedControlApp:
             self.k6221_status_var.set("Output stopped, current zeroed and output off")
         else:
             self.k6221_status_var.set(f"Output off failed: {error}")
-            if not self.closing:
-                messagebox.showerror("Keithley 6221", str(error), parent=self.root)
+            self._dialog_after_drain("showerror", "Keithley 6221", str(error))
         self._update_k6221_controls()
 
     def _redraw_k6221_readback_plot(self) -> None:
@@ -33921,6 +34632,8 @@ class CombinedControlApp:
             and not blocked
             and self.k6221_safety_var.get()
             and not self.__dict__.get("avtech_busy", False)
+            # An Avtech whose off failed holds the 6221 (M4, review, 2026-10-18).
+            and not self.__dict__.get("avtech_output_unknown", False)
         )
         for button in (self.k6221_apply_button, self.k6221_apply_negative_button):
             button.configure(state="normal" if can_operate else "disabled")
@@ -39245,6 +39958,9 @@ class CombinedControlApp:
             return
         self.k6221_closed = True
         self.k6221_stop_event.set()
+        # A running pulse sign scan's log (user, 2026-10-18); closed by
+        # safe_close_avtech, which runs next, with both offs.
+        self._note_cidwm_stop("the program closing")
         # The output monitor reschedules itself every 300 ms.  Closing only
         # stops it from booking the next call, so the one already booked can
         # still fire after the window is gone and raise a Tk error.
@@ -39256,9 +39972,13 @@ class CombinedControlApp:
                 # Called from the shutdown thread: any failure here must not
                 # skip the 6221 output-off below (review, 2026-10-09).
                 pass
+        self.cidwm_close_outputs = {"6221": "not connected"}
+        if self.k6221_controller.connected:
+            self.cidwm_close_outputs["6221"] = "off written on exit (not read back)"
         try:
             self.k6221_controller.disconnect()
         except BaseException as error:
+            self.cidwm_close_outputs["6221"] = f"zero FAILED: {error}"
             self.append_log(f"Keithley 6221 safe-close warning: {error}")
         finally:
             self.k6221_executor.shutdown(wait=False, cancel_futures=True)
@@ -39268,11 +39988,23 @@ class CombinedControlApp:
             return
         self.avtech_closed = True
         self.k6221_stop_event.set()  # a pulse sign scan on the Avtech stops too
+        self._note_cidwm_stop("the program closing")
+        outputs = dict(self.__dict__.get("cidwm_close_outputs") or {})
+        outputs["Avtech"] = "off, read back" if self.avtech_controller.connected else "not connected"
         try:
             self.avtech_controller.disconnect()  # trigger on hold, output off
         except BaseException as error:
+            outputs["Avtech"] = f"zero FAILED: {error}"
             self.append_log(f"Avtech safe-close warning: {error}")
         finally:
+            # A running pulse sign scan's log, closed with what the exit's
+            # offs did: its finish does not run once closing (user, 2026-10-18).
+            recorder = self.__dict__.get("cidwm_scan_recorder")
+            if recorder is not None:
+                self._close_scan_recorder(
+                    "cidwm_scan_recorder", "stopped", status="the program closed", outputs=outputs,
+                    points_saved=recorder.rows_written, stop_reason="the program closing",
+                )
             self.avtech_executor.shutdown(wait=False, cancel_futures=True)
 
     def safe_close_keithley(self) -> None:
@@ -39280,11 +40012,22 @@ class CombinedControlApp:
             return
         self.keithley_closed = True
         self.keithley_stop_event.set()
+        # A running scan's log (user, 2026-10-18), closed here with what the
+        # exit's off did: its finish does not run once closing.
+        self._scan_log("keithley_scan_recorder", "stop_requested", button="the program closing")
+        model = self.keithley_controller.model
+        outputs = {model: "0 V and OFF written on exit (not read back)"}
         try:
             self.keithley_controller.disconnect()
         except BaseException as error:
+            outputs[model] = f"zero FAILED: {error}"
             self.append_log(f"Keithley safe-close warning: {error}")
         finally:
+            if self.__dict__.get("keithley_scan_recorder") is not None:
+                self._close_scan_recorder(
+                    "keithley_scan_recorder", "stopped", status="the program closed", outputs=outputs,
+                    points_saved=len(self.keithley_step_rows), stop_reason="the program closing",
+                )
             self.keithley_executor.shutdown(wait=False, cancel_futures=True)
 
     def safe_close_magnets(self) -> None:
@@ -39293,17 +40036,25 @@ class CombinedControlApp:
         self.magnet_closed = True
         self.magnet_scan_stop_event.set()
         self.magnet_field_zero_stop_event.set()
+        # A running scan's log (user, 2026-10-18), closed here with what the
+        # exit's 0 A writes did: its finish does not run once closing.
+        self._scan_log("magnet_scan_recorder", "stop_requested", button="the program closing")
         if threading.current_thread() is threading.main_thread():
             try:
                 self.magnet_auto_poll_var.set(False)
             except tk.TclError:
                 pass
+        outputs = {}
         for key in ("OUT", "IN"):
             channel = self.magnet_channels[key]
+            label = f"{MAGNET_CHANNEL_LABELS[key]} KEPCO"
+            outputs[label] = "not connected"
             if channel.bop is not None and channel.bop.connected:
                 try:
                     channel.bop.set_current(0.0)
+                    outputs[label] = "0 A written on exit (not read back)"
                 except BaseException as error:
+                    outputs[label] = f"zero FAILED: {error}"
                     try:
                         self.append_magnet_log(
                             f"{MAGNET_CHANNEL_LABELS[key]} zero-on-exit warning: {error}"
@@ -39314,6 +40065,11 @@ class CombinedControlApp:
                 channel.close()
             except BaseException:
                 pass
+        if self.__dict__.get("magnet_scan_recorder") is not None:
+            self._close_scan_recorder(
+                "magnet_scan_recorder", "stopped", status="the program closed", outputs=outputs,
+                points_saved=len(self.magnet_scan_rows), stop_reason="the program closing",
+            )
         self.magnet_executor.shutdown(wait=False, cancel_futures=True)
 
     def safe_close_camera(self) -> None:
@@ -39415,8 +40171,7 @@ class CombinedControlApp:
                 result = future.result()
             except BaseException as error:
                 self.append_log(f"Stage error: {error}")
-                if not self.closing:
-                    messagebox.showerror("K10CR1 control error", str(error), parent=self.root)
+                self._dialog_after_drain("showerror", "K10CR1 control error", str(error))
             else:
                 if success is not None:
                     success(result)
@@ -39550,8 +40305,7 @@ class CombinedControlApp:
                 state = future.result()
             except BaseException as error:
                 self.append_log(f"Stage stop failed: {error}")
-                if not self.closing:
-                    messagebox.showerror("Stage stop failed", str(error), parent=self.root)
+                self._dialog_after_drain("showerror", "Stage stop failed", str(error))
             else:
                 self.load_stage_state(state)
                 self.stage_operation_var.set(

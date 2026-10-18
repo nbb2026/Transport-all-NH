@@ -1,5 +1,91 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## MOKE magnet, MOKE-24 and CIDWM: shared run folder, zero at every end, review fixes (2026-10-18)
+
+- **Save (user: "live CSV like CIDWM"; the shared base below):**
+  - The MOKE current scan, the MOKE-24 voltage scan and the CIDWM pulse sign
+    scan (6221 or Avtech) call `begin_scan_run` after their Yes/No. It asks
+    for the folder, then an optional file name, and makes
+    `<folder>/<name>/<name>.csv` and `.log`. A blank name gives
+    `MOKE_…`, `MOKE24_…` or `CIDWM_…`.
+  - Each point is appended to the live CSV on the worker before the next
+    current or voltage step. The columns are unchanged:
+    `MAGNET_SCAN_CSV_COLUMNS`, `KEITHLEY_SCAN_CSV_COLUMNS` (Save CSV's) and
+    `CIDWM_SCAN_6221_COLUMNS` / `CIDWM_SCAN_AVTECH_COLUMNS`.
+  - The log has `run_prepared` (the page's settings), `scan_started`,
+    `point_saved`, `note`, `stop_requested` (the button), `outputs_zeroed`
+    and `run_finished`. `check()` runs between steps, so a failed write ends
+    the scan through its failure path.
+  - The CIDWM images go into the run folder as before. Its `_parameters.log`
+    is gone: `run_prepared` holds the same parameters.
+  - The MOKE and MOKE-24 Save CSV buttons still work and open in the last
+    run folder. The next Start's folder dialog opens beside it.
+  - The image-folder checks now come before the Yes/No, with the other
+    input checks. A program close writes `stop_requested` and
+    `run_finished` (`stopped`) with what the exit's offs did.
+- **Zero at every end (user), on the scan's worker after its own clean-up,
+  each output tried whatever the others did:**
+  - MOKE: the scanned path's KEPCO gets the verified 0 A (read back), and
+    the other path's KEPCO is sent 0 A. A Stop or a failure used to write a
+    plain 0 A to the scanned path only.
+  - MOKE-24: 0 V and OUTP OFF, then `:OUTP?` and the level read back
+    (`Keithley2410Controller.output_off_read_back`). A failed final off no
+    longer replaces the scan's own error.
+  - CIDWM: the 6221 (`OUTP?` read back, `_k6221_off_read_back`) and the
+    Avtech (`switch_off`), the scan's own source first. The 6221 read-back
+    lives on the page, not in `Keithley6221Controller`, whose code
+    MS-fourState.py copies.
+  - Each interlock follows only its own output's result: zeroing one never
+    frees the other.
+  - The status is "Completed; both KEPCOs zeroed", "Stopped; 2410 zeroed",
+    "Completed; 6221 and Avtech zeroed" and so on, or "Failed: …". The
+    dialog gives the error and how each output ended, or says CHECK IT.
+  - The Yes/No texts and the magnet scan's path note say so. The stop
+    status lines no longer promise only the selected magnet.
+- **Review fixes:**
+  - M1: Zero, Zero both and Disconnect need only the BOPs (Disconnect any
+    open device). A dropped gaussmeter no longer locks them, and the
+    connection line says "Partly connected (no …)". Connect writes 0 A to
+    every connected, enabled BOP before it closes the ports.
+  - M2: a field zeroing whose 0 A was not confirmed shows "0 A not
+    confirmed" and keeps no 0 A. A failed zero after an error is in the
+    error. The recovery and zeroing notices go to the page log
+    (`_magnet_log`), and to the scan log as notes. Zero both reports a
+    failed write, a closed BOP, or a readback that is not 0 A.
+  - M3: a failed 2410 off (red button, Disconnect, scan end) shows "Output:
+    check the 2410" (the model's name). The voltage is unknown, and Up/Down
+    refuse until an off is confirmed.
+  - C2-2: a MOKE-24 point keeps only ROI samples whose camera average began
+    after `set_voltage` returned. It waits for one, as the magnet scan
+    does. The camera passes `window_start_monotonic`.
+  - M4: `avtech_output_unknown` is set by every failed Avtech off (red
+    button, Disconnect, Connect, a pulse, a scan end) and cleared by a
+    confirmed one. It blocks 6221 Apply ±I and the 6221 scan, as
+    `k6221_output_unknown` holds the Avtech.
+  - M5: the finish, task, save and stage dialogs of these pages open from
+    `root.after(0, …)` (`_dialog_after_drain`), never inside
+    `drain_ui_queue`.
+  - M6: "1e400" / "inf" in ROI max points, the magnet Interval s and the
+    Loop box no longer raise OverflowError. The poll timer keeps running,
+    at most 1 h apart.
+- **Tests (window-free):**
+  - `test_moke_cidwm_runs` (41) covers each scan's files, log events in
+    order, every ending, a failing zero, a failed log write, the program
+    close, the Start order and the prefixes, Save CSV's folder, and each
+    finding above.
+  - Changed for the user's decisions:
+    - `test_moke_scan_zero` now expects the verified 0 A at every end and a
+      failed zero reported, not raised.
+    - `test_magnet_minor_review`: a Stop or an error writes the verified
+      0 A, and the scan's error is kept.
+    - `test_cidwm_pulse_scan`, `test_cidwm_6221_row_and_fields` and
+      `test_k6221_failed_off_interlock` run the worker on a recorder. The
+      Avtech scan's end also switches the 6221 off. Stuck6221's `OUTP?` now
+      reads what its writes left, since the readback decides.
+    - `test_moke24_ovp_margin_and_zero`: Yes now reaches the run folder.
+    - The other stand-ins run `root.after` at once or log through
+      `thread_log`.
+
 ## One run folder, live CSV and log for every scan page: the shared base (2026-10-18)
 
 - **Request (user: "make the operation logic and save logic and files in

@@ -115,7 +115,10 @@ class IntervalBoxTests(unittest.TestCase):
                 f'expected floating-point number but got "{interval}"')
         else:
             a.magnet_poll_interval_var.get.return_value = interval
-        with mock.patch.object(app.messagebox, "askyesno", return_value=True), \
+        # The run folder step (user, 2026-10-18) answered with a stand-in.
+        recorder = mock.Mock()
+        with mock.patch.object(app, "begin_scan_run", return_value=recorder), \
+                mock.patch.object(app.messagebox, "askyesno", return_value=True), \
                 mock.patch.object(app.messagebox, "showwarning") as warned, \
                 mock.patch.object(app.messagebox, "showerror") as failed:
             app.CombinedControlApp.start_magnet_scan(a)

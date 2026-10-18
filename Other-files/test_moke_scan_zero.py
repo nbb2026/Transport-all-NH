@@ -1,102 +1,110 @@
-"""Isolated worker regression: no GUI, drivers, or physical instruments."""
-import ast
-import __future__
-import math
-from pathlib import Path
+"""Isolated worker regression: no GUI, drivers, or physical instruments.
+
+Since 2026-10-18 (user: every scan page zeroes its sources at every end, as
+SHV) every ending of a magnet scan, completed, stopped or failed, writes the
+verified 0 A to the scanned path and sends 0 A to the other path's KEPCO, on
+the worker after the scan's own clean-up.  Before, a completed scan verified
+its 0 A, and a Stop or a failure wrote a plain 0 A to the scanned path only;
+a failed zero replaced the scan's own error.  These tests changed with it."""
 import threading
-import time
 import types
 import unittest
+from unittest import mock
 
-SOURCE = Path(__file__).resolve().parents[1] / 'Transport_all_NH_dev.py'
-tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
-names = {'_magnet_scan_worker', '_magnet_scan_zero_readback'}
-methods = [n for c in tree.body if isinstance(c, ast.ClassDef)
-           for n in c.body if isinstance(n, ast.FunctionDef) and n.name in names]
-assert len(methods) == len(names)
-# The worker now waits for an ROI sample newer than the point's current
-# (review, 2026-10-13); with no camera window it does not wait.  Its wait
-# uses the module helper camera_average_block_s (audit, 2026-10-13).
-methods += [n for n in tree.body
-            if isinstance(n, ast.FunctionDef) and n.name == 'camera_average_block_s']
-assert len(methods) == len(names) + 1
-namespace = {'Path': Path, 'time': time, 'math': math,
-             'MAGNET_SCAN_FRAME_TIMEOUT_S': 10.0}
-exec(compile(ast.Module(body=methods, type_ignores=[]), str(SOURCE), 'exec',
-             flags=__future__.annotations.compiler_flag), namespace)
+import numpy as np
 
-
-class Var:
-    def set(self, value): self.value = value
+from test_magnet_zero_and_frames import scan_app
+from test_ppms_motor_debug import app
 
 
 class ZeroTests(unittest.TestCase):
-    def make_app(self, fail_zero=False, stopped=False, fail_field=False):
-        app = types.SimpleNamespace()
-        app.magnet_scan_stop_event = threading.Event()
-        if stopped: app.magnet_scan_stop_event.set()
-        app.magnet_scan_data_lock = threading.Lock()
-        app.magnet_scan_current_samples = []
-        app.magnet_scan_rows = []
-        app.magnet_scan_start_time = time.time()
-        app.magnet_scan_collecting = False
-        app.magnet_status_var = Var()
-        app.magnet_target_vars = {'ip': Var()}
-        app.magnet_current_vars = {'ip': Var()}
-        app.magnet_last_currents = {}
-        app.calls = []
-        app.ui = []
-        app.post_ui = app.ui.append
-        def field():
-            if fail_field: raise RuntimeError('field error')
-            return 12.
-        app._require_gauss_meter = lambda key: types.SimpleNamespace(query_field=field)
-        # The scan's field read has the reconnect recovery (audit,
-        # 2026-10-13); here a failure that recovery cannot fix.
-        app._query_gauss_with_recovery = lambda key: field()
-        app._require_magnet_bop = lambda key: types.SimpleNamespace(
-            set_current=lambda value: app.calls.append(('fallback', key, value)))
-        def write(key, value):
-            app.calls.append(('verified', key, value))
-            if fail_zero and value == 0: raise RuntimeError('zero readback failed')
-            return value
-        app._write_and_verify_magnet_current = write
-        app._append_magnet_scan_point = lambda key, row: None
-        app._magnet_scan_zero_readback = types.MethodType(namespace['_magnet_scan_zero_readback'], app)
-        return app
+    def setUp(self):
+        patcher = mock.patch.object(app, "np", np)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-    def run_worker(self, app):
-        namespace['_magnet_scan_worker'](app, [(1,1,1,-1.)], 0., 0., 'ip', None)
+    def make_app(self, fail_zero=False, stopped=False, fail_field=False):
+        a = scan_app(None)
+        a.camera_window = None
+        a.magnet_scan_stop_event = threading.Event()
+        if stopped:
+            a.magnet_scan_stop_event.set()
+        a.calls = []
+
+        def field():
+            if fail_field:
+                raise RuntimeError('field error')
+            return 12.0
+
+        a._query_gauss_with_recovery = lambda key: field()
+        a._require_gauss_meter = lambda key: types.SimpleNamespace(query_field=field)
+
+        def write(key, value):
+            a.calls.append(('verified', key, value))
+            if fail_zero and value == 0:
+                raise RuntimeError('zero readback failed')
+            return value
+
+        a._write_and_verify_magnet_current = write
+        a._append_magnet_scan_point = lambda key, row: None
+        return a
+
+    def run_worker(self, a):
+        a._magnet_scan_worker([(1, 1, 1, -1.0)], 0.0, 0.0, 'OUT', None)
+
+    def run_ui(self, a):
+        while a.ui:
+            a.ui.pop(0)()
 
     def test_complete_zero_after_last_point_without_extra_data(self):
-        app = self.make_app()
-        self.run_worker(app)
-        self.assertEqual(app.calls, [('verified','ip',-1.),('verified','ip',0.)])
-        self.assertEqual(len(app.magnet_scan_rows), 1)
-        self.assertEqual(app.magnet_scan_rows[0][4], -1.)
-        for callback in app.ui: callback()
-        self.assertEqual(app.magnet_target_vars['ip'].value, '0.000')
-        self.assertEqual(app.magnet_last_currents['ip'], 0.)
-        self.assertFalse(app.magnet_scan_collecting)
+        a = self.make_app()
+        self.run_worker(a)
+        self.assertEqual(a.calls, [('verified', 'OUT', -1.0), ('verified', 'OUT', 0.0)])
+        self.assertEqual(a.zero_writes, [('IN', 0.0)], "the other path's KEPCO sent 0 A")
+        self.assertEqual(len(a.magnet_scan_rows), 1)
+        self.assertEqual(a.magnet_scan_rows[0][4], -1.0)
+        self.run_ui(a)
+        self.assertEqual(a.magnet_target_vars['OUT'].get(), '0.000')
+        self.assertEqual(a.magnet_last_currents['OUT'], 0.0)
+        self.assertFalse(a.magnet_scan_collecting)
+        self.assertEqual(a.magnet_scan_outputs, {'Out-of-plane KEPCO': 'zeroed', 'In-plane KEPCO': 'zeroed'})
 
-    def test_zero_failure_propagates_and_retries_safe_write(self):
-        app = self.make_app(fail_zero=True)
-        with self.assertRaisesRegex(RuntimeError, 'zero readback failed'): self.run_worker(app)
-        self.assertEqual(app.calls[-1], ('fallback','ip',0.))
-        self.assertEqual(len(app.magnet_scan_rows), 1)
-        self.assertFalse(app.magnet_scan_collecting)
+    def test_a_failed_zero_is_reported_not_raised_and_retries_a_plain_write(self):
+        a = self.make_app(fail_zero=True)
+        self.run_worker(a)          # the scan completed; its end says how the KEPCOs ended
+        self.assertEqual(a.zero_writes, [('OUT', 0.0), ('IN', 0.0)], "one more plain 0 A, then the other")
+        self.assertEqual(a.magnet_scan_outputs['Out-of-plane KEPCO'], 'zero FAILED: zero readback failed')
+        self.assertEqual(a.magnet_scan_outputs['In-plane KEPCO'], 'zeroed')
+        self.run_ui(a)
+        self.assertEqual(a.magnet_current_vars['OUT'].get(), '0 A not confirmed')
+        self.assertIsNone(a.magnet_last_currents['OUT'])
+        self.assertEqual(len(a.magnet_scan_rows), 1)
 
-    def test_stop_preserves_existing_zero(self):
-        app = self.make_app(stopped=True)
-        self.run_worker(app)
-        self.assertEqual(app.calls, [('fallback','ip',0.)])
-        self.assertEqual(app.magnet_scan_rows, [])
+    def test_stop_zeroes_with_a_readback(self):
+        a = self.make_app(stopped=True)
+        self.run_worker(a)
+        self.assertEqual(a.calls, [('verified', 'OUT', 0.0)])
+        self.assertEqual(a.zero_writes, [('IN', 0.0)])
+        self.assertEqual(a.magnet_scan_rows, [])
 
-    def test_measurement_error_preserves_existing_zero(self):
-        app = self.make_app(fail_field=True)
-        with self.assertRaisesRegex(RuntimeError, 'field error'): self.run_worker(app)
-        self.assertEqual(app.calls[-1], ('fallback','ip',0.))
-        self.assertEqual(app.magnet_scan_rows, [])
+    def test_a_measurement_error_is_kept_and_both_are_zeroed(self):
+        a = self.make_app(fail_field=True)
+        with self.assertRaisesRegex(RuntimeError, 'field error'):
+            self.run_worker(a)
+        self.assertEqual(a.calls[-1], ('verified', 'OUT', 0.0))
+        self.assertEqual(a.zero_writes, [('IN', 0.0)])
+        self.assertEqual(a.magnet_scan_rows, [])
+
+    def test_a_closed_scanned_port_is_a_failure_and_the_other_is_still_zeroed(self):
+        a = self.make_app()
+        a.magnet_channels['OUT'].bop.connected = False
+        self.run_worker(a)
+        self.assertIn('its current is unknown', a.magnet_scan_outputs['Out-of-plane KEPCO'])
+        self.assertEqual(a.zero_writes, [('IN', 0.0)])
+        a.magnet_channels['IN'].bop = None
+        self.run_worker(a)
+        self.assertEqual(a.magnet_scan_outputs['In-plane KEPCO'], 'not connected')
 
 
-if __name__ == '__main__': unittest.main()
+if __name__ == '__main__':
+    unittest.main()

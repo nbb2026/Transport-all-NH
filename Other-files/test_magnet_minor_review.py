@@ -26,7 +26,7 @@ from unittest import mock
 import numpy as np
 
 from test_magnet_scan_start import stand_in
-from test_magnet_zero_and_frames import Var, bind, magnet_app, scan_app
+from test_magnet_zero_and_frames import Var, bind, magnet_app, run_dialogs_now, scan_app
 from test_ppms_motor_debug import app
 
 C = app.CombinedControlApp
@@ -83,6 +83,7 @@ def save_app(rows, settings):
     a.moke_hardware_parameter_snapshot.return_value = {}
     a.camera_scan_parameter_snapshot.return_value = {}
     bind(a, "save_magnet_scan_csv", "_redraw_moke_plot")
+    run_dialogs_now(a)
     return a
 
 
@@ -283,12 +284,16 @@ def worker_app(meter, target="1.500"):
     a = scan_app(None)
     a.camera_window = None        # no camera window: no wait for frames
     a._require_gauss_meter = lambda key: meter
-    a.magnet_target_vars = {"OUT": Var(target)}
-    a.magnet_status_var = Var()
+    a.magnet_target_vars = {"OUT": Var(target), "IN": Var("0.000")}
     a.magnet_scan_stop_event = Never()
-    a.zero_writes = []
-    a._require_magnet_bop = lambda key: types.SimpleNamespace(
-        set_current=lambda value: a.zero_writes.append(value))
+    a.verified = []
+    written = a._write_and_verify_magnet_current
+
+    def write(key, value):
+        a.verified.append((key, value))
+        return written(key, value)
+
+    a._write_and_verify_magnet_current = write
     return a
 
 
@@ -309,40 +314,58 @@ class ScanWorkerTests(unittest.TestCase):
         self.assertEqual(meter.events, ["query", "close", "connect", "query", "query"])
         self.assertEqual([row[6] for row in a.magnet_scan_rows], [12.0, 0.5])
         self.assertEqual(len(a.set_at), 3, "both points, then the verified 0 A at the end")
+        self.assertEqual(a.magnet_scan_outputs, {"Out-of-plane KEPCO": "zeroed", "In-plane KEPCO": "zeroed"})
+
+    # Since 2026-10-18 (user: every scan ending zeroes its sources, read back
+    # where the instrument allows) a Stop and an error write the verified
+    # 0 A, as a completed scan does, and the other path's KEPCO is sent 0 A;
+    # before, they wrote a plain 0 A to the scanned path only.
 
     def test_stop_puts_0_in_the_target_box(self):
         a = worker_app(Meter(12.0))
         a.magnet_scan_stop_event = threading.Event()
+        written = a._write_and_verify_magnet_current
 
         def write(key, value):
             a.magnet_scan_stop_event.set()      # Stop pressed during the first write
-            return value
+            return written(key, value)
 
         a._write_and_verify_magnet_current = write
         a._magnet_scan_worker([(1, 1, 2, 1.0), (1, 2, 2, 0.0)], 0.0, 0.0, "OUT", None)
-        self.assertEqual(a.zero_writes, [0.0])
+        self.assertEqual(len(a.set_at), 2, "the first point, then the verified 0 A")
+        self.assertEqual(a.zero_writes, [("IN", 0.0)], "the other path's KEPCO: 0 A sent")
         self.run_ui(a)
         self.assertEqual(a.magnet_target_vars["OUT"].get(), "0.000")
+        self.assertEqual(a.magnet_current_vars["OUT"].get(), "+0.000 A")
 
     def test_an_error_puts_0_in_the_target_box(self):
         a = worker_app(Meter(TimeoutError("no reply"), TimeoutError("still no reply")))
         with self.assertRaises(TimeoutError):
             a._magnet_scan_worker([(1, 1, 1, 1.0)], 0.0, 0.0, "OUT", None)
-        self.assertEqual(a.zero_writes, [0.0])
+        self.assertEqual(a.verified, [("OUT", 1.0), ("OUT", 0.0)], "the scan's error kept, 0 A verified")
         self.run_ui(a)
         self.assertEqual(a.magnet_target_vars["OUT"].get(), "0.000")
 
     def test_a_failed_zero_leaves_the_target_box(self):
         a = worker_app(Meter(RuntimeError("x"), RuntimeError("y")))
 
+        def write(key, value):
+            if value == 0.0:
+                raise RuntimeError("no IQ reply")
+            return value
+
         def refuse(value):
             raise RuntimeError("BOP gone")
 
-        a._require_magnet_bop = lambda key: types.SimpleNamespace(set_current=refuse)
-        with self.assertRaises(RuntimeError):
+        a._write_and_verify_magnet_current = write
+        a.magnet_channels["OUT"].bop.set_current = refuse
+        with self.assertRaisesRegex(RuntimeError, "x|y"):
             a._magnet_scan_worker([(1, 1, 1, 1.0)], 0.0, 0.0, "OUT", None)
         self.run_ui(a)
         self.assertEqual(a.magnet_target_vars["OUT"].get(), "1.500")
+        self.assertEqual(a.magnet_current_vars["OUT"].get(), "0 A not confirmed")
+        self.assertIsNone(a.magnet_last_currents["OUT"], "never kept as 0 A (M2)")
+        self.assertTrue(a.magnet_scan_outputs["Out-of-plane KEPCO"].startswith("zero FAILED: no IQ reply"))
 
 
 def zero_app():
@@ -350,7 +373,7 @@ def zero_app():
     for channel in a.magnet_channels.values():
         channel.close = lambda bop=channel.bop: setattr(bop, "connected", False)
     a.magnet_field_vars = {"OUT": Var(), "IN": Var()}
-    bind(a, "disconnect_magnets")
+    bind(a, "disconnect_magnets", "_magnet_zero_armed_bops")
     return a
 
 
@@ -445,7 +468,9 @@ class EstimateTests(unittest.TestCase):
         a.moke_hardware_parameter_snapshot.return_value = {}
         a._snapshot_variable = C._snapshot_variable
         a._format_scan_duration = C._format_scan_duration
-        with mock.patch.object(app.messagebox, "askyesno", return_value=True) as asked, \
+        recorder = mock.Mock(directory=Path("MOKE_run"))
+        with mock.patch.object(app, "begin_scan_run", return_value=recorder), \
+                mock.patch.object(app.messagebox, "askyesno", return_value=True) as asked, \
                 mock.patch.object(app.messagebox, "showwarning") as warned, \
                 mock.patch.object(app.messagebox, "showerror") as failed:
             C.start_magnet_scan(a)

@@ -22,20 +22,27 @@ from test_ppms_motor_debug import app
 class Stuck6221(Instrument):
     """A 6221 whose OUTP OFF times out once ``fail_off`` is set; ``fail_on``
     names another command that times out; ``wrong`` gives a frequency
-    readback that does not match."""
+    readback that does not match.  OUTP? reads what the OUTP commands that
+    went through left (since 2026-10-18 a scan's end reads it back, and the
+    readback decides); a 6221 whose OUTP OFF times out was left on."""
 
     def __init__(self, fail_off=True, wrong=False, fail_on=None):
         super().__init__()
         self.fail_off, self.wrong, self.fail_on = fail_off, wrong, fail_on
+        self.output = "1" if fail_off else "0"
 
     def write(self, command):
         if (self.fail_off and command == "OUTP OFF") or command == self.fail_on:
             raise TimeoutError(f"VI_ERROR_TMO on {command}")
         super().write(command)
+        if command in ("OUTP ON", "OUTP OFF"):
+            self.output = "1" if command == "OUTP ON" else "0"
 
     def query(self, command):
         if self.wrong and command == "SOUR:WAVE:FREQ?":
             return "1"
+        if command == "OUTP?":
+            return self.output
         return super().query(command)
 
     def close(self):
@@ -63,6 +70,7 @@ def page(instrument):
     a.k6221_compliance_var, a.k6221_count_var = Var("100"), Var("1")
     a.k6221_stop_event = threading.Event()
     a.k6221_output_var, a.k6221_status_var, a.k6221_connection_var = Var(), Var(), Var()
+    a.avtech_output_var = Var()
     a.k6221_busy, a.k6221_scan_running, a.k6221_output_unknown = False, False, False
     a.k6221_executor = Now()
     a.post_ui = lambda callback: callback()
@@ -151,10 +159,13 @@ class ScanTests(unittest.TestCase):
         a.cidwm_scan_status_var = Var()
         a.k6221_scan_running = True
         a.k6221_stop_event.set()   # stopped before the first pulse; the off at the end still runs
-        folder = Path(self.enterContext(tempfile.TemporaryDirectory())) / "run"
-        folder.mkdir()
-        future = a.k6221_executor.submit(a._cidwm_pulse_scan_worker, {"signs": (1,)}, folder)
+        # The run folder through the shared recorder (user, 2026-10-18).
+        recorder = app.ScanRunRecorder(Path(self.enterContext(tempfile.TemporaryDirectory())), "CIDWM",
+                                       "run", {})
+        a.cidwm_scan_recorder = recorder
+        future = a.k6221_executor.submit(a._cidwm_pulse_scan_worker, {"signs": (1,)}, recorder)
         a._finish_cidwm_pulse_scan(future)
+        self.assertTrue(recorder.closed, "run_finished written by the finish")
         return a
 
     def test_a_failed_off_at_the_end_keeps_the_avtech_waiting(self):

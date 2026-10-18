@@ -55,9 +55,16 @@ class Camera:
 
 
 class Source:
+    """The 6221; its OUTP? reads 0 (off) for the scan end's read back."""
+
+    connected = True
+
     def __init__(self, stop_on=None, event=None):
         self.calls = []
         self.stop_on, self.event = stop_on, event
+        self.lock = threading.RLock()
+        self.instrument = types.SimpleNamespace(query=lambda command: "0")
+        self.logger = lambda message: None
 
     def set_dc_pulse(self, current_a, width_s, compliance_v, count):
         self.calls.append(("pulse", current_a, width_s, compliance_v, count))
@@ -80,7 +87,17 @@ def page(source=None, camera=None):
     a._publish_k6221_readback = mock.Mock()
     a._publish_k6221_off_state = mock.Mock()
     a.cidwm_scan_status_var = Var()
+    a.thread_log = mock.Mock()
     return a
+
+
+def run_recorder(test):
+    """A run folder <tmp>/run/ with run.csv and run.log, through the shared
+    recorder (user, 2026-10-18), closed when the test ends."""
+    parent = Path(tempfile.mkdtemp())
+    recorder = app.ScanRunRecorder(parent, "CIDWM", "run", {"test": True})
+    test.addCleanup(recorder.close, "test")
+    return recorder
 
 
 SETTINGS = {"current_ma": 2.0, "width_s": 50e-6, "compliance_v": 100.0, "signs": (1, -1, 1),
@@ -107,8 +124,8 @@ class SignTests(unittest.TestCase):
 
 class WorkerTests(unittest.TestCase):
     def setUp(self):
-        self.folder = Path(tempfile.mkdtemp()) / "run"
-        self.folder.mkdir()
+        self.recorder = run_recorder(self)
+        self.folder = self.recorder.directory
         # The program imports numpy and Pillow with the camera stack.
         for name, module in (("np", np), ("Image", Image)):
             patcher = mock.patch.object(app, name, module)
@@ -118,7 +135,7 @@ class WorkerTests(unittest.TestCase):
     def test_each_pulse_has_its_sign_and_its_two_tiffs(self):
         a = page()
         a.k6221_roi = {"cx": 1.5, "cy": 1.0, "w": 4.0, "h": 3.0, "angle": 0.0}
-        result = a._cidwm_pulse_scan_worker(SETTINGS, self.folder)
+        result = a._cidwm_pulse_scan_worker(SETTINGS, self.recorder)
         self.assertEqual(result["done"], 3)
         pulses = [c for c in a.k6221_controller.calls if c[0] == "pulse"]
         self.assertEqual([(c[1], c[4]) for c in pulses], [(2e-3, 1), (-2e-3, 1), (2e-3, 1)],
@@ -154,7 +171,7 @@ class WorkerTests(unittest.TestCase):
         a = page(source)
         a.k6221_stop_event = event
         source.event = event
-        result = a._cidwm_pulse_scan_worker(SETTINGS, self.folder)
+        result = a._cidwm_pulse_scan_worker(SETTINGS, self.recorder)
         self.assertEqual(result["done"], 1)
         self.assertEqual([c[0] for c in source.calls], ["pulse", "off", "pulse", "off", "off"])
         with (self.folder / "run.csv").open(encoding="utf-8-sig") as file:
@@ -168,7 +185,7 @@ class WorkerTests(unittest.TestCase):
         a = page(camera=Camera(frames=False))
         with mock.patch.object(app, "CIDWM_SCAN_FRAME_TIMEOUT_S", 0.1):
             with self.assertRaisesRegex(RuntimeError, "No camera frame taken wholly after the pulse"):
-                a._cidwm_pulse_scan_worker(SETTINGS, self.folder)
+                a._cidwm_pulse_scan_worker(SETTINGS, self.recorder)
         self.assertEqual(a.k6221_controller.calls[-1], ("off",))
         with (self.folder / "run.csv").open(encoding="utf-8-sig") as file:
             rows = list(csv.DictReader(file))
@@ -180,14 +197,14 @@ class WorkerTests(unittest.TestCase):
         frames with a cross-fade, so the scan waits for a frame whose oldest
         frame began after the pulse."""
         a = page(camera=Camera(stale=3))
-        a._cidwm_pulse_scan_worker(dict(SETTINGS, signs=(1,)), self.folder)
+        a._cidwm_pulse_scan_worker(dict(SETTINGS, signs=(1,)), self.recorder)
         raw = np.asarray(Image.open(next(self.folder.glob("*_raw16.tiff"))))
         np.testing.assert_array_equal(raw, frame(0.0).raw, "not the stale frame (raw + 100)")
 
     def test_without_camera_live_drawing_the_tiffs_and_a_note(self):
         a = page(camera=Camera(drawing=False))
         with mock.patch.object(app, "CIDWM_SCAN_DISPLAY_TIMEOUT_S", 0.1):
-            a._cidwm_pulse_scan_worker(dict(SETTINGS, signs=(1,)), self.folder)
+            a._cidwm_pulse_scan_worker(dict(SETTINGS, signs=(1,)), self.recorder)
         with (self.folder / "run.csv").open(encoding="utf-8-sig") as file:
             row = next(csv.DictReader(file))
         self.assertEqual(row["display_png"], "")
@@ -272,6 +289,8 @@ class SizeTests(unittest.TestCase):
 class AvtechSource:
     """The Avtech: one pulse per call, off again when it returns."""
 
+    connected = True
+
     def __init__(self, trip_on=None):
         self.calls, self.trip_on = [], trip_on
 
@@ -293,8 +312,8 @@ class AvtechWorkerTests(unittest.TestCase):
     """The pulse sign scan on the Avtech (user, 2026-10-13)."""
 
     def setUp(self):
-        self.folder = Path(tempfile.mkdtemp()) / "run"
-        self.folder.mkdir()
+        self.recorder = run_recorder(self)
+        self.folder = self.recorder.directory
         for name, module in (("np", np), ("Image", Image)):
             patcher = mock.patch.object(app, name, module)
             patcher.start()
@@ -309,11 +328,14 @@ class AvtechWorkerTests(unittest.TestCase):
     def test_each_pulse_its_sign_its_images_and_the_avtech_off_at_the_end(self):
         avtech = AvtechSource()
         a = self.page(avtech)
-        result = a._cidwm_pulse_scan_worker(AVTECH_SETTINGS, self.folder)
+        result = a._cidwm_pulse_scan_worker(AVTECH_SETTINGS, self.recorder)
         self.assertEqual(result["done"], 3)
         self.assertEqual(avtech.calls, [("pulse", 20.0, 10e-9), ("pulse", -20.0, 10e-9),
                                         ("pulse", 20.0, 10e-9), ("off",)])
-        self.assertEqual(a.k6221_controller.calls, [], "the 6221 is not used")
+        # Not used for pulses; only switched off at the end, as every
+        # source of the page is at every scan end (user, 2026-10-18).
+        self.assertEqual(a.k6221_controller.calls, [("off",)], "the 6221 only switched off at the end")
+        self.assertEqual(a.cidwm_scan_outputs, {"Avtech": "zeroed", "6221": "zeroed"})
         with (self.folder / "run.csv").open(encoding="utf-8-sig") as file:
             rows = list(csv.DictReader(file))
         self.assertEqual(list(rows[0])[:7], ["pulse", "sign", "set_amplitude_V", "amplitude_V",
@@ -337,7 +359,7 @@ class AvtechWorkerTests(unittest.TestCase):
         avtech = Failing()
         a = self.page(avtech)
         with self.assertRaisesRegex(app.AvtechPulseError, "pulse fired"):
-            a._cidwm_pulse_scan_worker(AVTECH_SETTINGS, self.folder)
+            a._cidwm_pulse_scan_worker(AVTECH_SETTINGS, self.recorder)
         with (self.folder / "run.csv").open(encoding="utf-8-sig") as file:
             rows = list(csv.DictReader(file))
         self.assertEqual([(r["pulse"], r["amplitude_V"], r["pulse_width_ns"]) for r in rows], [("1", "20", "10")])
@@ -348,7 +370,7 @@ class AvtechWorkerTests(unittest.TestCase):
         avtech = AvtechSource(trip_on=2)
         a = self.page(avtech)
         with self.assertRaisesRegex(RuntimeError, "output protection tripped"):
-            a._cidwm_pulse_scan_worker(AVTECH_SETTINGS, self.folder)
+            a._cidwm_pulse_scan_worker(AVTECH_SETTINGS, self.recorder)
         self.assertEqual([c[0] for c in avtech.calls], ["pulse", "pulse", "off"])
         with (self.folder / "run.csv").open(encoding="utf-8-sig") as file:
             rows = list(csv.DictReader(file))
@@ -379,7 +401,10 @@ class SaveImagesTests(unittest.TestCase):
             latest_display=(np.full((3, 4), 7, dtype=np.uint8), (0, 0, 4, 3), shown),
             pause_rendering=mock.Mock(), resume_rendering=mock.Mock(),
         )
-        a.root, a.closing = None, False  # the dialogs are mocked
+        # The dialogs are mocked; they open from root.after(0, ...) (M5,
+        # review, 2026-10-18), here at once.
+        a.root = types.SimpleNamespace(after=lambda _delay, callback: callback())
+        a.closing = False
         a.active_file_exports = set()
         a._refresh_file_export_controls = mock.Mock()
         a._update_k6221_controls = mock.Mock()
