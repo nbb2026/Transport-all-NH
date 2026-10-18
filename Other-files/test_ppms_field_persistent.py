@@ -216,9 +216,17 @@ class PersistentSetpointTests(unittest.TestCase):
         # Not when a scan or Macro starts: one stopped at its motor check, or
         # a Macro without FIELD lines, never commands the field.
         source = inspect.getsource(app.CombinedControlApp._ppms_nested_scan_worker)
-        hand_off = source.index('_end_ppms_persistent_follow_up("The field scan")')
+        # The Field scans' block field: after the motor check.  Angle+Field
+        # (user, 2026-10-18) has its own hand-off with each outer field's
+        # command, before that field's angle sweep, so each command's own
+        # hand-off is the last one before it.
+        command = source.index("remote.set_field(field_target, rate, approach, 1)")
+        hand_off = source.rindex('_end_ppms_persistent_follow_up("The field scan")', 0, command)
         self.assertLess(source.index("PPMSMotorScanError(f\"{error}; field kept"), hand_off)
-        self.assertLess(hand_off, source.index("remote.set_field(field_target, rate, approach, 1)"))
+        outer_command = source.index("remote.set_field(field, rate, approach, 1)")
+        outer_hand_off = source.rindex('_end_ppms_persistent_follow_up("The field scan")', 0, outer_command)
+        self.assertLess(source.index('"Scan stopped; the next field was not set"'), outer_hand_off,
+                        "a stopped Angle+Field scan ends no follow-up")
         for name, call in (("_ppms_scan_with_final_field", "_end_ppms_persistent_follow_up('Zero + persist')"),
                            ("_ppms_zero_field_after_interrupted_scan", '_end_ppms_persistent_follow_up("The scan clean-up")')):
             with self.subTest(name=name):

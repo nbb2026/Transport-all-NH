@@ -2208,15 +2208,32 @@ PPMS_TEMPERATURE_ACQUISITION_S = 5.0
 # Frequency+Current the frequency is the outer loop: the whole current sweep
 # runs at each frequency (the user's choice).
 PPMS_FREQUENCY_SCAN_MODES = ("Frequency", "Frequency+Current")
+# Angle+Field (user, 2026-10-18: "does PPMS module have angle+field scan? if
+# not, add it"): the field is the outer loop and the whole angle sweep runs
+# at each field, as the user chose for SHV's Angle+Field the same day.  It
+# sits after the +Temperature modes, before the frequency modes.
 PPMS_SCAN_MODES = ("Temperature", "Field", "Angle", "Current", "Field+Temperature",
-                   "Angle+Temperature", "Current+Temperature", *PPMS_FREQUENCY_SCAN_MODES)
+                   "Angle+Temperature", "Current+Temperature", "Angle+Field", *PPMS_FREQUENCY_SCAN_MODES)
+# The modes that command the magnet field: they follow the Field scan's
+# rules at every end (Stop keeps the field; I off, a field failure or closing
+# set 0 Oe once).  Every other mode never commands the field.
+PPMS_FIELD_COMMANDING_MODES = ("Field", "Field+Temperature", "Angle+Field")
 # The quantity each mode's plots put on the x axis (ppms_plot_axis).  A
-# Frequency+Current scan plots against the current, one curve per frequency.
+# Frequency+Current scan plots against the current, one curve per frequency;
+# Angle+Field against the angle, one curve per outer field.
 PPMS_SCAN_PLOT_AXES = {
     "Temperature": "temperature", "Field": "field", "Field+Temperature": "field",
     "Angle": "angle", "Angle+Temperature": "angle", "Current": "current",
-    "Current+Temperature": "current", "Frequency": "frequency", "Frequency+Current": "current",
+    "Current+Temperature": "current", "Angle+Field": "angle",
+    "Frequency": "frequency", "Frequency+Current": "current",
 }
+# The Angle+Field estimate's planning allowance for each rotator MOVE of at
+# most 0.9° (the scan turns in such steps; the arrival needs two AtTarget
+# readings 0.5 s apart).  The rotator's own speed is not known to the
+# program, so this is an allowance, as PPMS_SET_UP_ALLOWANCE_S is (user,
+# 2026-10-18: the estimate counts the moves, the return to the first angle
+# at each field included).
+PPMS_ROTATOR_MOVE_ALLOWANCE_S = 1.0
 # The CSV column each plot axis is, for the run log's point_saved (user,
 # 2026-10-18); the base page's plots read the same columns.
 PPMS_PLOT_AXIS_COLUMNS = {"field": "measured_field_oe", "temperature": "temperature_k",
@@ -17887,6 +17904,21 @@ class CombinedControlApp:
             if hasattr(var, "trace_add"):
                 var.trace_add("write", refresh_frequency_note)
         refresh_frequency_note()
+        # Angle+Field's outer fields (user, 2026-10-18), where the outer
+        # temperature row sits for the +Temperature modes and shown only in
+        # Angle+Field: Start / End / Step in Oe, at the page's field range
+        # defaults, checked as a Field scan's fields at Start.  Its label is
+        # shorter than "Outer temperature K:", so the row is no wider.
+        self.ppms_outer_field_scan_range = [tk.StringVar(value=v) for v in
+                                            getattr(self, "ppms_default_field_range", ("0", "1000", "100"))]
+        field_range_frame = ttk.Frame(scan)
+        self.ppms_outer_field_range_frame = field_range_frame
+        ttk.Label(field_range_frame, text="Outer field Oe:").grid(row=0, column=0)
+        for i, (label, var) in enumerate(zip(("Start", "End", "Step"), self.ppms_outer_field_scan_range)):
+            ttk.Label(field_range_frame, text=label).grid(row=0, column=1+2*i)
+            entry = ttk.Entry(field_range_frame, textvariable=var, width=6)
+            entry.grid(row=0, column=2+2*i)
+            self.ppms_control_widgets.append(entry)
         def change_mode(_event=None):
             defaults = self._ppms_scan_mode_defaults()
             combined = self.ppms_simple_mode.get() in ("Field+Temperature", "Angle+Temperature", "Current+Temperature")
@@ -17898,6 +17930,10 @@ class CombinedControlApp:
                 frequency_range_frame.grid(row=4, column=0, columnspan=9, sticky="ew", pady=(2, 0))
             else:
                 frequency_range_frame.grid_remove()
+            if self.ppms_simple_mode.get() == "Angle+Field":
+                field_range_frame.grid(row=4, column=0, columnspan=9, sticky="w", pady=(2, 0))
+            else:
+                field_range_frame.grid_remove()
             scan.configure(text="PPMS scan")
             values = defaults[self.ppms_simple_mode.get()]
             for var, value in zip(self.ppms_simple_range, values): var.set(value)
@@ -17972,6 +18008,9 @@ class CombinedControlApp:
         # Current's defaults (user, 2026-10-18).
         defaults["Frequency"] = (f"{NONLOCAL_FSCAN_START_HZ:g}", f"{NONLOCAL_FSCAN_STOP_HZ:g}", "", "Hz (primes)")
         defaults["Frequency+Current"] = defaults["Current"]
+        # Angle+Field: the main row is the inner angle sweep, at Angle's
+        # defaults; the outer fields have their own row (user, 2026-10-18).
+        defaults["Angle+Field"] = defaults["Angle"]
         return defaults
 
     def _ppms_direct_transport_settings(self):
@@ -42166,6 +42205,10 @@ class CombinedControlApp:
             # Its main row is the current sweep, as in a Current scan, and
             # neither frequency scan reads "f Hz" (user, 2026-10-18).
             scanned = {"Current", "Frequency"}
+        if mode == "Angle+Field":
+            # The scan sets the angle and the field; the H Oe box and Set H
+            # are not used (user, 2026-10-18).  The rate box stays usable.
+            scanned = {"Angle", "Field"}
         for parameter, widgets in getattr(self, "ppms_scan_target_widgets", {}).items():
             for widget in widgets:
                 widget.configure(state="normal" if enabled and parameter not in scanned else "disabled")
@@ -43251,10 +43294,20 @@ class CombinedControlApp:
         return {key: shade_color(base, rank[value] / span if span else 0.5)
                 for key, value in valid.items()}
 
+    @staticmethod
+    def _ppms_field_series_group(row) -> str:
+        """An Angle+Field curve's name: its outer field step and commanded
+        field (user, 2026-10-18), one curve per field."""
+        field = row.get("target_field_oe")
+        shown = f"{field:g} Oe" if isinstance(field, (int, float)) else "? Oe"
+        return f"H{row.get('outer_field_index', 1)} ({shown})"
+
     def _ppms_temperature_plot_colors(self, base, temperatures):
-        if getattr(self, 'ppms_active_scan_mode', '') == 'Frequency+Current':
+        if getattr(self, 'ppms_active_scan_mode', '') in ('Frequency+Current', 'Angle+Field'):
             # Its curves are one per frequency, and the callers pass each
-            # curve's frequency here (user, 2026-10-18).
+            # curve's frequency here (user, 2026-10-18).  Angle+Field's are
+            # one per outer field, given with its commanded field: the same
+            # light-to-dark shading by rank, lowest field lightest.
             return self._ppms_frequency_plot_colors(base, temperatures)
         if getattr(self, 'ppms_active_scan_mode', '') not in ('Field+Temperature', 'Angle+Temperature', 'Current+Temperature'):
             return {}
@@ -43347,6 +43400,10 @@ class CombinedControlApp:
                 # A curve per frequency, shaded by it (user, 2026-10-18).
                 group = self._ppms_frequency_series_group(row)
                 temperature = row.get("6221_frequency_hz")
+            elif scan_mode == "Angle+Field":
+                # A curve per outer field, shaded by it (user, 2026-10-18).
+                group = self._ppms_field_series_group(row)
+                temperature = row.get("target_field_oe")
             tail = f"{group} L{row.get('loop', 1)}"
             point_x = x_value * x_scale
             for column, prefix in columns:
@@ -44401,15 +44458,25 @@ class CombinedControlApp:
                     for v, label in zip(self.ppms_frequency_scan_range, ("start", "end"))))
             current_sweep = mode in ("Current", "Current+Temperature", "Frequency+Current")
             scan_field = mode in ("Field", "Field+Temperature")
+            # Angle+Field (user, 2026-10-18): the outer fields from their own
+            # row, the main row the angle sweep.  It commands the field, as a
+            # Field scan does, but one field per angle sweep.
+            field_outer = mode == "Angle+Field"
+            field_commanded = mode in PPMS_FIELD_COMMANDING_MODES
+            outer_fields = (ppms_scan_axis(*(number(v, f"outer field {label} (Oe)") for v, label in
+                                             zip(self.ppms_outer_field_scan_range, ("start", "end", "step"))))
+                            if field_outer else None)
             temperatures = (ppms_scan_axis(*(number(v, f"outer temperature {label}") for v, label in zip(self.ppms_temperature_scan_range, ("start", "end", "step"))))
                             if mode in ("Field+Temperature", "Angle+Temperature", "Current+Temperature") else values if mode == "Temperature" else None)
             # The modes that never command the field record the field read
             # at Start as target_field_oe, not the H Oe box they do not use
             # (review, 2026-10-18: the CSV named a target never sent).
-            fixed_field = values[0] if scan_field else self._ppms_field_read_at_start()
+            fixed_field = (values[0] if scan_field else outer_fields[0] if field_outer
+                           else self._ppms_field_read_at_start())
             fixed_temp = temperatures[0] if temperatures is not None else number(self.ppms_temperature_target_var, "the fixed temperature on the left (K)")
-            fixed_angle = values[0] if mode in ("Angle", "Angle+Temperature") else number(self.ppms_motor_target_var, "the fixed angle on the left (°)")
-            start_oe, end_oe = (values[0], values[-1]) if scan_field else (fixed_field, fixed_field)
+            fixed_angle = values[0] if mode in ("Angle", "Angle+Temperature", "Angle+Field") else number(self.ppms_motor_target_var, "the fixed angle on the left (°)")
+            start_oe, end_oe = ((values[0], values[-1]) if scan_field else (outer_fields[0], outer_fields[-1])
+                                if field_outer else (fixed_field, fixed_field))
             loops = 1
             stable_s = number(self.ppms_field_scan_stable_var, "settle time per point (s)")
             acquisition_s = number(self.ppms_acquisition_time_var, "acquisition time per point (s)")
@@ -44419,17 +44486,27 @@ class CombinedControlApp:
             if scan_field:
                 validate_ppms_field_command(start_oe, rate_oe_s)
                 validate_ppms_field_command(end_oe, rate_oe_s)
+            elif field_outer:
+                # Every outer field is a command, checked as a Field scan's
+                # fields are, with the rate box (user, 2026-10-18).
+                for field in outer_fields:
+                    try:
+                        validate_ppms_field_command(field, rate_oe_s)
+                    except ValueError as error:
+                        raise ValueError(f"Outer field {field:g} Oe: {error}") from None
             else:
                 # The rate is checked as before; the field read at Start is
                 # no command, so it is not checked as one.
                 validate_ppms_field_command(0.0, rate_oe_s)
             if not math.isfinite(stable_s) or not 0 <= stable_s <= 86400:
                 raise ValueError("PPMS settle time per point must be within 0–86400 s")
-            fields = values if scan_field else (fixed_field,)
+            fields = values if scan_field else outer_fields if field_outer else (fixed_field,)
             if scan_field:
                 # Reverse the actual outbound nodes, including uneven final
                 # steps; do not duplicate the turnaround measurement.
                 fields = fields + fields[-2::-1]
+            # Angle+Field: one entry per outer field, one way (no return
+            # sweep); the worker sets each field, then sweeps the angles.
             sequence = tuple((1, i, len(fields), value) for i, value in enumerate(fields, 1))
             approach = self._ppms_field_approach_code(
                 self.ppms_field_approach_var.get()
@@ -44457,7 +44534,7 @@ class CombinedControlApp:
                 allow_no_lockins=use_zurich,
                 harmonic_c=self._ppms_harmonic_value("830_c"),
             )
-            nested = {"angle": values if mode in ("Angle", "Angle+Temperature") else (fixed_angle,),
+            nested = {"angle": values if mode in ("Angle", "Angle+Temperature", "Angle+Field") else (fixed_angle,),
                       "temperature": temperatures if temperatures is not None else (fixed_temp,)}
             currents = values if current_sweep else (transport_settings["current_rms_ma"],)
             for current in currents:
@@ -44501,6 +44578,8 @@ class CombinedControlApp:
             if any(transport_settings[k] not in (1, 2, 3) for k in ("harmonic_a", "harmonic_b")):
                 raise ValueError("SR830 harmonic must be 1, 2 or 3")
             transport_settings["nested"] = nested
+            if field_outer:
+                transport_settings["outer_fields"] = tuple(outer_fields)
             transport_settings["currents"] = currents
             transport_settings["scan_mode"] = mode
             transport_settings["acquisition_s"] = acquisition_s
@@ -44548,8 +44627,36 @@ class CombinedControlApp:
                     for _loop, _point, _count, target in sequence:
                         field_ramp_s += abs(target - previous) / rate_oe_s
                         previous = target
+        rotator_moves = 0
+        if field_outer:
+            # Angle+Field (user, 2026-10-18): one ramp per outer field at the
+            # rate box, in every harmonic pass, from the field read now; and
+            # every rotator MOVE of at most 0.9°: to the first angle from the
+            # present one, along the sweep, and back to the first angle
+            # before each later field (the return), at
+            # PPMS_ROTATOR_MOVE_ALLOWANCE_S each.  Its angle blocks repeat at
+            # every field, as Angle+Temperature's at every temperature.
+            previous = initial_field
+            for _pass in harmonic_passes:
+                for _loop, _point, _count, target in sequence:
+                    field_ramp_s += abs(target - previous) / rate_oe_s
+                    previous = target
+            angles = nested["angle"]
+
+            def moves(start, end):
+                return len(ppms_scan_axis(start, end, 0.9)) - 1
+            try:
+                present_angle = float((self.ppms_last_readback or {})["angle_deg"])
+            except (KeyError, TypeError, ValueError):
+                present_angle = float(angles[0])
+            sweeps = len(sequence) * len(harmonic_passes)
+            sweep_moves = sum(moves(a, b) for a, b in zip(angles, angles[1:]))
+            return_moves = moves(angles[-1], angles[0])
+            rotator_moves = moves(present_angle, angles[0]) + sweeps * sweep_moves + (sweeps - 1) * return_moves
+            blocks *= len(sequence)
         estimated_seconds = field_ramp_s + sum(
             (settle + acquisition_s) * points_per_pass for settle, _tc, _meter in pass_settles)
+        estimated_seconds += rotator_moves * PPMS_ROTATOR_MOVE_ALLOWANCE_S
         # Planning allowance only: actual GPIB/reference settling is measured
         # during acquisition and replaces this estimate after completed points.
         set_ups = blocks * len(harmonic_passes)
@@ -44609,10 +44716,32 @@ class CombinedControlApp:
                 # boxes' values and waits for them before the first frequency.
                 + f"\nHeld as in a Current scan: {fixed_temp:g} K (T K) and {fixed_angle:g}° (Angle °); "
                 "the field is not commanded\n")
+        # Angle+Field (user, 2026-10-18): the outer field steps and their
+        # ramps at the rate box, the angles per field, the rotator's moves
+        # with the return to the first angle, and what is held.
+        if field_outer:
+            def step_text(points, unit):
+                return f" (Step {abs(points[1] - points[0]):g}{unit})" if len(points) > 1 else ""
+            angles = nested["angle"]
+            ramp_step = (f"about {self._format_scan_duration(abs(sequence[1][3] - sequence[0][3]) / rate_oe_s)} "
+                         "per step; " if len(sequence) > 1 else "")
+            frequency_line = (
+                f"Outer fields: {len(sequence)} steps, {sequence[0][3]:g} to {sequence[-1][3]:g} Oe"
+                f"{step_text([point[3] for point in sequence], ' Oe')}, the whole angle sweep at each\n"
+                f"At each field: set Driven at {rate_oe_s:g} Oe/s ({ramp_step}about "
+                f"{self._format_scan_duration(abs(sequence[0][3] - initial_field) / rate_oe_s)} to the first field "
+                f"from {initial_field:g} Oe; {self._format_scan_duration(field_ramp_s)} of ramps in all), its "
+                "stable reading awaited, then the angles; the first angle after each field change takes "
+                "agreeing windows\n"
+                f"Angles per field: {len(angles)}, {angles[0]:g} to {angles[-1]:g}°{step_text(angles, '°')}; "
+                f"rotator: {sweep_moves} moves of at most 0.9° per sweep and {return_moves} back to "
+                f"{angles[0]:g}° before each later field, {rotator_moves} moves in all (planned at "
+                f"{PPMS_ROTATOR_MOVE_ALLOWANCE_S:g} s each)\n"
+                f"Held as in an Angle scan: {fixed_temp:g} K (T K)\n")
         # How every ending leaves the outputs (user, 2026-10-18: every scan
         # page zeroes its sources at every end, as SHV; the confirmation no
         # longer promises outputs kept).
-        if scan_field:
+        if field_commanded:
             field_end = ("the field stays at its setpoint after Stop, and is set to 0 Oe after I off, a field "
                          "failure or closing the program")
         else:
@@ -44642,7 +44771,7 @@ class CombinedControlApp:
         try:
             run_settings = self._ppms_run_settings(
                 mode, sequence, rate_oe_s, stable_s, approach, transport_settings, pass_settles,
-                settle_s, estimated_seconds, fixed_field, scan_field)
+                settle_s, estimated_seconds, fixed_field, field_commanded)
         except Exception as error:
             messagebox.showerror("PPMS run log", "Could not gather the settings for the run log; the scan was not "
                                  f"started: {error}", parent=self.root)
@@ -44673,6 +44802,9 @@ class CombinedControlApp:
         if frequencies:
             self.thread_log(f"PPMS {mode} scan: {frequency_text}"
                             + (", the whole current sweep at each" if mode == "Frequency+Current" else ""))
+        if field_outer:
+            self.thread_log(f"PPMS {mode} scan: {len(sequence)} outer fields, {sequence[0][3]:g} to "
+                            f"{sequence[-1][3]:g} Oe at {rate_oe_s:g} Oe/s, the whole angle sweep at each")
         self.ppms_scan_settle_logged = settle_s
         self.ppms_scan_sr830_tc_code = sr830_tc_code
         self.ppms_field_scan_running = True
@@ -44702,6 +44834,7 @@ class CombinedControlApp:
         # the confirmation and the log give it exactly (user, 2026-10-14).
         self.ppms_field_scan_status_var.set(
             f"{mode} scan: " + (f"{frequency_text}; " if frequencies else "")
+            + (f"{len(sequence)} fields x {len(nested['angle'])} angles; " if field_outer else "")
             + f"{total} points, settle {ppms_settle_status_text(settle_s)} s; "
             f"estimated about {estimate_text}"
         )
@@ -45006,7 +45139,7 @@ class CombinedControlApp:
                 # worker and into the run log, unless the scan's own
                 # clean-up already had it accepted (review, 2026-10-18: the
                 # close sent it again from its own thread).
-                if (self.__dict__.get("ppms_active_scan_mode", "") in ("Field", "Field+Temperature")
+                if (self.__dict__.get("ppms_active_scan_mode", "") in PPMS_FIELD_COMMANDING_MODES
                         and len(args) == 5 and not self.__dict__.get("ppms_scan_field_zero_accepted", False)):
                     try:
                         if self.ppms_environment_controller.connected:
@@ -45038,7 +45171,7 @@ class CombinedControlApp:
             error, stopped = None, True
         outputs_confirmed = bool(results) and all(
             str(state) in ("zeroed", "not connected") for state in results.values())
-        field_mode = mode in ("Field", "Field+Temperature")
+        field_mode = mode in PPMS_FIELD_COMMANDING_MODES
         if error is not None:
             # A simultaneous stop request must not hide a genuine I/O or
             # cleanup failure. Only typed cancellation is non-modal.
@@ -45098,7 +45231,8 @@ class CombinedControlApp:
         remote = self.ppms_environment_controller
         nested = settings.get("nested", {})
 
-        def wait_until(predicate, timeout, label):
+        def wait_until(predicate, timeout, label,
+                       cancelled="Scan stopped; cancelling the motor wait does not mean the motor physically stopped"):
             deadline = time.monotonic() + timeout
             good_since = None
             while not stop.is_set() and not self.closing:
@@ -45114,7 +45248,7 @@ class CombinedControlApp:
                     error_type = PPMSFieldScanError if label == "measured field" else TimeoutError
                     raise error_type(f"{label} settle timeout, last reading {data}")
                 stop.wait(.5)
-            raise PPMSScanCancelled("Scan stopped; cancelling the motor wait does not mean the motor physically stopped")
+            raise PPMSScanCancelled(cancelled)
 
         def prepare_temperature(temperature):
             if temperature is None:
@@ -45185,6 +45319,46 @@ class CombinedControlApp:
         current_source_started = False
         sweep_peak = (max(settings.get('currents', (settings['current_rms_ma'],)))
                       * math.sqrt(2.) * 1e-3) if continuous_current else None
+        # Angle+Field (user, 2026-10-18): the field outer, the whole angle
+        # sweep at each field, the temperature held as in an Angle scan.
+        field_outer = settings.get("scan_mode") == "Angle+Field"
+        last_field = [None]
+        if field_outer:
+            try:
+                last_field[0] = float((getattr(self, "ppms_last_readback", None) or {})["field_oe"])
+            except (KeyError, TypeError, ValueError):
+                pass
+
+        def set_outer_field(index, count, field):
+            """One outer field of an Angle+Field scan, commanded as a Field
+            scan commands its fields: Driven (mode 1) at the rate box, with
+            the page's approach, the Persistent follow-up ended first, then
+            its stable reading awaited for max(1 s, Settle s) as a field
+            scan's first field is.  The first angle after it then takes the
+            first-point agreeing windows (ppms_source_fresh, P1)."""
+            if stop.is_set() or self.closing:
+                raise PPMSScanCancelled("Scan stopped; the next field was not set")
+            # The run log: one field_step per outer field, before the
+            # command; a failed write ends the scan here (user, 2026-10-18).
+            self._ppms_log("field_step", index=index, count=count, target_field_oe=field, rate_oe_s=rate,
+                           approach_code=approach, mode="Driven")
+            self._ppms_log_check()
+            self.post_ui(lambda: self.ppms_field_scan_status_var.set(
+                f"Field {index}/{count}: {field:g} Oe at {rate:g} Oe/s; waiting for it to settle…"))
+            self.post_ui(lambda: self._end_ppms_persistent_follow_up("The field scan"))
+            try:
+                remote.set_field(field, rate, approach, 1)
+            except Exception as error:
+                raise PPMSFieldScanError(f"Field set failed: {error}") from error
+            # A field scan's first field waits 3600 s; a longer ramp at the
+            # rate box gets its ramp time and 180 s, as each field point.
+            distance = abs(field - last_field[0]) if last_field[0] is not None else abs(field)
+            data = wait_until(lambda d: self._ppms_field_is_ready(d, field, driven=True),
+                              max(3600.0, distance / rate + 180.0), "measured field",
+                              cancelled="Scan stopped while the field settled")
+            last_field[0] = float(data["field_oe"])
+            self.ppms_source_fresh = True   # the first angle at this field settles
+
         def scan_blocks():
             angles = tuple(enumerate(nested.get("angle", (None,)), 1))
             temperatures = tuple(enumerate(nested.get("temperature", (None,)), 1))
@@ -45192,19 +45366,25 @@ class CombinedControlApp:
                 for ti, temperature in temperatures:
                     prepare_temperature(temperature)
                     for ai, angle in angles:
-                        yield ai, angle, ((ti, temperature),)
+                        yield ai, angle, ((ti, temperature),), None
+            elif field_outer:
+                fields = tuple(enumerate(settings.get("outer_fields", ()), 1))
+                for fi, field in fields:
+                    set_outer_field(fi, len(fields), field)
+                    for ai, angle in angles:
+                        yield ai, angle, temperatures, (fi, field)
             else:
                 for ai, angle in angles:
-                    yield ai, angle, temperatures
+                    yield ai, angle, temperatures, None
 
         failed = False
         preserve_range_output = False
         try:
-            if settings.get("scan_mode") in ("Angle", "Angle+Temperature"):
+            if settings.get("scan_mode") in ("Angle", "Angle+Temperature", "Angle+Field"):
                 self._configure_ppms_transport_scan(settings)
                 self.ppms_source_fresh = True   # the first angle settles
                 settings = dict(settings, keep_source_between_angles=True)
-            for ai, angle, temperatures in scan_blocks():
+            for ai, angle, temperatures, outer_field in scan_blocks():
                 if stop.is_set() or self.closing:
                     break
                 # The run log between instrument steps: a failed write ends
@@ -45286,7 +45466,14 @@ class CombinedControlApp:
                             elif not (position == 0 and stepped_to_first):
                                 self._update_ppms_transport_current(point_settings)
                             point_settings['keep_source_between_current_points'] = True
-                        self._ppms_field_scan_worker(sequence, rate, stable, approach, point_settings)
+                        block_sequence = sequence
+                        if outer_field is not None:
+                            # Angle+Field: this angle's one point at the
+                            # outer field, which target_field_oe records; its
+                            # step goes in the last column (user, 2026-10-18).
+                            block_sequence = ((1, 1, 1, outer_field[1]),)
+                            point_settings["outer_field_index"] = outer_field[0]
+                        self._ppms_field_scan_worker(block_sequence, rate, stable, approach, point_settings)
         except PPMSLockinRangeError:
             preserve_range_output = True
             raise
@@ -45310,7 +45497,7 @@ class CombinedControlApp:
                 # Field scans only: the others keep the magnet's setpoint and
                 # mode, on a stop, "I off" or exit (user, 2026-10-09).
                 if ((stop.is_set() or self.closing) and not failed
-                        and settings.get("scan_mode") in ("Field", "Field+Temperature")):
+                        and settings.get("scan_mode") in PPMS_FIELD_COMMANDING_MODES):
                     self._ppms_zero_field_after_interrupted_scan(rate, approach)
                 self._stop_ppms_transport_source(read_back=True)
 
@@ -45542,7 +45729,13 @@ class CombinedControlApp:
         failed = False
         preserve_range_output = False
         last_field = None
-        check_field = transport_settings.get("scan_mode", "Field") in ("Field", "Field+Temperature")
+        # The Field scans command each point's field.  Angle+Field (user,
+        # 2026-10-18) commanded this point's field before its angle sweep:
+        # here it is only checked, as a Field scan's point is (at the
+        # target and settled before the settle, the reading and after it),
+        # and a field failure or I off zeroes it as in a Field scan.
+        command_field = transport_settings.get("scan_mode", "Field") in ("Field", "Field+Temperature")
+        check_field = transport_settings.get("scan_mode", "Field") in PPMS_FIELD_COMMANDING_MODES
         if self.ppms_last_readback is not None:
             try:
                 last_field = float(self.ppms_last_readback["field_oe"])
@@ -45558,7 +45751,7 @@ class CombinedControlApp:
             ):
                 if self.ppms_field_scan_stop_event.is_set():
                     break
-                if check_field:
+                if command_field:
                     try:
                         result = self.ppms_environment_controller.set_field(
                             target, rate_oe_s, approach_code, 1
@@ -45642,7 +45835,11 @@ class CombinedControlApp:
                 # started source; not at every angle or current point, where
                 # the source keeps running (user, 2026-10-09).
                 source_fresh = bool(self.__dict__.pop("ppms_source_fresh", False))
-                if completed == 1 and (check_field or source_fresh):
+                # Angle+Field's first angle after each field change comes
+                # through source_fresh, which its field step sets; its other
+                # angles, each a one-point call here, read once (user,
+                # 2026-10-18; P1).
+                if completed == 1 and (command_field or source_fresh):
                     # First point of a sweep: the lock-in filters have only
                     # just seen the settled field and the freshly started
                     # excitation.  Keep acquiring windows until two in a row
@@ -45726,6 +45923,11 @@ class CombinedControlApp:
                 # column (user, 2026-10-14).
                 row["effective_settle_s"] = settle_s
                 row["slowest_lockin_tc_s"] = slowest_tc_s
+                # Angle+Field's outer field step, the last column, as SHV's
+                # outer_field_index (user, 2026-10-18); the other modes'
+                # columns are unchanged.
+                if "outer_field_index" in transport_settings:
+                    row["outer_field_index"] = transport_settings["outer_field_index"]
                 # A later pass may drop a meter whose orders are done; keep the
                 # first row's columns so the live CSV stays aligned.
                 if self.ppms_field_scan_rows:
@@ -46241,7 +46443,7 @@ class CombinedControlApp:
             # scans only, the others keep the magnet's setpoint and mode on
             # exit (user, 2026-10-09; review, 2026-10-13).
             if (scan_was_running and not after_worker
-                    and getattr(self, "ppms_active_scan_mode", "") in ("Field", "Field+Temperature")
+                    and getattr(self, "ppms_active_scan_mode", "") in PPMS_FIELD_COMMANDING_MODES
                     and not self.__dict__.get("ppms_scan_field_zero_accepted", False)
                     and self.ppms_environment_controller.connected):
                 try:
@@ -48622,6 +48824,8 @@ class PPMSPanel(CombinedControlApp):
         orders = self._ppms2_measured_orders()
         # Frequency+Current: a curve per frequency (user, 2026-10-18).
         by_frequency = getattr(self, 'ppms_active_scan_mode', '') == 'Frequency+Current'
+        # Angle+Field: a curve per outer field (user, 2026-10-18).
+        by_field = getattr(self, 'ppms_active_scan_mode', '') == 'Angle+Field'
         # X, Y and theta of one meter live in the same row, so group the
         # canvases by harmonic order and visit each row once per order
         # instead of once per order and channel.
@@ -48654,6 +48858,10 @@ class PPMSPanel(CombinedControlApp):
                         # Named and shaded by its frequency.
                         group = self._ppms_frequency_series_group(row)
                         temperature = row.get('6221_frequency_hz')
+                    elif by_field:
+                        # Named and shaded by its commanded field.
+                        group = self._ppms_field_series_group(row)
+                        temperature = row.get('target_field_oe')
                     name = f"{meter_label} {group} L{row.get('loop', 1)}"
                     point_x = float(x_value) * scale
                     for channel, suffix in columns:

@@ -938,6 +938,26 @@ class ScanBoxFrequencyModeTests(unittest.TestCase):
         self.choose("Current+Temperature")
         self.assertFalse(frame.winfo_ismapped())
 
+    def test_angle_field_has_the_outer_field_row(self):
+        """Angle+Field (user, 2026-10-18): the main row is the angle sweep at
+        Angle's defaults; "Outer field Oe:" with Start / End / Step at the
+        page's field range sits where the outer temperature row sits, shown
+        only in this mode.  Not yet run: CI was off on 2026-10-18."""
+        self.choose("Angle+Field")
+        self.assertEqual([v.get() for v in self.panel.ppms_simple_range], ["0", "360", "5"])
+        self.assertEqual(self.panel.ppms_simple_unit.get(), "°")
+        frame = self.panel.ppms_outer_field_range_frame
+        self.assertTrue(frame.winfo_ismapped())
+        self.assertEqual(int(frame.grid_info()["row"]), 4, "where the outer temperature row sits")
+        texts = [str(w.cget("text")) for w in frame.winfo_children() if w.winfo_class() == "TLabel"]
+        self.assertEqual(texts, ["Outer field Oe:", "Start", "End", "Step"])
+        self.assertEqual([v.get() for v in self.panel.ppms_outer_field_scan_range],
+                         list(self.panel.ppms_default_field_range))
+        self.assertFalse(self.panel.ppms_frequency_range_frame.winfo_ismapped())
+        self.assertEqual(self.panel.ppms_plot_axis, "angle")
+        self.choose("Angle+Temperature")
+        self.assertFalse(frame.winfo_ismapped())
+
     def test_the_box_is_no_wider_and_nothing_sticks_out(self):
         """At 2000 px nothing in the scan box sticks out of it, in any mode.
         The 1101 px window already cuts the box's right-hand cells in every
@@ -946,7 +966,7 @@ class ScanBoxFrequencyModeTests(unittest.TestCase):
         tab = self.panel.ppms_tab
         sizes, overs = {}, {}
         for width in (1101, LAB_WIDE):
-            for mode in ("Field", "Current+Temperature", "Frequency", "Frequency+Current"):
+            for mode in ("Field", "Current+Temperature", "Frequency", "Frequency+Current", "Angle+Field"):
                 with self.subTest(width=width, mode=mode):
                     self.choose(mode, width)
                     sizes[(width, mode)] = (self.scan.winfo_reqwidth(), self.scan.winfo_reqheight())
@@ -971,6 +991,12 @@ class ScanBoxFrequencyModeTests(unittest.TestCase):
                                      "the outer row costs the plots no more height than the temperature row")
                 self.assertLessEqual(overs[(width, "Frequency")], overs[(width, "Field")], overs)
                 self.assertLessEqual(overs[(width, "Frequency+Current")], overs[(width, "Current+Temperature")], overs)
+                # Angle+Field's outer field row (user, 2026-10-18) costs no
+                # more than the outer temperature row.
+                self.assertLessEqual(sizes[(width, "Angle+Field")][0], sizes[(width, "Current+Temperature")][0])
+                self.assertLessEqual(abs(sizes[(width, "Angle+Field")][1]
+                                         - sizes[(width, "Current+Temperature")][1]), 2)
+                self.assertLessEqual(overs[(width, "Angle+Field")], overs[(width, "Current+Temperature")], overs)
 
 
 # Named to sort last: unittest runs a module's classes in name order, and this

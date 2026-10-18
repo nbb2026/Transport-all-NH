@@ -1,5 +1,49 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## PPMS Angle+Field scan (2026-10-18)
+
+The user asked: "does PPMS module have angle+field scan? if not, add it." It did not. The field is the outer loop
+and the whole angle sweep runs at each field, as the user chose for SHV's Angle+Field the same day.
+
+- Mode list: "Angle+Field" after Current+Temperature, before the frequency modes. The main row (Start / End / Step)
+  is the inner angle sweep, with Angle's defaults (0 to 360°, step 5) and limits (QDInstrument, the motor safety
+  tick, −370 to 370°). A second row, "Outer field Oe:" with Start / End / Step, sits where "Outer temperature K:"
+  sits for the +Temperature modes and shows only in this mode. Its defaults are the page's field range
+  (`ppms_default_field_range`). Every outer field is checked as a Field scan's fields are
+  (`validate_ppms_field_command`, with the rate box). The outer fields go one way, with no return sweep. The H Oe
+  box and Set H are locked in this mode; the rate box is used.
+- At each outer field (`set_outer_field` in `_ppms_nested_scan_worker`): a `field_step` log event and the log check;
+  the Persistent follow-up ended; the field set Driven at the rate box with the page's approach, as a Field scan
+  sets its fields; its stable reading awaited for max(1 s, Settle s) (3600 s, or the ramp time + 180 s if that is
+  longer). Then the angle sweep, with Angle+Temperature's motor calls and checks (moves of at most 0.9°, read back),
+  which first turns back to the first angle. The first angle after each field change takes the first-point
+  agreeing windows (`ppms_source_fresh`); the other angles read once. The 6221 is set up once at the start, as in
+  Angle+Temperature. At every angle the point worker checks the field as a Field scan's point is checked (at the
+  target and settled, before and after the reading), without sending the field again.
+- The temperature is held as in an Angle scan, at the T K box. This mode never changes it.
+- Rows: the existing columns. `target_field_oe` is the commanded outer field. `outer_field_index` (as on SHV) goes
+  last, in this mode only. The plots are against the angle, with one curve per field ("H2 (500 Oe)"), light to dark
+  from the lowest field to the highest.
+- Endings: the same as the Field scans (`PPMS_FIELD_COMMANDING_MODES`). Stop keeps the field, also during a ramp.
+  I off, a field failure (refused command, timeout, drift) or closing sets 0 Oe once (PS3). "Zero field + persist
+  after scan" works as for Field scans. The 6221 is zeroed and read back at every end. A motor or other failure
+  keeps the field, as in a Field scan. A stop while the field settles is logged as "Scan stopped while the field
+  settled" (the other waits keep their text).
+- The Yes/No and the estimate show the outer field steps; the ramp per step, to the first field and in all, at the
+  rate box; the angles per field; the rotator's moves (per sweep, back to the first angle before each later
+  field, in all); and the total points. The moves are planned at `PPMS_ROTATOR_MOVE_ALLOWANCE_S` (1 s per move of
+  at most 0.9°). The program does not know the rotator's speed. The point, set-up and temperature allowances are
+  counted as in Angle+Temperature, per angle block at each field.
+- Saving: the shared run folder and log (`begin_scan_run`, prefix PPMS), with `field_step` per outer field. A
+  Macro `SCAN` line runs whatever mode the main window shows, so Angle+Field works there with no parser change.
+- Tests: `test_ppms_angle_field` (26 tests, window-free): the mode in every table and branch, the outer row on
+  stand-in widgets, Start's plan, Yes/No, estimate and limits, the call order per field, the rows and the
+  first-point windows, the columns, the files and log events, the harmonic passes, Stop mid-sweep and during a
+  ramp, I off, field failures, a refused zero, drift, closing, zero + persist, and the plots.
+  `test_ppms_field_persistent`'s source-order check now finds each field command's own hand-off. CI only, not yet
+  run (the Actions minutes are used up): `test_panel_defaults` checks the outer row and that the scan box is no
+  wider or taller in Angle+Field than in Current+Temperature, at 1101 px and 2000 px.
+
 ## SHV mode box 13 characters wide (2026-10-18)
 
 - After the merge of the Angle+Field / Angle+Current modes with the commercial-style look, the SHV mode box is 13
