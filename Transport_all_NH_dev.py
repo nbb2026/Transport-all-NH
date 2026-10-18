@@ -347,6 +347,525 @@ def configure_tk_font_system(root: tk.Misc) -> tuple[str, str]:
     return ui_family, mono_family
 
 
+# ---------------------------------------------------------------------------
+# Commercial-style look (user, 2026-10-18: "optimize the GUI like a expensive
+# commercial software"; their choice: clean light, blue accent: light grey
+# page, white cards with bold titles, a blue Start, red Stop/OFF, uniform
+# lamps, consistent spacing, the connections at a glance).  Tk's own ttk
+# styling only, nothing to install on the lab PC.
+#
+# Look only, and no size changes: every plot of the SHV page is exactly at its
+# 55 px minimum in the 1101 px window, so nothing here sets a font, padding or
+# border width that a widget's size depends on.  Colours, button and frame
+# styles only; a filled (blue/red) button is used only where it is checked at
+# start-up to request exactly the size of the button style it replaces
+# (configure_button_roles), else the button keeps its look with coloured text.
+# ---------------------------------------------------------------------------
+THEME_COLORS = {
+    "page": "#eef1f5",        # the window and the space between cards
+    "surface": "#ffffff",     # cards (LabelFrames) and everything in them
+    "border": "#d5dbe3",      # card and field borders
+    "text": "#1f2933",
+    "muted": "#5f6b76",
+    "accent": "#0068b5",      # Start, the selected tab, the first plot series
+    "accent_active": "#00589a",
+    "accent_pressed": "#004a82",
+    "danger": "#c62828",      # Stop / OFF / Zero
+    "danger_active": "#b71c1c",
+    "danger_pressed": "#8e0000",
+    "on_fill": "#ffffff",     # text on a filled button
+    "disabled_fill": "#e0e0e0",
+    "disabled_text": "#9e9e9e",
+    "button": "#f5f7fa",      # neutral buttons where the theme draws colours
+    "button_active": "#e8edf3",
+    "tab": "#e2e7ee",         # unselected notebook tabs, ditto
+    "success": "#087a55",
+    "warning": "#a65300",
+    "status": "#eaf0f5",
+    "plot_background": "#ffffff",
+    "plot_border": "#cfd6dd",
+    "plot_grid": "#e3e7eb",
+    "plot_series": "#0068b5",  # the accent; data-coded colours keep their own
+}
+
+# One lamp for every connection and status indicator: a 10 px dot centred in
+# a 16 px canvas, (fill, outline) by state.  The fills are those the program
+# and its tests have always used; "warning" (amber) is for a state between.
+LAMP_SIZE_PX = 16
+LAMP_DOT_PX = 10
+LAMP_COLORS = {
+    "on": ("#20b15a", "#10783a"),
+    "off": ("#9aa0a6", "#6f757b"),
+    "fault": ("#e53935", "#9d1d1a"),
+    "warning": ("#f9a825", "#a86f00"),
+}
+
+# The program's red tk.Buttons (Zero / OFF, Set stage 0°, …): red while they
+# can be pressed, grey while locked, so a disabled one looks disabled (on red,
+# only its text would grey).
+RED_BUTTON_COLORS = {
+    "normal": dict(bg=THEME_COLORS["danger"], fg="white", activebackground=THEME_COLORS["danger_pressed"],
+                   activeforeground="white", disabledforeground=THEME_COLORS["disabled_text"]),
+    "disabled": dict(bg=THEME_COLORS["disabled_fill"], fg=THEME_COLORS["disabled_text"],
+                     activebackground=THEME_COLORS["disabled_fill"],
+                     activeforeground=THEME_COLORS["disabled_text"],
+                     disabledforeground=THEME_COLORS["disabled_text"]),
+}
+
+# The ttk button styles a Start or Stop button can have, and the role styles
+# made from each: "Accent.TButton", "Danger.Inline.TButton", …  Each role
+# style keeps its base's padding (or the calibrated one) and so its size.
+BUTTON_BASE_STYLES = ("TButton", "Compact.TButton", "Inline.TButton")
+BUTTON_ROLES = ("Accent", "Danger")
+# Themes that draw buttons natively and ignore a style's colours: a filled
+# role button there uses Tk's plain border element, sized to match.
+NATIVE_BUTTON_THEMES = ("vista", "xpnative", "winnative", "aqua")
+# Buttons whose text toggles between Start and Stop keep the neutral look.
+BUTTON_ROLE_NEUTRAL_WORDS = ("recording",)
+
+
+def button_role(text) -> str | None:
+    """"Accent" for a Start button, "Danger" for a Stop / OFF / Zero one,
+    None for every other button (the theme's mapping by button text)."""
+    words = re.findall(r"[a-z0-9]+", str(text or "").lower())
+    if not words or any(word in words for word in BUTTON_ROLE_NEUTRAL_WORDS):
+        return None
+    if words[0] in ("stop", "zero") or "stop" in words or "off" in words:
+        return "Danger"
+    if "start" in words:
+        return "Accent"
+    return None
+
+
+def button_role_style(role: str, base: str = "TButton") -> str:
+    """The ttk style for ``role`` on a ``base`` button style:
+    ("Accent", "TButton") -> "Accent.TButton", ("Danger", "Inline.TButton")
+    -> "Danger.Inline.TButton"."""
+    return f"{role}.{base or 'TButton'}"
+
+
+def lamp_state(connected, fault: bool = False) -> str:
+    """The lamp state of a connection: red on a fault, green when connected,
+    grey when not (or unknown)."""
+    if fault:
+        return "fault"
+    return "on" if connected else "off"
+
+
+def parse_ttk_padding(value) -> tuple[int, int, int, int]:
+    """A ttk -padding value as (left, top, right, bottom): one value for all
+    four sides, two for left/right and top/bottom, three with bottom = top."""
+    if isinstance(value, (tuple, list)):
+        parts = [str(part) for part in value]
+    else:
+        parts = str(value or "").split()
+    numbers = []
+    for part in parts:
+        numbers.extend(int(round(float(piece))) for piece in str(part).split())
+    if not numbers:
+        return (0, 0, 0, 0)
+    left = numbers[0]
+    top = numbers[1] if len(numbers) > 1 else left
+    right = numbers[2] if len(numbers) > 2 else left
+    bottom = numbers[3] if len(numbers) > 3 else top
+    return (left, top, right, bottom)
+
+
+def matched_padding(padding, base_size, role_size):
+    """The padding that makes a role button as large as its base button:
+    ``padding`` (left, top, right, bottom) gave ``role_size`` (w, h) where the
+    base asks for ``base_size``.  The difference is split between the sides;
+    None when it would need a negative padding."""
+    left, top, right, bottom = padding
+    dw = int(base_size[0]) - int(role_size[0])
+    dh = int(base_size[1]) - int(role_size[1])
+    result = (left + dw // 2, top + dh // 2, right + dw - dw // 2, bottom + dh - dh // 2)
+    return result if min(result) >= 0 else None
+
+
+def theme_surface_of(widget) -> str:
+    """The background a plain widget made in ``widget`` should have: white
+    inside a card (any LabelFrame around it), the page grey outside."""
+    if not isinstance(widget, tk.Misc):
+        return THEME_COLORS["surface"]  # stand-in widgets in offline tests
+    current = widget
+    try:
+        for _depth in range(100):  # a window's widgets are never this deep
+            if not isinstance(current, tk.Misc):
+                break
+            kind = current.winfo_class()
+            if kind in ("TLabelframe", "Labelframe"):
+                return THEME_COLORS["surface"]
+            if kind in ("Toplevel", "Tk"):
+                break
+            current = current.master
+    except (tk.TclError, AttributeError):
+        return THEME_COLORS["surface"]
+    return THEME_COLORS["page"]
+
+
+def create_lamp(parent, *, height=None, kind: str = "connection", background=None):
+    """A lamp (the program's one indicator shape) in ``parent``: a 16 px
+    canvas, ``height`` tall to sit level with a line of text beside it, with
+    the dot centred.  Returns (canvas, item); grid or pack the canvas.
+    ``kind`` "connection" lamps are counted in the connection overview."""
+    height = max(LAMP_SIZE_PX, int(height or LAMP_SIZE_PX))
+    canvas = tk.Canvas(parent, width=LAMP_SIZE_PX, height=height, highlightthickness=0,
+                       background=background or theme_surface_of(parent))
+    middle, centre, radius = height // 2, LAMP_SIZE_PX // 2, LAMP_DOT_PX // 2
+    fill, outline = LAMP_COLORS["off"]
+    item = canvas.create_oval(centre - radius, middle - radius, centre + radius, middle + radius,
+                              fill=fill, outline=outline)
+    register_lamp(canvas, kind)
+    return canvas, item
+
+
+def register_lamp(canvas, kind: str = "connection") -> None:
+    """Remember ``canvas`` as a lamp of its window, for the overview."""
+    try:
+        canvas._lamp_kind = kind
+        canvas._lamp_state = getattr(canvas, "_lamp_state", "off")
+        top = canvas.winfo_toplevel()
+        top.__dict__.setdefault("_look_lamps", []).append(canvas)
+    except (tk.TclError, AttributeError, TypeError):
+        pass  # stand-in widgets in offline tests
+
+
+def set_lamp(target, state: str) -> None:
+    """Show ``state`` ("on", "off", "fault", "warning") on a lamp, given as
+    (canvas, item) or None; tells the window's connection overview."""
+    if target is None:
+        return
+    canvas, item = target
+    fill, outline = LAMP_COLORS.get(state, LAMP_COLORS["off"])
+    try:
+        canvas.itemconfigure(item, fill=fill, outline=outline)
+    except tk.TclError:
+        return
+    try:
+        changed = getattr(canvas, "_lamp_state", None) != state
+        canvas._lamp_state = state
+        if changed and threading.current_thread() is threading.main_thread():
+            refresh = getattr(canvas.winfo_toplevel(), "_look_overview_refresh", None)
+            if callable(refresh):
+                refresh()
+    except (tk.TclError, AttributeError, TypeError):
+        pass
+
+
+def paint_red_button(button) -> None:
+    """A red tk.Button in its colours for its state: red while it can be
+    pressed, grey while it is locked."""
+    disabled = str(button.cget("state")) == "disabled"
+    button.configure(**RED_BUTTON_COLORS["disabled" if disabled else "normal"])
+
+
+def red_button_in_place_of(ttk_button, text, command, **grid):
+    """Replace ``ttk_button`` by a red tk.Button of exactly its size.
+
+    A tk.Button asks for another size than a ttk one, so it fills a frame of
+    the ttk button's requested size, gridded where the ttk button would have
+    been (``grid``): the layout around it is unchanged (as SHV's Set stage 0°,
+    user, 2026-10-18).  Returns the tk.Button."""
+    size = dict(width=ttk_button.winfo_reqwidth(), height=ttk_button.winfo_reqheight())
+    parent = ttk_button.master
+    ttk_button.destroy()
+    holder = ttk.Frame(parent, **size)
+    holder.grid(**grid)
+    holder.grid_propagate(False)
+    holder.columnconfigure(0, weight=1)
+    holder.rowconfigure(0, weight=1)
+    button = tk.Button(holder, text=text, command=command, font="TkDefaultFont", padx=0, pady=0,
+                       **RED_BUTTON_COLORS["normal"])
+    button.grid(row=0, column=0, sticky="nsew")
+    return button
+
+
+def configure_button_roles(root, style, *, probe_text: str = "Start scan") -> dict[str, bool]:
+    """Make the Accent (blue) and Danger (red) button styles for each base
+    style.  Returns {style name: True if filled, False if coloured text}.
+
+    Where the theme draws colours (clam, default, alt), a role style is its
+    base with other colours and the same layout, so the same size.  Where it
+    draws native buttons (Windows' vista), the fill needs Tk's plain border
+    element (from the default theme), whose size differs from the native one: the padding is
+    calibrated against a probe of the base style and kept only if the two
+    then request exactly the same size.  Otherwise the role style is the
+    native button with blue or red text, the same size by construction."""
+    colors = THEME_COLORS
+    fills = {"Accent": (colors["accent"], colors["accent_active"], colors["accent_pressed"]),
+             "Danger": (colors["danger"], colors["danger_active"], colors["danger_pressed"])}
+    native = style.theme_use() in NATIVE_BUTTON_THEMES
+    border = None
+    if native:
+        try:
+            if "Look.Button.border" not in style.element_names():
+                # Tk's own plain border (the default theme's), which fills
+                # its whole area with -background: a flat coloured button.
+                style.element_create("Look.Button.border", "from", "default", "border")
+            border = "Look.Button.border"
+        except tk.TclError:
+            border = None
+    result = {}
+    for base in BUTTON_BASE_STYLES:
+        try:
+            base_layout = style.layout(base)
+        except tk.TclError:  # a base style without a layout of its own
+            base_layout = style.layout("TButton")
+        for role in BUTTON_ROLES:
+            name = button_role_style(role, base)
+            fill, active, pressed = fills[role]
+            filled = not native or border is not None
+            if filled:
+                if native:
+                    # The base's own layout, its outer (native) element
+                    # replaced by the plain border.
+                    outer = list(base_layout[0]) if base_layout else ["", {}]
+                    outer[0] = border
+                    style.layout(name, [tuple(outer)] + list(base_layout[1:]))
+                style.configure(name, background=fill, foreground=colors["on_fill"], bordercolor=fill,
+                                lightcolor=fill, darkcolor=fill, focuscolor=colors["on_fill"])
+                if native:
+                    style.configure(name, relief="flat", borderwidth=1)
+                style.map(name,
+                          background=[("disabled", colors["disabled_fill"]), ("pressed", pressed), ("active", active)],
+                          bordercolor=[("disabled", colors["disabled_fill"]), ("pressed", pressed), ("active", active)],
+                          lightcolor=[("disabled", colors["disabled_fill"]), ("pressed", pressed), ("active", active)],
+                          darkcolor=[("disabled", colors["disabled_fill"]), ("pressed", pressed), ("active", active)],
+                          foreground=[("disabled", colors["disabled_text"])])
+                if native:
+                    filled = _calibrate_role_padding(root, style, base, name)
+            if not filled:
+                style.layout(name, base_layout)
+                style.configure(name, foreground=fill,
+                                padding=parse_ttk_padding(style.lookup(base, "padding")))
+                style.map(name, foreground=[("disabled", colors["disabled_text"])])
+            result[name] = filled
+    return result
+
+
+def _calibrate_role_padding(root, style, base: str, name: str, probe_text: str = "Start scan") -> bool:
+    """Give ``name`` the padding that makes it request the size of ``base``;
+    True only if a probe of each then asks for exactly the same size."""
+    try:
+        def size(style_name):
+            probe = ttk.Button(root, text=probe_text, style=style_name)
+            try:
+                return int(probe.winfo_reqwidth()), int(probe.winfo_reqheight())
+            finally:
+                probe.destroy()
+
+        padding = parse_ttk_padding(style.lookup(base, "padding"))
+        style.configure(name, padding=padding)
+        target = size(base)
+        new = matched_padding(padding, target, size(name))
+        if new is None:
+            return False
+        style.configure(name, padding=new)
+        return size(name) == target
+    except (tk.TclError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def apply_look_to_tree(widget, style) -> None:
+    """Give every widget under ``widget`` its card or page colours and every
+    Start / Stop / OFF / Zero ttk button its role style.
+
+    Frames, labels and check/radio buttons are white (cards) by default;
+    those outside any LabelFrame get a "Page." style, the same style with the
+    page grey.  Only colours and style names change, never a size.  Other
+    windows (dialogs, Camera Live) keep their own look."""
+    page, surface = THEME_COLORS["page"], THEME_COLORS["surface"]
+    made = set()
+
+    def page_style(base: str) -> str:
+        name = "Page." + base
+        if name not in made:
+            style.configure(name, background=page)
+            if base.endswith(("TCheckbutton", "TRadiobutton")):
+                style.map(name, background=[("active", page)])
+            made.add(name)
+        return name
+
+    def walk(parent, in_card: bool) -> None:
+        for child in parent.winfo_children():
+            try:
+                kind = child.winfo_class()
+                if kind in ("Toplevel", "Tk"):
+                    continue
+                card = in_card or kind == "TLabelframe"
+                if kind == "TButton":
+                    current = str(child.cget("style")) or "TButton"
+                    role = button_role(child.cget("text")) if current in BUTTON_BASE_STYLES else None
+                    if role:
+                        child.configure(style=button_role_style(role, current))
+                elif kind in ("TFrame", "TLabel", "TCheckbutton", "TRadiobutton") and not in_card:
+                    current = str(child.cget("style")) or kind
+                    # A label given its own background keeps it.
+                    own = kind == "TLabel" and str(child.cget("background"))
+                    if not own and not current.startswith("Page.") and str(
+                            style.lookup(current, "background")).lower() == surface:
+                        child.configure(style=page_style(current))
+                elif kind == "Canvas" and getattr(child, "_lamp_kind", None):
+                    child.configure(background=surface if in_card else page)
+            except (tk.TclError, AttributeError):
+                continue
+            walk(child, card)
+
+    try:
+        walk(widget, False)
+    except (tk.TclError, AttributeError, TypeError):
+        pass
+
+
+def connection_overview_text(pages) -> tuple[str, str, str]:
+    """The overview of ``pages`` {page: [lamp state, …]}: (short text, long
+    text, lamp state).  Red if any connection is faulted, green if any is
+    connected, grey if none is."""
+    states = [state for page_states in pages.values() for state in page_states]
+    connected = sum(state in ("on", "warning", "fault") for state in states)
+    total = len(states)
+    lamp = "fault" if "fault" in states else "on" if connected else "off"
+    return (f"{connected}/{total}", f"{connected} of {total} instruments connected", lamp)
+
+
+def connection_overview_lines(pages) -> list[str]:
+    """One line per page for the overview's tooltip: "SHV: 2 of 4 connected"."""
+    lines = []
+    for page, states in pages.items():
+        if not states:
+            continue
+        connected = sum(state in ("on", "warning", "fault") for state in states)
+        fault = " (fault)" if "fault" in states else ""
+        lines.append(f"{page}: {connected} of {len(states)} connected{fault}")
+    return lines
+
+
+class ConnectionOverview:
+    """The connections at a glance, at the right of the notebook's tab row:
+    a lamp and "3 of 21 instruments connected" (or "3/21" where there is
+    less room), each page's count in a tooltip.
+
+    In the tab row's empty right side, so it costs no height on any page (a
+    status bar at the bottom would have taken the SHV plots below their
+    55 px; user, 2026-10-18).  Placed, so it changes no other widget's size;
+    as tall as the tab row, never over a page; hidden where a tab would be
+    under it.  It only reads the lamps (set_lamp tells it when one changes)."""
+
+    def __init__(self, root, notebook, *, pad: int = 4) -> None:
+        self.root, self.notebook, self.pad = root, notebook, pad
+        self.frame = ttk.Frame(root, style="Overview.TFrame", padding=(pad, 0, pad, 0))
+        self.lamp = create_lamp(self.frame, kind="overview", background=THEME_COLORS["page"])
+        self.lamp[0].pack(side="left", padx=(0, 4))
+        self.text = tk.StringVar(value="")
+        self.label = ttk.Label(self.frame, textvariable=self.text, style="Overview.TLabel")
+        self.label.pack(side="left")
+        self.tooltip = None
+        self.pending = None
+        self.texts = ("", "", "off")
+        root._look_overview_refresh = self.schedule
+        for widget in (self.frame, self.label, self.lamp[0]):
+            widget.bind("<Enter>", self._show_tooltip, add="+")
+            widget.bind("<Leave>", self._hide_tooltip, add="+")
+        notebook.bind("<Configure>", lambda _event: self.schedule(), add="+")
+        notebook.bind("<<NotebookTabChanged>>", lambda _event: self.schedule(), add="+")
+        self.schedule()
+
+    def pages(self) -> dict[str, list[str]]:
+        """{tab text: [state of each connection lamp on that page]}."""
+        tabs = {}
+        for tab in self.notebook.tabs():
+            tabs[str(tab)] = str(self.notebook.tab(tab, "text"))
+        pages = {name: [] for name in tabs.values()}
+        alive = []
+        for canvas in self.root.__dict__.get("_look_lamps", []):
+            try:
+                if not canvas.winfo_exists():
+                    continue
+            except tk.TclError:
+                continue
+            alive.append(canvas)
+            if getattr(canvas, "_lamp_kind", "") != "connection":
+                continue
+            path = str(canvas)
+            for tab, name in tabs.items():
+                if path.startswith(tab + "."):
+                    pages[name].append(getattr(canvas, "_lamp_state", "off"))
+                    break
+        self.root._look_lamps = alive
+        return pages
+
+    def schedule(self) -> None:
+        if self.pending is None:
+            try:
+                self.pending = self.root.after_idle(self.refresh)
+            except tk.TclError:
+                self.pending = None
+
+    def refresh(self) -> None:
+        self.pending = None
+        try:
+            self.texts = connection_overview_text(self.pages())
+            set_lamp(self.lamp, self.texts[2])
+            self._place()
+        except tk.TclError:
+            pass  # the window is closing
+
+    def _tab_row_height(self) -> int:
+        """The height of the tab row: down from the first tab's middle until
+        no tab is there."""
+        x = 12
+        found = 0
+        for y in range(0, 80, 2):
+            if self._tab_at(x, y):
+                found = y
+            elif found:
+                break
+        return found + 2 if found else 0
+
+    def _tab_at(self, x: int, y: int) -> bool:
+        return str(self.notebook.tk.call(str(self.notebook), "index", f"@{x},{y}")) != ""
+
+    def _place(self) -> None:
+        width = self.notebook.winfo_width()
+        height = self._tab_row_height()
+        self.frame.place_forget()
+        if width <= 1 or height < LAMP_SIZE_PX:
+            return
+        for text in self.texts[1], self.texts[0]:
+            self.text.set(text)
+            # The frame's own request follows at idle; its parts' are now.
+            need = 2 * self.pad + LAMP_SIZE_PX + 4 + self.label.winfo_reqwidth()
+            left = width - self.pad - need
+            if left > 0 and not any(self._tab_at(x, y) for x in range(left - 6, width, 4)
+                                    for y in (2, height // 2, height - 3)):
+                self.frame.place(in_=self.notebook, x=width - self.pad, y=0, anchor="ne", height=height)
+                return
+
+    def _show_tooltip(self, _event=None) -> None:
+        self._hide_tooltip()
+        lines = connection_overview_lines(self.pages()) or ["No instruments"]
+        try:
+            tip = tk.Toplevel(self.root)
+            tip.wm_overrideredirect(True)
+            ttk.Label(tip, text="\n".join(lines), style="Tooltip.TLabel", justify="left").pack()
+            x = self.frame.winfo_rootx() + self.frame.winfo_width() - 4
+            y = self.frame.winfo_rooty() + self.frame.winfo_height() + 2
+            tip.update_idletasks()
+            tip.wm_geometry(f"+{max(0, x - tip.winfo_reqwidth())}+{y}")
+            self.tooltip = tip
+        except tk.TclError:
+            self.tooltip = None
+
+    def _hide_tooltip(self, _event=None) -> None:
+        if self.tooltip is not None:
+            try:
+                self.tooltip.destroy()
+            except tk.TclError:
+                pass
+            self.tooltip = None
+
+
 def force_english_input_mode(widget=None) -> bool:
     """Select an English keyboard layout and close the IME on Windows.
 
@@ -15888,6 +16407,7 @@ class CombinedControlApp:
             self._on_notebook_tab_changed,
             add="+",
         )
+        self._apply_commercial_look()
         self.refresh_ports()
         self.set_connected_ui(False)
         self.update_stage_controls()
@@ -16195,9 +16715,9 @@ class CombinedControlApp:
             safety,
             text="Zero all / emergency off",
             command=self.all_off,
-            bg="#c62828",
+            bg=THEME_COLORS["danger"],
             fg="white",
-            activebackground="#8e0000",
+            activebackground=THEME_COLORS["danger_pressed"],
             activeforeground="white",
             padx=10,
             pady=4,
@@ -16318,9 +16838,9 @@ class CombinedControlApp:
         )
         self.led_intensity_canvas = tk.Canvas(
             led_plot,
-            bg="#fbfcfd",
+            bg=THEME_COLORS["plot_background"],
             highlightthickness=1,
-            highlightbackground="#cfd6dd",
+            highlightbackground=THEME_COLORS["plot_border"],
             height=self._ui_px(230, 135, canvas=True),
         )
         self.led_intensity_canvas.grid(row=1, column=0, sticky="nsew")
@@ -16392,7 +16912,7 @@ class CombinedControlApp:
         self.camera_connect_button = ttk.Button(
             actions,
             text="Connect camera",
-            style="Accent.TButton",
+            style="Strong.TButton",
             command=self.connect_camera,
         )
         self.camera_connect_button.pack(side="left", padx=(8, 4))
@@ -16612,7 +17132,7 @@ class CombinedControlApp:
         self.ppms_connect_button = ttk.Button(
             environment,
             text="Connect PPMS",
-            style="Accent.TButton",
+            style="Strong.TButton",
             command=self.connect_ppms_environment,
         )
         self.ppms_connect_button.grid(row=0, column=6, padx=2)
@@ -16643,7 +17163,7 @@ class CombinedControlApp:
         metrics_outer.grid(row=1, column=1, sticky="nsew", padx=(6, 0), pady=(0, 2))
         metrics_outer.rowconfigure(0, weight=1)
         metrics_outer.columnconfigure(0, weight=1)
-        metrics_view = tk.Canvas(metrics_outer, highlightthickness=0, height=100)
+        metrics_view = tk.Canvas(metrics_outer, highlightthickness=0, height=100, background=THEME_COLORS["surface"])
         metrics_view.grid(row=0, column=0, sticky='nsew')
         metrics_scroll = ttk.Scrollbar(metrics_outer, orient='vertical', command=metrics_view.yview)
         metrics_scroll.grid(row=0, column=1, sticky='ns')
@@ -17144,7 +17664,7 @@ class CombinedControlApp:
             height=self._ui_px(250, 200),
             background="#ffffff",
             highlightthickness=1,
-            highlightbackground="#cfd6dd",
+            highlightbackground=THEME_COLORS["plot_border"],
         )
         self.ppms_transport_canvas.grid(row=0, column=0, sticky="nsew")
         self.ppms_transport_canvas.bind(
@@ -17609,9 +18129,9 @@ class CombinedControlApp:
             output,
             text="Zero / OFF",
             command=self.zero_stfmr_kepco_output,
-            bg="#c62828",
+            bg=THEME_COLORS["danger"],
             fg="white",
-            activebackground="#8e0000",
+            activebackground=THEME_COLORS["danger_pressed"],
             activeforeground="white",
             state="disabled",
         )
@@ -17906,7 +18426,7 @@ class CombinedControlApp:
             plot,
             background="white",
             highlightthickness=1,
-            highlightbackground="#b8c0c8",
+            highlightbackground=THEME_COLORS["plot_border"],
             height=self._ui_px(300, 220),
         )
         self.stfmr_fmr_canvas.grid(row=0, column=0, sticky="nsew")
@@ -17925,7 +18445,7 @@ class CombinedControlApp:
             frequency_plot,
             background="white",
             highlightthickness=1,
-            highlightbackground="#b8c0c8",
+            highlightbackground=THEME_COLORS["plot_border"],
             height=self._ui_px(300, 220),
         )
         self.stfmr_frequency_canvas.grid(row=0, column=0, sticky="nsew")
@@ -18018,9 +18538,9 @@ class CombinedControlApp:
             field_output,
             text="Zero / OFF",
             command=self.zero_stfmr_lockin_kepco_output,
-            bg="#c62828",
+            bg=THEME_COLORS["danger"],
             fg="white",
-            activebackground="#8e0000",
+            activebackground=THEME_COLORS["danger_pressed"],
             activeforeground="white",
             state="disabled",
         )
@@ -18429,15 +18949,7 @@ class CombinedControlApp:
             text.grid(row=row, column=1, columnspan=2, sticky="new", pady=(4, 0))
             # One text line tall with the dot centred, so the dot sits level
             # with the first line even when the text runs to two lines.
-            height = max(16, text.winfo_reqheight())
-            canvas = tk.Canvas(
-                status, width=16, height=height, highlightthickness=0,
-                background=self.root.cget("background"),
-            )
-            middle = height // 2
-            item = canvas.create_oval(
-                3, middle - 5, 13, middle + 5, fill="#9aa0a6", outline="#6f757b"
-            )
+            canvas, item = create_lamp(status, height=text.winfo_reqheight(), kind="status")
             canvas.grid(row=row, column=0, sticky="nw", padx=(0, 4), pady=(4, 0))
             return canvas, item
 
@@ -18524,7 +19036,7 @@ class CombinedControlApp:
         x_plot.columnconfigure(0, weight=1)
         self.stfmr_lockin_x_canvas = tk.Canvas(
             x_plot, background="white", highlightthickness=1,
-            highlightbackground="#b8c0c8", height=self._ui_px(190, 135),
+            highlightbackground=THEME_COLORS["plot_border"], height=self._ui_px(190, 135),
         )
         self.stfmr_lockin_x_canvas.grid(row=0, column=0, sticky="nsew")
         self._stfmr_lockin_compact_canvas(self.stfmr_lockin_x_canvas)
@@ -18540,7 +19052,7 @@ class CombinedControlApp:
         y_plot.columnconfigure(0, weight=1)
         self.stfmr_lockin_y_canvas = tk.Canvas(
             y_plot, background="white", highlightthickness=1,
-            highlightbackground="#b8c0c8", height=self._ui_px(190, 135),
+            highlightbackground=THEME_COLORS["plot_border"], height=self._ui_px(190, 135),
         )
         self.stfmr_lockin_y_canvas.grid(row=0, column=0, sticky="nsew")
         self._stfmr_lockin_compact_canvas(self.stfmr_lockin_y_canvas)
@@ -18556,7 +19068,7 @@ class CombinedControlApp:
         theta_plot.columnconfigure(0, weight=1)
         self.stfmr_lockin_theta_canvas = tk.Canvas(
             theta_plot, background="white", highlightthickness=1,
-            highlightbackground="#b8c0c8", height=self._ui_px(190, 135),
+            highlightbackground=THEME_COLORS["plot_border"], height=self._ui_px(190, 135),
         )
         self.stfmr_lockin_theta_canvas.grid(row=0, column=0, sticky="nsew")
         self._stfmr_lockin_compact_canvas(self.stfmr_lockin_theta_canvas)
@@ -18572,7 +19084,7 @@ class CombinedControlApp:
         plot.columnconfigure(0, weight=1)
         self.stfmr_lockin_canvas = tk.Canvas(
             plot, background="white", highlightthickness=1,
-            highlightbackground="#b8c0c8", height=self._ui_px(190, 135),
+            highlightbackground=THEME_COLORS["plot_border"], height=self._ui_px(190, 135),
         )
         self.stfmr_lockin_canvas.grid(row=0, column=0, sticky="nsew")
         self._stfmr_lockin_compact_canvas(self.stfmr_lockin_canvas)
@@ -18638,38 +19150,21 @@ class CombinedControlApp:
     def _set_stfmr_lockin_reference_state(
         self, state: bool | None
     ) -> None:
-        if state is True:
-            fill, outline = "#20b15a", "#10783a"
-        elif state is False:
-            fill, outline = "#e53935", "#9d1d1a"
-        else:
-            fill, outline = "#9aa0a6", "#6f757b"
-        target = self.stfmr_lockin_reference_indicator
-        if target is None:
-            return
-        canvas, item = target
-        try:
-            canvas.itemconfigure(item, fill=fill, outline=outline)
-        except tk.TclError:
-            pass
+        set_lamp(self.stfmr_lockin_reference_indicator,
+                 "on" if state is True else "fault" if state is False else "off")
 
     def _set_stfmr_lockin_overload_state(self, state: bool | None) -> None:
         """Unknown readback is gray, never a false green; no range/output writes."""
         if state is True:
-            fill, outline, label = "#e53935", "#9d1d1a", "MFLI Overload: overload"
+            lamp, label = "fault", "MFLI Overload: overload"
         elif state is False:
-            fill, outline, label = "#20b15a", "#10783a", "MFLI Overload: normal"
+            lamp, label = "on", "MFLI Overload: normal"
         else:
-            fill, outline, label = "#9aa0a6", "#6f757b", "MFLI Overload: --"
+            lamp, label = "off", "MFLI Overload: --"
         variable = getattr(self, "stfmr_lockin_overload_var", None)
         if variable is not None:
             variable.set(label)
-        target = getattr(self, "stfmr_lockin_overload_indicator", None)
-        if target is not None:
-            try:
-                target[0].itemconfigure(target[1], fill=fill, outline=outline)
-            except tk.TclError:
-                pass
+        set_lamp(getattr(self, "stfmr_lockin_overload_indicator", None), lamp)
 
     def _on_stfmr_lockin_meter_changed(self, _event=None) -> None:
         """Switch live acquisition to the independently selected lock-in."""
@@ -24367,13 +24862,13 @@ class CombinedControlApp:
 
         for tick in x_ticks:
             px = x_pixel(tick)
-            canvas.create_line(px, top, px, bottom, fill="#e3e7eb")
+            canvas.create_line(px, top, px, bottom, fill=THEME_COLORS["plot_grid"])
             canvas.create_text(
                 px, bottom + 16, text=format_nice_tick(tick, x_step)
             )
         for tick in y_ticks:
             py = y_pixel(tick)
-            canvas.create_line(left, py, right, py, fill="#e3e7eb")
+            canvas.create_line(left, py, right, py, fill=THEME_COLORS["plot_grid"])
             canvas.create_text(
                 left - 8,
                 py,
@@ -24509,13 +25004,13 @@ class CombinedControlApp:
 
         for tick in x_ticks:
             px = x_pixel(tick)
-            canvas.create_line(px, top, px, bottom, fill="#e3e7eb")
+            canvas.create_line(px, top, px, bottom, fill=THEME_COLORS["plot_grid"])
             canvas.create_text(
                 px, bottom + 16, text=format_nice_tick(tick, x_step)
             )
         for tick in y_ticks:
             py = y_pixel(tick)
-            canvas.create_line(left, py, right, py, fill="#e3e7eb")
+            canvas.create_line(left, py, right, py, fill=THEME_COLORS["plot_grid"])
             canvas.create_text(
                 left - 8,
                 py,
@@ -24958,33 +25453,16 @@ class CombinedControlApp:
         parent: tk.Misc,
         key: str,
     ) -> tk.Canvas:
-        """Create a compact grey/green instrument connection indicator."""
-        canvas = tk.Canvas(
-            parent,
-            width=16,
-            height=16,
-            highlightthickness=0,
-            background=self.root.cget("background"),
-        )
-        item = canvas.create_oval(
-            3, 3, 13, 13, fill="#9aa0a6", outline="#6f757b"
-        )
+        """Create a compact grey/green instrument connection indicator (the
+        program's one lamp, create_lamp).  A lock-in's reference lamp
+        ("…ref…") shows a state, not a connection: not in the overview."""
+        status = "ref" in key.split("_") or "reference" in key
+        canvas, item = create_lamp(parent, kind="status" if status else "connection")
         self.instrument_connection_indicators[key] = (canvas, item)
         return canvas
 
     def _set_connection_indicator(self, key: str, connected: bool, *, fault: bool = False) -> None:
-        target = self.instrument_connection_indicators.get(key)
-        if target is None:
-            return
-        canvas, item = target
-        try:
-            canvas.itemconfigure(
-                item,
-                fill=("#e53935" if fault else "#20b15a" if connected else "#9aa0a6"),
-                outline=("#a51c19" if fault else "#10783a" if connected else "#6f757b"),
-            )
-        except tk.TclError:
-            pass
+        set_lamp(self.instrument_connection_indicators.get(key), lamp_state(connected, fault))
 
     def _configure_ui_styles(self) -> None:
         """Apply one readable visual language scaled to the active display."""
@@ -25004,17 +25482,21 @@ class CombinedControlApp:
         self.ui_small_font_size = small_font_size
         large_font_size = max(font_size + 3, int(round(15 * self.ui_scale)))
         px = self._ui_px
+        # The commercial-style palette (THEME_COLORS, user, 2026-10-18):
+        # the page grey around white cards.  Colours only below: every
+        # padding and border width is as before, so no widget changes size.
+        colors = THEME_COLORS
         palette = {
-            "background": "#f4f6f8",
-            "surface": "#ffffff",
-            "text": "#1f2933",
-            "muted": "#5f6b76",
-            "border": "#cfd6dd",
-            "accent": "#1769aa",
+            "background": colors["page"],
+            "surface": colors["surface"],
+            "text": colors["text"],
+            "muted": colors["muted"],
+            "border": colors["border"],
+            "accent": colors["accent"],
             "accent_soft": "#e8f1f8",
-            "success": "#087a55",
-            "warning": "#a65300",
-            "status": "#eaf0f5",
+            "success": colors["success"],
+            "warning": colors["warning"],
+            "status": colors["status"],
         }
         self.ui_palette = palette
         self.root.configure(background=palette["background"])
@@ -25022,17 +25504,26 @@ class CombinedControlApp:
         # Chinese glyphs on Windows display scaling, even when the surrounding
         # panel still has plenty of free space.
         style.configure(".", font=(font_family, font_size))
-        style.configure("TFrame", background=palette["background"])
+        # Cards: frames, labels and check boxes are white, as the LabelFrames
+        # they sit in; apply_look_to_tree gives those outside any card the
+        # page grey ("Page." styles).
+        style.configure("TFrame", background=palette["surface"])
+        style.configure("TLabel", background=palette["surface"], foreground=palette["text"])
+        for name in ("TCheckbutton", "TRadiobutton"):
+            style.configure(name, background=palette["surface"], foreground=palette["text"])
+            style.map(name, background=[("active", palette["surface"])])
         style.configure(
             "TLabelframe",
-            background=palette["background"],
+            background=palette["surface"],
             bordercolor=palette["border"],
+            lightcolor=palette["surface"],
+            darkcolor=palette["surface"],
             relief="solid",
             borderwidth=1,
         )
         style.configure(
             "TLabelframe.Label",
-            background=palette["background"],
+            background=palette["surface"],
             foreground=palette["text"],
             font=(font_family, font_size, "bold"),
         )
@@ -25046,13 +25537,36 @@ class CombinedControlApp:
             "TNotebook.Tab",
             padding=(px(14, 7), px(7, 4)),
             font=(font_family, font_size),
+            background=colors["tab"],
+            foreground=palette["muted"],
+            bordercolor=palette["border"],
+            lightcolor=colors["tab"],
         )
         style.map(
             "TNotebook.Tab",
-            background=[("selected", palette["surface"])],
+            background=[("selected", palette["surface"]), ("active", colors["button_active"])],
             foreground=[("selected", palette["accent"])],
+            lightcolor=[("selected", palette["surface"])],
             font=[("selected", (font_family, font_size, "bold"))],
         )
+        # Neutral buttons, fields and bars: their colours where the theme
+        # draws them (clam on the Mac, default on Linux); Windows' native
+        # theme draws its own.
+        style.configure("TButton", background=colors["button"], bordercolor=palette["border"],
+                        lightcolor=colors["button"], darkcolor=colors["button"])
+        style.map("TButton", background=[("disabled", colors["button"]), ("pressed", colors["tab"]),
+                                         ("active", colors["button_active"])])
+        for name in ("TEntry", "TCombobox", "TSpinbox"):
+            style.configure(name, fieldbackground=palette["surface"], bordercolor=palette["border"],
+                            lightcolor=palette["surface"], darkcolor=palette["surface"])
+            style.map(name, bordercolor=[("focus", palette["accent"])], lightcolor=[("focus", palette["accent"])])
+        style.configure("Horizontal.TProgressbar", background=palette["accent"], troughcolor=colors["tab"],
+                        bordercolor=palette["border"], lightcolor=palette["accent"], darkcolor=palette["accent"])
+        # The connection overview in the tab row, and its tooltip.
+        style.configure("Overview.TFrame", background=palette["background"])
+        style.configure("Overview.TLabel", background=palette["background"], foreground=palette["muted"])
+        style.configure("Tooltip.TLabel", background=palette["surface"], foreground=palette["text"],
+                        relief="solid", borderwidth=1, padding=(6, 4))
         style.configure("TButton", padding=(px(9, 5), px(6, 3)))
         style.configure("Compact.TButton", padding=(px(6, 4), px(5, 3)))
         # As wide as a TButton, but no taller than an entry (42 px against
@@ -25066,11 +25580,23 @@ class CombinedControlApp:
         style.configure("TEntry", padding=(px(5, 3), px(5, 3)))
         style.configure("TCheckbutton", padding=(px(4, 2), px(4, 2)))
         style.configure("TRadiobutton", padding=(px(4, 2), px(4, 2)))
+        # Bold blue text, as Accent.TButton was until 2026-10-18: Connect
+        # camera, Connect PPMS and the LED channels' Apply keep their look
+        # and size.  Accent.TButton is now the filled blue Start button.
         style.configure(
-            "Accent.TButton",
+            "Strong.TButton",
             foreground=palette["accent"],
             font=(font_family, font_size, "bold"),
         )
+        # Blue Start, red Stop / OFF / Zero for each button style, each as
+        # large as the style it replaces (configure_button_roles).
+        # A role style that could not be made is the plain button (ttk
+        # finds "Accent.TButton" through "TButton"), the same size.
+        try:
+            self.ui_button_roles = configure_button_roles(self.root, style)
+        except Exception as error:
+            self.ui_button_roles = {}
+            print(f"Button styles not made: {error}", file=sys.stderr)
         style.configure(
             "Metric.TLabel",
             foreground=palette["text"],
@@ -25228,9 +25754,9 @@ class CombinedControlApp:
             absolute_actions,
             text="Stop now",
             command=self.stop_stage,
-            bg="#c62828",
+            bg=THEME_COLORS["danger"],
             fg="white",
-            activebackground="#8e0000",
+            activebackground=THEME_COLORS["danger_pressed"],
             activeforeground="white",
             padx=8,
         )
@@ -25764,9 +26290,9 @@ class CombinedControlApp:
             safety,
             text="Zero both now",
             command=self.zero_both_magnets,
-            bg="#d70018",
+            bg=THEME_COLORS["danger"],
             fg="white",
-            activebackground="#a80012",
+            activebackground=THEME_COLORS["danger_pressed"],
             activeforeground="white",
             padx=6,
             pady=1,
@@ -25946,7 +26472,7 @@ class CombinedControlApp:
         ttk.Label(
             progress_row,
             textvariable=self.magnet_scan_eta_var,
-            foreground="#0068b5",
+            foreground=THEME_COLORS["accent"],
             font=(self.ui_font_family, self.ui_small_font_size, "bold"),
         ).grid(row=0, column=1, sticky="e")
         scan_path_label = ttk.Label(
@@ -26026,9 +26552,9 @@ class CombinedControlApp:
         intensity_box.columnconfigure(0, weight=1)
         self.moke_intensity_canvas = tk.Canvas(
             intensity_box,
-            bg="#fbfcfd",
+            bg=THEME_COLORS["plot_background"],
             highlightthickness=1,
-            highlightbackground="#cfd6dd",
+            highlightbackground=THEME_COLORS["plot_border"],
             height=self._ui_px(200, 125, canvas=True),
         )
         self.moke_intensity_canvas.grid(row=0, column=0, sticky="nsew")
@@ -26046,9 +26572,9 @@ class CombinedControlApp:
         plot_box.columnconfigure(0, weight=1)
         self.moke_plot_canvas = tk.Canvas(
             plot_box,
-            bg="#fbfcfd",
+            bg=THEME_COLORS["plot_background"],
             highlightthickness=1,
-            highlightbackground="#cfd6dd",
+            highlightbackground=THEME_COLORS["plot_border"],
             height=self._ui_px(200, 125, canvas=True),
         )
         self.moke_plot_canvas.grid(row=0, column=0, sticky="nsew")
@@ -26318,9 +26844,9 @@ class CombinedControlApp:
             text=f"{self.keithley_model_var.get()} zero / output off",
             # Named in a running scan's log (user, 2026-10-18).
             command=lambda: self.stop_keithley_scan("zero / output off"),
-            bg="#d70018",
+            bg=THEME_COLORS["danger"],
             fg="white",
-            activebackground="#a80012",
+            activebackground=THEME_COLORS["danger_pressed"],
             activeforeground="white",
             padx=12,
             pady=2,
@@ -26565,9 +27091,9 @@ class CombinedControlApp:
             # than a third of the lab's 1101 px window, and the canvas was cut.
             canvas = tk.Canvas(
                 frame,
-                bg="#fbfcfd",
+                bg=THEME_COLORS["plot_background"],
                 highlightthickness=1,
-                highlightbackground="#cfd6dd",
+                highlightbackground=THEME_COLORS["plot_border"],
                 width=self._ui_px(160, 100, canvas=True),
                 height=self._ui_px(200, 120, canvas=True),
             )
@@ -26683,9 +27209,9 @@ class CombinedControlApp:
             readback,
             text="6221 stop now / zero",
             command=self.stop_k6221,
-            bg="#d70018",
+            bg=THEME_COLORS["danger"],
             fg="white",
-            activebackground="#a80012",
+            activebackground=THEME_COLORS["danger_pressed"],
             activeforeground="white",
             padx=10,
             pady=3,
@@ -26758,9 +27284,9 @@ class CombinedControlApp:
             avtech_pulse,
             text="Avtech output off",
             command=self.avtech_output_off,
-            bg="#d70018",
+            bg=THEME_COLORS["danger"],
             fg="white",
-            activebackground="#a80012",
+            activebackground=THEME_COLORS["danger_pressed"],
             activeforeground="white",
             padx=10,
             pady=3,
@@ -26904,16 +27430,7 @@ class CombinedControlApp:
         meters.grid(row=0, column=1, sticky="nw")
 
         def indicator(frame, key: str, row: int, column: int) -> None:
-            canvas = tk.Canvas(
-                frame,
-                width=16,
-                height=16,
-                highlightthickness=0,
-                background=self.root.cget("background"),
-            )
-            item = canvas.create_oval(
-                3, 3, 13, 13, fill="#9aa0a6", outline="#6f757b"
-            )
+            canvas, item = create_lamp(frame)
             canvas.grid(
                 row=row, column=column, padx=(1, 4), pady=(4 if row else 0, 0)
             )
@@ -27079,9 +27596,9 @@ class CombinedControlApp:
             text=f"Stop {NONLOCAL_DEFAULT_KEITHLEY_MODEL} / 6221 now",
             # The button's name for a running scan's stop_requested (2026-10-18).
             command=lambda: self.stop_nonlocal_vi(f"Stop {self.nonlocal_vi_2410_controller.model} / 6221 now"),
-            bg="#d70018",
+            bg=THEME_COLORS["danger"],
             fg="white",
-            activebackground="#a80012",
+            activebackground=THEME_COLORS["danger_pressed"],
             activeforeground="white",
             padx=12,
             pady=1,
@@ -27194,18 +27711,7 @@ class CombinedControlApp:
             lamp_height = max(16, int(mfli_lock_readout.winfo_reqheight()))
         except (tk.TclError, TypeError, ValueError, AttributeError):
             lamp_height = 16
-        vi_mfli_lock_canvas = tk.Canvas(
-            readouts,
-            width=16,
-            height=lamp_height,
-            highlightthickness=0,
-            background=self.root.cget("background"),
-        )
-        lamp_middle = lamp_height // 2
-        vi_mfli_lock_item = vi_mfli_lock_canvas.create_oval(
-            3, lamp_middle - 5, 13, lamp_middle + 5,
-            fill="#9aa0a6", outline="#6f757b",
-        )
+        vi_mfli_lock_canvas, vi_mfli_lock_item = create_lamp(readouts, height=lamp_height, kind="status")
         vi_mfli_lock_canvas.grid(row=1, column=0, sticky="nw", padx=(0, 3), pady=(3, 0))
         self.nonlocal_vi_mfli_lock_indicator = (
             vi_mfli_lock_canvas, vi_mfli_lock_item
@@ -27816,9 +28322,9 @@ class CombinedControlApp:
         frame.columnconfigure(0, weight=1)
         canvas = tk.Canvas(
             frame,
-            bg="#fbfcfd",
+            bg=THEME_COLORS["plot_background"],
             highlightthickness=1,
-            highlightbackground="#cfd6dd",
+            highlightbackground=THEME_COLORS["plot_border"],
             width=self._ui_px(160, 100, canvas=True),
             height=self._ui_px(200, 120, canvas=True),
         )
@@ -28073,7 +28579,7 @@ class CombinedControlApp:
         apply_button = ttk.Button(
             actions,
             text="Apply",
-            style="Accent.TButton",
+            style="Strong.TButton",
             width=8,
             command=lambda selected=channel: self.apply_channel(selected),
         )
@@ -28128,6 +28634,34 @@ class CombinedControlApp:
     def attach_motor(self, motor_app_class) -> None:
         self.motor_app_class = motor_app_class
         self.motor_app = motor_app_class(self.motor_tab, embedded=True)
+        self._apply_commercial_look(self.motor_tab)
+
+    def _apply_commercial_look(self, widget=None) -> None:
+        """The commercial-style look on the pages (user, 2026-10-18): cards
+        and page colours, the blue Start and red Stop / OFF / Zero buttons
+        (apply_look_to_tree), and once the connection overview in the tab
+        row.  Again for a page when it is shown, for widgets made since.
+        Colours and style names only: no widget changes size."""
+        if not isinstance(self.root, tk.Misc):
+            return  # stand-in windows in offline tests
+        style = ttk.Style(self.root)
+        apply_look_to_tree(widget or self.root, style)
+        if widget is None and self.__dict__.get("connection_overview") is None:
+            # Not yet seen in a real window (CI was off, 2026-10-18): a fault
+            # here only leaves the overview out, never the program.
+            try:
+                self.connection_overview = ConnectionOverview(self.root, self.notebook, pad=self._ui_px(6, 4))
+            except Exception as error:
+                self.connection_overview = None
+                print(f"Connection overview not shown: {error}", file=sys.stderr)
+            self.notebook.bind("<<NotebookTabChanged>>", self._apply_look_to_shown_page, add="+")
+
+    def _apply_look_to_shown_page(self, _event=None) -> None:
+        try:
+            shown = self.notebook.nametowidget(self.notebook.select())
+        except (tk.TclError, KeyError):
+            return
+        apply_look_to_tree(shown, ttk.Style(self.root))
 
     def _set_camera_dependent_controls(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
@@ -29307,9 +29841,9 @@ class CombinedControlApp:
         ).pack(fill="x", pady=(0, 5))
         canvas = tk.Canvas(
             outer,
-            bg="#fbfcfd",
+            bg=THEME_COLORS["plot_background"],
             highlightthickness=1,
-            highlightbackground="#cfd6dd",
+            highlightbackground=THEME_COLORS["plot_border"],
         )
         canvas.pack(fill="both", expand=True)
         canvas.bind(
@@ -31249,7 +31783,7 @@ class CombinedControlApp:
                 top,
                 x,
                 top + plot_height,
-                fill="#e3e8ed",
+                fill=THEME_COLORS["plot_grid"],
                 dash=(2, 3),
             )
             canvas.create_line(
@@ -31257,7 +31791,7 @@ class CombinedControlApp:
                 y,
                 left + plot_width,
                 y,
-                fill="#e3e8ed",
+                fill=THEME_COLORS["plot_grid"],
                 dash=(2, 3),
             )
 
@@ -32364,7 +32898,7 @@ class CombinedControlApp:
             left + plot_width / 2,
             34,
             text="Magnetic field (Gs)",
-            fill="#0068b5",
+            fill=THEME_COLORS["plot_series"],
             font=(self.ui_font_family, 8, "bold"),
         )
         # "Save CSV + PNG" draws the saved scan here for its snapshot
@@ -32495,12 +33029,12 @@ class CombinedControlApp:
             for tick_index, field_value in enumerate(field_ticks):
                 current = (field_value - field_intercept) / field_slope
                 x = left + (current - x_min) / (x_max - x_min) * plot_width
-                canvas.create_line(x, top - 4, x, top, fill="#0068b5")
+                canvas.create_line(x, top - 4, x, top, fill=THEME_COLORS["plot_series"])
                 canvas.create_text(
                     x,
                     top - 10,
                     text=format_nice_tick(field_value, field_tick_step),
-                    fill="#0068b5",
+                    fill=THEME_COLORS["plot_series"],
                     anchor=(
                         "sw"
                         if tick_index == 0 and abs(x - left) < 1.0
@@ -32526,7 +33060,7 @@ class CombinedControlApp:
             plot_xy(current, intensity)
             for current, intensity in zip(currents, intensities)
         ]
-        color = "#c62828" if key == "OUT" else "#0068b5"
+        color = THEME_COLORS["danger"] if key == "OUT" else THEME_COLORS["plot_series"]
         if len(points) >= 2:
             canvas.create_line(
                 *[coordinate for point in points for coordinate in point],
@@ -33662,11 +34196,11 @@ class CombinedControlApp:
         if len(points) >= 2:
             canvas.create_line(
                 *[coordinate for point in points for coordinate in point],
-                fill="#0068b5",
+                fill=THEME_COLORS["plot_series"],
                 width=2,
             )
         for x, y in points:
-            canvas.create_oval(x - 3, y - 3, x + 3, y + 3, fill="#0068b5", outline="")
+            canvas.create_oval(x - 3, y - 3, x + 3, y + 3, fill=THEME_COLORS["plot_series"], outline="")
 
     def _finish_keithley_scan(self, error) -> None:
         stopped = self.keithley_stop_event.is_set()
@@ -34003,19 +34537,13 @@ class CombinedControlApp:
             else self.nonlocal_mfli_lock_var
         )
         if state is True:
-            fill, outline, text_value = "#20b15a", "#10783a", "MFLI ext. ref: LOCK"
+            lamp, text_value = "on", "MFLI ext. ref: LOCK"
         elif state is False:
-            fill, outline, text_value = "#e53935", "#9d1d1a", "MFLI ext. ref: WARNING"
+            lamp, text_value = "fault", "MFLI ext. ref: WARNING"
         else:
-            fill, outline, text_value = "#9aa0a6", "#6f757b", "MFLI ext. ref: --"
+            lamp, text_value = "off", "MFLI ext. ref: --"
         variable.set(text_value)
-        if target is None:
-            return
-        canvas, item = target
-        try:
-            canvas.itemconfigure(item, fill=fill, outline=outline)
-        except tk.TclError:
-            pass
+        set_lamp(target, lamp)
 
     def _set_mfli_lock_from_sync(
         self, sync: dict[str, dict], *, vi: bool = False
@@ -35791,18 +36319,7 @@ class CombinedControlApp:
         )
 
     def _set_nonlocal_vi_indicator(self, key: str, connected: bool) -> None:
-        target = self.nonlocal_vi_connection_indicators.get(key)
-        if target is None:
-            return
-        canvas, item = target
-        try:
-            canvas.itemconfigure(
-                item,
-                fill="#20b15a" if connected else "#9aa0a6",
-                outline="#10783a" if connected else "#6f757b",
-            )
-        except tk.TclError:
-            pass
+        set_lamp(self.nonlocal_vi_connection_indicators.get(key), lamp_state(connected))
 
     def _nonlocal_vi_shared_hardware_busy(self) -> bool:
         # Compatibility path for the former all-at-once connector.  Per-device
@@ -42464,12 +42981,12 @@ class CombinedControlApp:
             if not 0 <= minutes <= x_max:
                 continue
             x=left+minutes/x_max*(right-left)
-            canvas.create_line(x,top,x,bottom,fill='#e5e5e5')
+            canvas.create_line(x,top,x,bottom,fill=THEME_COLORS['plot_grid'])
             canvas.create_text(x,bottom+11,text=f'{minutes:g}',font=('Arial',8))
         for tick in ticks:
             if low <= tick <= high:
                 y=bottom-(tick-low)/(high-low)*(bottom-top)
-                canvas.create_line(left,y,right,y,fill='#eeeeee')
+                canvas.create_line(left,y,right,y,fill=THEME_COLORS['plot_grid'])
                 canvas.create_text(left-5,y,text=f'{tick:g}',anchor='e',font=('Arial',8))
         previous=None
         for t,v in rows:
@@ -46923,18 +47440,7 @@ def create_motor_subsystem():
             self.connect_button.grid(row=0, column=3, padx=4)
             self.disconnect_button = ttk.Button(serial_box, text="Disconnect", command=self.disconnect)
             self.disconnect_button.grid(row=0, column=4, padx=4)
-            self.connection_indicator_canvas = tk.Canvas(
-                serial_box,
-                width=16,
-                height=16,
-                highlightthickness=0,
-                background=self.root.winfo_toplevel().cget("background"),
-            )
-            self.connection_indicator_item = (
-                self.connection_indicator_canvas.create_oval(
-                    3, 3, 13, 13, fill="#9aa0a6", outline="#6f757b"
-                )
-            )
+            self.connection_indicator_canvas, self.connection_indicator_item = create_lamp(serial_box)
             self.connection_indicator_canvas.grid(
                 row=0, column=5, padx=(8, 1)
             )
@@ -46977,9 +47483,9 @@ def create_motor_subsystem():
                 safety,
                 text="Init OFF / stop output",
                 command=self.init_off,
-                bg="#d70018",
+                bg=THEME_COLORS["danger"],
                 fg="white",
-                activebackground="#a80012",
+                activebackground=THEME_COLORS["danger_pressed"],
                 activeforeground="white",
                 font=(self.ui_font_family, self.ui_font_size, "bold"),
                 padx=14,
@@ -47181,11 +47687,7 @@ def create_motor_subsystem():
     
         def _update_controls(self) -> None:
             connected = self.controller.connected
-            self.connection_indicator_canvas.itemconfigure(
-                self.connection_indicator_item,
-                fill=("#20b15a" if connected else "#9aa0a6"),
-                outline=("#10783a" if connected else "#6f757b"),
-            )
+            set_lamp((self.connection_indicator_canvas, self.connection_indicator_item), lamp_state(connected))
             idle = not self.command_busy and not self.init_off_busy
             self.connect_button.configure(state="normal" if not connected and idle else "disabled")
             self.disconnect_button.configure(state="normal" if connected and idle else "disabled")
@@ -49556,12 +50058,8 @@ def rte_failed_status_text(error, results) -> str:
 # SHV's red "Set stage 0°" (user, 2026-10-18), as the program's red buttons
 # (bg #c62828, white text, #8e0000 while pressed); grey while it is locked, so
 # that a disabled button looks disabled (on red, only its text would grey).
-RTE_RED_BUTTON_COLORS = {
-    'normal': dict(bg='#c62828', fg='white', activebackground='#8e0000', activeforeground='white',
-                   disabledforeground='#9e9e9e'),
-    'disabled': dict(bg='#e0e0e0', fg='#9e9e9e', activebackground='#e0e0e0', activeforeground='#9e9e9e',
-                     disabledforeground='#9e9e9e'),
-}
+# Since 2026-10-18 the program's one set of red-button colours.
+RTE_RED_BUTTON_COLORS = RED_BUTTON_COLORS
 
 
 # The RT-E scan box's note by mode: what Start, End and Step are and where
@@ -49882,8 +50380,22 @@ class RTEPanel(PPMSPanel):
             button = ttk.Button(params, text=label, command=callback, width=11)
             button.grid(row=row, column=col, padx=4)
             self.rte_edit_widgets.append((button, 'normal'))
-        ttk.Button(params, text='KEPCO Zero / OFF', command=self._rte_zero, width=15).grid(row=1, column=6)
-        ttk.Button(params, text='6221 / 2400 OFF', command=self.ppms_sources_off, width=15).grid(row=3, column=4, columnspan=3, sticky='e')
+        kepco_off = ttk.Button(params, text='KEPCO Zero / OFF', command=self._rte_zero, width=15)
+        sources_off = ttk.Button(params, text='6221 / 2400 OFF', command=self.ppms_sources_off, width=15)
+        off_grids = (dict(row=1, column=6), dict(row=3, column=4, columnspan=3, sticky='e'))
+        if laid_out:
+            # Red, as Set stage 0° (user, 2026-10-18: "make SHV's KEPCO Zero
+            # / OFF and 6221 / 2400 OFF red, the same way"): each a tk.Button
+            # filling a frame of exactly its ttk button's size, gridded where
+            # the ttk button was, so the settings keep their layout and
+            # height.  Never locked (as before), so always red.
+            self.rte_off_buttons = [
+                red_button_in_place_of(button, str(button.cget('text')), command, **grid)
+                for button, command, grid in ((kepco_off, self._rte_zero, off_grids[0]),
+                                              (sources_off, self.ppms_sources_off, off_grids[1]))]
+        else:
+            kepco_off.grid(**off_grids[0])
+            sources_off.grid(**off_grids[1])
         # A compliance warning is long: it wraps within its four columns
         # instead of widening the settings.
         current_live = ttk.Label(params, textvariable=self.ppms_current_live_var, width=1, wraplength=0)
@@ -49943,18 +50455,11 @@ class RTEPanel(PPMSPanel):
             # its place: the stage block and every pair keep their layout.
             # Locked and released as before (rte_edit_widgets); grey while
             # disabled (_rte_paint_red_buttons).  The offline tests' stand-in
-            # widgets keep the ttk button.
-            size = dict(width=zero.winfo_reqwidth(), height=zero.winfo_reqheight())
-            zero.destroy()
-            holder = ttk.Frame(stage_box, **size)
-            holder.grid(row=1, column=0, columnspan=2, sticky='ew')
-            holder.grid_propagate(False)
-            holder.columnconfigure(0, weight=1)
-            holder.rowconfigure(0, weight=1)
-            zero = tk.Button(holder, text='Set stage 0°', command=self._rte_stage_set_zero, font='TkDefaultFont',
-                             padx=0, pady=0, **RTE_RED_BUTTON_COLORS['normal'])
-            zero.grid(row=0, column=0, sticky='nsew')
-            self.rte_red_buttons = [zero]
+            # widgets keep the ttk button.  (red_button_in_place_of since
+            # 2026-10-18, for SHV's two OFF buttons too.)
+            zero = red_button_in_place_of(zero, 'Set stage 0°', self._rte_stage_set_zero,
+                                          row=1, column=0, columnspan=2, sticky='ew')
+            self.rte_red_buttons = [zero, *self.__dict__.get('rte_off_buttons', ())]
         else:
             zero.grid(row=1, column=0, columnspan=2, sticky='ew')
         self.rte_stage_zero_button = zero
@@ -50216,8 +50721,7 @@ class RTEPanel(PPMSPanel):
         """The red Set stage 0° in its colours for its state: red while it
         can be pressed, grey while it is locked (user, 2026-10-18)."""
         for button in self.__dict__.get('rte_red_buttons', ()):
-            disabled = str(button.cget('state')) == 'disabled'
-            button.configure(**RTE_RED_BUTTON_COLORS['disabled' if disabled else 'normal'])
+            paint_red_button(button)
 
     def _require_ppms_control_ready(self):
         if self.rte_closed or self.closing:

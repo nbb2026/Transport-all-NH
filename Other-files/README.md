@@ -1,5 +1,59 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Commercial-style look (2026-10-18)
+
+The user asked for the GUI to look "like a expensive commercial software":
+clean light, blue accent. Look only: no instrument, scan, file or log
+change. Not yet seen in a window: CI was off (Actions minutes), so only
+the window-free suites ran. Check it on CI or the lab PC before use.
+
+- One palette, `THEME_COLORS`, at the top of the program (after the font
+  set-up): light grey page (#eef1f5), white cards, accent #0068b5, danger
+  #c62828.
+- Cards: frames, labels and check boxes are white like the LabelFrames
+  they sit in. `apply_look_to_tree` gives the ones outside any LabelFrame a
+  `Page.` style, which is the same style with the grey background. It runs
+  at start-up, after the MOKE motor page is attached, and on the page shown
+  at each tab change. Dialogs and Camera Live keep their own look.
+- Buttons, chosen by their text (`button_role`): Start buttons are blue
+  (`Accent.TButton`) and Stop / OFF / Zero buttons are red
+  (`Danger.TButton`), with `Accent.`/`Danger.` versions of `Compact.` and
+  `Inline.` too. "Start/Stop recording" stays neutral, since its text
+  switches between the two. Where the theme draws colours (clam, default),
+  a role style uses its base's layout, so it is the same size. Windows'
+  native theme ignores colours, so there the fill uses Tk's plain border
+  element (from the default theme, flat), and the padding is adjusted at
+  start-up until a probe button asks for exactly the base style's size. If that does not work out, the
+  button stays native with blue or red text (`configure_button_roles`).
+  The old bold-blue `Accent.TButton` (Connect camera, Connect PPMS, LED
+  Apply) is now `Strong.TButton`, which looks and measures the same as
+  before.
+- SHV: KEPCO Zero / OFF and 6221 / 2400 OFF are now red tk.Buttons, made
+  the same way as Set stage 0° (`red_button_in_place_of`: a frame exactly
+  the ttk button's size, in the ttk button's grid cell). They are never
+  locked, as before. All red tk.Buttons use one set of colours,
+  `RED_BUTTON_COLORS` (`RTE_RED_BUTTON_COLORS` is the same object); the
+  former #d70018 red is #c62828.
+- Lamps: one helper (`create_lamp` / `set_lamp`): a 10 px dot in a 16 px
+  canvas, with the background of the card or page it sits on. Green
+  #20b15a, grey #9aa0a6, red #e53935 (the fills are unchanged); amber is
+  defined but nothing uses it yet.
+- Plots: canvas background white, border #cfd6dd, grid #e3e7eb, and the
+  first series in the accent colour, all from the palette. Colours that
+  carry data (frequency shading, harmonics, OUT red) are unchanged.
+- Connections: there is no status bar, because it would take the SHV
+  plots below their 55 px. Instead, `ConnectionOverview` sits at the right
+  of the tab row: a lamp and "3 of 21 instruments connected" (or "3/21"
+  when there is less room), with each page's count in a tooltip. It is
+  placed there, so it costs no height and changes no other widget. It is
+  hidden when a tab would be underneath it.
+- No font, padding or border width was changed.
+- Tests: `test_commercial_look` (window-free) covers the palette, the
+  button-role mapping and its style names, the padding match, the role
+  styles on stand-in ttk styles (colour theme, native theme with and
+  without the clone, a size that cannot match), the lamps, the overview
+  text, the card/page tree pass and the red buttons.
+
 ## Review of the merged areas: fixes (2026-10-18)
 
 Review of c3b4b24..1c51161 (the five areas merged). Not yet run on the
