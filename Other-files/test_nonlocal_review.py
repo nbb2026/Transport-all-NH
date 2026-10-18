@@ -136,29 +136,39 @@ class StopAndOffTests(unittest.TestCase):
 
 
 class GateVIFinishTests(unittest.TestCase):
-    def finish(self, error, shutdown_error):
+    """Since 2026-10-18 (user) the scan's end zeroes both outputs on the
+    worker; the finish reports each beside the scan's own error."""
+
+    def finish(self, error, results):
         a = page()
-        a.nonlocal_vi_2410_controller = mock.Mock(model="2400")
+        a.nonlocal_vi_2410_controller = mock.Mock(model="2400", connected=True)
         a.nonlocal_vi_eta_var = Var()
         a.nonlocal_vi_run_directory = None
-        a.nonlocal_vi_shutdown_error = shutdown_error
+        a.nonlocal_scan_outputs = results
         a._set_mfli_lock_state = mock.Mock()
         for name in ("_redraw_nonlocal_vi_plots", "_update_k6221_controls", "_update_keithley_controls"):
             setattr(a, name, mock.Mock())
         a._finish_nonlocal_vi_scan(error)
         return a
 
-    def test_a_scan_error_and_a_failed_shutdown_are_both_reported(self):
-        a = self.finish(RuntimeError("SR830 timeout"), RuntimeError("6221 output is still ON"))
+    def test_a_scan_error_and_a_failed_zero_are_both_reported(self):
+        a = self.finish(RuntimeError("SR830 timeout"),
+                        {"6221": "zero FAILED: 6221 output is still ON", "Keithley 2400": "zeroed"})
         status = a.nonlocal_vi_status_var.get()
-        self.assertIn("VI failed: SR830 timeout", status)
-        self.assertIn("switching the outputs off failed, check them: 6221 output is still ON", status)
-        self.assertEqual(a.nonlocal_vi_output_var.get(), "Keithley 2400 and 6221 outputs: check them")
+        self.assertIn("Gate-VI: Failed: SR830 timeout", status)
+        self.assertIn("6221 zero FAILED; Keithley 2400 zeroed: check it", status)
+        self.assertEqual(a.nonlocal_vi_output_var.get(), "Keithley 2400 output: OFF; 6221 output: check it")
 
-    def test_a_clean_end_says_off_read_back(self):
-        a = self.finish(RuntimeError("SR830 timeout"), None)
-        self.assertIn("all outputs off (read back)", a.nonlocal_vi_status_var.get())
+    def test_a_clean_end_says_zeroed(self):
+        a = self.finish(RuntimeError("SR830 timeout"), {"6221": "zeroed", "Keithley 2400": "zeroed"})
+        self.assertIn("Keithley 2400 and 6221 zeroed", a.nonlocal_vi_status_var.get())
         self.assertEqual(a.nonlocal_vi_output_var.get(), "Keithley 2400 and 6221 outputs: OFF")
+
+    def test_no_zeroing_report_says_check_them(self):
+        a = self.finish(None, None)
+        self.assertIn("Gate-VI: Completed; Keithley 2400 and 6221 not confirmed zeroed: check them",
+                      a.nonlocal_vi_status_var.get())
+        self.assertEqual(a.nonlocal_vi_output_var.get(), "Keithley 2400 and 6221 outputs: check them")
 
 
 class KeithleyTaskTests(unittest.TestCase):

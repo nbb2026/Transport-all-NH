@@ -16,6 +16,7 @@ changed code.
 No Tk and no instrument: stand-in controllers and widgets record what the
 page asks of them, and every dialog is mocked."""
 import csv
+import json
 import math
 import tempfile
 import threading
@@ -273,12 +274,13 @@ class GateVIFrequencyTests(unittest.TestCase):
         a._publish_nonlocal_vi_samples = mock.Mock()
         a.nonlocal_vi_progress = mock.Mock()
         a.nonlocal_vi_eta_var, a.nonlocal_vi_status_var, a.nonlocal_vi_output_var = Var(), Var(), Var()
-        directory = Path(tempfile.mkdtemp())
-        a._nonlocal_vi_scan_worker(settings, directory)
+        # The run folder's recorder (user, 2026-10-18).
+        recorder = app.ScanRunRecorder(Path(tempfile.mkdtemp()), "NL_GateVI", "run", {})
+        a._nonlocal_vi_scan_worker(settings, recorder)
         self.assertEqual([c[2] for c in a.nonlocal_vi_ac_controller.calls if c[0] == "configure"], ["DC"])
         self.assertEqual(a.nonlocal_vi_2410_controller.apply_voltage_pulse.call_count,
                          len(settings["voltage_scan"]))
-        with (directory / "VI_summary.csv").open(encoding="utf-8-sig") as file:
+        with recorder.csv_path.open(encoding="utf-8-sig") as file:
             summary = list(csv.DictReader(file))
         self.assertEqual(len(summary), len(settings["voltage_scan"]), "one 2182A row per pulse")
         # The plots split curves by frequency: a DC run is one curve, as before.
@@ -286,8 +288,11 @@ class GateVIFrequencyTests(unittest.TestCase):
         self.assertEqual(len(after), len(settings["voltage_scan"]))
         self.assertEqual(len({row[4] for row in after}), 1)
         self.assertEqual(len({row["set_frequency_hz"] for row in a.nonlocal_vi_summary_rows}), 1)
-        log = (directory / "VI_parameters.log").read_text(encoding="utf-8")
-        self.assertIn("frequency_hz=nan", log, "no frequency in DC")
+        # The run log's set_up (was VI_parameters.log): no frequency in DC.
+        events = [json.loads(line) for line in recorder.log_path.read_text(encoding="utf-8").splitlines()]
+        set_up = [event for event in events if event["event"] == "set_up"]
+        self.assertEqual(len(set_up), 1)
+        self.assertTrue(math.isnan(set_up[0]["frequency_hz"]), "no frequency in DC")
 
 
 # ---------------------------------------- the Gate-VI start confirmation
@@ -305,12 +310,14 @@ class StartConfirmationTests(unittest.TestCase):
             filedialog.askdirectory.return_value = str(a.nonlocal_vi_output_directory)
             messagebox.askyesno.return_value = False   # declined: nothing starts
             a.start_nonlocal_vi_scan()
+        # The Yes/No comes before the folder dialog now (user, 2026-10-18).
+        filedialog.askdirectory.assert_not_called()
         messagebox.showwarning.assert_not_called()
         messagebox.askyesno.assert_called_once()
         text = messagebox.askyesno.call_args.args[1]
         self.assertIn(f"low-pass filter order {app.NONLOCAL_LOCKIN_FILTER_ORDER}", text)
         self.assertNotIn("th-order", text)
-        self.assertEqual(list(a.nonlocal_vi_output_directory.iterdir()), [], "the run folder removed")
+        self.assertEqual(list(a.nonlocal_vi_output_directory.iterdir()), [], "no run folder made")
 
 
 # ------------------------------------------ the pulse gate above 1 nA range
@@ -339,7 +346,7 @@ class GateAboveRangeTests(unittest.TestCase):
         a._publish_reference_sync = mock.Mock()
         a.nonlocal_vi_progress = mock.Mock()
         a.nonlocal_vi_eta_var, a.nonlocal_vi_status_var, a.nonlocal_vi_output_var = Var(), Var(), Var()
-        a._nonlocal_vi_scan_worker(settings, Path(tempfile.mkdtemp()))
+        a._nonlocal_vi_scan_worker(settings, app.ScanRunRecorder(Path(tempfile.mkdtemp()), "NL_GateVI", "run", {}))
         return a, settings
 
     def test_a_measured_value_above_the_bound_can_pass_a_gate_above_it(self):

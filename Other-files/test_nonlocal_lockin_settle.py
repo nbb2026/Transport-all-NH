@@ -16,6 +16,7 @@ No Tk window and no instrument: the page stand-ins of test_nonlocal_6221_iv
 and test_nonlocal_gate_vi_harmonics, and waits that are recorded, not slept.
 Creating a Tk root fails the test, and every dialog is mocked."""
 import csv
+import json
 import math
 import tempfile
 import threading
@@ -29,6 +30,12 @@ from test_nonlocal_6221_iv import FakeSource, page
 from test_nonlocal_gate_vi_harmonics import FakeAC, gate_page
 from test_nonlocal_keithley import Var
 from test_ppms_motor_debug import app
+
+
+def run_prepared(folder):
+    """The settings of the one run log under folder (begin_scan_run's)."""
+    log = next(Path(folder).glob("NL_6221IV_*/*.log"))
+    return json.loads(log.read_text(encoding="utf-8").splitlines()[0])["settings"]
 
 
 class NoWindows(unittest.TestCase):
@@ -180,10 +187,11 @@ class IV6221WorkerTests(NoWindows):
         a.nonlocal_iv6221_source_var, a.nonlocal_iv6221_point_var = Var(), Var()
         settings = a._parse_nonlocal_iv6221_settings()
         settings.update({"settle_s": settle_s, "acquire_s": 0.0, **planned})
-        path = Path(tempfile.mkdtemp()) / "run.csv"
+        # The run folder's recorder (user, 2026-10-18).
+        recorder = app.ScanRunRecorder(Path(tempfile.mkdtemp()), "NL_6221IV", "run", {})
         with mock.patch.object(app, "NONLOCAL_IV6221_REFERENCE_WAIT_S", 0.0):
-            a._nonlocal_iv6221_worker(settings, path)
-        with path.open(encoding="utf-8-sig") as file:
+            a._nonlocal_iv6221_worker(settings, recorder)
+        with recorder.csv_path.open(encoding="utf-8-sig") as file:
             rows = list(csv.reader(file))
         waits = [w for w in a.nonlocal_keithley_stop_event.waits if w and w >= 0.05]
         return waits, rows
@@ -232,10 +240,13 @@ class IV6221StartTests(NoWindows):
         return a
 
     def start(self, a, accept=False, folder=None):
+        # The optional file name of begin_scan_run (user, 2026-10-18): blank.
         with mock.patch.object(app, "messagebox") as messagebox, \
-                mock.patch.object(app, "filedialog") as filedialog:
+                mock.patch.object(app, "filedialog") as filedialog, \
+                mock.patch.object(app, "simpledialog") as simpledialog:
             messagebox.askyesno.return_value = accept
             filedialog.askdirectory.return_value = folder or ""
+            simpledialog.askstring.return_value = ""
             a.start_nonlocal_iv6221()
         return messagebox
 
@@ -310,10 +321,11 @@ class IV6221StartTests(NoWindows):
         a._begin_nonlocal_keithley_task.assert_called_once()
         self.assertEqual((a.nonlocal_iv6221_settings["point_settle_s"],
                           a.nonlocal_iv6221_settings["first_settle_s"]), (3.0, 30.0))
-        log = next(folder.glob("6221-IV_*/*_parameters.log")).read_text(encoding="utf-8")
-        for line in ("point_settle_s=3", "first_settle_s=30", "lockin_time_constant_s=3",
-                     "slowest_lockin=SR830 #8"):
-            self.assertIn(line, log)
+        # The run log's run_prepared settings (the parameter log until 2026-10-18).
+        settings = run_prepared(folder)
+        self.assertEqual((settings["point_settle_s"], settings["first_settle_s"],
+                          settings["lockin_time_constant_s"], settings["slowest_lockin"]),
+                         (3.0, 30.0, 3.0, "SR830 #8"))
 
 
 class SR830ReadTests(NoWindows):
@@ -452,13 +464,18 @@ class GateVIWorkerTests(NoWindows):
         a._publish_nonlocal_vi_samples = mock.Mock()
         a.nonlocal_vi_progress = mock.Mock()
         a.nonlocal_vi_eta_var, a.nonlocal_vi_status_var, a.nonlocal_vi_output_var = Var(), Var(), Var()
-        directory = Path(tempfile.mkdtemp())
-        a._nonlocal_vi_scan_worker(settings, directory)
+        # The run folder (user, 2026-10-18): the summary is run.csv, the
+        # readings run_raw.csv; the set-up's settle is in the run log.
+        recorder = app.ScanRunRecorder(Path(tempfile.mkdtemp()), "NL_GateVI", "run", settings)
+        a._nonlocal_vi_scan_worker(settings, recorder)
         tables = {}
-        for name in ("VI_raw.csv", "VI_summary.csv"):
-            with (directory / name).open(encoding="utf-8-sig") as file:
+        for name, path in (("VI_raw.csv", recorder.directory / "run_raw.csv"),
+                           ("VI_summary.csv", recorder.csv_path)):
+            with path.open(encoding="utf-8-sig") as file:
                 tables[name] = list(csv.DictReader(file))
-        log = (directory / "VI_parameters.log").read_text(encoding="utf-8")
+        events = [json.loads(line) for line in recorder.log_path.read_text(encoding="utf-8").splitlines()]
+        log = {"settings": events[0]["settings"],
+               "set_up": next(event for event in events if event["event"] == "set_up")}
         return a, settings, tables, log
 
     def test_each_reading_waits_1_tc_after_the_6221_switches_on(self):
@@ -467,8 +484,8 @@ class GateVIWorkerTests(NoWindows):
         waits = a.nonlocal_vi_stop_event.waits
         # Three points (0 -> 4 -> 0 V): the pre-run after each 6221 switch-on.
         self.assertEqual(waits.count(2.0), 3)
-        self.assertIn("effective_settle_s=2", log)
-        self.assertIn("lockin_settle_s=2.0", log)
+        self.assertEqual(log["set_up"]["effective_settle_s"], 2.0)
+        self.assertEqual(log["settings"]["lockin_settle_s"], 2.0)
         raw = tables["VI_raw.csv"]
         self.assertEqual(list(raw[0])[-1], "settle_waited_s", "appended at the end")
         # 1st pass (SR830 1ω, the Zurich): the pre-run, counted from the
@@ -488,7 +505,7 @@ class GateVIWorkerTests(NoWindows):
         a, settings, _tables, log = self.run_scan(SlowZurichAC(), tc="2")
         self.assertEqual(settings["lockin_settle_s"], 2.0, "the confirmation's 1 x 2 s")
         self.assertEqual(a.nonlocal_vi_stop_event.waits.count(3.0), 3, "1 x the 3 s read back")
-        self.assertIn("effective_settle_s=3", log)
+        self.assertEqual(log["set_up"]["effective_settle_s"], 3.0)
 
 
 
@@ -719,8 +736,7 @@ class IV6221StartReviewTests(NoWindows):
         a = self.sr830_page(tau=3.0, slope=18.0)
         folder = Path(tempfile.mkdtemp())
         self.start(a, accept=True, folder=str(folder))
-        log = next(folder.glob("6221-IV_*/*_parameters.log")).read_text(encoding="utf-8")
-        self.assertIn("sr830_filter_slopes_db_per_oct={'8': 18.0}", log)
+        self.assertEqual(run_prepared(folder)["sr830_filter_slopes_db_per_oct"], {"8": 18.0})
 
     def test_the_far_point_line_names_settle_s_when_it_sets_the_wait(self):
         a = self.page(FakeSource(keys=(), mfli=True), settle="30")

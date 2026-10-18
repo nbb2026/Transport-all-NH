@@ -183,12 +183,14 @@ class WorkerTests(unittest.TestCase):
         a._publish_reference_sync = mock.Mock()
         a.nonlocal_vi_progress = mock.Mock()
         a.nonlocal_vi_eta_var, a.nonlocal_vi_status_var, a.nonlocal_vi_output_var = Var(), Var(), Var()
-        directory = Path(tempfile.mkdtemp())
+        # The run folder (user, 2026-10-18): the summary is <name>.csv, the
+        # readings <name>_raw.csv.
+        recorder = app.ScanRunRecorder(Path(tempfile.mkdtemp()), "NL_GateVI", "run", {})
         with mock.patch.object(app, "NONLOCAL_VI_HARMONIC_SETTLE_TAUS", 10.0):
-            a._nonlocal_vi_scan_worker(settings, directory)
-        with (directory / "VI_summary.csv").open(encoding="utf-8-sig") as file:
+            a._nonlocal_vi_scan_worker(settings, recorder)
+        with recorder.csv_path.open(encoding="utf-8-sig") as file:
             summary = list(csv.DictReader(file))
-        with (directory / "VI_raw.csv").open(encoding="utf-8-sig") as file:
+        with (recorder.directory / "run_raw.csv").open(encoding="utf-8-sig") as file:
             raw = list(csv.DictReader(file))
         return a, summary, raw
 

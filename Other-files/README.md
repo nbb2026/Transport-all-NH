@@ -1,5 +1,93 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Non-local scans: the shared run folder and log; both outputs zeroed at every end; audit fixes (2026-10-18)
+
+- **Save (user: one save logic on every scan page):** |R| vs time, 2400-IV,
+  6221-IV and Gate-VI follow the convention above `ScanRunRecorder`.
+  - Start order: the checks, then the scan's Yes/No (Gate-VI's now comes
+    before the folder; |R| vs time has none), then `begin_scan_run`: the
+    folder, the optional file name, then `<folder>/<name>/`.
+  - A blank name gives `NL_RvsT_` / `NL_2400IV_` / `NL_6221IV_` /
+    `NL_GateVI_<date>_<time>`. Cancel, a refused name or a folder that
+    cannot be made starts nothing and touches no output.
+  - `<name>.csv` is the live CSV, with the columns as before and in their
+    order: 2400-IV's six, 6221-IV's header, and for Gate-VI the summary
+    (VI_summary's columns). Gate-VI's readings and gate |R| go beside it,
+    in `<name>_raw.csv` and `<name>_resistance_gate.csv` (VI_raw's and
+    VI_resistance_gate's columns), and its plot snapshots too.
+  - |R| vs time had no file; it now saves every reading: point, elapsed_s,
+    source_current_A, voltage_V, current_A, resistance_Ohm, timestamp.
+  - Every row is opened, written, flushed, fsynced and closed before the
+    next instrument step, so no handle is held (the Non-local live-CSV
+    rule since 2026-10-08, now for all three Gate-VI files). A failed write
+    ends the scan through its failure path.
+  - `<name>.log` replaces the `_parameters.log` files and VI_parameters.log:
+    run_prepared (their settings, every instrument's address and identity),
+    scan_started, point_saved, note (every Non-local log line, the
+    controllers' too, while the scan runs), stop_requested (the button's
+    name, or the program closing), outputs_zeroed and run_finished.
+    Gate-VI adds set_up (the read-backs and the effective settle),
+    gate_resistance and plot_snapshots; 6221-IV adds frequency_set_up.
+  - `_nonlocal_make_run_directory` is gone. No Non-local page has a Save
+    CSV as; 2400-IV's Save plot PNG still writes beside the live CSV.
+- **Zero at every end (completed, stopped, failed):** on the page's worker,
+  after the scan's own clean-up, `_nonlocal_zero_outputs` runs through
+  `zero_scan_outputs`:
+  - the 6221 off (SOUR:WAVE:ABOR, CURR 0, OUTP OFF, OUTP? read back 0);
+  - then the Keithley 2400/2410 at 0 V and off (`zero_output`: safe_shutdown,
+    drained after high voltage; :OUTP? 0 and the level read back at 0).
+  - Each is tried whatever the other did; "not connected" is no failure.
+    Every scan zeroes both, as SHV zeroes the KEPCO in a Current scan, |R|
+    vs time included. Both only switch off, so NonLocalVIInterlock and the
+    6221 / Avtech interlock are unchanged.
+  - Status: "<scan>: Completed; " / "Stopped; " / "Failed: <error>; " +
+    `scan_end_outputs_text` ("Keithley 2400 and 6221 zeroed", "6221 zeroed;
+    Keithley 2400 zero FAILED: check it"), then "n/N points saved in
+    <folder>". The 6221-IV box says the same without the points.
+  - The log is closed before any dialog. A failure's dialog ends "At the
+    end: 6221 zeroed; Keithley 2400 …"; an output not confirmed at zero
+    gives a "<scan> outputs" dialog with CHECK IT. These dialogs open via
+    `root.after(0, …)`, not inside drain_ui_queue (2026-10-14 rule).
+  - The output lines say OFF only for an output read back at zero.
+  - Closing the program mid-scan: the worker's end zeroes both and closes
+    the log, since no finish comes then.
+  - The Yes/No texts ("The 6221 is switched off at the end", "The Keithley
+    is zeroed and switched off at the end") and the Stop texts now say both
+    are zeroed at every end. Gate-VI's own end-of-scan off is replaced by
+    the shared zeroing.
+- **C2-1 (user: "Float it like PPMS/SHV"):** `NonLocalACController.configure`
+  sets the 6221's output low floating after its *RST, before anything
+  else: OUTP:LTE? read, `OUTP:LTE OFF` written only when earthed, read
+  back, as `Keithley6221Controller._set_output_low_floating`. A 6221 that
+  stays earthed stops the set-up, naming TRIAX -> OUTPUT LOW -> FLOATING.
+  connect_source sends no *RST.
+- **C2-3:** LIAS? (and *ESR?, ERRS?) clear as they are read, so they are
+  never retried (`CLEAR_ON_READ_QUERIES`). A misaligned or non-integer
+  LIAS? reply, such as a stale SNAP? value, is `SR830_LIAS_UNREADABLE`
+  (0x0F): left out as overloaded and unlocked, and logged. The buffer is
+  cleared, and no range is stepped for it, since a lasting overload
+  latches again.
+- **C2-5:** `apply_voltage_pulse`'s status callback stays before the
+  switch-off, so the pulse's end is recorded at Width s. It is wrapped,
+  though: one that raises is logged, and safe_shutdown always runs.
+- **C2-6:** a failed Non-local Keithley connect writes 0 V and OUTP OFF and
+  closes the VISA session, each in its own try.
+- **Tests (window-free):** `test_nonlocal_scan_runs`:
+  - each scan's files, columns and log events in order;
+  - completed, stopped and failed endings, a failing zero, a 6221 that
+    stays on, the zeroing order after the scan's own clean-up;
+  - the |R| stop with its button's name, closing mid-scan, the dialogs from
+    the event loop;
+  - Gate-VI's Yes/No before the folder;
+  - C2-1, C2-3, C2-5 and C2-6.
+
+  Updated for the new files and endings (worker calls with a recorder,
+  the run log in place of the parameter logs, the new status texts):
+  `test_nonlocal_6221_iv` (`RunFolderTests` removed with
+  `_nonlocal_make_run_directory`), `_keithley`, `_frequency_scan`,
+  `_gate_vi_harmonics`, `_lockin_settle`, `_minor_review`,
+  `_pulse_gate_6221` and `_review`. Not yet run on the instruments.
+
 ## One run folder, live CSV and log for every scan page: the shared base (2026-10-18)
 
 - **Request (user: "make the operation logic and save logic and files in

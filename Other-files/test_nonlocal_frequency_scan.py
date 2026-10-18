@@ -34,6 +34,12 @@ class Event(threading.Event):
         return self.is_set()
 
 
+def run_recorder(page):
+    """A scan's run folder and log, as begin_scan_run makes them (user,
+    2026-10-18): <tmp>/run/run.csv and run.log."""
+    return app.ScanRunRecorder(Path(tempfile.mkdtemp()), page, "run", {})
+
+
 def luminance(color):
     return sum(int(color[index:index + 2], 16) for index in (1, 3, 5))
 
@@ -151,8 +157,9 @@ class IV6221Tests(unittest.TestCase):
         a = self.make(start="0.1", end="0.2", step="0.1")
         settings = a._parse_nonlocal_iv6221_settings()
         settings.update({"settle_s": 0.0, "acquire_s": 1e-9})
-        path = Path(tempfile.mkdtemp()) / "run.csv"
-        a._nonlocal_iv6221_worker(settings, path)
+        recorder = run_recorder("NL_6221IV")
+        path = recorder.csv_path
+        a._nonlocal_iv6221_worker(settings, recorder)
         calls = self.source.calls
         self.assertEqual([c[2] for c in calls if c[0] == "configure"], [11.0, 13.0])
         second = [c[0] for c in calls].index("configure", 1)
@@ -185,7 +192,7 @@ class IV6221Tests(unittest.TestCase):
         a = self.make(tick=False, start="0.1", end="0.2", step="0.1")
         settings = a._parse_nonlocal_iv6221_settings()
         settings.update({"settle_s": 0.0, "acquire_s": 1e-9})
-        a._nonlocal_iv6221_worker(settings, Path(tempfile.mkdtemp()) / "run.csv")
+        a._nonlocal_iv6221_worker(settings, run_recorder("NL_6221IV"))
         self.assertEqual([c[2] for c in self.source.calls if c[0] == "configure"], [17.3])
         self.assertNotIn(5 / 17.3, a.nonlocal_keithley_stop_event.waits)
 
@@ -208,7 +215,7 @@ class IV6221Tests(unittest.TestCase):
 
         self.source.configure = stop_after_first
         with self.assertRaises(InterruptedError):
-            a._nonlocal_iv6221_worker(settings, Path(tempfile.mkdtemp()) / "run.csv")
+            a._nonlocal_iv6221_worker(settings, run_recorder("NL_6221IV"))
         self.assertEqual([c[2] for c in self.source.calls if c[0] == "configure"], [11.0])
         self.assertEqual(self.source.calls[-2:], [("output_off",), ("confirm_output_off",)])
         self.assertFalse(self.source.output_on)
@@ -335,9 +342,9 @@ class GateVITests(unittest.TestCase):
         a.nonlocal_vi_eta_var, a.nonlocal_vi_status_var, a.nonlocal_vi_output_var = Var(), Var(), Var()
         statuses = []
         a.nonlocal_vi_status_var.set = statuses.append
-        directory = Path(tempfile.mkdtemp())
-        a._nonlocal_vi_scan_worker(settings, directory)
-        with (directory / "VI_summary.csv").open(encoding="utf-8-sig") as file:
+        recorder = run_recorder("NL_GateVI")
+        a._nonlocal_vi_scan_worker(settings, recorder)
+        with recorder.csv_path.open(encoding="utf-8-sig") as file:
             summary = list(csv.DictReader(file))
         return settings, summary, statuses
 
