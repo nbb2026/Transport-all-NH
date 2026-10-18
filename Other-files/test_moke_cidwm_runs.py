@@ -744,6 +744,8 @@ class MagnetZeroReportTests(unittest.TestCase):
         bop = types.SimpleNamespace(connected=True, output_armed=True, query_current=lambda: 0.3)
         a.magnet_channels = {"OUT": types.SimpleNamespace(bop=bop, gauss=types.SimpleNamespace(connected=True))}
         a.magnet_last_currents = {"OUT": 0.3}
+        a.magnet_current_vars = {"OUT": Var("+0.300 A")}
+        a.post_ui = lambda callback: callback()
         a.logged = []
         a.thread_log = a.logged.append
         stop = threading.Event()
@@ -763,7 +765,29 @@ class MagnetZeroReportTests(unittest.TestCase):
         self.assertTrue(result["cancelled"])
         self.assertIsNone(result["current"], "0 A not confirmed: unknown, not 0.0")
         self.assertIsNone(a.magnet_last_currents["OUT"])
+        self.assertEqual(a.magnet_current_vars["OUT"].get(), "0 A not confirmed")
         self.assertTrue(any("0 A not confirmed" in line for line in a.logged), "in the page log")
+
+    def test_field_zero_error_with_a_failed_zero_says_so(self):
+        a = types.SimpleNamespace()
+        bop = types.SimpleNamespace(connected=True, output_armed=True, query_current=lambda: 0.3)
+        a.magnet_channels = {"OUT": types.SimpleNamespace(bop=bop, gauss=types.SimpleNamespace(connected=True))}
+        a.magnet_last_currents = {"OUT": 0.3}
+        a.magnet_current_vars = {"OUT": Var()}
+        a.post_ui = lambda callback: callback()
+        a.thread_log = lambda _text: None
+        a.magnet_field_zero_stop_event = threading.Event()
+
+        def write(key, value):
+            raise RuntimeError("IQ timeout")
+
+        a._write_and_verify_magnet_current = write
+        a._query_gauss_with_recovery = lambda key: 20.0
+        bind(a, "_zero_magnet_field_worker", "_require_magnet_bop", "_require_gauss_meter", "_magnet_log",
+             "_scan_page_log", "_scan_log")
+        with self.assertRaisesRegex(app.MagnetProtocolError, "then 0 A could not be confirmed: check the KEPCO"):
+            a._zero_magnet_field_worker("OUT")
+        self.assertEqual(a.magnet_current_vars["OUT"].get(), "0 A not confirmed")
 
     def test_field_zero_finish_shows_not_confirmed(self):
         a = magnet_app()

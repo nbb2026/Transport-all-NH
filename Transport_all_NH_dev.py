@@ -29768,6 +29768,7 @@ class CombinedControlApp:
                 return self._write_and_verify_magnet_current(key, 0.0)
             except BaseException as zero_error:
                 self.magnet_last_currents[key] = None
+                self.post_ui(lambda: self.magnet_current_vars[key].set("0 A not confirmed"))
                 self._magnet_log(
                     f"{MAGNET_CHANNEL_LABELS[key]} zeroing the current after a field-zero stop or error failed "
                     f"(0 A not confirmed): {zero_error}"

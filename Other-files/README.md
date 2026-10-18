@@ -69,7 +69,7 @@
     Loop box no longer raise OverflowError. The poll timer keeps running,
     at most 1 h apart.
 - **Tests (window-free):**
-  - `test_moke_cidwm_runs` (41) covers each scan's files, log events in
+  - `test_moke_cidwm_runs` (42) covers each scan's files, log events in
     order, every ending, a failing zero, a failed log write, the program
     close, the Start order and the prefixes, Save CSV's folder, and each
     finding above.
