@@ -737,6 +737,129 @@ class RTEStatusRowTests(unittest.TestCase):
         self.assertLess(abs(progress.winfo_rooty() - self.status_label().winfo_rooty()), 6)
 
 
+# Named to run after PanelDefaultTests' message boxes and before TCRackTests,
+# as RTEStatusRowTests does: it maps and destroys a program copy too.
+class ScanBoxFrequencyModeTests(unittest.TestCase):
+    """The PPMS scan box's Frequency and Frequency+Current modes (user,
+    2026-10-18): both in the Mode list, which keeps its width; Frequency's
+    Start / End in Hz with the Step box empty; Frequency+Current's "Outer
+    frequency Hz:" row where the outer temperature row sits, with its prime
+    count; and the box no wider in either mode, in the 1101 px window and at
+    2000 px."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.root = tk.Tk()
+        except tk.TclError as error:  # headless build server
+            raise unittest.SkipTest(f"no display: {error}")
+        cls.app = build_lab_app(app, cls.root)  # as the lab PC shows it
+        notebook = next(w for w in cls.app.__dict__.values()
+                        if isinstance(w, tk.ttk.Notebook))
+        for index in range(notebook.index("end")):
+            if notebook.tab(index, "text") == "PPMS":
+                notebook.select(index)
+        cls.panel = cls.app.ppms_panel
+        cls.scan = cls.panel.ppms_field_scan_start_button.master.master
+        cls.root.geometry(f"{LAB_WIDE}x{lab_window(cls.app)[1]}+0+0")
+        cls.root.update()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app.closing = True
+        cls.app.safe_close_hardware()
+        cls.root.destroy()
+
+    def choose(self, mode, width=None):
+        self.panel.ppms_simple_mode.set(mode)
+        self.panel.ppms_scan_mode_combo.event_generate("<<ComboboxSelected>>")
+        if width is not None:
+            self.root.geometry(f"{width}x{lab_window(self.app)[1]}+0+0")
+        for _ in range(3):
+            self.root.update()
+
+    def tearDown(self):
+        self.choose("Field")
+
+    def unit_label(self):
+        name = str(self.panel.ppms_simple_unit)
+        return next(w for w in self.scan.winfo_children()
+                    if w.winfo_class() == "TLabel" and str(w.cget("textvariable")) == name)
+
+    def test_both_modes_are_in_the_list_and_fit_it(self):
+        combo = self.panel.ppms_scan_mode_combo
+        self.assertEqual(tuple(str(v) for v in combo.cget("values")), app.PPMS_SCAN_MODES)
+        self.assertEqual(int(combo.cget("width")), 19)
+        font = tkinter.font.nametofont("TkTextFont")
+        room = combo.winfo_width() - (combo.winfo_reqwidth() - int(combo.cget("width")) * font.measure("0"))
+        for mode in app.PPMS_SCAN_MODES:
+            self.assertLessEqual(font.measure(mode), room, mode)
+
+    def test_frequency_has_start_and_end_in_hz_and_no_step(self):
+        self.choose("Frequency")
+        self.assertEqual([v.get() for v in self.panel.ppms_simple_range], ["7", "97", ""])
+        self.assertEqual(self.panel.ppms_simple_unit.get(), "Hz (primes)")
+        label = self.unit_label()
+        font = tkinter.font.nametofont(str(label.cget("font")) or "TkDefaultFont")
+        self.assertLessEqual(font.measure("Hz (primes)"), label.winfo_width(), "the unit shows in full")
+        self.assertEqual(str(self.panel.ppms_scan_step_entry.cget("state")), "disabled")
+        self.assertFalse(self.panel.ppms_frequency_range_frame.winfo_ismapped())
+        self.assertEqual(self.panel.ppms_plot_axis, "frequency")
+        self.assertEqual(self.panel.ppms_acquisition_time_var.get(), "1")
+
+    def test_frequency_current_has_the_outer_frequency_row(self):
+        self.choose("Frequency+Current")
+        self.assertEqual([v.get() for v in self.panel.ppms_simple_range], ["0.01", "1", "0.01"])
+        self.assertEqual(self.panel.ppms_simple_unit.get(), "mA RMS")
+        frame = self.panel.ppms_frequency_range_frame
+        self.assertTrue(frame.winfo_ismapped())
+        self.assertEqual(int(frame.grid_info()["row"]), 4, "where the outer temperature row sits")
+        texts = [str(w.cget("text")) for w in frame.winfo_children() if w.winfo_class() == "TLabel"]
+        self.assertEqual(texts[:3], ["Outer frequency Hz:", "Start", "End"])
+        self.assertEqual([v.get() for v in self.panel.ppms_frequency_scan_range], ["7", "97"])
+        self.assertEqual(self.panel.ppms_frequency_scan_note_var.get(), "22 primes: 7–97 Hz")
+        # Shown in full, or cut to the row's room with "…", never widening it.
+        shown = texts[3]
+        self.assertTrue(shown == "22 primes: 7–97 Hz"
+                        or (shown.endswith("…") and "22 primes: 7–97 Hz".startswith(shown[:-1].rstrip())), shown)
+        self.assertEqual(self.panel.ppms_plot_axis, "current")
+        try:
+            self.panel.ppms_frequency_scan_range[0].set("24")
+            self.panel.ppms_frequency_scan_range[1].set("28")
+            self.root.update()
+            self.assertEqual(self.panel.ppms_frequency_scan_note_var.get(), "No prime from 24 to 28 Hz; widen the range")
+        finally:
+            self.panel.ppms_frequency_scan_range[0].set("7")
+            self.panel.ppms_frequency_scan_range[1].set("97")
+        self.choose("Current+Temperature")
+        self.assertFalse(frame.winfo_ismapped())
+
+    def test_the_box_is_no_wider_and_nothing_sticks_out(self):
+        tab = self.panel.ppms_tab
+        sizes = {}
+        for width in (1101, LAB_WIDE):
+            for mode in ("Field", "Current+Temperature", "Frequency", "Frequency+Current"):
+                with self.subTest(width=width, mode=mode):
+                    self.choose(mode, width)
+                    sizes[(width, mode)] = (self.scan.winfo_reqwidth(), self.scan.winfo_reqheight())
+                    right = tab.winfo_rootx() + tab.winfo_width()
+                    box_right = self.scan.winfo_rootx() + self.scan.winfo_width()
+                    self.assertLessEqual(box_right, right + 1, "the scan box stays on the page")
+                    pending = list(self.scan.winfo_children())
+                    while pending:
+                        widget = pending.pop()
+                        pending.extend(widget.winfo_children())
+                        if widget.winfo_ismapped():
+                            self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), box_right + 1,
+                                                 f"{widget.winfo_class()} sticks out of the scan box")
+            with self.subTest(width=width):
+                self.assertLessEqual(sizes[(width, "Frequency")][0], sizes[(width, "Field")][0])
+                self.assertLessEqual(sizes[(width, "Frequency+Current")][0], sizes[(width, "Current+Temperature")][0])
+                self.assertLessEqual(abs(sizes[(width, "Frequency+Current")][1]
+                                         - sizes[(width, "Current+Temperature")][1]), 2,
+                                     "the outer row costs the plots no more height than the temperature row")
+
+
 # Named to sort last: unittest runs a module's classes in name order, and this
 # one maps and destroys a whole program copy.  Before PanelDefaultTests'
 # message boxes that is the order that crashed Tk's focus_force on the Linux

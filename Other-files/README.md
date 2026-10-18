@@ -1,5 +1,113 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## PPMS page: Frequency and Frequency+Current scans (2026-10-18)
+
+- **Request (user: "add frequency and frequency+current scan in the PPMS
+  module"):** two more entries in the Mode list, Frequency and
+  Frequency+Current (`PPMS_SCAN_MODES`, `PPMS_FREQUENCY_SCAN_MODES`). The
+  list keeps its width: Current+Temperature is still the longest entry.
+- **Frequencies (the user's choice):** the whole-number primes from Start to
+  End Hz, both included, with no step, from Non-local's list
+  (`ppms_prime_frequencies` → `nonlocal_prime_frequencies`). Start must be
+  at least 2 and End at most 100 kHz, the 6221's sine.
+- **Frequency:** Start / End in Hz on the main row (default 7 / 97,
+  `NONLOCAL_FSCAN_START_HZ` / `STOP_HZ`). The Step box is emptied and
+  greyed, and the unit reads "Hz (primes)". The 6221 amplitude, compliance
+  and the lock-ins come from the settings boxes, as a Current scan's fixed
+  values do; "f Hz" is not read. Temperature and angle are held at the
+  T K and Angle ° boxes, and the field is not commanded, all as in a
+  Current scan. Plots against the set frequency, "Frequency (Hz)" (linear:
+  the plot helper has no log axis).
+- **Frequency+Current (the user's choice: frequency outer):** the main row
+  is the inner current sweep (Current's defaults, 0.01 → 1 mA in 0.01).
+  "Outer frequency Hz:" Start / End sits where the outer temperature row
+  does, with the prime count ("22 primes: 7–97 Hz", or what is wrong).
+  The whole current sweep runs at each frequency. Plots against the
+  current, one curve per frequency ("SR830-1 7 Hz L1"), light at the lowest
+  frequency to dark at the highest.
+- **At each frequency (`_ppms_frequency_scan_block`,
+  `_ppms_set_up_frequency`), in Non-local's reviewed order for a frequency
+  change (6221-IV, Gate-VI):**
+  1. The 6221 is switched off and read back as off (`OUTP?` 0). If it
+     still reads on, the scan fails before anything else is sent.
+  2. The page's own set-up (`_configure_ppms_transport_scan`) runs at the
+     new frequency: *RST, the sine with its amplitude, compliance and
+     range, each read back; the SR830s checked; the sine re-armed and read
+     back as on. Frequency+Current keeps the one fixed range of the whole
+     sweep (`continuous_sweep_peak_a`), as a Current scan.
+  3. The SR830 reference lock is awaited at the new frequency, for up to
+     20 s (`NONLOCAL_IV6221_REFERENCE_WAIT_S`, Non-local's wait at each
+     frequency) instead of a scan start's 8 s. A PLL at a few hertz is
+     slow to lock.
+  4. The Zurich's lock at the new frequency is awaited the same way
+     (`_ppms_wait_zurich_reference`, read-only), and its expected frequency
+     becomes the new one.
+  5. The settle runs: Settle s or 1 × the slowest TC, and at least 5
+     periods of the frequency (`NONLOCAL_FSCAN_SETTLE_PERIODS`), as
+     Non-local waits.
+  6. The first point's agreeing windows follow, as at a scan's start.
+  - Every frequency gets steps 1 to 6, the first current of each
+    frequency included.
+  - Later currents only change the amplitude, without a re-arm
+    (`_update_ppms_transport_current`), as in a Current scan.
+  - A 1+2 or 1+2+3 SR830 repeats the whole scan per order, as in the
+    other modes.
+- **Start checks:** empty or non-whole boxes, no prime in the range, End
+  over 100 kHz. Every frequency is checked in every harmonic pass through
+  `validate_ppms_transport_scan_settings`: the 6221's sine, and each
+  measured SR830's harmonic × frequency within 102 kHz. A failure names
+  the frequency ("At 34019 Hz: SR830 slot C …"). The Zurich's 3 × 100 kHz
+  stays inside its 500 kHz. The 100000-point cap counts the frequencies.
+- **The Yes/No and the status show the primes:** "Frequencies: 43 primes:
+  7–199 Hz (Step not used)" and what happens at each frequency;
+  "Frequency scan: 43 primes: 7–199 Hz; 43 points, …".
+- **Estimate:** every point counts as before (settle + Acquire s + 6 s).
+  Every frequency of every harmonic pass is a set-up with the 12 s
+  allowance (`PPMS_SET_UP_ALLOWANCE_S`, the same 12 s as before). Each
+  frequency's first point adds one more window, and the part of its 5
+  periods longer than the settle.
+- **Rows:** no new column. `6221_frequency_hz` is the set frequency;
+  `sr830_<n>_frequency_hz` and `zurich_reference_hz` are the references
+  the lock-ins read. `effective_settle_s` includes the 5 periods.
+- **Ending, as Current and Current+Temperature on this page:**
+  - Completed: the 6221 keeps its last output (the last frequency and
+    current).
+  - Stop button: every output and setpoint is kept, nothing zeroed.
+  - "I off": the 6221 is switched off.
+  - A failure (a lock that does not come, a 6221 that stays on): the 6221
+    is switched off and the field is kept.
+  - An SR830 range failure keeps the output, as before.
+  - Known effect: after a completed scan the 6221 runs at the last prime
+    while "f Hz" still holds its own value, so the idle Zurich row may
+    show WARNING (reference frequency mismatch) until Set I or I off.
+- **Also changed on the same path (review findings, 2026-10-18):**
+  - Start builds each harmonic pass's settings on the Tk thread
+    (`harmonic_passes`). The worker no longer reads the harmonic
+    StringVars.
+  - Start's per-current check passes SR830-3's harmonic; it was checked as
+    harmonic 1. `_ppms_harmonic_passes` already checked it, so no scan
+    that passed before is refused.
+  - `_configure_ppms_transport_scan` takes an optional
+    `reference_timeout_s`. Without it, every other set-up (all SHV ones
+    included) keeps the 8 s.
+  - The SHV page does not change: it has its own mode list, Start, worker
+    and plots.
+- **Tests:** `test_ppms_frequency_scan` (window-free):
+  - the prime lists and texts;
+  - Start's checks and settings;
+  - the estimate;
+  - the hardware sequence on fake 6221, SR830 and Zurich, in order;
+  - columns, Stop, I off and failures, each ending as a Current scan's;
+  - the plot axis and curve names;
+  - every mode-keyed table;
+  - the SHV page and its 8 s lock unchanged.
+
+  Each safety assertion was checked by breaking its code (8 mutations, all
+  caught). `test_panel_defaults` `ScanBoxFrequencyModeTests` (CI only): the
+  list, both rows, and the box no wider or taller than the Field and
+  Current+Temperature boxes at 1101 and 2000 px. Not yet run on the
+  instruments.
+
 ## SHV run folder and log; the STFMR file-name step; SHV scans end with the KEPCO and 6221 zeroed (2026-10-18)
 
 - **Run folder (user: "like ST-FMR, pls also write a log of SHV and save

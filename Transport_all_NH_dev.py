@@ -1641,9 +1641,32 @@ PPMS_ZURICH_MODE_ORDERS = {"1": (1,), "2": (2,), "3": (3,), "1+2": (1, 2), "1+2+
 PPMS_ZURICH_TIME_CONSTANT_S = 1.0
 # The PPMS page's "Acquire s": 1 s, but 5 s for a Temperature scan (user,
 # 2026-10-16).  Switching the scan mode puts the new mode's default in the
-# box unless the operator typed another value there.
+# box unless the operator typed another value there.  Frequency and
+# Frequency+Current take the 1 s (user, 2026-10-18).
 PPMS_ACQUISITION_S = 1.0
 PPMS_TEMPERATURE_ACQUISITION_S = 5.0
+# The PPMS page's scan modes, in the Mode list's order.  Frequency and
+# Frequency+Current were added at the user's request (2026-10-18: "add
+# frequency and frequency+current scan in the PPMS module").  Their
+# frequencies are the whole-number primes from Start to End Hz, with no step,
+# as on Non-local (nonlocal_prime_frequencies) and ST-FMR.  In
+# Frequency+Current the frequency is the outer loop: the whole current sweep
+# runs at each frequency (the user's choice).
+PPMS_FREQUENCY_SCAN_MODES = ("Frequency", "Frequency+Current")
+PPMS_SCAN_MODES = ("Temperature", "Field", "Angle", "Current", "Field+Temperature",
+                   "Angle+Temperature", "Current+Temperature", *PPMS_FREQUENCY_SCAN_MODES)
+# The quantity each mode's plots put on the x axis (ppms_plot_axis).  A
+# Frequency+Current scan plots against the current, one curve per frequency.
+PPMS_SCAN_PLOT_AXES = {
+    "Temperature": "temperature", "Field": "field", "Field+Temperature": "field",
+    "Angle": "angle", "Angle+Temperature": "angle", "Current": "current",
+    "Current+Temperature": "current", "Frequency": "frequency", "Frequency+Current": "current",
+}
+# The Start estimate's planning allowance for each set-up of the 6221 and the
+# lock-ins (GPIB commands and the reference lock).  A frequency scan sets them
+# up again at every frequency of every harmonic pass, so each of those set-ups
+# gets it too (user, 2026-10-18: the estimate counts the lock waits).
+PPMS_SET_UP_ALLOWANCE_S = 12.0
 # SR830 slots accept the same selections as the Zurich: a multi-order choice
 # runs one scan pass per order, with the meter re-tuned between passes.
 PPMS_HARMONIC_MODE_ORDERS = PPMS_ZURICH_MODE_ORDERS
@@ -6151,6 +6174,42 @@ def nonlocal_frequency_scan_text(start_hz, stop_hz) -> str:
     if len(values) == 1:
         return f"1 prime: {values[0]:g} Hz"
     return f"{len(values)} primes: {values[0]:g}–{values[-1]:g} Hz"
+
+
+def ppms_prime_frequencies(start_hz, end_hz) -> tuple[float, ...]:
+    """The frequencies of a PPMS Frequency or Frequency+Current scan (user,
+    2026-10-18): the whole-number primes from Start to End Hz, both
+    included, with no step, from Non-local's list (nonlocal_prime_frequencies).
+    The checks before it are in the PPMS page's words, whose boxes are Start
+    and End; the top is the 6221's sine, 100 kHz (NONLOCAL_FSCAN_MAX_HZ)."""
+    try:
+        start, end = float(start_hz), float(end_hz)
+    except (TypeError, ValueError):
+        raise ValueError("Frequency Start and End must be whole numbers of Hz") from None
+    if not all(math.isfinite(value) and value.is_integer() for value in (start, end)):
+        raise ValueError("Frequency Start and End must be whole numbers of Hz")
+    if not 2 <= start <= end <= NONLOCAL_FSCAN_MAX_HZ:
+        raise ValueError(
+            f"A frequency scan needs 2 ≤ Start ≤ End ≤ {NONLOCAL_FSCAN_MAX_HZ} Hz (the 6221's sine)"
+        )
+    return nonlocal_prime_frequencies(start, end)
+
+
+def ppms_frequency_count_text(frequencies) -> str:
+    """How many primes and their range, as Non-local's note words it:
+    "43 primes: 7–199 Hz", or "1 prime: 7 Hz"."""
+    values = tuple(frequencies)
+    if len(values) == 1:
+        return f"1 prime: {values[0]:g} Hz"
+    return f"{len(values)} primes: {values[0]:g}–{values[-1]:g} Hz"
+
+
+def ppms_frequency_scan_note(start_hz, end_hz) -> str:
+    """The PPMS "Outer frequency Hz:" row's note: the count, or what is wrong."""
+    try:
+        return ppms_frequency_count_text(ppms_prime_frequencies(start_hz, end_hz))
+    except ValueError as error:
+        return str(error)
 
 
 def current_unit(max_abs_current_a: float) -> tuple[float, str]:
@@ -16562,9 +16621,10 @@ class CombinedControlApp:
         # fields), the buttons on a row of their own, then progress and
         # status.  On one line the parameters made the scan box too wide to
         # sit beside the settings.  The mode list is wide enough for its
-        # longest entry, "Current+Temperature".
+        # longest entry, "Current+Temperature"; "Frequency+Current" (user,
+        # 2026-10-18) is shorter, so the list keeps its width.
         ttk.Label(scan, text="Mode").grid(row=0, column=0, sticky="e", padx=(0, 2))
-        mode = ttk.Combobox(scan, textvariable=self.ppms_simple_mode, values=("Temperature", "Field", "Angle", "Current", "Field+Temperature", "Angle+Temperature", "Current+Temperature"), state="readonly", width=19)
+        mode = ttk.Combobox(scan, textvariable=self.ppms_simple_mode, values=PPMS_SCAN_MODES, state="readonly", width=19)
         mode.grid(row=0, column=1, columnspan=3, sticky="w", padx=2, pady=1)
         self.ppms_control_widgets.append(mode)
         # Settle and Acquire share the mode row, so they are made right after
@@ -16582,6 +16642,10 @@ class CombinedControlApp:
             widget = ttk.Entry(scan, textvariable=var, width=6)
             widget.grid(row=1, column=2*i+1, sticky="ew", padx=2, pady=1)
             self.ppms_control_widgets.append(widget)
+        # A Frequency scan has no step (the primes from Start to End), so
+        # _update_ppms_scan_target_widgets greys this box then (user,
+        # 2026-10-18).
+        self.ppms_scan_step_entry = widget
         unit = tk.StringVar(value="Oe")
         self.ppms_simple_unit = unit
         self.ppms_temperature_scan_range = [tk.StringVar(value=v) for v in ("300", "280", "5")]
@@ -16592,16 +16656,48 @@ class CombinedControlApp:
             entry = ttk.Entry(temperature_range_frame, textvariable=var, width=6)
             entry.grid(row=0, column=2+2*i)
             self.ppms_control_widgets.append(entry)
+        # Frequency+Current's outer frequencies (user, 2026-10-18), where the
+        # outer temperature row sits for the combined modes: Start and End
+        # in Hz, the primes between them with no step, and how many there
+        # are, as Non-local's frequency scan row shows it.  The note takes
+        # the row's spare width and is cut with "…" rather than widen the box.
+        self.ppms_frequency_scan_range = [tk.StringVar(value=f"{value:g}") for value in
+                                          (NONLOCAL_FSCAN_START_HZ, NONLOCAL_FSCAN_STOP_HZ)]
+        self.ppms_frequency_scan_note_var = tk.StringVar()
+        frequency_range_frame = ttk.Frame(scan)
+        self.ppms_frequency_range_frame = frequency_range_frame
+        ttk.Label(frequency_range_frame, text="Outer frequency Hz:").grid(row=0, column=0)
+        for i, (label, var) in enumerate(zip(("Start", "End"), self.ppms_frequency_scan_range)):
+            ttk.Label(frequency_range_frame, text=label).grid(row=0, column=1+2*i)
+            entry = ttk.Entry(frequency_range_frame, textvariable=var, width=6)
+            entry.grid(row=0, column=2+2*i)
+            self.ppms_control_widgets.append(entry)
+        frequency_note = ttk.Label(frequency_range_frame, width=1)
+        frequency_note.grid(row=0, column=5, sticky="ew", padx=(6, 0))
+        frequency_range_frame.columnconfigure(5, weight=1)
+        show_trimmed(frequency_note, self.ppms_frequency_scan_note_var)
+
+        def refresh_frequency_note(*_args):
+            self.ppms_frequency_scan_note_var.set(
+                ppms_frequency_scan_note(*(var.get() for var in self.ppms_frequency_scan_range)))
+
+        for var in self.ppms_frequency_scan_range:
+            # As the T K box's trace: the stand-in variables of the
+            # window-free tests have none.
+            if hasattr(var, "trace_add"):
+                var.trace_add("write", refresh_frequency_note)
+        refresh_frequency_note()
         def change_mode(_event=None):
-            defaults = {"Temperature": ("300", "280", "5", "K"), "Field": ("0", "1000", "100", "Oe"), "Field+Temperature": ("0", "1000", "100", "Oe"), "Angle": ("0", "360", "5", "°"), "Current": ("0.01", "1", "0.01", "mA RMS")}
-            defaults["Field"] = defaults["Field+Temperature"] = (*getattr(self, "ppms_default_field_range", ("0", "1000", "100")), "Oe")
-            defaults["Angle+Temperature"] = ("0", "360", "5", "°")
-            defaults["Current+Temperature"] = defaults["Current"]
+            defaults = self._ppms_scan_mode_defaults()
             combined = self.ppms_simple_mode.get() in ("Field+Temperature", "Angle+Temperature", "Current+Temperature")
             if combined:
                 temperature_range_frame.grid(row=4, column=0, columnspan=9, sticky="w", pady=(2, 0))
             else:
                 temperature_range_frame.grid_remove()
+            if self.ppms_simple_mode.get() == "Frequency+Current":
+                frequency_range_frame.grid(row=4, column=0, columnspan=9, sticky="ew", pady=(2, 0))
+            else:
+                frequency_range_frame.grid_remove()
             scan.configure(text="PPMS scan")
             values = defaults[self.ppms_simple_mode.get()]
             for var, value in zip(self.ppms_simple_range, values): var.set(value)
@@ -16611,10 +16707,13 @@ class CombinedControlApp:
             self._apply_ppms_mode_acquisition_default(self.ppms_simple_mode.get())
             self._update_ppms_control_ui()
             if not self.ppms_field_scan_rows:
-                self.ppms_plot_axis = {"Temperature": "temperature", "Field": "field", "Field+Temperature": "field", "Angle+Temperature": "angle", "Angle": "angle", "Current": "current", "Current+Temperature": "current"}[self.ppms_simple_mode.get()]
+                self.ppms_plot_axis = PPMS_SCAN_PLOT_AXES[self.ppms_simple_mode.get()]
                 self._redraw_ppms_transport_plot()
         mode.bind("<<ComboboxSelected>>", change_mode)
-        ttk.Label(scan, textvariable=unit).grid(row=1, column=6, sticky="w", padx=(2, 0))
+        self.ppms_scan_mode_combo = mode
+        # Over the empty cells to its right as well: "Hz (primes)" is wider
+        # than "Acquire s" above it, and the column must not widen the box.
+        ttk.Label(scan, textvariable=unit).grid(row=1, column=6, columnspan=3, sticky="w", padx=(2, 0))
         # The buttons keep their own row frame, sized to their text.  The
         # zero/persist button is as wide as its longer text, so switching to
         # "Queued: zero + persist" does not resize the box.
@@ -16657,6 +16756,20 @@ class CombinedControlApp:
                 child.grid_configure(row=2, column=0, rowspan=1, columnspan=1, sticky="w", padx=2)
         plot.configure(text="SR830-1 / SR830-2 / SR830-3: X, Y, θ vs scan variable")
         plot.master.rowconfigure(3, weight=1, minsize=220)
+
+    def _ppms_scan_mode_defaults(self) -> dict:
+        """(Start, End, Step, unit) that choosing each scan mode puts in the
+        main range row, for every mode in PPMS_SCAN_MODES."""
+        defaults = {"Temperature": ("300", "280", "5", "K"), "Field": ("0", "1000", "100", "Oe"), "Field+Temperature": ("0", "1000", "100", "Oe"), "Angle": ("0", "360", "5", "°"), "Current": ("0.01", "1", "0.01", "mA RMS")}
+        defaults["Field"] = defaults["Field+Temperature"] = (*getattr(self, "ppms_default_field_range", ("0", "1000", "100")), "Oe")
+        defaults["Angle+Temperature"] = ("0", "360", "5", "°")
+        defaults["Current+Temperature"] = defaults["Current"]
+        # Frequency: Start and End in Hz (Non-local's 7 and 97), no step;
+        # Frequency+Current: the main row is the inner current sweep, at
+        # Current's defaults (user, 2026-10-18).
+        defaults["Frequency"] = (f"{NONLOCAL_FSCAN_START_HZ:g}", f"{NONLOCAL_FSCAN_STOP_HZ:g}", "", "Hz (primes)")
+        defaults["Frequency+Current"] = defaults["Current"]
+        return defaults
 
     def _ppms_direct_transport_settings(self):
         if not self.ppms_instrument_controllers['6221'].connected:
@@ -39463,9 +39576,18 @@ class CombinedControlApp:
         scanned = {"Temperature", "Field"} if mode == "Field+Temperature" else {"Angle", "Temperature"} if mode == "Angle+Temperature" else {mode}
         if mode == "Current+Temperature":
             scanned = {"Current", "Temperature"}
+        if mode == "Frequency+Current":
+            # Its main row is the current sweep, as in a Current scan
+            # (user, 2026-10-18).
+            scanned = {"Current"}
         for parameter, widgets in getattr(self, "ppms_scan_target_widgets", {}).items():
             for widget in widgets:
                 widget.configure(state="normal" if enabled and parameter not in scanned else "disabled")
+        # A Frequency scan takes every prime from Start to End: no Step
+        # (user, 2026-10-18).
+        step = self.__dict__.get("ppms_scan_step_entry")
+        if step is not None and mode == "Frequency":
+            step.configure(state="disabled")
 
     @staticmethod
     def _ppms_field_approach_code(label: str) -> int:
@@ -40519,7 +40641,32 @@ class CombinedControlApp:
         except tk.TclError:
             self.ppms_poll_after_id = None
 
+    @staticmethod
+    def _ppms_frequency_series_group(row) -> str:
+        """A Frequency+Current curve's name: its set frequency (user,
+        2026-10-18), one curve per frequency, as loops and passes are."""
+        frequency = row.get("6221_frequency_hz")
+        return f"{frequency:g} Hz" if isinstance(frequency, (int, float)) else "? Hz"
+
+    @staticmethod
+    def _ppms_frequency_plot_colors(base, frequencies):
+        """Frequency+Current's curve colours (user, 2026-10-18): the
+        meter's or harmonic's colour, light at the lowest frequency to dark
+        at the highest, as the Non-local and ST-FMR frequency plots
+        (shade_color); ``frequencies`` maps each curve to its frequency."""
+        valid = {key: float(value) for key, value in frequencies.items()
+                 if isinstance(value, (int, float)) and math.isfinite(value)}
+        ordered = sorted(set(valid.values()))
+        rank = {value: index for index, value in enumerate(ordered)}
+        span = len(ordered) - 1
+        return {key: shade_color(base, rank[value] / span if span else 0.5)
+                for key, value in valid.items()}
+
     def _ppms_temperature_plot_colors(self, base, temperatures):
+        if getattr(self, 'ppms_active_scan_mode', '') == 'Frequency+Current':
+            # Its curves are one per frequency, and the callers pass each
+            # curve's frequency here (user, 2026-10-18).
+            return self._ppms_frequency_plot_colors(base, temperatures)
         if getattr(self, 'ppms_active_scan_mode', '') not in ('Field+Temperature', 'Angle+Temperature', 'Current+Temperature'):
             return {}
         valid = {k: float(v) for k, v in temperatures.items() if isinstance(v, (int, float)) and math.isfinite(v)}
@@ -40570,7 +40717,9 @@ class CombinedControlApp:
         x_key, x_label = {"field": ("measured_field_oe", "Measured magnetic field (Oe)"),
                           "temperature": ("temperature_k", "Measured temperature (K)"),
                           "angle": ("measured_angle_deg", "Measured angle (°)"),
-                          "current": ("6221_current_rms_ma", "Applied AC current (mA RMS)")}[axis]
+                          "current": ("6221_current_rms_ma", "Applied AC current (mA RMS)"),
+                          # The set frequency (user, 2026-10-18).
+                          "frequency": ("6221_frequency_hz", "Frequency (Hz)")}[axis]
         # Scale only plotted coordinates; acquisition/CSV retain their Oe values.
         x_scale = 1.0
         x_extent = None
@@ -40604,8 +40753,12 @@ class CombinedControlApp:
                 group = f"T{row.get('temperature_index', 1)} ({row.get('target_temperature_k', '')} K)"
             if axis == "field" and scan_mode == "Field+Temperature":
                 group += f" ({row.get('target_temperature_k', '')} K)"
-            tail = f"{group} L{row.get('loop', 1)}"
             temperature = row.get("target_temperature_k")
+            if scan_mode == "Frequency+Current":
+                # A curve per frequency, shaded by it (user, 2026-10-18).
+                group = self._ppms_frequency_series_group(row)
+                temperature = row.get("6221_frequency_hz")
+            tail = f"{group} L{row.get('loop', 1)}"
             point_x = x_value * x_scale
             for column, prefix in columns:
                 value = row.get(column)
@@ -40904,6 +41057,27 @@ class CombinedControlApp:
         Start confirmation and the duration estimate (user, 2026-10-14)."""
         return [self._ppms_lockin_settle(stable_s, settings["active_lockins"], zurich)
                 for settings in passes]
+
+    @staticmethod
+    def _ppms_frequency_set_up_s(frequencies, pass_settles, acquisition_s) -> float:
+        """What a Frequency or Frequency+Current estimate adds for its
+        frequencies (user, 2026-10-18: the estimate counts every point and
+        the per-frequency lock waits).  Each frequency of each harmonic pass
+        is set up again: the first pass's set-ups have their planning
+        allowance with the points, and every later pass's get
+        PPMS_SET_UP_ALLOWANCE_S each.  The first point at each frequency
+        takes at least one more Acquire s window (two must agree), and its
+        wait is at least NONLOCAL_FSCAN_SETTLE_PERIODS periods of the
+        frequency where that is longer than the pass's settle.
+        ``pass_settles`` is _ppms_settle_per_pass's list."""
+        total = 0.0
+        for index, (settle_s, _tc, _meter) in enumerate(pass_settles):
+            for frequency in frequencies:
+                total += float(acquisition_s) + max(
+                    0.0, NONLOCAL_FSCAN_SETTLE_PERIODS / float(frequency) - float(settle_s))
+                if index:
+                    total += PPMS_SET_UP_ALLOWANCE_S
+        return total
 
     def _ppms_sr830_time_constant_idle(self) -> bool:
         """Whether the 'SR830 TC' choice may change now: not during a scan,
@@ -41222,7 +41396,11 @@ class CombinedControlApp:
         if output_on != 1:
             raise RuntimeError("6221 sine output did not turn on")
 
-        deadline = time.monotonic() + PPMS_TRANSPORT_REFERENCE_TIMEOUT_S
+        # A frequency scan's set-up at each frequency gives the lock longer
+        # (reference_timeout_s, Non-local's 20 s; user, 2026-10-18); every
+        # other set-up keeps the 8 s.
+        reference_timeout_s = float(settings.get("reference_timeout_s", PPMS_TRANSPORT_REFERENCE_TIMEOUT_S))
+        deadline = time.monotonic() + reference_timeout_s
         last_reference = {}
         while time.monotonic() < deadline:
             locked = True
@@ -41252,7 +41430,7 @@ class CombinedControlApp:
             for key, value in last_reference.items()
         )
         raise RuntimeError(
-            f"Connected SR830 failed to lock the 6221 external reference within {PPMS_TRANSPORT_REFERENCE_TIMEOUT_S:g} s"
+            f"Connected SR830 failed to lock the 6221 external reference within {reference_timeout_s:g} s"
             f"; {detail}"
         )
 
@@ -41504,7 +41682,7 @@ class CombinedControlApp:
         try:
             self._require_ppms_control_ready()
             mode = self.ppms_simple_mode.get()
-            if mode not in ("Temperature", "Field", "Angle", "Current", "Field+Temperature", "Angle+Temperature", "Current+Temperature"):
+            if mode not in PPMS_SCAN_MODES:
                 raise ValueError("Please select a valid scan mode")
             def number(variable, label):
                 raw = str(variable.get()).strip()
@@ -41517,7 +41695,22 @@ class CombinedControlApp:
                 if not math.isfinite(value):
                     raise ValueError(f"{label} must be a finite value")
                 return value
-            values = ppms_scan_axis(*(number(v, f"scan {label}") for v, label in zip(self.ppms_simple_range, ("start", "end", "step"))))
+            # A frequency scan's frequencies (user, 2026-10-18): the primes
+            # from Start to End Hz, Step not read; Frequency+Current takes
+            # them from its outer row and sweeps the current on the main row.
+            frequencies = None
+            if mode == "Frequency":
+                frequencies = ppms_prime_frequencies(*(
+                    number(v, f"frequency {label} (Hz)")
+                    for v, label in zip(self.ppms_simple_range[:2], ("start", "end"))))
+                values = frequencies
+            else:
+                values = ppms_scan_axis(*(number(v, f"scan {label}") for v, label in zip(self.ppms_simple_range, ("start", "end", "step"))))
+            if mode == "Frequency+Current":
+                frequencies = ppms_prime_frequencies(*(
+                    number(v, f"outer frequency {label} (Hz)")
+                    for v, label in zip(self.ppms_frequency_scan_range, ("start", "end"))))
+            current_sweep = mode in ("Current", "Current+Temperature", "Frequency+Current")
             scan_field = mode in ("Field", "Field+Temperature")
             temperatures = (ppms_scan_axis(*(number(v, f"outer temperature {label}") for v, label in zip(self.ppms_temperature_scan_range, ("start", "end", "step"))))
                             if mode in ("Field+Temperature", "Angle+Temperature", "Current+Temperature") else values if mode == "Temperature" else None)
@@ -41556,8 +41749,10 @@ class CombinedControlApp:
             if len(addresses) != len(set(addresses)):
                 raise RuntimeError("SR830 slots cannot share a GPIB address")
             transport_settings = validate_ppms_transport_scan_settings(
-                values[0] if mode in ("Current", "Current+Temperature") else self.ppms_transport_current_var.get(),
-                self.ppms_transport_frequency_var.get(),
+                values[0] if current_sweep else self.ppms_transport_current_var.get(),
+                # A frequency scan starts at its first prime; "f Hz" is not
+                # used then, so it cannot refuse the scan (user, 2026-10-18).
+                frequencies[0] if frequencies else self.ppms_transport_frequency_var.get(),
                 self.ppms_transport_compliance_var.get(),
                 self._ppms_harmonic_value("830_a"),
                 self._ppms_harmonic_value("830_b"),
@@ -41567,10 +41762,13 @@ class CombinedControlApp:
             )
             nested = {"angle": values if mode in ("Angle", "Angle+Temperature") else (fixed_angle,),
                       "temperature": temperatures if temperatures is not None else (fixed_temp,)}
-            currents = values if mode in ("Current", "Current+Temperature") else (transport_settings["current_rms_ma"],)
+            currents = values if current_sweep else (transport_settings["current_rms_ma"],)
             for current in currents:
+                # With SR830-3's harmonic too; it was checked as harmonic 1
+                # here (review, 2026-10-18).
                 validate_ppms_transport_scan_settings(current, transport_settings["frequency_hz"], transport_settings["compliance_v"],
-                    transport_settings["harmonic_a"], transport_settings["harmonic_b"], active_lockins, allow_no_lockins=use_zurich)
+                    transport_settings["harmonic_a"], transport_settings["harmonic_b"], active_lockins, allow_no_lockins=use_zurich,
+                    harmonic_c=transport_settings["harmonic_c"])
             if "angle" in nested:
                 if self.ppms_environment_controller.backend != PPMS_QDINSTRUMENT_BACKEND or not self.ppms_motor_confirm_var.get():
                     raise ValueError("Angle scans need QDInstrument and the motor-specific safety confirmation")
@@ -41583,8 +41781,26 @@ class CombinedControlApp:
             # A 1+2 or 1+2+3 selection repeats the whole scan per order.
             harmonic_passes = self._ppms_harmonic_passes(transport_settings)
             total *= len(harmonic_passes)
+            if frequencies:
+                total *= len(frequencies)
             if total > 100000:
                 raise ValueError("Nested scans are limited to 100000 measurement points")
+            if frequencies:
+                # Every frequency is checked as the first was: within the
+                # 6221's sine, and each measured SR830's harmonic x frequency
+                # within its limit, in every harmonic pass (user, 2026-10-18).
+                # The Zurich's 3 x 100 kHz stays inside its 500 kHz.
+                for frequency in frequencies:
+                    for config in harmonic_passes:
+                        try:
+                            validate_ppms_transport_scan_settings(
+                                config["current_rms_ma"], frequency, config["compliance_v"],
+                                config["harmonic_a"], config["harmonic_b"], config["active_lockins"],
+                                allow_no_lockins=bool(config.get("allow_no_lockins", False)),
+                                harmonic_c=config["harmonic_c"])
+                        except ValueError as error:
+                            raise ValueError(f"At {frequency:g} Hz: {error}") from None
+                transport_settings["frequencies"] = tuple(frequencies)
             if any(transport_settings[k] not in (1, 2, 3) for k in ("harmonic_a", "harmonic_b")):
                 raise ValueError("SR830 harmonic must be 1, 2 or 3")
             transport_settings["nested"] = nested
@@ -41599,6 +41815,9 @@ class CombinedControlApp:
             if not slowdown.is_integer() or not 0 <= slowdown <= 14:
                 raise ValueError("Decel code must be an integer within 0–14")
             transport_settings["slowdown"] = int(slowdown)
+            # Each pass's settings, built here on the Tk thread from the
+            # complete settings, for the worker (review, 2026-10-18).
+            transport_settings["harmonic_passes"] = tuple(self._ppms_harmonic_passes(transport_settings))
         except (ValueError, TypeError, RuntimeError, tk.TclError) as error:
             messagebox.showerror("PPMS scan parameters", str(error), parent=self.root)
             return
@@ -41629,7 +41848,12 @@ class CombinedControlApp:
         # Planning allowance only: actual GPIB/reference settling is measured
         # during acquisition and replaces this estimate after completed points.
         blocks = len(nested["angle"]) * len(nested["temperature"]) * len(currents)
-        estimated_seconds += 6.0 * total + 12.0 * blocks
+        if frequencies:
+            # Every frequency is set up again (user, 2026-10-18).
+            blocks *= len(frequencies)
+            estimated_seconds += len(nested["angle"]) * len(nested["temperature"]) * self._ppms_frequency_set_up_s(
+                frequencies, pass_settles, acquisition_s)
+        estimated_seconds += 6.0 * total + PPMS_SET_UP_ALLOWANCE_S * blocks
         previous_temperature = float((self.ppms_last_readback or {}).get("temperature_k", nested["temperature"][0]))
         for _angle in ((None,) if mode == "Angle+Temperature" else nested["angle"]):
             for temperature in nested["temperature"]:
@@ -41659,9 +41883,22 @@ class CombinedControlApp:
         if later:
             settle_line += ("; harmonic passes with fewer lock-ins wait "
                             + ", ".join(f"{settle:g}" for settle in later) + " s")
+        # A frequency scan says how many primes, their range, and what
+        # happens at each (user, 2026-10-18).
+        frequency_text = ppms_frequency_count_text(frequencies) if frequencies else ""
+        frequency_line = ""
+        if frequencies:
+            frequency_line = (
+                f"Frequencies: {frequency_text}"
+                + (" (Step not used)" if mode == "Frequency" else ", the whole current sweep at each")
+                + "\nAt each frequency the 6221 is switched off and set up again at it and the lock-ins' "
+                "reference lock is awaited; the first point then waits as below, at least "
+                f"{NONLOCAL_FSCAN_SETTLE_PERIODS:g} periods of the frequency, and takes agreeing windows"
+                + ("; the other currents change only the 6221 amplitude" if mode == "Frequency+Current" else "")
+                + "\n")
         if not messagebox.askyesno(
             "PPMS scan time estimate",
-            f"Scan mode: {mode}\nMeasurement points: {total}\n{settle_line}\n"
+            f"Scan mode: {mode}\n{frequency_line}Measurement points: {total}\n{settle_line}\n"
             f"Estimated duration: about {estimate_text}\n\n"
             "This is an estimate; the actual duration may grow with instrument settling and rotation waits."
             + rotation_note
@@ -41715,13 +41952,16 @@ class CombinedControlApp:
         # The wait announced here; the worker logs only a different one, e.g.
         # after a front-panel time constant read at the scan start.
         self.thread_log(f"PPMS {mode} scan: each reading waits {settle_text}")
+        if frequencies:
+            self.thread_log(f"PPMS {mode} scan: {frequency_text}"
+                            + (", the whole current sweep at each" if mode == "Frequency+Current" else ""))
         self.ppms_scan_settle_logged = settle_s
         self.ppms_field_scan_stop_event.clear()
         self.ppms_field_scan_running = True
         self.ppms_scan_preserve_on_stop = False
         self.ppms_active_scan_mode = mode
         self.ppms_plot_addresses = dict(zip(active_lockins, addresses))
-        self.ppms_plot_axis = {"Field": "field", "Field+Temperature": "field", "Temperature": "temperature", "Angle+Temperature": "angle", "Angle": "angle", "Current": "current", "Current+Temperature": "current"}[mode]
+        self.ppms_plot_axis = PPMS_SCAN_PLOT_AXES[mode]
         self.ppms_field_scan_rows = []
         self._redraw_ppms_transport_plot()
         self.ppms_field_scan_started_at = time.monotonic()
@@ -41733,7 +41973,8 @@ class CombinedControlApp:
         # The wait rounded as on RT-E's status line (ppms_settle_status_text);
         # the confirmation and the log give it exactly (user, 2026-10-14).
         self.ppms_field_scan_status_var.set(
-            f"{mode} scan: {total} points, settle {ppms_settle_status_text(settle_s)} s; "
+            f"{mode} scan: " + (f"{frequency_text}; " if frequencies else "")
+            + f"{total} points, settle {ppms_settle_status_text(settle_s)} s; "
             f"estimated about {estimate_text}"
         )
         self.ppms_transport_status_var.set(
@@ -41772,7 +42013,11 @@ class CombinedControlApp:
         try:
             if len(args) == 5:
                 sequence, rate, stable, approach, settings = args
-                for pass_settings in self._ppms_harmonic_passes(settings):
+                # The passes Start built on the Tk thread: the harmonic
+                # choices are StringVars, never read on this worker (review,
+                # 2026-10-18).  Built here only for callers that did not.
+                passes = settings.get("harmonic_passes") or self._ppms_harmonic_passes(settings)
+                for pass_settings in passes:
                     if self.ppms_field_scan_stop_event.is_set() or self.closing:
                         break
                     # Each pass reconfigures the source, which rewrites HARM
@@ -41979,6 +42224,11 @@ class CombinedControlApp:
                     self.ppms_scan_context = {"angle_index": ai, "temperature_index": ti,
                         "target_angle_deg": angle if angle is not None else "",
                         "target_temperature_k": temperature if temperature is not None else ""}
+                    if settings.get("scan_mode") in PPMS_FREQUENCY_SCAN_MODES:
+                        # Frequency outer, current inner, with their own
+                        # source set-up at each frequency (user, 2026-10-18).
+                        self._ppms_frequency_scan_block(sequence, rate, stable, approach, settings)
+                        continue
                     for current in settings.get("currents", (settings["current_rms_ma"],)):
                         if stop.is_set() or self.closing:
                             break
@@ -42021,6 +42271,85 @@ class CombinedControlApp:
                         and settings.get("scan_mode") in ("Field", "Field+Temperature")):
                     self._ppms_zero_field_after_interrupted_scan(rate, approach)
                 self._stop_ppms_transport_source()
+
+    def _ppms_frequency_scan_block(self, sequence, rate, stable, approach, settings):
+        """A Frequency or Frequency+Current scan at the block's temperature
+        and angle (user, 2026-10-18): each frequency in turn, and in
+        Frequency+Current the whole current sweep at each (the user chose
+        the frequency outer).
+
+        Each frequency starts as a scan does: _ppms_set_up_frequency (the
+        6221 off and set up again at it, the lock-ins locked to it), then
+        the first point's settle and agreeing windows (ppms_source_fresh),
+        with at least NONLOCAL_FSCAN_SETTLE_PERIODS periods of the frequency,
+        as Non-local waits.  It is set for every frequency, so the first
+        current of each one settles; Current+Temperature's single flag for
+        the whole scan is not copied.  Later currents change only the
+        amplitude, without a re-arm (_update_ppms_transport_current), as a
+        Current scan does, within the one fixed range of the whole sweep
+        (continuous_sweep_peak_a), which each set-up selects again.  Only
+        the settings built at Start are read here, no Tk variable."""
+        stop = self.ppms_field_scan_stop_event
+        frequencies = tuple(float(value) for value in settings["frequencies"])
+        currents = tuple(settings.get("currents", (settings["current_rms_ma"],)))
+        sweep = settings.get("scan_mode") == "Frequency+Current"
+        sweep_peak = max(currents) * math.sqrt(2.) * 1e-3 if sweep else None
+        for index, frequency in enumerate(frequencies, 1):
+            for position, current in enumerate(currents):
+                if stop.is_set() or self.closing:
+                    return
+                point_settings = dict(settings, current_rms_ma=current, frequency_hz=frequency,
+                                      peak_a=math.sqrt(2.) * current * 1e-3,
+                                      reference_timeout_s=NONLOCAL_IV6221_REFERENCE_WAIT_S)
+                if sweep:
+                    point_settings["continuous_sweep_peak_a"] = sweep_peak
+                if position == 0:
+                    self._ppms_set_up_frequency(point_settings, index, len(frequencies))
+                    self.ppms_source_fresh = True   # each frequency's first point settles
+                    point_settings["frequency_settle_s"] = NONLOCAL_FSCAN_SETTLE_PERIODS / frequency
+                else:
+                    self._update_ppms_transport_current(point_settings)
+                point_settings["keep_source_between_current_points"] = True
+                self._ppms_field_scan_worker(sequence, rate, stable, approach, point_settings)
+
+    def _ppms_set_up_frequency(self, settings, index, count):
+        """The 6221 and the lock-ins at a frequency scan's next frequency
+        (user, 2026-10-18), in Non-local's reviewed order for a frequency
+        change (the 6221-IV and Gate-VI frequency scans): the 6221 off,
+        read back as off, then set up again at the new frequency.
+
+        The set-up is the page's own (_configure_ppms_transport_scan): the
+        sine at the new frequency with its amplitude, compliance and range,
+        each read back, the SR830s checked, the sine re-armed and its output
+        read back as on, then the SR830 reference lock awaited at the new
+        frequency.  The lock may take up to NONLOCAL_IV6221_REFERENCE_WAIT_S
+        (20 s), Non-local's wait at each frequency, rather than the 8 s of a
+        scan start, as a PLL at a few hertz is slow to lock.  The Zurich is
+        then awaited the same way (_ppms_wait_zurich_reference).  Nothing
+        else is set on any instrument."""
+        stop = self.ppms_field_scan_stop_event
+        frequency = float(settings["frequency_hz"])
+        if stop.is_set() or self.closing:
+            raise PPMSScanCancelled("Scan stopped; the next frequency was not set up")
+        self.post_ui(lambda: self.ppms_field_scan_status_var.set(
+            f"Frequency {index}/{count}: {frequency:g} Hz; 6221 off, setting up again…"))
+        source = self.ppms_instrument_controllers["6221"]
+        with source.lock:
+            source.safe_output_off()
+            state = self._ppms_query_numbers("6221", "OUTP?", 1)[0]
+        if state != 0:
+            raise RuntimeError(
+                f"6221 output still ON (OUTP?={state:g}) before setting up {frequency:g} Hz; scan stopped")
+        self.post_ui(lambda: self.ppms_transport_status_var.set(
+            f"Transport acquisition: 6221 OFF (read back); setting up {frequency:g} Hz"))
+        self._configure_ppms_transport_scan(settings)
+        self._ppms_wait_zurich_reference(
+            frequency, float(settings.get("reference_timeout_s", PPMS_TRANSPORT_REFERENCE_TIMEOUT_S)))
+
+    def _ppms_wait_zurich_reference(self, frequency, timeout_s):
+        """The Zurich's lock at a frequency scan's new frequency.  The base
+        page has no Zurich; PPMSPanel waits for it."""
+        return None
 
     def _average_ppms_transport_sample(self, frequency, lockins, duration):
         """Average X/Y snapshots; R/theta describe the mean vector.
@@ -42210,6 +42539,10 @@ class CombinedControlApp:
                 # point's agreeing windows still follow it (user, 2026-10-14).
                 settle_s, slowest_tc_s = self._ppms_point_settle(
                     stable_s, tuple(transport_settings["active_lockins"]))
+                # A frequency scan's first point at each frequency waits at
+                # least NONLOCAL_FSCAN_SETTLE_PERIODS periods of it, as
+                # Non-local does (user, 2026-10-18); absent otherwise.
+                settle_s = max(settle_s, float(transport_settings.get("frequency_settle_s", 0.0)))
                 if settle_s > 0 and self.ppms_field_scan_stop_event.wait(settle_s):
                     break
                 result = self._read_ppms_live()
@@ -44830,6 +45163,33 @@ class PPMSPanel(CombinedControlApp):
                 self.post_ui(lambda s=dict(measured): self._display_zurich_sample(s))
         return sample
 
+    def _ppms_wait_zurich_reference(self, frequency, timeout_s):
+        """A frequency scan's Zurich lock at each new frequency (user,
+        2026-10-18), after the SR830s' lock in the set-up: read until its
+        external-reference PLL is locked at the new frequency, as Non-local
+        waits for the Zurich at each frequency (wait_references).  Read-only:
+        nothing on the Zurich is set.  The expected frequency becomes the new
+        one; the scan's readings compare with the point's frequency."""
+        self.zurich_expected_frequency = float(frequency)
+        if not getattr(self, 'zurich_scan_enabled', False):
+            return
+        stop = self.ppms_field_scan_stop_event
+        deadline = time.monotonic() + float(timeout_s)
+        while True:
+            if stop.is_set() or self.closing or getattr(self, 'zurich_closed', False):
+                raise PPMSScanCancelled("Stopped as requested while waiting for the Zurich reference")
+            with self.zurich_controller.lock:
+                sample = self.zurich_controller.read_mfli(float(frequency))
+            if sample.get('reference_valid'):
+                self.post_ui(lambda s=dict(sample): self._display_zurich_sample(s))
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Zurich failed to lock the 6221 external reference at {float(frequency):g} Hz "
+                    f"within {float(timeout_s):g} s; {sample.get('status_text', '')}")
+            if stop.wait(0.2):
+                raise PPMSScanCancelled("Stopped as requested while waiting for the Zurich reference")
+
     def _read_ppms2_zurich_ranged(self, frequency, scanning=False):
         actions = []
         for attempt in range(4):
@@ -45023,7 +45383,9 @@ class PPMSPanel(CombinedControlApp):
         x_key, x_label = {'field': ('measured_field_oe', 'Measured magnetic field (Oe)'),
             'angle': ('measured_angle_deg', 'Measured angle (°)'),
             'temperature': ('temperature_k', 'Measured temperature (K)'),
-            'current': ('6221_current_rms_ma', 'Applied AC current (mA RMS)')}[axis]
+            'current': ('6221_current_rms_ma', 'Applied AC current (mA RMS)'),
+            # The set frequency (user, 2026-10-18).
+            'frequency': ('6221_frequency_hz', 'Frequency (Hz)')}[axis]
         rows = self.ppms_field_scan_rows
         # One pass gives both the unit decision and the symmetric x range.
         max_x = max((abs(float(r[x_key])) for r in rows
@@ -45033,6 +45395,8 @@ class PPMSPanel(CombinedControlApp):
             scale, x_label = 1e-4, 'Measured magnetic field (T)'
         x_extent = max_x * scale if axis == 'field' else None
         orders = self._ppms2_measured_orders()
+        # Frequency+Current: a curve per frequency (user, 2026-10-18).
+        by_frequency = getattr(self, 'ppms_active_scan_mode', '') == 'Frequency+Current'
         # X, Y and theta of one meter live in the same row, so group the
         # canvases by harmonic order and visit each row once per order
         # instead of once per order and channel.
@@ -45060,8 +45424,12 @@ class PPMSPanel(CombinedControlApp):
                         continue
                     group = (f"A{row.get('angle_index', 1)}" if axis == 'temperature'
                              else f"T{row.get('temperature_index', 1)} ({row.get('target_temperature_k', '')} K)")
-                    name = f"{meter_label} {group} L{row.get('loop', 1)}"
                     temperature = row.get('target_temperature_k')
+                    if by_frequency:
+                        # Named and shaded by its frequency.
+                        group = self._ppms_frequency_series_group(row)
+                        temperature = row.get('6221_frequency_hz')
+                    name = f"{meter_label} {group} L{row.get('loop', 1)}"
                     point_x = float(x_value) * scale
                     for channel, suffix in columns:
                         value = row.get(prefix + suffix)
