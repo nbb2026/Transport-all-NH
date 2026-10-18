@@ -1662,6 +1662,14 @@ PPMS_SCAN_PLOT_AXES = {
     "Angle": "angle", "Angle+Temperature": "angle", "Current": "current",
     "Current+Temperature": "current", "Frequency": "frequency", "Frequency+Current": "current",
 }
+# The CSV column each plot axis is, for the run log's point_saved (user,
+# 2026-10-18); the base page's plots read the same columns.
+PPMS_PLOT_AXIS_COLUMNS = {"field": "measured_field_oe", "temperature": "temperature_k",
+                          "angle": "measured_angle_deg", "current": "6221_current_rms_ma",
+                          "frequency": "6221_frequency_hz"}
+# What the PPMS page's finish, error and status add when a field scan's own
+# zeroing of the field was refused (review, 2026-10-18: it was only logged).
+PPMS_FIELD_NOT_ZEROED_TEXT = "field NOT zeroed: check MultiVu"
 # The Start estimate's planning allowance for each set-up of the 6221 and the
 # lock-ins (GPIB commands and the reference lock).  A frequency scan sets them
 # up again at every frequency of every harmonic pass, so each of those set-ups
@@ -6378,18 +6386,24 @@ def parse_ppms_macro(text):
 
 
 def ppms_scan_temperature_segments(current_k, target_k, rate_k_min):
-    """Use 1 K/min at/below 9 K; a warm-up restores rate during live polling."""
+    """A scan's temperature change as [(target K, rate K/min)].  The typed
+    rate is kept; a segment at or below 9 K is lowered to 1 K/min, never
+    raised to it: min(rate, 1) (review, 2026-10-18: a typed 0.5 K/min went
+    up to exactly 1.0 there, against the README's "a typed temperature rate
+    is kept").  A warm-up from at or below 9 K returns to the typed rate
+    during live polling, in the scan worker."""
     current_k, target_k, rate_k_min = float(current_k), float(target_k), float(rate_k_min)
     validate_ppms_temperature_command(target_k, 1.0)
     validate_ppms_temperature_command(10.0, rate_k_min, 10.0)
     if not math.isfinite(current_k):
         raise ValueError('Current temperature readback is invalid; cannot plan the temperature change')
     boundary = PPMS_TEMPERATURE_LOW_BOUNDARY_K
+    low_rate = min(rate_k_min, PPMS_TEMPERATURE_LOW_MAX_RATE_K_MIN)
     # Stage slightly above the inclusive low-temperature boundary, so the
     # high-rate command does not itself request a low-temperature target.
     if target_k <= boundary and current_k > boundary + .1:
-        return [(boundary + .1, rate_k_min), (target_k, 1.0)]
-    return [(target_k, 1.0 if min(current_k, target_k) <= boundary else rate_k_min)]
+        return [(boundary + .1, rate_k_min), (target_k, low_rate)]
+    return [(target_k, low_rate if min(current_k, target_k) <= boundary else rate_k_min)]
 
 
 def validate_ppms_temperature_command(
@@ -16907,7 +16921,10 @@ class CombinedControlApp:
         status.bind("<Configure>", lambda event: event.widget.configure(wraplength=max(100, event.width-8)))
         # Built but not shown, as before.
         ttk.Label(scan, text="One-way start→end; 6221 AC + two SR830; current is turned off at the end, environment holds the last point")
-        self.ppms_zero_persist_button = ttk.Button(actions, text='Zero field + persist after scan', command=self._queue_ppms_zero_persist, width=26)
+        # Usable only while a scan runs; a second click cancels it (review,
+        # 2026-10-18: queued while idle, it was never cleared).
+        self.ppms_zero_persist_button = ttk.Button(actions, text='Zero field + persist after scan', command=self._queue_ppms_zero_persist,
+                                                   width=26, state="disabled")
         self.ppms_zero_persist_button.grid(row=0, column=3)
         # Spare width goes to the empty column after the table, so the
         # fields keep their size and the status takes the extra room.
@@ -39720,6 +39737,10 @@ class CombinedControlApp:
             self.ppms_field_scan_stop_button.configure(
                 state="normal" if self.ppms_field_scan_running else "disabled"
             )
+        if "ppms_zero_persist_button" in self.__dict__:
+            # Queued during a scan only (review, 2026-10-18).
+            self.ppms_zero_persist_button.configure(
+                state="normal" if self.ppms_field_scan_running else "disabled")
         if hasattr(self, "ppms_field_scan_save_button"):
             self.ppms_field_scan_save_button.configure(
                 state=(
@@ -39903,7 +39924,7 @@ class CombinedControlApp:
         window.rowconfigure(1, weight=1)
         window.columnconfigure(0, weight=1)
         ttk.Label(window, text="Executed line by line; TEMP K [K/min] [approach]; FIELD Oe Oe/s [approach mode]; WAIT seconds; SCAN\n"
-                  "Supports TMP TEMP / FLD FIELD / WAI WAITFOR seconds temperature field 0 0 0; REM comment. SCAN uses the main-window settings and asks where to save the CSV.",
+                  "Supports TMP TEMP / FLD FIELD / WAI WAITFOR seconds temperature field 0 0 0; REM comment. SCAN uses the main-window settings and asks for its run folder and file name (one run folder per SCAN).",
                   wraplength=820).grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=8)
         editor = self.ppms_macro_editor = tk.Text(window, wrap="none", undo=True)
         editor.grid(row=1, column=0, sticky="nsew", padx=(10, 0))
@@ -40065,7 +40086,10 @@ class CombinedControlApp:
             except Exception as error:
                 self._ppms_macro_finish(f"Line {line} stopped: {error}")
                 return
-            self._ppms_macro_next()
+            # The next line from the Tk event loop, not here inside
+            # drain_ui_queue: a SCAN line opens the scan's Yes/No and save
+            # dialogs (the README's rule of 2026-10-14; review, 2026-10-18).
+            self.root.after(0, self._ppms_macro_next)
         future.add_done_callback(lambda _: self.post_ui(finished))
 
     def _ppms_macro_operation(self, op, args):
@@ -41154,7 +41178,7 @@ class CombinedControlApp:
         else:
             self.ppms_acquisition_default_shown = None
 
-    def _ppms_lockin_settle(self, stable_s: float, active_lockins, zurich: bool):
+    def _ppms_lockin_settle(self, stable_s: float, active_lockins, zurich: bool, fallback_code=None):
         """(wait s, slowest TC s, its meter) before a PPMS or RT-E scan point
         is read: Settle s, or LOCKIN_SETTLE_TAUS (1) time constants of the
         slowest lock-in the scan measures if longer (ppms_lockin_settle_s).
@@ -41172,11 +41196,17 @@ class CombinedControlApp:
         Connect sets: the 'SR830 TC' choice, or OFLT 10 (1 s) on RT-E.  The
         Zurich counts with the TC the scan configures
         (zurich_scan_tau), or its 1 s default if that is missing.
+
+        ``fallback_code``: that choice as Start read it, for the scan worker,
+        which reads no Tk variable (review, 2026-10-18); None on the Tk
+        thread reads the choice itself.
         """
         codes = self.__dict__.get("ppms_sr830_time_constant_codes") or {}
         meters = []
         for key in active_lockins:
             code = codes.get(key)
+            if code is None and fallback_code is not None:
+                code = fallback_code
             if code is None:
                 try:
                     code = self._ppms_sr830_time_constant_code()
@@ -41210,7 +41240,11 @@ class CombinedControlApp:
         point's window line and then each saved point's line replace it,
         and the remaining time they show counts the longer wait."""
         zurich = bool(self.__dict__.get("zurich_scan_enabled", False))
-        settle, slowest, meter = self._ppms_lockin_settle(stable_s, active_lockins, zurich)
+        # The 'SR830 TC' choice as the PPMS Start read it, never its Tk
+        # variable here on the worker (review, 2026-10-18); 10 (1 s, what
+        # Connect sets without a choice) on the SHV page, as before.
+        settle, slowest, meter = self._ppms_lockin_settle(
+            stable_s, active_lockins, zurich, fallback_code=self.__dict__.get("ppms_scan_sr830_tc_code", 10))
         if self.__dict__.get("ppms_scan_settle_logged") != settle:
             self.ppms_scan_settle_logged = settle
             self.thread_log(f"{getattr(type(self), 'ppms_page_name', 'PPMS')} scan: each reading now waits "
@@ -41356,6 +41390,7 @@ class CombinedControlApp:
             if state is not None:
                 state.low_range_count = state.range_cooldown = 0
                 state.low_range_peak = 0.0
+                state.overload_floor = None
             if not hasattr(self, "ppms_idle_range_ready_at"):
                 self.ppms_idle_range_ready_at = {}
             self.ppms_idle_range_ready_at[key] = (
@@ -41444,6 +41479,9 @@ class CombinedControlApp:
             raise RuntimeError("Please connect first: " + ", ".join(missing))
 
         self.ppms_last_current_trip = False
+        # A new excitation: the ranges that overloaded under the old one are
+        # no floor for it (review, 2026-10-18).
+        self._ppms_clear_sr830_range_floor(active_lockins)
         current_rms_ma = float(settings["current_rms_ma"])
         frequency_hz = float(settings["frequency_hz"])
         compliance_v = float(settings["compliance_v"])
@@ -41612,7 +41650,11 @@ class CombinedControlApp:
         self,
         expected_frequency_hz: float,
         active_lockins: tuple[str, ...],
+        allow_down: bool = True,
     ) -> dict[str, object]:
+        """One reading of the 6221 and each SR830.  ``allow_down``: the
+        reading may step an SR830's range down, a scan point's first reading
+        only (review, 2026-10-18; see _ppms_autorange_sr830)."""
         output_on = int(round(self._ppms_query_numbers("6221", "OUTP?", 1)[0]))
         measurement_condition = int(round(
             self._ppms_query_numbers("6221", "STAT:MEAS:COND?", 1)[0]
@@ -41657,11 +41699,21 @@ class CombinedControlApp:
             # much larger order would otherwise keep the coarse range found
             # for that order and quantise the small signal.  A range change
             # restarts the acquisition window, so no point mixes two ranges.
-            settling = self._ppms_autorange_sr830(key, r_value, lia_status, enabled=not zero_current)
+            settling = self._ppms_autorange_sr830(key, r_value, lia_status, enabled=not zero_current,
+                                                  allow_down=allow_down)
             sample["range_settle_s"] = max(sample.get("range_settle_s", 0.), settling)
             sample[f"{prefix}_overload"] = bool(lia_status & 7)
             sample[f"{prefix}_sensitivity_index"] = self.ppms_sr830_range_states[key].sensitivity_index
         return sample
+
+    def _ppms_clear_sr830_range_floor(self, keys=None) -> None:
+        """Forget the ranges that overloaded (_ppms_autorange_sr830), for
+        ``keys`` or every SR830: a new pass, sweep, source set-up, time
+        constant or Connect may need a finer range again (review,
+        2026-10-18)."""
+        for key, state in dict(getattr(self, "ppms_sr830_range_states", None) or {}).items():
+            if keys is None or key in keys:
+                state.overload_floor = None
 
     def _ppms_read_sr830_status(self, key, fresh=False) -> int:
         """Read the SR830 LIA status byte with its latching in mind.
@@ -41690,12 +41742,23 @@ class CombinedControlApp:
         """Two independent SR830 ranging rules, one code per change.
 
         Up: any overload report widens the range one code at once.
-        Down: with ``allow_down`` (idle polling and scan acquisition), a
-        reference-locked amplitude below 10 % of full scale for three
-        consecutive settled readings narrows the range one code, landing the
-        signal at 20-25 % of the new range.  Both directions are followed by a
-        cool-down of three readings so the rules cannot oscillate.  ``enabled``
-        gates only the down rule (it needs the PPMS excitation to be on).
+        Down: with ``allow_down`` (idle polling, and a scan point's first
+        reading), a reference-locked amplitude below 10 % of full scale for
+        three consecutive settled readings narrows the range one code,
+        landing the signal at 20-25 % of the new range.  Both directions are
+        followed by a cool-down of three readings.  ``enabled`` gates only
+        the down rule (it needs the PPMS excitation to be on).
+
+        Without ``allow_down`` (a scan point's later readings) only an
+        overload changes the range, and the cool-down and the count of low
+        readings do not move, as STFMR does since 2026-10-14.  A range that
+        overloaded is the floor afterwards: the down rule never returns to
+        it until _ppms_clear_sr830_range_floor (the next pass's or sweep's
+        first point, a new source set-up, a Set I, a time-constant change or
+        a Connect).  Without both, an input overload with a small demodulated
+        R (a weak harmonic beside a large first harmonic) flipped between
+        two ranges forever, and a scan point gave up after 180 s (review,
+        2026-10-18; shared with SHV).
         """
         controller = self.ppms_instrument_controllers[key]
         with controller.lock:
@@ -41722,12 +41785,17 @@ class CombinedControlApp:
                 raise RuntimeError("SR830 amplitude readback invalid")
             action = ""
             overloaded = bool(status & 7)
-            if not overloaded:
+            floor = getattr(state, "overload_floor", None) or 0
+            if not overloaded and not allow_down:
+                # A scan point's later reading: only an overload changes the
+                # range (review, 2026-10-18).
+                pass
+            elif not overloaded:
                 # --- down-range rule (never touches the overload step above) ---
                 if state.range_cooldown > 0:
                     state.range_cooldown -= 1
                     state.low_range_count = 0
-                elif (enabled and allow_down and old > 0 and not status & 8
+                elif (enabled and old > max(0, floor) and not status & 8
                         and magnitude < PPMS_SR830_DOWNRANGE_FRACTION * scales[old]):
                     state.low_range_count += 1
                     if state.low_range_count >= PPMS_SR830_DOWNRANGE_READINGS:
@@ -41746,7 +41814,9 @@ class CombinedControlApp:
             if overloaded:
                 if old >= top:
                     self._post_sr830_range_label(key, "OVERLOAD; at maximum range", status, "", old)
-                    raise PPMSLockinRangeError(f"{controller.label} OVERLOAD: already at maximum sensitivity, check the input and gain; 6221 output kept")
+                    # Not "6221 output kept": every scan end zeroes it since
+                    # 2026-10-18 (user), on SHV too.
+                    raise PPMSLockinRangeError(f"{controller.label} OVERLOAD: already at maximum sensitivity, check the input and gain")
                 requested = old + 1
                 controller.instrument.write(f"SENS {requested}")
                 actual = float(controller.instrument.query("SENS?").strip())
@@ -41756,6 +41826,9 @@ class CombinedControlApp:
                 state.clear_latch_pending = True
                 state.low_range_count = 0
                 state.range_cooldown = PPMS_SR830_RANGE_COOLDOWN_READINGS
+                # The range that overloaded is never returned to until the
+                # floor is cleared (review, 2026-10-18).
+                state.overload_floor = max(floor, requested)
                 action = f"SENS {old}->{requested} (overload)"
             label = (("OVERLOAD; " if overloaded else "")
                      + (f"autorange {action}" if action else "reference locked" if not status & 8 else "reference unlocked"))
@@ -41900,7 +41973,10 @@ class CombinedControlApp:
             scan_field = mode in ("Field", "Field+Temperature")
             temperatures = (ppms_scan_axis(*(number(v, f"outer temperature {label}") for v, label in zip(self.ppms_temperature_scan_range, ("start", "end", "step"))))
                             if mode in ("Field+Temperature", "Angle+Temperature", "Current+Temperature") else values if mode == "Temperature" else None)
-            fixed_field = values[0] if scan_field else number(self.ppms_field_target_var, "the fixed field on the left (Oe)")
+            # The modes that never command the field record the field read
+            # at Start as target_field_oe, not the H Oe box they do not use
+            # (review, 2026-10-18: the CSV named a target never sent).
+            fixed_field = values[0] if scan_field else self._ppms_field_read_at_start()
             fixed_temp = temperatures[0] if temperatures is not None else number(self.ppms_temperature_target_var, "the fixed temperature on the left (K)")
             fixed_angle = values[0] if mode in ("Angle", "Angle+Temperature") else number(self.ppms_motor_target_var, "the fixed angle on the left (°)")
             start_oe, end_oe = (values[0], values[-1]) if scan_field else (fixed_field, fixed_field)
@@ -41910,8 +41986,13 @@ class CombinedControlApp:
             if not 0 < acquisition_s <= 86400:
                 raise ValueError("Acquisition time must be greater than 0 and at most 86400 s")
             rate_oe_s = number(self.ppms_field_rate_var, "field rate (Oe/s)")
-            validate_ppms_field_command(start_oe, rate_oe_s)
-            validate_ppms_field_command(end_oe, rate_oe_s)
+            if scan_field:
+                validate_ppms_field_command(start_oe, rate_oe_s)
+                validate_ppms_field_command(end_oe, rate_oe_s)
+            else:
+                # The rate is checked as before; the field read at Start is
+                # no command, so it is not checked as one.
+                validate_ppms_field_command(0.0, rate_oe_s)
             if not math.isfinite(stable_s) or not 0 <= stable_s <= 86400:
                 raise ValueError("PPMS settle time per point must be within 0–86400 s")
             fields = values if scan_field else (fixed_field,)
@@ -42004,6 +42085,9 @@ class CombinedControlApp:
             # Each pass's settings, built here on the Tk thread from the
             # complete settings, for the worker (review, 2026-10-18).
             transport_settings["harmonic_passes"] = tuple(self._ppms_harmonic_passes(transport_settings))
+            # The 'SR830 TC' choice, read here for the worker's waits, which
+            # read no Tk variable (review, 2026-10-18).
+            sr830_tc_code = self._ppms_sr830_time_constant_code()
         except (ValueError, TypeError, RuntimeError, tk.TclError) as error:
             messagebox.showerror("PPMS scan parameters", str(error), parent=self.root)
             return
@@ -42013,11 +42097,6 @@ class CombinedControlApp:
                 initial_field = float(self.ppms_last_readback["field_oe"])
             except (KeyError, TypeError, ValueError):
                 pass
-        estimated_distance = 0.0
-        previous = initial_field
-        for _loop, _point, _count, target in sequence:
-            estimated_distance += abs(target - previous)
-            previous = target
         # Each point waits Settle s, or LOCKIN_SETTLE_TAUS (1) time
         # constants of the slowest lock-in its pass measures if longer,
         # before it is read; the
@@ -42025,28 +42104,41 @@ class CombinedControlApp:
         # (user, 2026-10-14).
         pass_settles = self._ppms_settle_per_pass(stable_s, harmonic_passes, use_zurich)
         points_per_pass = total // max(1, len(harmonic_passes))
-        estimated_seconds = (
-            estimated_distance / rate_oe_s
-            + (len(nested["angle"]) * len(nested["temperature"]) * len(currents) - 1)
-            * sum(abs(sequence[i][3] - sequence[i-1][3]) for i in range(1, len(sequence))) / rate_oe_s
-            + sum((settle + acquisition_s) * points_per_pass for settle, _tc, _meter in pass_settles)
-        )
+        blocks = len(nested["angle"]) * len(nested["temperature"]) * len(currents)
+        # A 1+2 or 1+2+3 choice repeats the whole scan per order, its field
+        # ramps, temperature changes and set-ups included, so each is counted
+        # in every harmonic pass (review, 2026-10-18: they were counted once).
+        # Only a field scan ramps the field: the other modes never command it,
+        # so no ramp to the H Oe box is counted (review, 2026-10-18).
+        field_ramp_s = 0.0
+        if scan_field:
+            previous = initial_field
+            for _pass in harmonic_passes:
+                for _block in range(blocks):
+                    for _loop, _point, _count, target in sequence:
+                        field_ramp_s += abs(target - previous) / rate_oe_s
+                        previous = target
+        estimated_seconds = field_ramp_s + sum(
+            (settle + acquisition_s) * points_per_pass for settle, _tc, _meter in pass_settles)
         # Planning allowance only: actual GPIB/reference settling is measured
         # during acquisition and replaces this estimate after completed points.
-        blocks = len(nested["angle"]) * len(nested["temperature"]) * len(currents)
+        set_ups = blocks * len(harmonic_passes)
         if frequencies:
             # One set-up per frequency, whatever the number of currents: the
             # currents after the first change only the amplitude (review,
             # 2026-10-18; it counted one per current at each frequency).
+            # _ppms_frequency_set_up_s counts the later passes' set-ups.
             blocks = len(nested["angle"]) * len(nested["temperature"]) * len(frequencies)
+            set_ups = blocks
             estimated_seconds += len(nested["angle"]) * len(nested["temperature"]) * self._ppms_frequency_set_up_s(
                 frequencies, pass_settles, acquisition_s)
-        estimated_seconds += 6.0 * total + PPMS_SET_UP_ALLOWANCE_S * blocks
+        estimated_seconds += 6.0 * total + PPMS_SET_UP_ALLOWANCE_S * set_ups
         previous_temperature = float((self.ppms_last_readback or {}).get("temperature_k", nested["temperature"][0]))
-        for _angle in ((None,) if mode == "Angle+Temperature" else nested["angle"]):
-            for temperature in nested["temperature"]:
-                estimated_seconds += abs(temperature - previous_temperature) / temp_rate * 60.0
-                previous_temperature = temperature
+        for _pass in harmonic_passes:
+            for _angle in ((None,) if mode == "Angle+Temperature" else nested["angle"]):
+                for temperature in nested["temperature"]:
+                    estimated_seconds += abs(temperature - previous_temperature) / temp_rate * 60.0
+                    previous_temperature = temperature
         estimate_text = self._format_scan_duration(estimated_seconds)
         # Every mode first turns the rotator to its angle: warn before a long
         # turn, as a manual move over 30° asks (review, 2026-10-09).
@@ -42087,59 +42179,54 @@ class CombinedControlApp:
                 # boxes' values and waits for them before the first frequency.
                 + f"\nHeld as in a Current scan: {fixed_temp:g} K (T K) and {fixed_angle:g}° (Angle °); "
                 "the field is not commanded\n")
+        # How every ending leaves the outputs (user, 2026-10-18: every scan
+        # page zeroes its sources at every end, as SHV; the confirmation no
+        # longer promises outputs kept).
+        if scan_field:
+            field_end = ("the field stays at its setpoint after Stop, and is set to 0 Oe after I off, a field "
+                         "failure or closing the program")
+        else:
+            field_end = (f"the field is not commanded (the CSV's target_field_oe is the field read now, "
+                         f"{fixed_field:g} Oe)")
+        end_line = ("\n\nAt every end (completed, stopped or failed) the 6221 is switched off and read back as off. "
+                    f"The temperature and the angle stay where the scan left them; {field_end}.")
         if not messagebox.askyesno(
             "PPMS scan time estimate",
             f"Scan mode: {mode}\n{frequency_line}Measurement points: {total}\n{settle_line}\n"
             f"Estimated duration: about {estimate_text}\n\n"
             "This is an estimate; the actual duration may grow with instrument settling and rotation waits."
             + rotation_note
-            + "\nContinue to choose the save folder and start the scan?",
+            + end_line
+            + "\n\nContinue to choose the run folder and start the scan?",
             icon="warning" if rotation_note else "question",
             parent=self.root,
         ):
             return
-        folder = filedialog.askdirectory(parent=self.root, title="Select the folder for the PPMS live CSV")
-        if not folder:
-            return
-        default_stem = f"PPMS_{mode}_{time.strftime('%Y%m%d_%H%M%S')}"
-        while True:
-            requested_name = simpledialog.askstring(
-                "PPMS file name",
-                f"Folder: {folder}\nEnter a file name (.csv may be omitted):\n"
-                f"Leave empty for the default name: {default_stem}.csv\nAn existing name gets a number appended, nothing is overwritten.",
-                parent=self.root,
-            )
-            if requested_name is None:
-                return
-            stem = requested_name.strip()
-            if not stem:
-                stem = default_stem
-                break
-            if stem.lower().endswith(".csv"):
-                stem = stem[:-4]
-            reserved = stem.split(".")[0].upper()
-            if (not stem or stem.endswith((".", " "))
-                    or re.search(r'[<>:"/\\|?*\x00-\x1f]', stem)
-                    or reserved in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}):
-                messagebox.showerror("Invalid file name", "Enter a valid file name without a path or characters forbidden in Windows file names.", parent=self.root)
-                continue
-            break
+        # The save step, as on every scan page (user, 2026-10-18; the
+        # convention above ScanRunRecorder): the folder, the optional file
+        # name, then <folder>/<name>/ with <name>.csv, the live CSV, and
+        # <name>.log, the run log (a blank name: PPMS_<date>_<time>).  It
+        # replaces the page's own folder and name dialogs and its live CSV
+        # in the folder.  A Macro SCAN line makes one run folder per SCAN;
+        # the folder dialog opens where the last run's folder is.
         try:
-            suffix = 0
-            while True:
-                name = f"{stem}_{suffix:02d}.csv" if suffix else f"{stem}.csv"
-                self.ppms_live_csv_path = Path(folder) / name
-                try:
-                    with self.ppms_live_csv_path.open("x", encoding="utf-8-sig", newline=""):
-                        pass
-                    break
-                except FileExistsError:
-                    suffix += 1
-            self.ppms_live_csv_fields = None
-        except OSError as error:
-            messagebox.showerror("Failed to create the live CSV", str(error), parent=self.root)
+            run_settings = self._ppms_run_settings(
+                mode, sequence, rate_oe_s, stable_s, approach, transport_settings, pass_settles,
+                settle_s, estimated_seconds, fixed_field, scan_field)
+        except Exception as error:
+            messagebox.showerror("PPMS run log", "Could not gather the settings for the run log; the scan was not "
+                                 f"started: {error}", parent=self.root)
             return
-        self.thread_log(f"PPMS live save: {self.ppms_live_csv_path}")
+        last_folder = self.__dict__.get("ppms_run_folder")
+        initial_dir = None
+        if last_folder is not None and Path(last_folder).parent.is_dir():
+            initial_dir = Path(last_folder).parent
+        recorder = begin_scan_run(self.root, "PPMS", "Select the folder for the PPMS run", initial_dir, run_settings)
+        if recorder is None:
+            return
+        self.ppms_run_recorder, self.ppms_run_folder = recorder, recorder.directory
+        self.thread_log(f"PPMS {mode} scan; run folder: {recorder.directory} ({recorder.csv_path.name} and "
+                        f"{recorder.log_path.name})")
         # The wait announced here; the worker logs only a different one, e.g.
         # after a front-panel time constant read at the scan start.
         self.thread_log(f"PPMS {mode} scan: each reading waits {settle_text}")
@@ -42147,10 +42234,20 @@ class CombinedControlApp:
             self.thread_log(f"PPMS {mode} scan: {frequency_text}"
                             + (", the whole current sweep at each" if mode == "Frequency+Current" else ""))
         self.ppms_scan_settle_logged = settle_s
+        self.ppms_scan_sr830_tc_code = sr830_tc_code
         self.ppms_field_scan_stop_event.clear()
         self.ppms_field_scan_running = True
         self.ppms_scan_preserve_on_stop = False
-        self.ppms_scan_stop_6221_note = ""
+        # This scan's ending, for its finish: the zeroing's results, what
+        # its own clean-up did to the field, and which button stopped it.
+        self.ppms_scan_outputs = None
+        self.ppms_scan_field_note = ""
+        self.ppms_scan_stop_button = ""
+        # "Zero field + persist after scan" is queued only during a scan,
+        # never before its Start (review, 2026-10-18).
+        self.ppms_zero_persist_pending = False
+        if "ppms_zero_persist_button" in self.__dict__:
+            self.ppms_zero_persist_button.configure(text="Zero field + persist after scan")
         self.ppms_active_scan_mode = mode
         self.ppms_plot_addresses = dict(zip(active_lockins, addresses))
         self.ppms_plot_axis = PPMS_SCAN_PLOT_AXES[mode]
@@ -42173,14 +42270,21 @@ class CombinedControlApp:
             "Transport acquisition: configuring the 6221 and the connected SR830…"
         )
         self._update_ppms_control_ui()
-        future = self.ppms_executor.submit(
-            self._ppms_scan_with_final_field,
-            sequence,
-            rate_oe_s,
-            stable_s,
-            approach,
-            transport_settings,
-        )
+        try:
+            future = self.ppms_executor.submit(
+                self._ppms_scan_with_final_field,
+                sequence,
+                rate_oe_s,
+                stable_s,
+                approach,
+                transport_settings,
+            )
+        except Exception as error:
+            self.ppms_field_scan_running = False
+            self._ppms_close_run("not_started", error=str(error), points_saved=0)
+            self._update_ppms_control_ui()
+            messagebox.showerror("PPMS scan not started", str(error), parent=self.root)
+            return
 
         def finished() -> None:
             stopped = self.ppms_field_scan_stop_event.is_set()
@@ -42195,28 +42299,230 @@ class CombinedControlApp:
 
         future.add_done_callback(lambda _future: self.post_ui(finished))
 
+    def _ppms_field_read_at_start(self) -> float:
+        """The field the PPMS last read, for a scan that does not command the
+        field: its CSV's target_field_oe (review, 2026-10-18)."""
+        try:
+            field = float((self.ppms_last_readback or {})["field_oe"])
+        except (KeyError, TypeError, ValueError):
+            field = math.nan
+        if not math.isfinite(field):
+            raise ValueError("No PPMS field reading yet: wait for the live reading, then start the scan again "
+                             "(this mode records the field read at Start as its target_field_oe)")
+        return field
+
+    def _ppms_run_settings(self, mode, sequence, rate_oe_s, stable_s, approach, transport_settings, pass_settles,
+                           settle_s, estimated_s, fixed_field, scan_field):
+        """run_prepared's settings, on the Tk thread at Start with the other
+        inputs (user, 2026-10-18): the mode and its plan, the timing, the
+        harmonic passes, the 6221, the field and temperature handling, the
+        estimate, every rack resource with its state and identity, the
+        Zurich's scan settings, the last PPMS reading and the safety tick.
+        Only what the page already holds is read; no instrument is asked."""
+        state = self.__dict__
+
+        def box(variable):
+            try:
+                return variable.get()
+            except Exception:
+                return None
+
+        resources = {}
+        boxes = state.get("ppms_resource_vars", {})
+        for key, controller in state.get("ppms_instrument_controllers", {}).items():
+            typed = box(boxes[key]) if key in boxes else None
+            resources[key] = dict(label=str(getattr(controller, "label", key)),
+                                  resource=str(getattr(controller, "resource_name", "") or typed or ""),
+                                  connected=bool(getattr(controller, "connected", False)),
+                                  identity=str(getattr(controller, "identity", "") or ""))
+        zurich = state.get("zurich_controller")
+        if zurich is not None:
+            resources["zurich"] = dict(label="Zurich MFLI",
+                                       resource=str(box(state["zurich_resource"]) or "") if "zurich_resource" in state else "",
+                                       connected=bool(getattr(zurich, "mfli_connected", False)),
+                                       identity=str(getattr(zurich, "mfli_identity", "") or ""))
+        passes = transport_settings.get("harmonic_passes", ())
+        scan = {key: value for key, value in transport_settings.items() if key != "harmonic_passes"}
+        safety = state.get("ppms_control_safety_var")
+        return dict(
+            mode=mode, scan=scan,
+            field=dict(commanded=bool(scan_field), sequence_oe=[point[3] for point in sequence],
+                       rate_oe_s=rate_oe_s, approach_code=approach,
+                       target_field_oe=(None if scan_field else fixed_field),
+                       note=("the scan sets each field, Driven" if scan_field
+                             else "not commanded; target_field_oe is the field read at Start")),
+            timing=dict(settle_s=stable_s, acquire_s=transport_settings.get("acquisition_s"),
+                        effective_settle_s=settle_s, settle_time_constants=LOCKIN_SETTLE_TAUS,
+                        per_pass=[dict(harmonic_pass=index, effective_settle_s=wait, slowest_tc_s=tc,
+                                       slowest_meter=meter)
+                                  for index, (wait, tc, meter) in enumerate(pass_settles, 1)],
+                        estimated_s=estimated_s),
+            harmonic_passes=[dict(harmonic_pass=config.get("harmonic_pass", index),
+                                  harmonics={PPMS_SR830_LABELS.get(key, key):
+                                             config.get(PPMS_SR830_HARMONIC_SETTING_KEYS.get(key, ""))
+                                             for key in config.get("active_lockins", ())})
+                             for index, config in enumerate(passes, 1)],
+            zurich=(dict(harmonics=state.get("zurich_scan_harmonic"), reference=state.get("zurich_scan_reference"),
+                         time_constant_s=state.get("zurich_scan_tau"))
+                    if state.get("zurich_scan_enabled") else dict(used=False)),
+            sr830_time_constant_codes=dict(state.get("ppms_sr830_time_constant_codes") or {}),
+            ending=("every end zeroes the 6221 (read back); the temperature and the angle are kept; "
+                    + ("Stop keeps the field, I off / a field failure / closing set it to 0 Oe" if scan_field
+                       else "the field is not commanded")),
+            environment=dict(backend=str(getattr(state.get("ppms_environment_controller"), "backend", "")),
+                             last_reading=dict(state.get("ppms_last_readback") or {})),
+            resources=resources,
+            safety_confirmed=bool(box(safety)) if safety is not None else None)
+
+    def _ppms_log(self, name, **details) -> None:
+        """One event in the running PPMS scan's run log, from either thread;
+        never raises (the recorder keeps a failure for _ppms_log_check)."""
+        recorder = self.__dict__.get("ppms_run_recorder")
+        if recorder is not None:
+            recorder.event(name, **details)
+
+    def _ppms_log_check(self) -> None:
+        """On the worker, between instrument steps: a failed run-log write
+        ends the scan here, through its failure path (user, 2026-10-18)."""
+        recorder = self.__dict__.get("ppms_run_recorder")
+        if recorder is not None:
+            recorder.check()
+
+    def _ppms_append_row(self, row) -> None:
+        """One saved point onto the run folder's live CSV (user, 2026-10-18).
+        The columns are the first row's, as before.  Without a run (the
+        worker on its own, as the unit tests run it) the older live-CSV
+        path; Start always makes one."""
+        recorder = self.__dict__.get("ppms_run_recorder")
+        if recorder is None:
+            self._append_ppms_live_csv(row)
+        else:
+            recorder.append_row(row)
+
+    def _ppms_close_run(self, outcome, **details) -> list[str]:
+        """run_finished and the close, once, best effort: on the Tk thread at
+        a finish (before any dialog), or on the worker when the program
+        closes.  Returns what went wrong, for the page to show."""
+        recorder = self.__dict__.get("ppms_run_recorder")
+        self.ppms_run_recorder = None
+        if recorder is None or recorder.closed:
+            return []
+        errors = recorder.close(outcome, **details)
+        try:
+            self.thread_log(f"PPMS run folder {recorder.directory}: {outcome}; {recorder.csv_path.name} and "
+                            f"{recorder.log_path.name} closed")
+            if errors:
+                self.thread_log(f"PPMS run log: {'; '.join(errors)}")
+        except Exception:
+            pass
+        return errors
+
+    def _ppms_show_later(self, show) -> None:
+        """A finish's dialog from the Tk event loop (root.after), not inside
+        drain_ui_queue, where it would hold every page's post_ui callbacks
+        until it closed (the README's rule of 2026-10-14)."""
+        try:
+            self.root.after(0, show)
+        except tk.TclError:
+            pass  # The window is being destroyed: nothing is shown.
+
+    def _ppms_zero_6221_after_scan(self):
+        """The 6221 at zero at a scan's end: its output off (SOUR:WAVE:ABOR,
+        CURR 0, OUTP OFF) and read back with OUTP? 0, as SHV's end does
+        (user, 2026-10-18).  Raises when it does not read back off."""
+        controller = self.ppms_instrument_controllers["6221"]
+        if not controller.connected:
+            return "not connected"
+        self.ppms_idle_autorange_enabled = False
+        with controller.lock:
+            controller.safe_output_off()
+            state = self._ppms_query_numbers("6221", "OUTP?", 1)[0]
+        if state != 0:
+            raise RuntimeError(f"the 6221 output did not read back OFF (OUTP? {state:g})")
+        return "zeroed"
+
+    def _ppms_zero_outputs_after_scan(self) -> dict[str, str]:
+        """Every ending of a PPMS scan, completed, stopped or failed, on the
+        worker after the scan's own clean-up: the 6221, the only source the
+        page drives in a scan, zeroed and read back through the shared
+        zero_scan_outputs (user, 2026-10-18; until then a completed or
+        stopped scan kept the 6221's output).  The PPMS temperature, the
+        magnet field and the rotator are never touched here; a field scan's
+        own field rules and "Zero field + persist after scan" stay as they
+        were.  Never raises: returns {"6221": "zeroed" | "not connected" |
+        "zero FAILED: <error>"}, logged as outputs_zeroed."""
+        results = zero_scan_outputs((("6221", self._ppms_zero_6221_after_scan),))
+        try:
+            self._ppms_log("outputs_zeroed", **results)
+            self.thread_log(f"PPMS scan end: 6221 {results['6221']}")
+            outcome = results["6221"]
+
+            def show():
+                if self.closing:
+                    return
+                if outcome == "zeroed":
+                    self.ppms_transport_status_var.set("Transport acquisition: 6221 output OFF (read back)")
+                    live = self.__dict__.get("ppms_current_live_var")
+                    if live is not None:
+                        live.set("OFF / 0 mA")
+                elif outcome != "not connected":
+                    self.ppms_transport_status_var.set(
+                        f"Transport acquisition: 6221 {outcome[:120]}; switch it off")
+            self.post_ui(show)
+        except Exception:
+            pass
+        return results
+
     def _queue_ppms_zero_persist(self):
+        # Only during a scan, and a second click cancels it: queued while
+        # idle, it was never cleared and zeroed the field after a later scan
+        # (review, 2026-10-18).  Start clears it.
+        if not self.ppms_field_scan_running:
+            return
+        if getattr(self, "ppms_zero_persist_pending", False):
+            self.ppms_zero_persist_pending = False
+            self.ppms_zero_persist_button.configure(text='Zero field + persist after scan')
+            self.ppms_field_scan_status_var.set('Zero field + persist after this scan: cancelled')
+            return
         self.ppms_zero_persist_pending = True
         self.ppms_zero_persist_button.configure(text='Queued: zero + persist')
-        self.ppms_field_scan_status_var.set('Queued: after this scan completes normally, the field is zeroed and switched to Persistent')
+        self.ppms_field_scan_status_var.set('Queued: after this scan completes normally, the field is zeroed and '
+                                            'switched to Persistent; click again to cancel')
 
     def _ppms_scan_with_final_field(self, *args):
         self.ppms_zero_persist_completed = False
+        self.ppms_scan_outputs = None
         try:
-            if len(args) == 5:
-                sequence, rate, stable, approach, settings = args
-                # The passes Start built on the Tk thread: the harmonic
-                # choices are StringVars, never read on this worker (review,
-                # 2026-10-18).  Built here only for callers that did not.
-                passes = settings.get("harmonic_passes") or self._ppms_harmonic_passes(settings)
-                for pass_settings in passes:
-                    if self.ppms_field_scan_stop_event.is_set() or self.closing:
-                        break
-                    # Each pass reconfigures the source, which rewrites HARM
-                    # for the meters still active in that pass.
-                    self._ppms_nested_scan_worker(sequence, rate, stable, approach, pass_settings)
-            else:
-                self._ppms_nested_scan_worker(*args)
+            try:
+                if len(args) == 5:
+                    sequence, rate, stable, approach, settings = args
+                    # The passes Start built on the Tk thread: the harmonic
+                    # choices are StringVars, never read on this worker (review,
+                    # 2026-10-18).  Built here only for callers that did not.
+                    passes = settings.get("harmonic_passes") or self._ppms_harmonic_passes(settings)
+                    # The run log (user, 2026-10-18); a failed write ends the
+                    # scan here, before anything is switched on.
+                    self._ppms_log("scan_started", mode=settings.get("scan_mode", ""),
+                                   points=self.__dict__.get("ppms_field_scan_total"), harmonic_passes=len(passes))
+                    self._ppms_log_check()
+                    for index, pass_settings in enumerate(passes, 1):
+                        if self.ppms_field_scan_stop_event.is_set() or self.closing:
+                            break
+                        self._ppms_log("harmonic_pass", harmonic_pass=pass_settings.get("harmonic_pass", index),
+                                       harmonics={PPMS_SR830_LABELS.get(key, key):
+                                                  pass_settings.get(PPMS_SR830_HARMONIC_SETTING_KEYS.get(key, ""))
+                                                  for key in pass_settings.get("active_lockins", ())})
+                        self._ppms_log_check()
+                        # Each pass reconfigures the source, which rewrites HARM
+                        # for the meters still active in that pass.
+                        self._ppms_nested_scan_worker(sequence, rate, stable, approach, pass_settings)
+                else:
+                    self._ppms_nested_scan_worker(*args)
+            finally:
+                # Every ending, completed, stopped or failed, zeroes the
+                # 6221 here, after the scan's own clean-up and before a
+                # queued zero + persist ramps the field (user, 2026-10-18).
+                self.ppms_scan_outputs = self._ppms_zero_outputs_after_scan()
             if (self.ppms_field_scan_stop_event.is_set() or self.closing
                     or not getattr(self, 'ppms_zero_persist_pending', False)):
                 return
@@ -42245,34 +42551,77 @@ class CombinedControlApp:
             self.ppms_zero_persist_pending = False
             if 'ppms_zero_persist_button' in self.__dict__:
                 self.post_ui(lambda: self.ppms_zero_persist_button.configure(text='Zero field + persist after scan'))
+            if getattr(self, "closing", False):
+                # The program is closing: its finish may never run on the Tk
+                # thread, so the run log is closed here (user, 2026-10-18).
+                self._ppms_close_run("stopped", stop_reason="the program closing",
+                                     points_saved=len(self.__dict__.get("ppms_field_scan_rows") or ()),
+                                     outputs=self.__dict__.get("ppms_scan_outputs"))
 
     def _report_ppms_scan_finished(self, mode, stopped, error):
-        self.ppms_macro_scan_result = error is None and not stopped
+        """A PPMS scan's finish on the Tk thread (user, 2026-10-18, the
+        convention above ScanRunRecorder): "Completed; " or "Stopped; " and
+        how the 6221 ended (scan_end_outputs_text), or "Failed: <error>";
+        then the run log's run_finished and close, before any dialog; then
+        the dialog of a failure, or of a 6221 not confirmed at zero (CHECK
+        IT), from the Tk event loop.  A field scan's status also says what
+        its own clean-up did to the field."""
         label = f"PPMS {mode} scan"
+        results = self.__dict__.get("ppms_scan_outputs")
+        field_note = str(self.__dict__.get("ppms_scan_field_note", "") or "")
+        stop_reason = str(self.__dict__.get("ppms_scan_stop_button", "") or "")
         if isinstance(error, PPMSScanCancelled):
             self.thread_log(f"{label} cancelled normally: {error}")
+            stop_reason = f"{stop_reason}: {error}" if stop_reason else str(error)
             error, stopped = None, True
+        outputs_confirmed = bool(results) and all(
+            str(state) in ("zeroed", "not connected") for state in results.values())
+        field_mode = mode in ("Field", "Field+Temperature")
         if error is not None:
             # A simultaneous stop request must not hide a genuine I/O or
             # cleanup failure. Only typed cancellation is non-modal.
-            self.ppms_field_scan_status_var.set(f"{label} failed: {short_status_error(error, 100)}")
-            self.ppms_field_scan_eta_var.set("Remaining: --")
-            if not self.closing:
-                messagebox.showerror(label, str(error), parent=self.root)
-        elif stopped:
-            detail = "all settings and outputs kept, nothing zeroed" if getattr(self, "ppms_scan_preserve_on_stop", False) else "output-off request handled"
-            # A Stop while a frequency scan changed frequency, between the
-            # 6221's off and its re-arm, leaves it off (review, 2026-10-18).
-            stopped_off = getattr(self, "ppms_scan_stop_6221_note", "")
-            if stopped_off and getattr(self, "ppms_scan_preserve_on_stop", False):
-                detail = f"{stopped_off}; the other settings kept, nothing zeroed"
-            self.ppms_field_scan_status_var.set(f"{label} stopped; CSV kept; {detail}")
-            self.ppms_field_scan_eta_var.set("Remaining: --")
+            outcome = "error"
+            status = f"Failed: {short_status_error(error, 100)}"
+            if field_note == PPMS_FIELD_NOT_ZEROED_TEXT:
+                # Kept on the line: short_status_error ends at "; ".
+                status += f"; {PPMS_FIELD_NOT_ZEROED_TEXT}"
         else:
-            self.ppms_field_scan_status_var.set(f"{label} completed, CSV saved: {len(self.ppms_field_scan_rows)}/{self.ppms_field_scan_total} points; 6221 keeps the last current output")
-            self.ppms_field_scan_eta_var.set("Remaining: 00:00")
-            if getattr(self, 'ppms_zero_persist_completed', False):
-                self.ppms_field_scan_status_var.set(f'{label} completed, CSV saved; field zeroed and confirmed Persistent; 6221 keeps the last current output')
+            extras = []
+            if stopped:
+                outcome, prefix = "stopped", "Stopped; "
+                if field_mode:
+                    extras.append(field_note or "field kept at its setpoint")
+            else:
+                outcome, prefix = "completed", "Completed; "
+                if getattr(self, "ppms_zero_persist_completed", False):
+                    extras.append("field zeroed and confirmed Persistent")
+            status = (prefix + scan_end_outputs_text(results, ("6221",), check=not extras)
+                      + "".join(f"; {extra}" for extra in extras))
+        # A Macro goes on only after a completed scan whose 6221 read back off.
+        self.ppms_macro_scan_result = outcome == "completed" and outputs_confirmed
+        rows = self.__dict__.get("ppms_field_scan_rows") or ()
+        problems = self._ppms_close_run(
+            outcome, points_saved=len(rows), status=status, outputs=results,
+            error=str(error) if error is not None else "",
+            **({"stop_reason": stop_reason} if outcome == "stopped" else {}))
+        self.ppms_field_scan_status_var.set(status)
+        self.ppms_field_scan_eta_var.set("Remaining: 00:00" if outcome == "completed" else "Remaining: --")
+        if self.closing:
+            return
+        zeroing = (f"At the end: 6221 {results['6221']}" if results and "6221" in results
+                   else "At the end: the 6221 was not confirmed zeroed")
+        if field_note and field_note not in str(error or ""):
+            zeroing += f"; {field_note}"
+        if outcome == "error":
+            text = f"{error}\n\n{zeroing}"
+            self._ppms_show_later(lambda: messagebox.showerror(label, text, parent=self.root))
+        elif not outputs_confirmed:
+            text = f"The scan {outcome}, but the 6221 was not confirmed at zero: CHECK IT.\n\n{zeroing}"
+            self._ppms_show_later(lambda: messagebox.showerror("PPMS outputs", text, parent=self.root))
+        if problems:
+            text = (f"The run log was not closed cleanly: {'; '.join(problems)}\n\nThe live CSV keeps every "
+                    "saved point.")
+            self._ppms_show_later(lambda: messagebox.showerror("PPMS run log", text, parent=self.root))
 
     def _ppms_nested_scan_worker(self, sequence, rate, stable, approach, settings):
         stop = self.ppms_field_scan_stop_event
@@ -42304,9 +42653,17 @@ class CombinedControlApp:
                 raise PPMSScanCancelled("Scan stopped")
             accepted = {"near", "stable", "stableat target", "stableattarget"}
             current = float(self._read_ppms_live()["temperature_k"])
-            segments = ppms_scan_temperature_segments(current, temperature, settings["temperature_rate"])
+            # The typed rate, which a warm-up from at or below 9 K returns to
+            # once above 9 K: restore_high_rate is set only where a segment
+            # was lowered below it, not on "rate == 1.0", and the rate sent
+            # back is the typed one, not a fixed 10 K/min (review,
+            # 2026-10-18: a typed 8 K/min came back as 10, and a typed
+            # 1 K/min warm-up was "restored" to 10).
+            typed_rate = float(settings["temperature_rate"])
+            segments = ppms_scan_temperature_segments(current, temperature, typed_rate)
             for target, rate in segments:
-                restore_high_rate = rate == 1.0 and current <= PPMS_TEMPERATURE_LOW_BOUNDARY_K and target > PPMS_TEMPERATURE_LOW_BOUNDARY_K
+                restore_high_rate = (rate < typed_rate and current <= PPMS_TEMPERATURE_LOW_BOUNDARY_K
+                                     and target > PPMS_TEMPERATURE_LOW_BOUNDARY_K)
                 if stop.is_set() or self.closing:
                     raise PPMSScanCancelled("Scan stopped")
                 self.thread_log(f"Scan temperature segment: {target:g} K at {rate:g} K/min")
@@ -42321,7 +42678,7 @@ class CombinedControlApp:
                             raise
                         if stop.is_set() or self.closing:
                             raise PPMSScanCancelled("Scan stopped")
-                        rate = 1.0
+                        rate = PPMS_TEMPERATURE_LOW_MAX_RATE_K_MIN   # min(typed, 1): the typed rate is above 1 here
                         restore_high_rate = target > PPMS_TEMPERATURE_LOW_BOUNDARY_K
                         self.thread_log(f'9 K boundary rate limit: switched to 1 K/min automatically, continuing to {target:g} K')
                         remote.set_temperature(target, rate, settings["temperature_approach"])
@@ -42336,7 +42693,7 @@ class CombinedControlApp:
                         if stop.is_set() or self.closing:
                             raise PPMSScanCancelled('Scan stopped')
                         try:
-                            remote.set_temperature(target, 10.0, settings['temperature_approach'])
+                            remote.set_temperature(target, typed_rate, settings['temperature_approach'])
                         except ValueError as error:
                             if 'must not exceed 1 K/min' not in str(error):
                                 raise
@@ -42346,7 +42703,8 @@ class CombinedControlApp:
                                 raise
                             self.thread_log(f'Rate-restore command reply uncertain; keeping the target and continuing readback: {error}')
                         restore_high_rate = False
-                        self.thread_log(f'Temperature is above 9 K; target {target:g} K automatically restored to 10 K/min (rate command sent)')
+                        self.thread_log(f'Temperature is above 9 K; target {target:g} K automatically restored to the typed '
+                                        f'{typed_rate:g} K/min (rate command sent)')
                         return False  # Recheck after changing the ramp, not against the old readback.
                     return (abs(measured-target) <= .1
                         and str(data['temperature_status']).strip().lower() in accepted)
@@ -42379,6 +42737,9 @@ class CombinedControlApp:
             for ai, angle, temperatures in scan_blocks():
                 if stop.is_set() or self.closing:
                     break
+                # The run log between instrument steps: a failed write ends
+                # the scan here, through the failure path (user, 2026-10-18).
+                self._ppms_log_check()
                 if angle is not None:
                     try:
                         motor = PPMSMotorDebug(remote.active)
@@ -42416,6 +42777,21 @@ class CombinedControlApp:
                 for ti, temperature in temperatures:
                     if stop.is_set() or self.closing:
                         break
+                    currents = tuple(settings.get("currents", (settings["current_rms_ma"],)))
+                    stepped_to_first = False
+                    if continuous_current and current_source_started:
+                        # Current+Temperature: the 6221 back to the block's
+                        # first current before the next temperature, so the
+                        # ramp does not run at the last (largest) current of
+                        # the block before, and that first point settles with
+                        # its agreeing windows after the jump (review,
+                        # 2026-10-18; the README's 2026-10-09 rule).  Only the
+                        # amplitude changes, as between currents.
+                        self._update_ppms_transport_current(dict(
+                            settings, current_rms_ma=currents[0], peak_a=math.sqrt(2.) * currents[0] * 1e-3,
+                            continuous_sweep_peak_a=sweep_peak))
+                        self.ppms_source_fresh = True
+                        stepped_to_first = True
                     if not temperature_outer:
                         prepare_temperature(temperature)
                     self.ppms_scan_context = {"angle_index": ai, "temperature_index": ti,
@@ -42426,7 +42802,7 @@ class CombinedControlApp:
                         # source set-up at each frequency (user, 2026-10-18).
                         self._ppms_frequency_scan_block(sequence, rate, stable, approach, settings)
                         continue
-                    for current in settings.get("currents", (settings["current_rms_ma"],)):
+                    for position, current in enumerate(currents):
                         if stop.is_set() or self.closing:
                             break
                         point_settings = dict(settings, current_rms_ma=current,
@@ -42437,7 +42813,7 @@ class CombinedControlApp:
                                 self._configure_ppms_transport_scan(point_settings)
                                 self.ppms_source_fresh = True   # the first current settles
                                 current_source_started = True
-                            else:
+                            elif not (position == 0 and stepped_to_first):
                                 self._update_ppms_transport_current(point_settings)
                             point_settings['keep_source_between_current_points'] = True
                         self._ppms_field_scan_worker(sequence, rate, stable, approach, point_settings)
@@ -42449,10 +42825,9 @@ class CombinedControlApp:
         except PPMSMotorScanError:
             failed = True
             raise
-        except PPMSFieldScanError:
+        except PPMSFieldScanError as error:
             failed = True
-            self._ppms_zero_field_after_interrupted_scan(rate, approach)
-            raise
+            raise self._ppms_field_error_after_zero(error, rate, approach)
         except BaseException:
             failed = True
             self.thread_log("Non-field scan error: field setpoint kept, not zeroed")
@@ -42543,19 +42918,10 @@ class CombinedControlApp:
                 f"6221 output still ON (OUTP?={state:g}) before setting up {frequency:g} Hz; scan stopped")
         self.post_ui(lambda: self.ppms_transport_status_var.set(
             f"Transport acquisition: 6221 OFF (read back); setting up {frequency:g} Hz"))
-        try:
-            self._configure_ppms_transport_scan(settings)
-        except PPMSScanCancelled:
-            # A Stop between the off and the re-arm leaves the 6221 off: the
-            # finish line says so instead of "all outputs kept" (review,
-            # 2026-10-18).  A Stop in the lock wait after the re-arm reads ON.
-            try:
-                still_off = self._ppms_query_numbers("6221", "OUTP?", 1)[0] == 0
-                note = "6221 off (stopped while changing frequency)" if still_off else ""
-            except Exception:
-                note = "6221 state unknown (stopped while changing frequency): check it"
-            self.ppms_scan_stop_6221_note = note
-            raise
+        # A Stop between the off and the re-arm needs no note of its own any
+        # more: every scan end zeroes the 6221 and reads it back (user,
+        # 2026-10-18), so the finish says how it ended.
+        self._configure_ppms_transport_scan(settings)
         self._ppms_wait_zurich_reference(
             frequency, float(settings.get("reference_timeout_s", PPMS_TRANSPORT_REFERENCE_TIMEOUT_S)),
             previous_hz)
@@ -42575,10 +42941,15 @@ class CombinedControlApp:
         range_limit_s = PPMS_SR830_RANGE_LIMIT_S
         count, sums, last = 0, {}, None
         overloaded_samples = 0
+        # Only the point's first reading may step a range down; the window
+        # restarted after a range change does not count as a new point
+        # (review, 2026-10-18; shared with SHV).
+        first_reading = True
         while True:
             if self.ppms_field_scan_stop_event.is_set() or self.closing:
                 raise PPMSScanCancelled("Acquisition aborted; the unfinished point is not saved")
-            sample = self._read_ppms_transport_sample(frequency, lockins)
+            sample = self._read_ppms_transport_sample(frequency, lockins, first_reading)
+            first_reading = False
             if self.ppms_field_scan_stop_event.is_set() or self.closing:
                 raise PPMSScanCancelled("Acquisition aborted; the unfinished point is not saved")
             settling = float(sample.get("range_settle_s", 0.))
@@ -42591,7 +42962,7 @@ class CombinedControlApp:
                 if time.monotonic() + settling > call_start + range_limit_s:
                     raise PPMSLockinRangeError(
                         f"SR830 autorange did not settle within {range_limit_s:.0f} s; "
-                        "current point not saved; 6221 output kept")
+                        "current point not saved")
                 if self.ppms_field_scan_stop_event.wait(settling):
                     raise PPMSScanCancelled("Autorange wait stopped; current point not saved")
                 start = time.monotonic()
@@ -42613,7 +42984,7 @@ class CombinedControlApp:
             remaining = duration - (time.monotonic() - start)
             if remaining <= 0:
                 if count == 0:
-                    raise PPMSLockinRangeError("Every SR830 reading in the acquisition window was overloaded; current point not saved; 6221 output kept")
+                    raise PPMSLockinRangeError("Every SR830 reading in the acquisition window was overloaded; current point not saved")
                 break
             if self.ppms_field_scan_stop_event.wait(min(.05, remaining)):
                 raise PPMSScanCancelled("Acquisition aborted; the unfinished point is not saved")
@@ -42671,7 +43042,11 @@ class CombinedControlApp:
         return checked
 
     def _acquire_ppms_first_point(self, frequency, lockins, acquisition_s):
-        """Acquire windows until two consecutive ones agree; return (sample, windows)."""
+        """Acquire windows until two consecutive ones agree; return (sample, windows).
+
+        The first point of a pass or sweep: the SR830 range floors of the
+        one before end here (review, 2026-10-18)."""
+        self._ppms_clear_sr830_range_floor()
         previous = None
         sample = None
         for window in range(1, PPMS_FIRST_POINT_MAX_WINDOWS + 1):
@@ -42886,9 +43261,22 @@ class CombinedControlApp:
                 if self.ppms_field_scan_rows:
                     row = dict.fromkeys(self.ppms_field_scan_rows[0], "") | row
                 # The live CSV first: a failed write leaves no point that is
-                # only in memory (review, 2026-10-09; RT-E's order).
-                self._append_ppms_live_csv(row)
+                # only in memory (review, 2026-10-09; RT-E's order).  Since
+                # 2026-10-18 the run folder's CSV (user).
+                self._ppms_append_row(row)
                 self.ppms_field_scan_rows.append(row)
+                # The saved point in the run log; a failed log write ends the
+                # scan after it, as a failed CSV row does (user, 2026-10-18).
+                axis_column = PPMS_PLOT_AXIS_COLUMNS.get(
+                    PPMS_SCAN_PLOT_AXES.get(transport_settings.get("scan_mode", "Field"), "field"), "measured_field_oe")
+                self._ppms_log("point_saved", index=len(self.ppms_field_scan_rows),
+                               harmonic_pass=row.get("harmonic_pass", 1), x_column=axis_column,
+                               x=row.get(axis_column, ""), target_field_oe=target,
+                               measured_field_oe=row.get("measured_field_oe", ""),
+                               temperature_k=row.get("temperature_k", ""),
+                               current_rms_ma=row.get("6221_current_rms_ma", ""),
+                               frequency_hz=row.get("6221_frequency_hz", ""))
+                self._ppms_log_check()
                 last_field = float(result["field_oe"])
                 mean_point_s = elapsed / max(1, len(self.ppms_field_scan_rows))
                 remaining_s = mean_point_s * max(0, self.ppms_field_scan_total - len(self.ppms_field_scan_rows))
@@ -42954,10 +43342,9 @@ class CombinedControlApp:
         except PPMSMotorScanError:
             failed = True
             raise
-        except PPMSFieldScanError:
+        except PPMSFieldScanError as error:
             failed = True
-            self._ppms_zero_field_after_interrupted_scan(rate_oe_s, approach_code)
-            raise
+            raise self._ppms_field_error_after_zero(error, rate_oe_s, approach_code)
         except BaseException:
             failed = True
             self.thread_log("Non-field scan error: field setpoint kept, not zeroed")
@@ -42976,7 +43363,11 @@ class CombinedControlApp:
                 raise
     def _ppms_zero_field_after_interrupted_scan(
         self, rate_oe_s: float, approach_code: int
-    ) -> None:
+    ) -> bool:
+        """The field scan's own clean-up: 0 Oe, Driven.  True when the PPMS
+        took the command; on a failure the finish says "field NOT zeroed:
+        check MultiVu" (ppms_scan_field_note; review, 2026-10-18: it was
+        only logged)."""
         # User-requested stop uses a fixed ramp, independent of the scan rate.
         # Never change temperature or motor targets in this cleanup path.
         zero_rate = 100.0 if self.ppms_field_scan_stop_event.is_set() else rate_oe_s
@@ -42987,6 +43378,25 @@ class CombinedControlApp:
             )
         except BaseException as error:
             self.thread_log(f"PPMS: zeroing after the interrupted field scan failed: {error}")
+            self.ppms_scan_field_note = PPMS_FIELD_NOT_ZEROED_TEXT
+            return False
+        self.ppms_scan_field_note = "field ramping to 0 Oe"
+        return True
+
+    def _ppms_field_error_after_zero(self, error, rate_oe_s, approach_code):
+        """A field-scan failure (PPMSFieldScanError) zeroes the field once,
+        in whichever worker meets it first (both did, twice, before).  If
+        the zero is refused, the error says so: "<error>; field NOT zeroed:
+        check MultiVu", and so do the status and the dialog (review,
+        2026-10-18).  Returns the error to raise."""
+        if getattr(error, "ppms_field_zero_tried", False):
+            return error
+        if not self._ppms_zero_field_after_interrupted_scan(rate_oe_s, approach_code):
+            failure = PPMSFieldScanError(f"{error}; {PPMS_FIELD_NOT_ZEROED_TEXT}")
+            failure.__cause__ = error
+            error = failure
+        error.ppms_field_zero_tried = True
+        return error
 
     def _ppms_preserve_stopped_scan(self):
         return (getattr(self, "ppms_scan_preserve_on_stop", False)
@@ -42995,10 +43405,17 @@ class CombinedControlApp:
     def stop_ppms_field_scan(self) -> None:
         if not self.ppms_field_scan_running:
             return
+        # Stop keeps the field, temperature and angle; the 6221 is zeroed at
+        # the scan's end, as at every end (user, 2026-10-18; it said
+        # "nothing zeroed").
         self.ppms_scan_preserve_on_stop = True
+        self._ppms_log("stop_requested", button="Stop")
+        if not self.__dict__.get("ppms_scan_stop_button"):
+            self.ppms_scan_stop_button = "Stop"
         self.ppms_field_scan_stop_event.set()
         mode = getattr(self, "ppms_active_scan_mode", "")
-        self.ppms_field_scan_status_var.set(f"Stopping the {mode} scan; field, current, temperature and angle setpoints are kept, nothing zeroed…")
+        self.ppms_field_scan_status_var.set(f"Stopping the {mode} scan; completed CSV points kept; the 6221 is "
+                                            "zeroed next; temperature, field and angle kept…")
         self.ppms_field_scan_stop_button.configure(state="disabled")
 
     def _append_ppms_live_csv(self, row):
@@ -43021,12 +43438,16 @@ class CombinedControlApp:
     def save_ppms_field_scan_csv(self) -> None:
         if not self.ppms_field_scan_rows:
             return
+        # The dialog opens in the last scan's run folder (user, 2026-10-18).
+        folder = self.__dict__.get("ppms_run_folder")
+        where = {"initialdir": str(folder)} if folder is not None and Path(folder).is_dir() else {}
         selected = filedialog.asksaveasfilename(
             parent=self.root,
             title="Save PPMS scan CSV as",
             defaultextension=".csv",
             filetypes=(("CSV", "*.csv"),),
             initialfile=time.strftime("PPMS_field_scan_%Y%m%d_%H%M%S.csv"),
+            **where,
         )
         if not selected:
             return
@@ -43231,6 +43652,10 @@ class CombinedControlApp:
         future.add_done_callback(lambda _future: self.post_ui(finished))
 
     def ppms_sources_off(self) -> None:
+        if self.__dict__.get("ppms_run_recorder") is not None:
+            # A running PPMS scan's stop, in its run log (user, 2026-10-18).
+            self._ppms_log("stop_requested", button="I off")
+            self.ppms_scan_stop_button = "I off"
         self.ppms_idle_autorange_enabled = False
         self.ppms_scan_preserve_on_stop = False
         # Cancel queued/in-progress configuration before sending OFF: it must
@@ -43298,6 +43723,10 @@ class CombinedControlApp:
             return
         self.ppms_closed = True
         scan_was_running = self.ppms_field_scan_running
+        # A running scan's log (user, 2026-10-18); its worker closes the log.
+        recorder = self.__dict__.get("ppms_run_recorder")
+        if recorder is not None:
+            recorder.event("stop_requested", button="the program closing")
         self.ppms_field_scan_stop_event.set()
         if self.ppms_poll_after_id is not None:
             try:
@@ -45321,6 +45750,23 @@ class PPMSPanel(CombinedControlApp):
         super()._update_ppms_control_ui()
         if hasattr(self, 'zurich_connect_button'):
             self._set_zurich_busy(self.zurich_busy)
+
+    def thread_log(self, message):
+        """The page's log line, and while a PPMS scan's run log is open also
+        its "note" (user, 2026-10-18), from whichever thread logs it.  The
+        SHV page has its own run log (rte_recorder), never this one."""
+        super().thread_log(message)
+        self._ppms_log("note", text=str(message))
+
+    def _ppms_set_current_direct(self):
+        # Set I sets the 6221 alone.  The Zurich settings a Start copied
+        # (zurich_scan_*) belong to that scan: after a Start that returned
+        # early, or a scan stopped before its set-up, Set I configured the
+        # Zurich from them (review, 2026-10-18).  The next Start copies the
+        # Zurich row again; its own Connect / apply settings is unchanged.
+        if not self.ppms_field_scan_running:
+            self.zurich_scan_enabled = False
+        super()._ppms_set_current_direct()
 
     def start_ppms_field_scan(self):
         if self.ppms_field_scan_running:

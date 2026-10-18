@@ -245,8 +245,11 @@ class CurrentCallbacks(unittest.TestCase):
         obj._ppms_autorange_sr830 = Mock(return_value=0.)
         obj.ppms_sr830_range_states = {'830_a': types.SimpleNamespace(sensitivity_index=9)}
         obj._read_ppms_transport_sample(317.3, ('830_a',))
-        self.assertNotIn('allow_down', obj._ppms_autorange_sr830.call_args.kwargs)  # default: both directions
+        self.assertTrue(obj._ppms_autorange_sr830.call_args.kwargs['allow_down'])  # default: both directions
         self.assertTrue(obj._ppms_autorange_sr830.call_args.kwargs['enabled'])
+        # A point's later readings only range up (review, 2026-10-18).
+        obj._read_ppms_transport_sample(317.3, ('830_a',), False)
+        self.assertFalse(obj._ppms_autorange_sr830.call_args.kwargs['allow_down'])
 
     def test_autorange_status_reports_the_selected_full_scale(self):
         obj = self.make_app()

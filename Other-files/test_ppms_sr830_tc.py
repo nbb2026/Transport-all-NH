@@ -930,7 +930,11 @@ class StartSettleTests(NoWindows):
         # 4 s of field ramp, 5 x (10 s + 1 s), and the 6 s and 12 s allowances.
         self.assertIn("Estimated duration: about 1 min 41 s", message)
         self.assertNotIn("lags", message, "the old note is gone: the scan waits instead")
-        self.assertTrue(message.endswith("\nContinue to choose the save folder and start the scan?"))
+        # The run folder replaced the save folder, and every end zeroes the
+        # 6221 (user, 2026-10-18).
+        self.assertIn("\n\nAt every end (completed, stopped or failed) the 6221 is switched off and read back "
+                      "as off.", message)
+        self.assertTrue(message.endswith("\n\nContinue to choose the run folder and start the scan?"))
         self.assertEqual(ask.call_args.kwargs["icon"], "question")
         self.assertFalse(obj.ppms_field_scan_running, "No: nothing starts")
 

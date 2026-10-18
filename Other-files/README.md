@@ -1,5 +1,83 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## PPMS page: one run folder per scan, the 6221 zeroed at every end, review fixes P1-P9 (2026-10-18)
+
+- **Save (user: the same save on every scan page):** every PPMS scan, a Macro
+  SCAN line included, now saves through `begin_scan_run` after its Yes/No:
+  the folder, the optional file name, then `<folder>/<name>/` with
+  `<name>.csv` (the live CSV, columns and order as before) and `<name>.log`.
+  A blank name gives `PPMS_<date>_<time>` (the mode is no longer in the
+  default name; it is in the log). A name in use gets `_01`, `_02` ….
+  - This replaces the page's own folder and name dialogs and its live CSV
+    in the chosen folder. A refused name is shown and nothing starts (the
+    old dialog asked again).
+  - The log has `run_prepared` (mode, plan, field handling, timing,
+    harmonic passes, Zurich, resources, last PPMS reading, safety tick),
+    `scan_started`, `harmonic_pass`, `point_saved`, `note` (every page log
+    line while the scan runs), `stop_requested` (Stop, I off, the program
+    closing), `outputs_zeroed` and `run_finished`. A failed log write ends
+    the scan through its failure path at the next block or point.
+  - **Macro SCAN: one run folder per SCAN line** (the Macro does not group
+    its files). The folder dialog opens where the last run's folder is.
+  - Save CSV as opens in the last run folder.
+  - SHV still uses the shared `_append_ppms_live_csv`, unchanged.
+- **Zero at every end (user):** completed, stopped (Stop or I off) or
+  failed, the worker zeroes the 6221 after the scan's own clean-up
+  (`SOUR:WAVE:ABOR`, `CURR 0`, `OUTP OFF`, read back `OUTP?` 0) through
+  `zero_scan_outputs`. It replaces "Completed/Stopped: outputs kept" and an
+  SR830 range failure's "6221 output kept"; the Frequency modes end the same
+  way. The scan never drives the 2400, so it is not zeroed. The PPMS
+  temperature, the magnet field and the rotator are not touched; a field
+  scan's own rules (Stop keeps the field; I off, a field failure or closing
+  set 0 Oe Driven) and "Zero field + persist after scan" are unchanged. The
+  6221 is zeroed before a queued zero + persist ramps the field.
+  - Status: `Completed; 6221 zeroed`, `Stopped; 6221 zeroed` (Field modes
+    add `; field kept at its setpoint` or `; field ramping to 0 Oe`),
+    `Failed: <error>`. A 6221 not read back off: `… 6221 zero FAILED: check
+    it` and a CHECK IT dialog; a Macro then stops.
+  - The Yes/No says how every end leaves the outputs; the Stop line says
+    "the 6221 is zeroed next"; dialogs open from `root.after` (2026-10-14
+    rule), and a Macro's next line too.
+- **Review fixes:**
+  - P1 Current+Temperature: before each later temperature block the 6221
+    steps back to the block's first current (amplitude only), so the ramp
+    no longer runs at the largest current, and that first point gets its
+    agreeing windows.
+  - P2 (shared with SHV): only a point's first reading may step an SR830
+    range down (later readings only range up, the counts do not move), and
+    a range that overloaded is a floor until the next pass's or sweep's
+    first point, a source set-up, a Set I, a TC change or a Connect. The
+    two ranges no longer flip forever. "6221 output kept" is gone from the
+    range errors (SHV zeroes too).
+  - P3: a scan's segment at or below 9 K uses min(typed rate, 1 K/min), and
+    the warm-up above 9 K returns to the typed rate (it was 10 K/min, also
+    after a typed 1 K/min).
+  - P4: Temperature, Angle, Current and the frequency modes record the field
+    read at Start as `target_field_oe` (no reading yet: Start refuses), do
+    not read the H Oe box, and count no field ramp in the estimate.
+  - P5: "Zero field + persist after scan" is usable only during a scan, a
+    second click cancels it, and Start clears it.
+  - P6: the 'SR830 TC' fallback of the worker's wait is read at Start.
+  - P7: the PPMS page's Set I sets the 6221 alone; it no longer configures
+    the Zurich from an older Start's copied settings.
+  - P8: field ramps, temperature changes and set-up allowances are counted
+    in every harmonic pass.
+  - P9: a field-scan failure zeroes the field once (both workers did); if
+    the zero is refused, the error, the status and the dialog say "field
+    NOT zeroed: check MultiVu".
+- **Tests:** `test_ppms_run_save_zero` (window-free, the real built page on
+  fakes): files and log events in order, the columns as before, Stop, I off,
+  a failure, a 6221 that stays on, a failed log write, cancels, Save CSV as,
+  a second run's folder, the program closing, the field endings, P1-P9 and
+  the Macro's next line. Changed expectations: `test_ppms_frequency_scan`
+  (every ending now zeroes the 6221; `Rig.run` goes through
+  `_ppms_scan_with_final_field`), `test_ppms_simple_modes` (run folder
+  names, finish texts and dialogs), `test_ppms_nested` (8 K/min restored,
+  not 10), `test_lockin_settle_rte_ppms` (2 min 02 s with ramps per pass),
+  `test_ppms_sr830_tc` (Yes/No ending), `test_ppms_current_callbacks`
+  (`allow_down`), `test_ppms_rte_review` (Macro root stub). No SHV test
+  changed. Not yet run on the instruments.
+
 ## One run folder, live CSV and log for every scan page: the shared base (2026-10-18)
 
 - **Request (user: "make the operation logic and save logic and files in
