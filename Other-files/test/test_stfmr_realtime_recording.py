@@ -302,7 +302,7 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(history[-1]['outcome'], 'completed')
         self.assertEqual(history[-1]['saved_points'], 6)
         self.assertTrue(history[-1]['outputs_off'])
-        self.assertTrue(recorder.csv_handle.closed and recorder.log_handle.closed)
+        self.assertTrue(recorder.closed)  # no handle is held since the shared recorder (2026-10-18)
         self.error.assert_not_called()
 
     def test_sr830_single_frequency_and_autorange_retry(self):
@@ -434,7 +434,7 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(recorder.csv_path.read_bytes(), before)
         self.assertEqual(h.stfmr_lockin_controllers['kepco'].calls, calls)
         self.assertEqual(events(recorder)[-1]['outcome'], 'closed')
-        self.assertTrue(recorder.csv_handle.closed)
+        self.assertTrue(recorder.closed)  # no handle is held since the shared recorder (2026-10-18)
 
     def test_csv_disk_failure_aborts_before_next_current(self):
         h, recorder = self.start()
@@ -449,7 +449,7 @@ class StreamingTests(unittest.TestCase):
         self.assertIn('disk full', events(recorder)[-1]['error'])
         self.assertIn(('zero',), h.stfmr_lockin_controllers['kepco'].calls)
         self.assertIn(('rf_off',), h.stfmr_lockin_controllers['smb'].calls)
-        self.assertTrue(recorder.log_handle.closed)
+        self.assertTrue(recorder.closed)  # no handle is held since the shared recorder (2026-10-18)
 
     def test_log_failure_and_zero_failure_still_close_rf_and_files(self):
         h, recorder = self.start()
@@ -458,7 +458,7 @@ class StreamingTests(unittest.TestCase):
             h.root.drain()
         self.assertFalse(h.stfmr_lockin_running)
         self.assertIn(('rf_off',), h.stfmr_lockin_controllers['smb'].calls)
-        self.assertTrue(recorder.log_handle.closed and recorder.csv_handle.closed)
+        self.assertTrue(recorder.closed)  # no handle is held since the shared recorder (2026-10-18)
         self.error.assert_called_once()
 
     def test_executor_submission_failure_closes_recording(self):

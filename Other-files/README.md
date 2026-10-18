@@ -1,5 +1,83 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## One run folder, live CSV and log for every scan page: the shared base (2026-10-18)
+
+- **Request (user: "make the operation logic and save logic and files in
+  different module like the same as possible"):** the user chose to unify
+  the save step on every scan page (PPMS, SHV, ST-FMR, FMR, Non-local
+  2400-IV / 6221-IV / Gate-VI / |R| vs time, CIDWM, MOKE magnet, MOKE-24) and
+  to zero the sources at every scan end, as on SHV. The PPMS temperature and
+  magnet field are never touched. This commit is the shared base. No page
+  behaves differently yet; SHV and ST-FMR now use the shared class.
+- **The convention** is the comment block above `ScanRunRecorder`. The pages
+  follow it:
+  - Start order: inputs checked → Yes/No → `begin_scan_run` → the run on the
+    page's worker.
+  - Every page logs `run_prepared`, `scan_started`, `point_saved`, `note`,
+    `stop_requested`, `outputs_zeroed` and `run_finished`.
+  - At every ending, the page's worker zeroes every output with
+    `zero_scan_outputs`: each tried whatever the others did, read back
+    where the instrument allows.
+  - The status suffix comes from `scan_end_outputs_text`.
+  - Save CSV as opens in the run folder.
+- **`ScanRunRecorder(parent, page, name="", settings=None, *, label=None)`:**
+  - Makes `<parent>/<name>/` with `<name>.csv` and `<name>.log`: a blank
+    name gives `<page>_<date>_<time>`, and a name in use gets `_01`, `_02` ….
+    The files are opened `"x"`, so nothing is overwritten.
+  - With settings it writes `run_prepared` (program, `APP_VERSION`, Python,
+    the file name, the paths, the page's settings under `settings`). If that
+    line cannot be written, the run is closed `not_started` and the error
+    raised.
+  - `event(name, **details)` and `note(text)` take one lock, never raise,
+    and keep the first failure for `check()` on the worker.
+  - `append_row(row)`: the header is the first row's keys. A later row's
+    missing cells are blank, and a key the header lacks raises before
+    anything is written, so the columns never shift. Each row is fsynced.
+  - Every write opens and closes its file, so no handle is held (Windows can
+    copy the folder mid-scan). `close(outcome, **details)` writes
+    `run_finished`, best effort, once.
+  - For the page: `directory`, `csv_path`, `log_path`, `rows_written`,
+    `fieldnames`.
+- **`begin_scan_run(parent, page_label, folder_title, initial_dir, settings, *,
+  prefix=None)`:** the folder dialog, then "<page_label> file name", then the
+  recorder.
+  - It returns None when a dialog is cancelled or the name refused, and then
+    nothing is made.
+  - It also returns None, after showing "<page_label> run folder", when the
+    folder, its files or the first log line cannot be made.
+  - `prefix` names a blank run when the label is not a file name ("|R| vs
+    time").
+- **`zero_scan_outputs(steps)` and `scan_end_outputs_text(results, outputs=(),
+  check=True, together="")`:**
+  - `zero_scan_outputs` runs each output's zero in order and returns
+    {label: "zeroed" / "not connected" / "zero FAILED: …"}.
+  - `scan_end_outputs_text` formats those results as SHV did: "KEPCO and
+    6221 zeroed", "6221 zeroed; KEPCO zero FAILED: check it", "zero FAILED:
+    6221 and KEPCO: check them", "… not confirmed zeroed: check them".
+  - `rte_outputs_text` and `_rte_zero_outputs_after_scan` now call them.
+    Every SHV text is as before (compared for all 216 result combinations),
+    so CI's width checks are unchanged.
+- **SHV and ST-FMR on the shared class:**
+  - `SHVScanRecorder` is a subclass with the same files and log lines.
+  - `STFMRScanRecorder` keeps its fixed columns, its `run_prepared`,
+    `saved_points`, a log write that raises (the page ends its sweep) and
+    its `STFMR_field_scan_<stamp>` default.
+  - ST-FMR no longer holds its CSV and log open: each write opens and closes
+    the file, as SHV's.
+  - Four assertions in `test/test_stfmr_realtime_recording.py` that read the
+    old handles now check `recorder.closed`.
+- **Tests (window-free):** `test_scan_run_recorder`:
+  - The files, `run_prepared`, never overwriting, a refused prefix, and a
+    first line that cannot be written.
+  - The columns padded and never shifted, one fsync per row, no handle held,
+    two threads, a failed write kept and raised by `check()`, and the close
+    running once.
+  - `begin_scan_run`: the dialog order, cancel, a refused name, a clash
+    suffix, a creation failure, a first-line failure, and the prefix.
+  - The outputs texts and the zeroing order.
+  - SHV's and ST-FMR's files and answers byte for byte against their
+    5380ea8 implementations on a fixed clock.
+
 ## PPMS page: Frequency and Frequency+Current scans (2026-10-18)
 
 - **Request (user: "add frequency and frequency+current scan in the PPMS
