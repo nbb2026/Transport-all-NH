@@ -67,14 +67,16 @@ class ZeroTests(unittest.TestCase):
         self.assertEqual(a.magnet_target_vars['OUT'].get(), '0.000')
         self.assertEqual(a.magnet_last_currents['OUT'], 0.0)
         self.assertFalse(a.magnet_scan_collecting)
-        self.assertEqual(a.magnet_scan_outputs, {'Out-of-plane KEPCO': 'zeroed', 'In-plane KEPCO': 'zeroed'})
+        # Sent, not read back (review, 2026-10-18; it was "zeroed").
+        self.assertEqual(a.magnet_scan_outputs, {'Out-of-plane KEPCO': 'zeroed',
+                                                 'In-plane KEPCO': '0 A sent, not read back'})
 
     def test_a_failed_zero_is_reported_not_raised_and_retries_a_plain_write(self):
         a = self.make_app(fail_zero=True)
         self.run_worker(a)          # the scan completed; its end says how the KEPCOs ended
         self.assertEqual(a.zero_writes, [('OUT', 0.0), ('IN', 0.0)], "one more plain 0 A, then the other")
         self.assertEqual(a.magnet_scan_outputs['Out-of-plane KEPCO'], 'zero FAILED: zero readback failed')
-        self.assertEqual(a.magnet_scan_outputs['In-plane KEPCO'], 'zeroed')
+        self.assertEqual(a.magnet_scan_outputs['In-plane KEPCO'], '0 A sent, not read back')
         self.run_ui(a)
         self.assertEqual(a.magnet_current_vars['OUT'].get(), '0 A not confirmed')
         self.assertIsNone(a.magnet_last_currents['OUT'])

@@ -2184,6 +2184,9 @@ STFMR_SMB100A_POWER_READBACK_TOLERANCE_DB = 0.01
 # prime modulation frequencies are at least 1 Hz apart.
 STFMR_SMB100A_FREQUENCY_READBACK_TOLERANCE_HZ = 1.0
 STFMR_SMB100A_LFO_READBACK_TOLERANCE_HZ = 0.05
+# ST-FMR Save CSV's file names (review, 2026-10-18): not the run's
+# STFMR_field_scan_*, which the user's ST-FMR tools expect once per run folder.
+STFMR_SAVED_CSV_PREFIX = "STFMR_saved_"
 # The SMB100A's level resolution.  Every power of the list is rounded to it
 # and repeats are merged, so each pass is a level the generator can really
 # set and its label is the level that was sent (review, 2026-10-14).
@@ -3526,6 +3529,7 @@ class STFMRSMB100AController(SafeVisaIdentityController):
             safe_off_commands=("AM:STAT OFF", "LFO OFF", "OUTPUT OFF"),
             owner_scope="STFMR",
         )
+        self.last_configure_readbacks: dict[str, float] = {}
 
     def configure(self, frequency_ghz: float, power_dbm: float, lfo_hz: float) -> float:
         """Set up the carrier, the level and the AM, then switch them on.
@@ -3539,7 +3543,12 @@ class STFMRSMB100AController(SafeVisaIdentityController):
         same way ("LFO:FREQ?" and "FREQ?" right after each, also before
         "LFO ON" / "OUTPUT ON"; review, 2026-10-18).  Every write and its
         order are those of the supplied LabVIEW trace; the queries are the
-        only addition.  Returns the power's read-back in dBm."""
+        only addition.  Returns the power's read-back in dBm; the carrier's
+        and the LFO's read-backs (Hz) are left in last_configure_readbacks,
+        for the sweep's frequency_ready (review, 2026-10-18: they were
+        discarded at the start), and it is emptied first, so a configure
+        that fails leaves no older values there."""
+        self.last_configure_readbacks = {}
         frequency_ghz = float(frequency_ghz)
         power_dbm = float(power_dbm)
         lfo_hz = float(lfo_hz)
@@ -3551,7 +3560,7 @@ class STFMRSMB100AController(SafeVisaIdentityController):
             raise ValueError("SMB100A power software limit is 25 dBm")
         power_command = f":POW {power_dbm:.6g}"
         lfo_command = f"LFO:FREQ {lfo_hz:.7g} Hz"
-        frequency_command = f"FREQ {frequency_ghz:.9g}GHz"
+        frequency_command, sent_hz = self._carrier_command(frequency_ghz)
         readback = math.nan
         with self.lock:
             if self.instrument is None:
@@ -3571,12 +3580,24 @@ class STFMRSMB100AController(SafeVisaIdentityController):
                 if command == power_command:
                     readback = self._read_back_power(power_command, power_dbm)
                 elif command == lfo_command:
-                    self._read_back_frequency(lfo_command, "LFO:FREQ?", lfo_hz,
-                                              STFMR_SMB100A_LFO_READBACK_TOLERANCE_HZ, "modulation frequency")
+                    self.last_configure_readbacks["modulation_readback_hz"] = self._read_back_frequency(
+                        lfo_command, "LFO:FREQ?", lfo_hz, STFMR_SMB100A_LFO_READBACK_TOLERANCE_HZ,
+                        "modulation frequency")
                 elif command == frequency_command:
-                    self._read_back_frequency(frequency_command, "FREQ?", frequency_ghz * 1.0e9,
-                                              STFMR_SMB100A_FREQUENCY_READBACK_TOLERANCE_HZ, "carrier frequency")
+                    self.last_configure_readbacks["frequency_readback_hz"] = self._read_back_frequency(
+                        frequency_command, "FREQ?", sent_hz, STFMR_SMB100A_FREQUENCY_READBACK_TOLERANCE_HZ,
+                        "carrier frequency")
         return readback
+
+    @staticmethod
+    def _carrier_command(frequency_ghz: float) -> tuple[str, float]:
+        """The carrier's command and the frequency it actually sends, in Hz.
+        "FREQ {f:.9g}GHz" rounds to 9 digits (100 Hz above 10 GHz), so the
+        read-back is compared with that value, not the one asked for, which
+        could be refused although the generator took exactly what it was
+        sent (review, 2026-10-18).  The command is the trace's, unchanged."""
+        text = f"{float(frequency_ghz):.9g}"
+        return f"FREQ {text}GHz", float(text) * 1.0e9
 
     def set_frequency(self, frequency_ghz: float) -> float:
         """Change only the carrier frequency while AM/LFO/RF remain enabled,
@@ -3588,9 +3609,9 @@ class STFMRSMB100AController(SafeVisaIdentityController):
         with self.lock:
             if self.instrument is None:
                 raise RuntimeError("SMB100A is not connected")
-            command = f"FREQ {frequency_ghz:.9g}GHz"
+            command, sent_hz = self._carrier_command(frequency_ghz)
             self.instrument.write(command)
-            return self._read_back_frequency(command, "FREQ?", frequency_ghz * 1.0e9,
+            return self._read_back_frequency(command, "FREQ?", sent_hz,
                                              STFMR_SMB100A_FREQUENCY_READBACK_TOLERANCE_HZ, "carrier frequency")
 
     def set_modulation_frequency(self, lfo_hz: float) -> float:
@@ -14554,6 +14575,23 @@ class ScanRunRecorder:
             self.fieldnames = fields
             self.rows_written += 1
 
+    def write_header(self, fieldnames) -> None:
+        """The live CSV's header now, before any row: for a page whose run
+        must show its columns even when it stops before its first point
+        (Gate-VI's summary, as its two other CSVs; review, 2026-10-18).
+        Later rows keep these columns (append_row).  Does nothing once a
+        header is there; a failure raises, to end the scan."""
+        with self.lock:
+            if self.closed:
+                raise RuntimeError(f"The {self.label} live CSV is closed")
+            if self.fieldnames is not None:
+                return
+            fields = [str(name) for name in fieldnames]
+            with self.csv_path.open("a", newline="", encoding="utf-8-sig") as handle:
+                csv.DictWriter(handle, fieldnames=fields).writeheader()
+                self._sync(handle)
+            self.fieldnames = fields
+
     def close(self, outcome: str, /, **details) -> list[str]:
         """run_finished, then closed for good; best effort, once (the later
         calls do nothing).  The errors are returned for the page to show."""
@@ -14678,18 +14716,63 @@ def begin_scan_run(parent, page_label: str, folder_title: str, initial_dir, sett
         return None
 
 
+class ScanCloseHandoff:
+    """The program closing during a scan (review, 2026-10-18): the page's
+    instrument clean-up (disconnect) must come after the scan's worker has
+    zeroed its sources (read back) and closed its run log, or that zero
+    finds them "not connected" and the log says so.  SHV queues its clean-up
+    on its one worker; a page whose close cannot queue behind the scan
+    (several workers, or queued jobs to cancel) uses this: the worker calls
+    begin() when the scan starts and end() as its very last step; the close
+    calls defer(cleanup), which leaves cleanup for end() while a scan is
+    active, or returns False, and the close then runs it itself."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.active = False
+        self.cleanup = None
+
+    def begin(self) -> None:
+        with self.lock:
+            self.active = True
+
+    def defer(self, cleanup) -> bool:
+        with self.lock:
+            if not self.active:
+                return False
+            self.cleanup = cleanup
+            return True
+
+    def end(self) -> None:
+        with self.lock:
+            self.active = False
+            cleanup, self.cleanup = self.cleanup, None
+        if cleanup is not None:
+            cleanup()
+
+
+# A zero that was sent but, by design, not read back (review, 2026-10-18):
+# the MOKE magnet's other KEPCO, which the path selector isolates, so its
+# silence is no failure.  Neither "zeroed" nor a failure in the texts.
+ZERO_SENT_NOT_READ_BACK = "0 A sent, not read back"
+# The states of zero_scan_outputs that need no CHECK IT.
+SCAN_ZERO_OK_STATES = ("zeroed", "not connected", ZERO_SENT_NOT_READ_BACK)
+
+
 def zero_scan_outputs(steps) -> dict[str, str]:
     """A scan's end on the page's worker (user, 2026-10-18: every scan page
     zeroes its sources at every end, as SHV).  steps: (label, zero) pairs in
     order.  Each zero() is tried whatever the others did.  zero() raises when
     its output is not confirmed at zero (read back where the instrument
-    allows), or returns "not connected" when there is nothing to zero.  It
-    never raises and returns {label: "zeroed" | "not connected" | "zero
-    FAILED: <error>"}, for outputs_zeroed and scan_end_outputs_text."""
+    allows), or returns "not connected" when there is nothing to zero, or
+    ZERO_SENT_NOT_READ_BACK when it only sent the zero.  It never raises and
+    returns {label: "zeroed" | "not connected" | ZERO_SENT_NOT_READ_BACK |
+    "zero FAILED: <error>"}, for outputs_zeroed and scan_end_outputs_text."""
     results = {}
     for label, zero in steps:
         try:
-            results[label] = "not connected" if zero() == "not connected" else "zeroed"
+            state = zero()
+            results[label] = state if state in ("not connected", ZERO_SENT_NOT_READ_BACK) else "zeroed"
         except Exception as error:
             results[label] = f"zero FAILED: {error}"
     return results
@@ -14719,11 +14802,13 @@ def scan_end_outputs_text(results, outputs=(), check: bool = True, together: str
     states = [results.get(name, "") for name in names]
     if all(state == "zeroed" for state in states):
         return f"{together} zeroed"
-    failed = [name for name, state in zip(names, states) if state not in ("zeroed", "not connected")]
+    # ZERO_SENT_NOT_READ_BACK is said as it is: neither zeroed nor failed
+    # (review, 2026-10-18).
+    failed = [name for name, state in zip(names, states) if state not in SCAN_ZERO_OK_STATES]
     if len(names) > 1 and len(failed) == len(names):
         text = "zero FAILED: " + joined(failed)
     else:
-        text = "; ".join(f"{name} {state}" if state in ("zeroed", "not connected") else f"{name} zero FAILED"
+        text = "; ".join(f"{name} {state}" if state in SCAN_ZERO_OK_STATES else f"{name} zero FAILED"
                          for name, state in zip(names, states))
     if check and failed:
         text += ": check it" if len(failed) == 1 else ": check them"
@@ -14990,7 +15075,10 @@ class CombinedControlApp:
         self.led_roi_live_last_sample_time = self.led_roi_live_start_time
         self.led_roi_live_sample_sum = 0.0
         self.led_roi_live_sample_count = 0
-        self.keithley_controller = Keithley2410Controller(self.thread_log)
+        # The controllers log as Non-local's do (_nonlocal_log): the program
+        # log, and while the page's scan runs also its run log's "note"
+        # (review, 2026-10-18: their lines missed the run log).
+        self.keithley_controller = Keithley2410Controller(self._keithley_controller_log)
         self.keithley_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="keithley-2410"
         )
@@ -15050,7 +15138,7 @@ class CombinedControlApp:
         self.keithley_manual_buttons: list[ttk.Button] = []
         self.keithley_manual_zero_button = None
 
-        self.k6221_controller = Keithley6221Controller(self.thread_log)
+        self.k6221_controller = Keithley6221Controller(self._cidwm_controller_log)
         self.k6221_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="keithley-6221"
         )
@@ -15103,7 +15191,7 @@ class CombinedControlApp:
         self.k6221_compliance_state_label = None
         # The Avtech pulse generator on CIDWM (user, 2026-10-13): its own
         # executor; the pulse sign scan uses it or the 6221 ("Pulse source").
-        self.avtech_controller = AvtechPulserController(self.thread_log)
+        self.avtech_controller = AvtechPulserController(self._cidwm_controller_log)
         self.avtech_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="avtech-pulser")
         self.avtech_busy = False
         self.avtech_closed = False
@@ -19148,11 +19236,45 @@ class CombinedControlApp:
         failed Zero / OFF or Disconnect (user, 2026-10-18: "Refuse: zero it
         first").  The 4886 cannot be read back, so "on" is what this program
         sent (output_owned).  A sweep's own moves zero the 4886 before each
-        move instead."""
+        move instead.
+
+        The FMR, STFMR and SHV pages each have a 4886 controller for the same
+        supply (GPIB0::6), so this page's own "off" proves nothing while it
+        is not connected here: SHV's could hold the magnet at 2 A (review,
+        2026-10-18).  So the move is also refused unless this page's 4886 is
+        connected (it then holds the supply's lease, so no other page can
+        switch it on), and while any other page's 4886 output is on or not
+        confirmed off."""
         kepco = self.stfmr_lockin_controllers["kepco"]
+        if not getattr(kepco, "connected", False):
+            raise RuntimeError("Connect the 4886 on this page and zero it (Zero / OFF) first: the stage must not "
+                               "turn with the magnet on")
         if getattr(kepco, "output_owned", False):
             raise RuntimeError("The KEPCO 4886 output is on (or not confirmed off): Zero the 4886 first "
                                "(Zero / OFF), then move the stage")
+        self._stfmr_lockin_require_other_4886_off()
+
+    def _stfmr_lockin_require_other_4886_off(self) -> None:
+        """Raises while another page's 4886 output is on or not confirmed off
+        (review, 2026-10-18): before a hand move, its CLR / EO=1, and each of
+        a sweep's stage moves."""
+        others = self._stfmr_lockin_other_4886_on()
+        if others:
+            raise RuntimeError(f"The KEPCO 4886 output of the {' and '.join(others)} page is on (or not confirmed "
+                               "off): zero it there (Zero / OFF) first: the stage must not turn with the magnet on")
+
+    def _stfmr_lockin_other_4886_on(self) -> list[str]:
+        """The other pages (FMR, SHV) whose 4886 controller has its output on
+        or not confirmed off (output_owned), for the stage's 4886 check
+        (review, 2026-10-18).  Looked up in __dict__, so a page not built
+        (a test harness) counts as off."""
+        own = self.stfmr_lockin_controllers["kepco"]
+        rte = self.__dict__.get("rte_panel")
+        candidates = (("FMR", (self.__dict__.get("stfmr_controllers") or {}).get("kepco")),
+                      ("SHV", ((getattr(rte, "__dict__", {}).get("rte_controllers") or {}).get("kepco")
+                               if rte is not None else None)))
+        return [page for page, kepco in candidates
+                if kepco is not None and kepco is not own and getattr(kepco, "output_owned", False)]
 
     def move_stfmr_lockin_stage(self) -> None:
         """Move stage (user, 2026-10-17: "also add Move stage button for the
@@ -20213,8 +20335,12 @@ class CombinedControlApp:
         without the motor, as before; with the motor (user, 2026-10-17) the
         inputs and the stage check's job first, then, once the check has
         passed, the rest (folder, confirmation, files, outputs) from the Tk
-        event loop.  refresh: the page's buttons follow the state again
-        after the step (they were locked for the check)."""
+        event loop.  The page's buttons follow the state again after every
+        step: the instrument rows and Apply output are locked while
+        stfmr_lockin_starting is set, and a Start cancelled at its Yes/No or
+        its folder left them locked when only the motor's step refreshed
+        (review, 2026-10-18).  refresh is kept for the callers; the refresh
+        is always made."""
         self.stfmr_lockin_starting = True
         try:
             step()
@@ -20229,7 +20355,8 @@ class CombinedControlApp:
                     messagebox.showerror("STFMR start failed", str(error), parent=self.root)
         finally:
             self.stfmr_lockin_starting = False
-            if refresh and not self.closing and not self.stfmr_lockin_closed:
+            if not self.closing and not self.stfmr_lockin_closed:
+                # The instrument rows too (_stfmr_lockin_rows_locked).
                 self._update_stfmr_lockin_ui()
 
     def _start_stfmr_lockin_scan(self) -> None:
@@ -21056,6 +21183,7 @@ class CombinedControlApp:
                     kepco = self.stfmr_lockin_controllers["kepco"]
                     if not kepco.connected:
                         raise RuntimeError("The KEPCO 4886 is not connected; the sweep stopped before the stage moved")
+                    self._stfmr_lockin_require_other_4886_off()
                     was_on = getattr(kepco, "output_owned", True)
                     with visa_operation("KEPCO 4886", "zeroing before the first stage move"):
                         kepco.zero_output()
@@ -21076,6 +21204,12 @@ class CombinedControlApp:
                         power_dbm,
                         self.stfmr_lockin_expected_hz,
                     )
+                # The first carrier and LFO read-backs, logged in
+                # frequency_ready as the later ones are (review, 2026-10-18).
+                first = getattr(self.stfmr_lockin_controllers["smb"], "last_configure_readbacks", None)
+                if isinstance(first, dict):
+                    readbacks.update({key: first.get(key) for key in ("frequency_readback_hz",
+                                                                     "modulation_readback_hz")})
                 if meter in ("SR830", "MFLI + SR830"):
                     with visa_operation("SR830", "lock-in setup"):
                         sr830_setup = self.stfmr_lockin_controllers["830"].configure(
@@ -21107,6 +21241,12 @@ class CombinedControlApp:
                 # The next angle, with the 4886 at zero and the RF, AM and LFO
                 # left on (user, 2026-10-17).
                 if angle_change and angle_target is not None:
+                    # Without a session the zero above sent nothing, and
+                    # another page's 4886 may be on (review, 2026-10-18): the
+                    # stage must not turn with the magnet on.
+                    if not self.stfmr_lockin_controllers["kepco"].connected:
+                        raise RuntimeError("The KEPCO 4886 is not connected; the sweep stopped before the stage moved")
+                    self._stfmr_lockin_require_other_4886_off()
                     moved["state"] = self._stfmr_lockin_move_stage(angle_target)
                     if moved["state"] is None:
                         return
@@ -22933,7 +23073,13 @@ class CombinedControlApp:
         if not folder:
             return
         stamp = datetime_module.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        csv_path = Path(folder) / f"STFMR_field_scan_{stamp}.csv"
+        # STFMR_saved_<stamp>, never STFMR_field_scan_*: the user's ST-FMR
+        # tools (3-Transport-RT/process/scripts/stfmr/io.py) take the one
+        # STFMR_field_scan_*.csv in a run folder as the run, and refuse a
+        # folder with two (review, 2026-10-18).  The folder is picked, not
+        # the name, so a saved copy can never match it; its PNGs follow its
+        # stem.
+        csv_path = Path(folder) / f"{STFMR_SAVED_CSV_PREFIX}{stamp}.csv"
         try:
             with csv_path.open("w", newline="", encoding="utf-8-sig") as handle:
                 writer = csv.DictWriter(handle, fieldnames=list(self.stfmr_lockin_rows[0]))
@@ -23270,14 +23416,27 @@ class CombinedControlApp:
             setattr(self, f"stfmr_{kind}_run_directory", recorder.directory)
         return recorder
 
-    def _stfmr_fmr_zero_outputs(self) -> dict[str, str]:
+    def _stfmr_fmr_zero_outputs(self, readout: bool = True) -> dict[str, str]:
         """An FMR scan's end, completed, stopped or failed (user,
         2026-10-18: every scan page zeroes its sources at every end, as
         SHV): the 4886 as its Zero / OFF button zeroes it (force_output_off:
         zero and OUTP OFF, whoever switched it on; write-only, so nothing
         can be read back, and the readout shows what was sent), then the PNA
         RF off with OUTP? read back as 0.  Each is tried whatever the other
-        did, through the shared zero_scan_outputs; never raises."""
+        did, through the shared zero_scan_outputs; never raises.
+
+        readout=False: the program closing, on the shutdown thread, where
+        the readout's StringVars must not be set (Tk is not thread-safe;
+        review, 2026-10-18).  The readout is display only either way: a Tk
+        error there never makes a zero that was sent count as failed."""
+        def show(update, *args) -> None:
+            if not readout:
+                return
+            try:
+                update(*args)
+            except Exception:
+                pass
+
         def kepco_off():
             kepco = self.stfmr_controllers["kepco"]
             if not kepco.connected:
@@ -23285,9 +23444,9 @@ class CombinedControlApp:
             try:
                 result = kepco.force_output_off()
             except BaseException:
-                self._flag_stfmr_kepco_off_unconfirmed()
+                show(self._flag_stfmr_kepco_off_unconfirmed)
                 raise
-            self._apply_stfmr_kepco_readback(result)
+            show(self._apply_stfmr_kepco_readback, result)
 
         def rf_off():
             pna = self.stfmr_controllers["vna"]
@@ -29591,6 +29750,16 @@ class CombinedControlApp:
         self.thread_log(text)
         self._scan_log(attribute, "note", text=str(text))
 
+    def _keithley_controller_log(self, text: str) -> None:
+        """The MOKE-24 Keithley controller's lines: notes of a running
+        MOKE-24 scan too (review, 2026-10-18)."""
+        self._scan_page_log("keithley_scan_recorder", text)
+
+    def _cidwm_controller_log(self, text: str) -> None:
+        """The CIDWM 6221's and Avtech's controller lines: notes of a running
+        pulse sign scan too (review, 2026-10-18)."""
+        self._scan_page_log("cidwm_scan_recorder", text)
+
     def _close_scan_recorder(self, attribute: str, outcome: str, /, **details) -> None:
         """run_finished and the close of self.<attribute>, best effort, once;
         what went wrong is in the page log."""
@@ -29632,7 +29801,7 @@ class CombinedControlApp:
             **({"stop_reason": stop_reason} if outcome == "stopped" and stop_reason else {}), **details,
         )
         detail = self._scan_outputs_detail(results, labels)
-        failed = not results or any(results.get(name) not in ("zeroed", "not connected") for name in labels)
+        failed = not results or any(results.get(name) not in SCAN_ZERO_OK_STATES for name in labels)
         if error is not None:
             self._dialog_after_drain("showerror", title, f"{error}\n\n{detail}")
         elif failed:
@@ -31458,10 +31627,14 @@ class CombinedControlApp:
         if recorder is None:
             abort_scan_preparation("Scan not started; continuous reading resumed")
             return
-        # The page may have changed while the dialogs were open.
+        # The page may have changed while the dialogs were open; a MOKE-24
+        # or CIDWM scan started meanwhile would share the camera (review,
+        # 2026-10-18: only checked before the dialogs).
         if (
             self.magnet_scan_running
             or self.magnet_busy
+            or self.keithley_scan_running
+            or self.k6221_scan_running
             or not self._magnet_devices_ready()
             or not self._magnet_bops_armed()
         ):
@@ -31796,6 +31969,9 @@ class CombinedControlApp:
                 return "not connected"
             bop.set_current(0.0)
             self.post_ui(lambda: self.magnet_target_vars[other].set("0.000"))
+            # Written, not read back: never reported "zeroed" (review,
+            # 2026-10-18).
+            return ZERO_SENT_NOT_READ_BACK
 
         results = zero_scan_outputs(((scanned_label, zero_scanned), (other_label, zero_other)))
         self._scan_log("magnet_scan_recorder", "outputs_zeroed", **results)
@@ -34517,9 +34693,13 @@ class CombinedControlApp:
         )
         if recorder is None:
             return
-        if not self._cidwm_source_ready(source) or self.k6221_scan_running:
+        # The magnet and MOKE-24 scans too, which share the camera (review,
+        # 2026-10-18: only checked before the dialogs).
+        if (not self._cidwm_source_ready(source) or self.k6221_scan_running
+                or self.magnet_scan_running or self.keithley_scan_running):
             recorder.close("not_started", error="the CIDWM page changed while the dialogs were open",
                            points_saved=0)
+            self.k6221_status_var.set("Scan not started: the page changed while the dialogs were open")
             return
         self.cidwm_scan_directory = recorder.directory.parent
         run_directory = recorder.directory
@@ -35964,7 +36144,9 @@ class CombinedControlApp:
                 f"{label} connection failed: {short_status_error(error)}"
             )
             if not self.closing:
-                messagebox.showerror("Non-local VI", str(error), parent=self.root)
+                # From the Tk event loop, not inside drain_ui_queue (README rule of
+                # 2026-10-14; review, 2026-10-18).
+                self._nonlocal_dialog_later("showerror", "Non-local VI", str(error))
         self._refresh_nonlocal_vi_connection_summary()
         self._redraw_nonlocal_vi_plots()
         self._update_nonlocal_vi_controls()
@@ -36050,7 +36232,9 @@ class CombinedControlApp:
             else f"{label} disconnect warning: {error}"
         )
         if error is not None and not self.closing:
-            messagebox.showerror("Non-local VI", str(error), parent=self.root)
+            # From the Tk event loop, not inside drain_ui_queue (README rule of
+            # 2026-10-14; review, 2026-10-18).
+            self._nonlocal_dialog_later("showerror", "Non-local VI", str(error))
         self._refresh_nonlocal_vi_connection_summary()
         self._redraw_nonlocal_vi_plots()
         self._update_nonlocal_vi_controls()
@@ -36188,7 +36372,9 @@ class CombinedControlApp:
                 self._update_nonlocal_vi_controls()
                 return
             if not self.closing:
-                messagebox.showerror("Non-local VI", str(error), parent=self.root)
+                # From the Tk event loop, not inside drain_ui_queue (README rule of
+                # 2026-10-14; review, 2026-10-18).
+                self._nonlocal_dialog_later("showerror", "Non-local VI", str(error))
         else:
             self._set_nonlocal_vi_indicator("2410", True)
             self._set_nonlocal_vi_indicator("6221", True)
@@ -36276,7 +36462,9 @@ class CombinedControlApp:
             "Safely disconnected" if error is None else f"Disconnect warning: {error}"
         )
         if error is not None and not self.closing:
-            messagebox.showerror("Non-local VI", str(error), parent=self.root)
+            # From the Tk event loop, not inside drain_ui_queue (README rule of
+            # 2026-10-14; review, 2026-10-18).
+            self._nonlocal_dialog_later("showerror", "Non-local VI", str(error))
         self._redraw_nonlocal_vi_plots()
         self._update_nonlocal_vi_controls()
         self._update_k6221_controls()
@@ -37111,6 +37299,10 @@ class CombinedControlApp:
                                   self.NONLOCAL_VI_RESISTANCE_HEADER)):
                 self._nonlocal_side_csv_rows(recorder, path, [header], create=True)
             summary_header = self._nonlocal_vi_summary_header()
+            # And the summary's header (<name>.csv), so a scan stopped before
+            # its first point shows its columns there too, as VI_summary.csv
+            # did (review, 2026-10-18).
+            recorder.write_header(summary_header)
             # A voltage left on by Set: drained and off before the 6221.
             self._nonlocal_keithley_off_first("before the Gate-VI scan", in_use="in use by the Gate-VI scan")
             source = self.nonlocal_vi_ac_controller
@@ -37886,7 +38078,9 @@ class CombinedControlApp:
             else:
                 self.nonlocal_vi_status_var.set("No output connected to switch off")
         if error is not None and not self.closing:
-            messagebox.showerror("Non-local VI", str(error), parent=self.root)
+            # From the Tk event loop, not inside drain_ui_queue (README rule of
+            # 2026-10-14; review, 2026-10-18).
+            self._nonlocal_dialog_later("showerror", "Non-local VI", str(error))
         self._update_nonlocal_vi_controls()
 
     def _layout_nonlocal_vi_plots(self, shown) -> None:
@@ -38502,6 +38696,10 @@ class CombinedControlApp:
         (_nonlocal_zero_outputs).  The finish reads nonlocal_scan_outputs.
         While the program closes no finish comes, so the log is closed here."""
         error = None
+        # The program's close leaves its disconnect to this job until its
+        # end below (review, 2026-10-18).
+        handoff = self._nonlocal_close_handoff()
+        handoff.begin()
         try:
             recorder.event("scan_started", scan=self.NONLOCAL_SCAN_NAMES[scan][0], **details)
             recorder.check()
@@ -38510,15 +38708,21 @@ class CombinedControlApp:
             error = caught
             raise
         finally:
-            results = self._nonlocal_zero_outputs(recorder)
-            if self.__dict__.get("closing") or self.__dict__.get("nonlocal_vi_closed"):
-                outcome = self._nonlocal_run_outcome(error)
-                self._nonlocal_close_run(
-                    recorder, outcome, error=str(error) if outcome == "error" else "",
-                    **({"stop_reason": f"the program closed ({error})"} if outcome == "stopped" else {}),
-                    outputs=results, points_saved=int(self.__dict__.get("nonlocal_run_points") or 0),
-                )
-                self.nonlocal_recorder = None
+            try:
+                results = self._nonlocal_zero_outputs(recorder)
+                if self.__dict__.get("closing") or self.__dict__.get("nonlocal_vi_closed"):
+                    outcome = self._nonlocal_run_outcome(error)
+                    self._nonlocal_close_run(
+                        recorder, outcome, error=str(error) if outcome == "error" else "",
+                        **({"stop_reason": f"the program closed ({error})"} if outcome == "stopped" else {}),
+                        outputs=results, points_saved=int(self.__dict__.get("nonlocal_run_points") or 0),
+                    )
+                    self.nonlocal_recorder = None
+            finally:
+                handoff.end()
+
+    def _nonlocal_close_handoff(self) -> ScanCloseHandoff:
+        return self.__dict__.setdefault("nonlocal_close_handoff_state", ScanCloseHandoff())
 
     def _nonlocal_zero_outputs(self, recorder=None) -> dict[str, str]:
         """A scan's end on the page's worker (user, 2026-10-18): the 6221
@@ -39174,7 +39378,9 @@ class CombinedControlApp:
                     + self._nonlocal_output_warning()
                 )
                 if not self.closing:
-                    messagebox.showerror(f"Set {model}", str(error), parent=self.root)
+                    # From the Tk event loop, not inside drain_ui_queue (README rule of
+                    # 2026-10-14; review, 2026-10-18).
+                    self._nonlocal_dialog_later("showerror", f"Set {model}", str(error))
         else:
             text = f"ON: {voltage_v:.6g} V, I = {format_current(current_a)}"
             self.nonlocal_iv_keithley_var.set(f"Keithley {model} {text}")
@@ -39247,7 +39453,9 @@ class CombinedControlApp:
                 + self._nonlocal_output_warning()
             )
             if not self.closing:
-                messagebox.showerror(f"{model} pulse", str(error), parent=self.root)
+                # From the Tk event loop, not inside drain_ui_queue (README rule of
+                # 2026-10-14; review, 2026-10-18).
+                self._nonlocal_dialog_later("showerror", f"{model} pulse", str(error))
         else:
             self.nonlocal_vi_status_var.set(
                 f"{model} pulse applied: {settings['voltage_v']:g} V for {settings['width_s']:g} s "
@@ -39935,7 +40143,9 @@ class CombinedControlApp:
                        if unconfirmed else "")
                 )
             if not self.closing and not isinstance(error, InterruptedError):
-                messagebox.showerror("Set 6221", str(error), parent=self.root)
+                # From the Tk event loop, not inside drain_ui_queue (README rule of
+                # 2026-10-14; review, 2026-10-18).
+                self._nonlocal_dialog_later("showerror", "Set 6221", str(error))
         else:
             text = f"6221 ON: {actual:.4g} mA RMS / {frequency:g} Hz"
             self.nonlocal_iv6221_source_var.set(text)
@@ -40841,13 +41051,24 @@ class CombinedControlApp:
         # A running scan's log: its worker's end zeroes both outputs and
         # closes the log, as no finish comes now (user, 2026-10-18).
         self._nonlocal_stop_requested("the program closing")
-        try:
-            self._disconnect_nonlocal_vi_worker()
-        except BaseException as error:
+
+        def cleanup() -> None:
             try:
-                self.append_log(f"Non-local VI safe-close warning: {error}")
-            except BaseException:
-                pass
+                self._disconnect_nonlocal_vi_worker()
+            except BaseException as error:
+                try:
+                    self.append_log(f"Non-local VI safe-close warning: {error}")
+                except BaseException:
+                    pass
+
+        try:
+            # A running scan's job disconnects once it has zeroed both
+            # outputs (read back) and closed its log (review, 2026-10-18):
+            # disconnected at once, its zero found them "not connected".
+            # Queued jobs are still cancelled: a scan not yet started never
+            # drove anything, and nothing queued runs after the close.
+            if not self._nonlocal_close_handoff().defer(cleanup):
+                cleanup()
         finally:
             self.nonlocal_vi_executor.shutdown(
                 wait=False, cancel_futures=True
@@ -42661,15 +42882,20 @@ class CombinedControlApp:
         command: str,
         expected_count: int,
     ) -> tuple[float, ...]:
-        """Query a PPMS rack instrument and recover one stale GPIB reply."""
+        """Query a PPMS rack instrument and recover one stale GPIB reply.
+        A query that clears what it reports (LIAS?, *ESR?, ERRS?) is asked
+        once, as on Non-local (review, 2026-10-18): asked again it answers 0
+        and hides what the first read cleared.  Its misaligned reply clears
+        the buffer for the next query and raises."""
         controller = self.ppms_instrument_controllers[key]
         last_response = ""
         last_error: BaseException | None = None
+        once = command.strip().upper() in NonLocalACController.CLEAR_ON_READ_QUERIES
         with controller.lock:
             instrument = controller.instrument
             if instrument is None:
                 raise RuntimeError(f"PPMS {controller.label} is not connected")
-            for attempt in range(1, 4):
+            for attempt in range(1, 2 if once else 4):
                 try:
                     last_response = instrument.query(command).strip()
                     values = tuple(
@@ -42691,10 +42917,33 @@ class CombinedControlApp:
                     except Exception:
                         pass
                     time.sleep(0.08)
+                    if once:
+                        break
         raise RuntimeError(
-            f"PPMS {controller.label} query {command!r} kept returning abnormal replies: "
-            f"{last_response!r}"
+            f"PPMS {controller.label} query {command!r} "
+            + ("returned an abnormal reply (not asked again: it clears as it is read): " if once
+               else "kept returning abnormal replies: ")
+            + f"{last_response!r}"
         ) from last_error
+
+    def _ppms_query_lias(self, key: str) -> int:
+        """LIAS? once (review, 2026-10-18, as Non-local's C2-3): a reply that
+        is misaligned or not a status byte is logged and counted as
+        overloaded with the reference unlocked
+        (NonLocalACController.SR830_LIAS_UNREADABLE), so the reading is
+        invalid and ranges up, never retried into a cleared 0."""
+        try:
+            value = self._ppms_query_numbers(key, "LIAS?", 1)[0]
+            if not (float(value).is_integer() and 0 <= value <= 255):
+                raise ValueError(f"not a status byte: {value!r}")
+            return int(value)
+        except Exception as error:
+            if not self.ppms_instrument_controllers[key].connected:
+                raise
+            self.thread_log(f"{getattr(type(self), 'ppms_page_name', 'PPMS')} "
+                            f"{self.ppms_instrument_controllers[key].label} LIAS? reply unreadable ({error}); "
+                            "not asked again (it clears as it is read): the reading counts as overloaded")
+            return NonLocalACController.SR830_LIAS_UNREADABLE
 
     def _ppms_write_6221_checked(self, command: str) -> None:
         controller = self.ppms_instrument_controllers["6221"]
@@ -43255,7 +43504,7 @@ class CombinedControlApp:
             locked = True
             for key in active_lockins:
                 frequency = self._ppms_query_numbers(key, "FREQ?", 1)[0]
-                status = int(round(self._ppms_query_numbers(key, "LIAS?", 1)[0]))
+                status = self._ppms_query_lias(key)
                 last_reference[key] = (frequency, status)
                 if (status & 8) or not math.isclose(
                     frequency, frequency_hz, rel_tol=5e-3, abs_tol=0.1
@@ -43362,11 +43611,13 @@ class CombinedControlApp:
         """
         state = getattr(self, "ppms_sr830_range_states", {}).get(key)
         if state is not None and getattr(state, "clear_latch_pending", False):
-            self._ppms_query_numbers(key, "LIAS?", 1)
+            self._ppms_query_lias(key)
             state.clear_latch_pending = False
         if fresh:
-            self._ppms_query_numbers(key, "LIAS?", 1)
-        return int(round(self._ppms_query_numbers(key, "LIAS?", 1)[0]))
+            self._ppms_query_lias(key)
+        # Each LIAS? asked once; an unreadable one counts as overloaded and
+        # unlocked (review, 2026-10-18).
+        return self._ppms_query_lias(key)
 
     def _ppms_sr830_settle_s(self, key, time_constants=5.0) -> float:
         code = int(self._ppms_query_numbers(key, "OFLT?", 1)[0])
@@ -43575,6 +43826,11 @@ class CombinedControlApp:
     def start_ppms_field_scan(self) -> None:
         if self.ppms_field_scan_running or self.ppms_environment_busy:
             return
+        # Cleared at the start of Start, as SHV does (review, 2026-10-18): an
+        # old Stop does not stop this scan, and an I off pressed during the
+        # Yes/No or the save dialogs keeps it from starting.  It was cleared
+        # after the dialogs, which lost that I off.
+        self.ppms_field_scan_stop_event.clear()
         try:
             self._require_ppms_control_ready()
             mode = self.ppms_simple_mode.get()
@@ -43858,8 +44114,18 @@ class CombinedControlApp:
         initial_dir = None
         if last_folder is not None and Path(last_folder).parent.is_dir():
             initial_dir = Path(last_folder).parent
+        if self.ppms_field_scan_stop_event.is_set():
+            self.ppms_field_scan_status_var.set(f"{mode} scan not started: I off was pressed")
+            return
         recorder = begin_scan_run(self.root, "PPMS", "Select the folder for the PPMS run", initial_dir, run_settings)
         if recorder is None:
+            return
+        if self.ppms_field_scan_stop_event.is_set():
+            # I off during the folder or name dialog: the run folder stays,
+            # closed not_started, and nothing is switched on.
+            recorder.close("not_started", stop_reason="I off was pressed before the scan started", points_saved=0)
+            self.ppms_run_folder = recorder.directory
+            self.ppms_field_scan_status_var.set(f"{mode} scan not started: I off was pressed")
             return
         self.ppms_run_recorder, self.ppms_run_folder = recorder, recorder.directory
         self.thread_log(f"PPMS {mode} scan; run folder: {recorder.directory} ({recorder.csv_path.name} and "
@@ -43872,7 +44138,6 @@ class CombinedControlApp:
                             + (", the whole current sweep at each" if mode == "Frequency+Current" else ""))
         self.ppms_scan_settle_logged = settle_s
         self.ppms_scan_sr830_tc_code = sr830_tc_code
-        self.ppms_field_scan_stop_event.clear()
         self.ppms_field_scan_running = True
         self.ppms_scan_preserve_on_stop = False
         # This scan's ending, for its finish: the zeroing's results, what
@@ -43907,6 +44172,10 @@ class CombinedControlApp:
             "Transport acquisition: configuring the 6221 and the connected SR830…"
         )
         self._update_ppms_control_ui()
+        # From here a program close leaves its instrument clean-up to the
+        # scan's worker, also while the job is still queued (review,
+        # 2026-10-18).
+        self._ppms_close_handoff().begin()
         try:
             future = self.ppms_executor.submit(
                 self._ppms_scan_with_final_field,
@@ -43917,6 +44186,7 @@ class CombinedControlApp:
                 transport_settings,
             )
         except Exception as error:
+            self._ppms_close_handoff().end()
             self.ppms_field_scan_running = False
             self._ppms_close_run("not_started", error=str(error), points_saved=0)
             self._update_ppms_control_ui()
@@ -44129,6 +44399,12 @@ class CombinedControlApp:
     def _ppms_scan_with_final_field(self, *args):
         self.ppms_zero_persist_completed = False
         self.ppms_scan_outputs = None
+        # Until the end below, the program's close leaves its instrument
+        # clean-up to this worker (review, 2026-10-18).  Start sets it too,
+        # before the job is queued.
+        self._ppms_close_handoff().begin()
+        # A field scan's 0 Oe is sent once per scan (review, 2026-10-18).
+        self.ppms_scan_field_zero_accepted = False
         try:
             try:
                 if len(args) == 5:
@@ -44189,11 +44465,23 @@ class CombinedControlApp:
             if 'ppms_zero_persist_button' in self.__dict__:
                 self.post_ui(lambda: self.ppms_zero_persist_button.configure(text='Zero field + persist after scan'))
             if getattr(self, "closing", False):
+                # Closing during a field scan sets 0 Oe, Driven, here on the
+                # worker and into the run log, unless the scan's own
+                # clean-up already had it accepted (review, 2026-10-18: the
+                # close sent it again from its own thread).
+                if (self.__dict__.get("ppms_active_scan_mode", "") in ("Field", "Field+Temperature")
+                        and len(args) == 5 and not self.__dict__.get("ppms_scan_field_zero_accepted", False)):
+                    try:
+                        if self.ppms_environment_controller.connected:
+                            self._ppms_zero_field_after_interrupted_scan(args[1], args[3])
+                    except Exception as error:
+                        self.thread_log(f"PPMS: zeroing the field before close failed: {error}")
                 # The program is closing: its finish may never run on the Tk
                 # thread, so the run log is closed here (user, 2026-10-18).
                 self._ppms_close_run("stopped", stop_reason="the program closing",
                                      points_saved=len(self.__dict__.get("ppms_field_scan_rows") or ()),
                                      outputs=self.__dict__.get("ppms_scan_outputs"))
+            self._ppms_close_handoff().end()
 
     def _report_ppms_scan_finished(self, mode, stopped, error):
         """A PPMS scan's finish on the Tk thread (user, 2026-10-18, the
@@ -44218,7 +44506,12 @@ class CombinedControlApp:
             # A simultaneous stop request must not hide a genuine I/O or
             # cleanup failure. Only typed cancellation is non-modal.
             outcome = "error"
-            status = f"Failed: {short_status_error(error, 100)}"
+            # And a 6221 not confirmed at zero (review, 2026-10-18): the
+            # error is shortened for it, so the line stays as long as before.
+            zero_tail = ("" if outputs_confirmed
+                         else "; 6221 zero FAILED" if results else "; 6221 not confirmed zeroed")
+            text = short_status_error(error, 100 - len(zero_tail))
+            status = f"Failed: {text.rstrip(';') if zero_tail else text}{zero_tail}"
             if field_note == PPMS_FIELD_NOT_ZEROED_TEXT:
                 # Kept on the line: short_status_error ends at "; ".
                 status += f"; {PPMS_FIELD_NOT_ZEROED_TEXT}"
@@ -44251,6 +44544,9 @@ class CombinedControlApp:
             zeroing += f"; {field_note}"
         if outcome == "error":
             text = f"{error}\n\n{zeroing}"
+            if not outputs_confirmed:
+                # CHECK IT on a failure too (review, 2026-10-18).
+                text += "\n\nCHECK IT: the 6221 was not confirmed at zero."
             self._ppms_show_later(lambda: messagebox.showerror(label, text, parent=self.root))
         elif not outputs_confirmed:
             text = f"The scan {outcome}, but the 6221 was not confirmed at zero: CHECK IT.\n\n{zeroing}"
@@ -45005,6 +45301,12 @@ class CombinedControlApp:
         took the command; on a failure the finish says "field NOT zeroed:
         check MultiVu" (ppms_scan_field_note; review, 2026-10-18: it was
         only logged)."""
+        # Sent once per scan (review, 2026-10-18): on I off or closing both
+        # the field worker and the nested scan's clean-up sent it, and a
+        # refused second command then reported the accepted first one as
+        # "field NOT zeroed".  A refused zero may be tried again.
+        if self.__dict__.get("ppms_scan_field_zero_accepted", False):
+            return True
         # User-requested stop uses a fixed ramp, independent of the scan rate.
         # Never change temperature or motor targets in this cleanup path.
         zero_rate = 100.0 if self.ppms_field_scan_stop_event.is_set() else rate_oe_s
@@ -45017,6 +45319,7 @@ class CombinedControlApp:
             self.thread_log(f"PPMS: zeroing after the interrupted field scan failed: {error}")
             self.ppms_scan_field_note = PPMS_FIELD_NOT_ZEROED_TEXT
             return False
+        self.ppms_scan_field_zero_accepted = True
         self.ppms_scan_field_note = "field ramping to 0 Oe"
         return True
 
@@ -45046,10 +45349,12 @@ class CombinedControlApp:
         # the scan's end, as at every end (user, 2026-10-18; it said
         # "nothing zeroed").
         self.ppms_scan_preserve_on_stop = True
-        self._ppms_log("stop_requested", button="Stop")
         if not self.__dict__.get("ppms_scan_stop_button"):
             self.ppms_scan_stop_button = "Stop"
         self.ppms_field_scan_stop_event.set()
+        # The log after the event (review, 2026-10-18, as SHV's H2): a slow
+        # disk never delays the Stop.
+        self._ppms_log("stop_requested", button="Stop")
         mode = getattr(self, "ppms_active_scan_mode", "")
         self.ppms_field_scan_status_var.set(f"Stopping the {mode} scan; completed CSV points kept; the 6221 is "
                                             "zeroed next; temperature, field and angle kept…")
@@ -45289,9 +45594,8 @@ class CombinedControlApp:
         future.add_done_callback(lambda _future: self.post_ui(finished))
 
     def ppms_sources_off(self) -> None:
-        if self.__dict__.get("ppms_run_recorder") is not None:
-            # A running PPMS scan's stop, in its run log (user, 2026-10-18).
-            self._ppms_log("stop_requested", button="I off")
+        running_scan = self.__dict__.get("ppms_run_recorder") is not None
+        if running_scan:
             self.ppms_scan_stop_button = "I off"
         self.ppms_idle_autorange_enabled = False
         self.ppms_scan_preserve_on_stop = False
@@ -45322,6 +45626,11 @@ class CombinedControlApp:
                     if confirmed else "No source meter connected; output state cannot be confirmed")
 
         future = self.ppms_executor.submit(work)
+        if running_scan:
+            # A running PPMS scan's stop, in its run log (user, 2026-10-18),
+            # written after the event is set and the OFF queued (review,
+            # 2026-10-18, as SHV's H2): a slow disk never delays the OFF.
+            self._ppms_log("stop_requested", button="I off")
 
         def finished() -> None:
             try:
@@ -45331,7 +45640,15 @@ class CombinedControlApp:
                 if hasattr(self, "ppms_current_live_var"):
                     self.ppms_current_live_var.set("Unknown / output off not confirmed")
                 if not self.closing:
-                    messagebox.showerror("PPMS source off", str(error), parent=self.root)
+                    # From the Tk event loop, not inside drain_ui_queue (the
+                    # README's rule of 2026-10-14; review, 2026-10-18).  SHV's
+                    # 6221 / 2400 OFF comes here too.
+                    text = str(error)
+
+                    def show() -> None:
+                        if not self.closing:
+                            messagebox.showerror("PPMS source off", text, parent=self.root)
+                    self._ppms_show_later(show)
                 return
             self.ppms_connection_var.set(status)
             if hasattr(self, "ppms_current_live_var"):
@@ -45360,50 +45677,69 @@ class CombinedControlApp:
             return
         self.ppms_closed = True
         scan_was_running = self.ppms_field_scan_running
-        # A running scan's log (user, 2026-10-18); its worker closes the log.
+        # The stop event first, then the log (review, 2026-10-18, as SHV's
+        # H2): a slow disk never delays the stop.  The worker closes the log.
+        self.ppms_field_scan_stop_event.set()
         recorder = self.__dict__.get("ppms_run_recorder")
         if recorder is not None:
             recorder.event("stop_requested", button="the program closing")
-        self.ppms_field_scan_stop_event.set()
         if self.ppms_poll_after_id is not None:
             try:
                 self.root.after_cancel(self.ppms_poll_after_id)
             except (AttributeError, tk.TclError):
                 pass
             self.ppms_poll_after_id = None
-        errors = []
-        # Field scans only: the others keep the magnet's setpoint and mode on
-        # exit, as the worker's finally block and the exit dialog say
-        # (user, 2026-10-09; review, 2026-10-13).
-        if (scan_was_running
-                and getattr(self, "ppms_active_scan_mode", "") in ("Field", "Field+Temperature")
-                and self.ppms_environment_controller.connected):
+
+        def cleanup(after_worker: bool) -> None:
+            # The instruments closed only after a running scan's worker has
+            # zeroed the 6221 (read back), set a field scan's 0 Oe and closed
+            # its run log (review, 2026-10-18): this ran at once, from the
+            # closing thread, so the worker's zero found the 6221 "not
+            # connected" and its log said so.  SHV queues its clean-up the
+            # same way.
+            errors = []
+            # The field is zeroed by the worker (PS3).  Only a field scan
+            # whose worker had already ended (its finish not yet run) and
+            # whose 0 Oe was not accepted gets it here, as before: Field
+            # scans only, the others keep the magnet's setpoint and mode on
+            # exit (user, 2026-10-09; review, 2026-10-13).
+            if (scan_was_running and not after_worker
+                    and getattr(self, "ppms_active_scan_mode", "") in ("Field", "Field+Temperature")
+                    and not self.__dict__.get("ppms_scan_field_zero_accepted", False)
+                    and self.ppms_environment_controller.connected):
+                try:
+                    rate = float(self.ppms_field_rate_var.get())
+                    _target, rate = validate_ppms_field_command(0.0, rate)
+                    approach = self._ppms_field_approach_code(self.ppms_field_approach_var.get())
+                    self.ppms_environment_controller.set_field(0.0, rate, approach, 1)
+                except BaseException as error:
+                    errors.append(f"PPMS: zeroing the field before close failed: {error}")
+            for controller in self.ppms_instrument_controllers.values():
+                try:
+                    controller.disconnect()
+                except BaseException as error:
+                    errors.append(str(error))
             try:
-                rate = float(self.ppms_field_rate_var.get())
-                _target, rate = validate_ppms_field_command(0.0, rate)
-                approach = self._ppms_field_approach_code(
-                    self.ppms_field_approach_var.get()
-                )
-                self.ppms_environment_controller.set_field(
-                    0.0, rate, approach, 1
-                )
-            except BaseException as error:
-                errors.append(f"PPMS: zeroing the field before close failed: {error}")
-        for controller in self.ppms_instrument_controllers.values():
-            try:
-                controller.disconnect()
+                self.ppms_environment_controller.disconnect()
             except BaseException as error:
                 errors.append(str(error))
-        try:
-            self.ppms_environment_controller.disconnect()
-        except BaseException as error:
-            errors.append(str(error))
-        self.ppms_executor.shutdown(wait=False, cancel_futures=True)
-        for error in errors:
-            try:
-                self.append_log(f"PPMS safe-close warning: {error}")
-            except BaseException:
-                pass
+            for error in errors:
+                try:
+                    self.append_log(f"PPMS safe-close warning: {error}")
+                except BaseException:
+                    pass
+
+        deferred = scan_was_running and self._ppms_close_handoff().defer(lambda: cleanup(True))
+        # A deferred clean-up must not be cancelled with the scan still
+        # queued: the scan then runs, sees the stop, zeroes and cleans up.
+        self.ppms_executor.shutdown(wait=False, cancel_futures=not deferred)
+        if not deferred:
+            cleanup(False)
+
+    def _ppms_close_handoff(self) -> ScanCloseHandoff:
+        # setdefault: one hand-off, also on a page made without its
+        # __init__ (the unit tests' pages).
+        return self.__dict__.setdefault("ppms_close_handoff_state", ScanCloseHandoff())
 
     def safe_close_stfmr(self) -> None:
         """Best-effort FMR shutdown; source outputs are always fail-closed."""
@@ -45432,7 +45768,8 @@ class CombinedControlApp:
             # (user, 2026-10-18).
             for kind in scans:
                 setattr(self, f"stfmr_{kind}_running", False)
-            results = self._stfmr_fmr_zero_outputs()
+            # On the shutdown thread: no readout update (review, 2026-10-18).
+            results = self._stfmr_fmr_zero_outputs(readout=False)
             for kind in scans:
                 recorder = self.__dict__.get(f"stfmr_{kind}_recorder")
                 setattr(self, f"stfmr_{kind}_recorder", None)
@@ -49182,6 +49519,40 @@ def rte_outputs_text(results, check=True):
     return scan_end_outputs_text(results, ("6221", "KEPCO"), check=check, together="KEPCO and 6221")
 
 
+# The longest "Failed: ..." SHV status that still names an output not
+# confirmed at zero, in characters: under the 66 of the widest line CI
+# measures in RTEStatusRowTests (review, 2026-10-18).
+RTE_FAILED_STATUS_CHARS = 64
+
+
+def rte_unconfirmed_outputs(results) -> list[str]:
+    """The SHV outputs a scan's end did not confirm at zero, as
+    rte_outputs_text judges them: the 6221 unless "zeroed" (an SHV scan
+    always drives it), the KEPCO unless "zeroed" or "not connected"; both
+    when the zeroing never reported (review, 2026-10-18)."""
+    if not results:
+        return ["6221", "KEPCO"]
+    failed = [] if results.get("6221") == "zeroed" else ["6221"]
+    if results.get("kepco") not in ("zeroed", "not connected"):
+        failed.append("KEPCO")
+    return failed
+
+
+def rte_failed_status_text(error, results) -> str:
+    """An SHV failure's status: "Failed: <error>", and when an output was
+    not confirmed at zero also "; 6221 zero FAILED" (or "; 6221 and KEPCO
+    zero FAILED", or "; outputs not confirmed zeroed" when the zeroing never
+    reported), with the error shortened so that the whole line stays within
+    RTE_FAILED_STATUS_CHARS (review, 2026-10-18: a failure never said so)."""
+    failed = rte_unconfirmed_outputs(results)
+    if not failed:
+        return f"Failed: {short_status_error(error, 100)}"
+    tail = ("; outputs not confirmed zeroed" if not results
+            else f"; {' and '.join(failed)} zero FAILED")
+    text = short_status_error(error, RTE_FAILED_STATUS_CHARS - len("Failed: ") - len(tail)).rstrip(";")
+    return f"Failed: {text}{tail}"
+
+
 # SHV's red "Set stage 0°" (user, 2026-10-18), as the program's red buttons
 # (bg #c62828, white text, #8e0000 while pressed); grey while it is locked, so
 # that a disabled button looks disabled (on red, only its text would grey).
@@ -50683,7 +51054,8 @@ class RTEPanel(PPMSPanel):
                     status = f'Stopped; {outputs}'
                 except Exception as error:
                     outcome, error_text = 'error', str(error)
-                    status = f'Failed: {short_status_error(error, 100)}'
+                    # And an output not confirmed at zero (review, 2026-10-18).
+                    status = rte_failed_status_text(error, results)
                     if mode == 'Angle':
                         # Where the stage is after a failure, "NOT confirmed stopped"
                         # included, goes to the log and the dialog; the status line
@@ -50709,7 +51081,11 @@ class RTEPanel(PPMSPanel):
                 if not self.closing and not self.rte_closed:
                     if outcome == 'error':
                         detail = error_text + (f'\n\n{where[:1].upper()}{where[1:]}' if where else '')
-                        self._rte_dialog('SHV scan', f'{detail}\n\n{zeroing}')
+                        unconfirmed = rte_unconfirmed_outputs(results)
+                        # CHECK IT on a failure too (review, 2026-10-18).
+                        check = (f"\n\nCHECK IT: {' and '.join(unconfirmed)} not confirmed at zero."
+                                 if unconfirmed else '')
+                        self._rte_dialog('SHV scan', f'{detail}\n\n{zeroing}{check}')
                     elif not results or 'FAILED' in f"{results['6221']} {results['kepco']}":
                         self._rte_dialog('SHV outputs', f'The scan {outcome}, but an output was not confirmed at '
                                          f'zero: CHECK IT.\n\n{zeroing}')
@@ -51327,21 +51703,6 @@ class RTEPanel(PPMSPanel):
         ownership = self._newmark_stage_ownership()
         # Queued after the scan on the one-worker executor: no write can follow OFF.
         def cleanup():
-            # A running scan's log, if its finish has not closed it: the scan
-            # ran before this job on the one worker, so it has ended (user,
-            # 2026-10-18).  Best effort, before any instrument is closed.
-            if self.__dict__.get('rte_recorder') is not None:
-                future = self.__dict__.get('rte_scan_future')
-                try:
-                    error = future.exception(timeout=0) if future is not None else None
-                    outcome = ('completed' if error is None else 'stopped' if isinstance(error, PPMSScanCancelled)
-                               else 'error')
-                except Exception as problem:
-                    error, outcome = problem, 'error'
-                self._rte_close_recorder(outcome, error='' if outcome != 'error' else str(error),
-                                         points_saved=len(self.__dict__.get('ppms_field_scan_rows') or ()),
-                                         status='the program closed', stage=self.rte_stage_where,
-                                         outputs=self.__dict__.get('rte_scan_outputs'))
             # The stage first (STOP if it is moving, then Close), on this
             # worker thread, which holds its USB handle; then the rest as before.
             stage = self.rte_controllers.get('newmark')
@@ -51355,6 +51716,23 @@ class RTEPanel(PPMSPanel):
             # (user, 2026-10-17).
             if stage is not None and not stage.connected:
                 ownership.release('SHV')
+            # A running scan's log, if its finish has not closed it: the scan
+            # ran before this job on the one worker, so it has ended (user,
+            # 2026-10-18).  Closed after the stage's stop / disconnect and the
+            # instruments' lines, which are its notes (review, 2026-10-18: it
+            # was closed before them).  Best effort.
+            if self.__dict__.get('rte_recorder') is not None:
+                future = self.__dict__.get('rte_scan_future')
+                try:
+                    error = future.exception(timeout=0) if future is not None else None
+                    outcome = ('completed' if error is None else 'stopped' if isinstance(error, PPMSScanCancelled)
+                               else 'error')
+                except Exception as problem:
+                    error, outcome = problem, 'error'
+                self._rte_close_recorder(outcome, error='' if outcome != 'error' else str(error),
+                                         points_saved=len(self.__dict__.get('ppms_field_scan_rows') or ()),
+                                         status='the program closed', stage=self.rte_stage_where,
+                                         outputs=self.__dict__.get('rte_scan_outputs'))
             self.zurich_executor.submit(self.zurich_controller.disconnect_mfli)
             self.zurich_executor.shutdown(wait=False)
         self.ppms_executor.submit(cleanup)

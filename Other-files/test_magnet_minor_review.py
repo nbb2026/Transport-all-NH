@@ -314,7 +314,8 @@ class ScanWorkerTests(unittest.TestCase):
         self.assertEqual(meter.events, ["query", "close", "connect", "query", "query"])
         self.assertEqual([row[6] for row in a.magnet_scan_rows], [12.0, 0.5])
         self.assertEqual(len(a.set_at), 3, "both points, then the verified 0 A at the end")
-        self.assertEqual(a.magnet_scan_outputs, {"Out-of-plane KEPCO": "zeroed", "In-plane KEPCO": "zeroed"})
+        # Sent, not read back (review, 2026-10-18; it was "zeroed").
+        self.assertEqual(a.magnet_scan_outputs, {"Out-of-plane KEPCO": "zeroed", "In-plane KEPCO": "0 A sent, not read back"})
 
     # Since 2026-10-18 (user: every scan ending zeroes its sources, read back
     # where the instrument allows) a Stop and an error write the verified

@@ -1626,7 +1626,9 @@ class AngleStartTests(unittest.TestCase):
                  "Failed: Zurich reference unlocked"),
                 (app.NewmarkStageError("X50000: the USB transaction failed (it is not repeated)"),
                  "stage NOT confirmed stopped: CHECK THE STAGE", kepco_failed,
-                 "Failed: X50000: the USB transaction failed (it is not repeated)")):
+                 # A failure says an output not confirmed at zero too
+                 # (review, 2026-10-18), the error shortened for it.
+                 "Failed: X50000: the USB transaction failed (…; KEPCO zero FAILED")):
             with self.subTest(expected=expected):
                 future = Future()
                 run = self.start(executor=rte_tests.StartExecutor(future))
@@ -1655,8 +1657,11 @@ class AngleStartTests(unittest.TestCase):
                     # and the zeroing go to the dialog and the log (user,
                     # 2026-10-13 and 2026-10-18).
                     showerror.assert_called_once()
+                    # CHECK IT when an output was not confirmed at zero
+                    # (review, 2026-10-18).
+                    check = ("\n\nCHECK IT: KEPCO not confirmed at zero." if outputs is kepco_failed else "")
                     self.assertEqual(showerror.call_args.args[1],
-                                     f"{outcome}\n\n{where[:1].upper()}{where[1:]}\n\n{at_the_end}")
+                                     f"{outcome}\n\n{where[:1].upper()}{where[1:]}\n\n{at_the_end}{check}")
                     run.panel.thread_log.assert_any_call(f"SHV scan {expected}; {where}")
                 elif outputs is kepco_failed:
                     # A zero that failed: its own dialog, "CHECK IT".

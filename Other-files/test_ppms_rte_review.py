@@ -100,6 +100,11 @@ class PPMSExitKeepsFieldOutsideFieldScans(unittest.TestCase):
         a.ppms_instrument_controllers = {}
         a.ppms_executor = Mock()
         a.append_log = Mock()
+        if owner is None:
+            # No scan worker active: the close cleans up itself (review,
+            # 2026-10-18: a running worker does it after its end).
+            handoff = app.ScanCloseHandoff()
+            a._ppms_close_handoff = lambda: handoff
         if mode is not None:
             a.ppms_active_scan_mode = mode
         return a

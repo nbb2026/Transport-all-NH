@@ -145,12 +145,18 @@ class RackRowTests(unittest.TestCase):
 
     def test_a_failed_connection_ends_not_connected(self):
         a = rack_page()
+        # The dialog opens from root.after (review, 2026-10-18).
+        later = []
+        a.root = types.SimpleNamespace(after=lambda _ms, show: later.append(show))
         a.nonlocal_vi_ac_controller.fail_connect = True
         a.connect_nonlocal_vi_device("8")
         self.assertEqual(a.nonlocal_vi_device_connection_vars["8"].get(), "Connecting…")
         a.nonlocal_vi_executor.run_next()
         self.assertEqual(a.nonlocal_vi_device_connection_vars["8"].get(), "Not connected")
         self.assertIsNone(a.nonlocal_vi_pending_row)
+        self.messagebox.showerror.assert_not_called()
+        self.assertEqual(len(later), 1)
+        later.pop()()
         self.messagebox.showerror.assert_called_once()
 
     def test_disconnecting_stays_until_the_drain_and_off_finish(self):

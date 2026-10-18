@@ -488,6 +488,8 @@ class CurrentCallbacks(unittest.TestCase):
             controller.instrument = Mock() if key == "6221" else None
             obj.ppms_instrument_controllers[key] = controller
         obj._ppms_query_numbers = Mock(return_value=(state,))
+        # The error dialog opens from root.after (review, 2026-10-18).
+        obj.root = types.SimpleNamespace(after=lambda _ms, show: show())
         obj.ppms_sources_off()
         self.assertTrue(obj.ppms_field_scan_stop_event.is_set())
         worker = obj.ppms_executor.submit.call_args.args[0]

@@ -1,5 +1,86 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Review of the merged areas: fixes (2026-10-18)
+
+Review of c3b4b24..1c51161 (the five areas merged). Not yet run on the
+instruments.
+
+- **ST-FMR / FMR:**
+  - SF1: the FMR, ST-FMR and SHV pages each have a 4886 controller for the
+    same supply. Move stage, its CLR / EO=1 and each of a sweep's stage
+    moves are now refused unless ST-FMR's own 4886 is connected (so it
+    holds the supply's lease), and while any page's 4886 output is on or
+    not confirmed off: "Connect the 4886 on this page and zero it (Zero /
+    OFF) first: the stage must not turn with the magnet on", or "The KEPCO
+    4886 output of the SHV page is on (or not confirmed off): zero it there
+    ...". A sweep's later moves check the connection too.
+  - SF2: closing during an FMR scan zeroes the 4886 and the RF without
+    touching the readout's StringVars (shutdown thread); a Tk error in the
+    readout never makes a sent zero count as failed.
+  - SF3: the SMB100A carrier is read back against the value actually sent
+    (`FREQ {f:.9g}GHz`, 100 Hz steps above 10 GHz), not the one asked for.
+    The LFO rule is unchanged.
+  - SF4: Save CSV writes `STFMR_saved_<stamp>.csv` (and its PNGs), never
+    `STFMR_field_scan_*`, so a run folder keeps one run CSV for the ST-FMR
+    tools. The folder is picked, not the name, so no warning is needed.
+  - SF5: every Start step refreshes the page, so a Start cancelled at its
+    Yes/No or folder no longer leaves the instrument rows and Apply output
+    locked.
+  - SF6: the first carrier and LFO read-backs are in the first
+    `frequency_ready` (`last_configure_readbacks`), as the later ones.
+- **PPMS / SHV:**
+  - PS1: closing during a PPMS scan no longer disconnects at once. The
+    instruments are closed by the scan's worker after its end (the 6221
+    zeroed and read back, the run log closed), through `ScanCloseHandoff`;
+    with no scan running the close disconnects as before.
+  - PS2: Stop and I off set the event (and queue the OFF) before writing
+    `stop_requested`, as SHV.
+  - PS3: a field scan's 0 Oe is sent once per scan: a second one is not
+    sent after an accepted one (a refused one may be tried again). Closing
+    during a field scan sets it on the worker, into the run log; the close
+    sends it itself only if the worker had already ended without it.
+  - PS4: a failure with an output not confirmed at zero says so: PPMS
+    "Failed: ...; 6221 zero FAILED", SHV "Failed: ...; KEPCO zero FAILED"
+    (the error shortened to keep the line within
+    `RTE_FAILED_STATUS_CHARS`), and the dialog ends with CHECK IT.
+  - PS5: the I off error dialog (also SHV's 6221 / 2400 OFF) opens from
+    `root.after`.
+  - PS6: SHV's close writes the run log's `run_finished` after the stage's
+    stop / disconnect and the instruments' lines.
+  - PS7: PPMS Start clears its stop event first; an I off during the Yes/No
+    or the save dialogs keeps the scan from starting ("... not started: I
+    off was pressed"; a run folder already made is closed `not_started`).
+  - PS8: PPMS / SHV ask LIAS?, *ESR? and ERRS? once. A misaligned LIAS?
+    clears the buffer and counts as overloaded and unlocked (0x0F), as on
+    Non-local.
+- **MOKE / CIDWM / Non-local:**
+  - MN1: the MOKE magnet's other KEPCO, written 0 A and never read back, is
+    "0 A sent, not read back" (`ZERO_SENT_NOT_READ_BACK`), neither "zeroed"
+    nor a failure: "Completed; Out-of-plane KEPCO zeroed; In-plane KEPCO 0 A
+    sent, not read back". No CHECK IT for it.
+  - MN2: closing during a Non-local scan: the scan's job zeroes both
+    outputs, logs it and closes its run log, then disconnects
+    (`ScanCloseHandoff`).
+  - MN3: the Non-local connect / disconnect, OFF, Set, pulse and Set 6221
+    error dialogs open from `root.after`.
+  - MN4: the MOKE-24 Keithley's and CIDWM 6221's / Avtech's lines are notes
+    of a running scan's run log.
+  - Nits: the MOKE magnet Start re-checks the MOKE-24 / CIDWM scans after
+    its dialogs, CIDWM the magnet / MOKE-24 scans (and says why it did not
+    start); Gate-VI writes the summary CSV's header at the start
+    (`ScanRunRecorder.write_header`), so a scan stopped before its first
+    point still shows its columns.
+- **Tests:** `test_merge_review_fixes` (window-free, 51 tests). CI only, in
+  `test_panel_defaults`: `ReviewFixWidgetTests` (the MOKE status lines on
+  one line; a cancelled STFMR Start unlocks the rows and Apply) and three
+  SHV failure lines in `RTEStatusRowTests`. Changed expectations:
+  `test_moke_cidwm_runs`, `test_moke_scan_zero`, `test_magnet_minor_review`
+  (the other KEPCO's state), `test_rte_angle_scan` (the failure line and
+  CHECK IT), `test_ppms_rte_review` (the close's clean-up hand-off),
+  `test_ppms_sr830_tc` (Start clears the stop event first),
+  `test_ppms_current_callbacks` and `test_nonlocal_minor_review` (dialogs
+  from `root.after`).
+
 ## PPMS page: one run folder per scan, the 6221 zeroed at every end, review fixes P1-P9 (2026-10-18)
 
 - **Save (user: the same save on every scan page):** every PPMS scan, a Macro

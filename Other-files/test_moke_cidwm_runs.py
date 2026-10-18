@@ -154,8 +154,11 @@ class MagnetScanRunTests(Folder):
         self.assertEqual(events[-1], "run_finished")
         finished = log_events(recorder)[-1]
         self.assertEqual((finished["outcome"], finished["points_saved"]), ("completed", 2))
-        self.assertEqual(finished["outputs"], {"Out-of-plane KEPCO": "zeroed", "In-plane KEPCO": "zeroed"})
-        self.assertEqual(a.magnet_status_var.get(), "Completed; both KEPCOs zeroed")
+        # The other path's KEPCO is only sent 0 A: said so, never "zeroed"
+        # (review, 2026-10-18; it read "both KEPCOs zeroed").
+        self.assertEqual(finished["outputs"], {"Out-of-plane KEPCO": "zeroed", "In-plane KEPCO": "0 A sent, not read back"})
+        self.assertEqual(a.magnet_status_var.get(),
+                         "Completed; Out-of-plane KEPCO zeroed; In-plane KEPCO 0 A sent, not read back")
         self.assertTrue(recorder.closed)
         self.assertEqual(a.zero_writes, [("IN", 0.0)])
 
@@ -176,7 +179,8 @@ class MagnetScanRunTests(Folder):
         stop = next(event for event in events if event["event"] == "stop_requested")
         self.assertEqual(stop["button"], "Zero both now")
         self.assertEqual((events[-1]["outcome"], events[-1]["stop_reason"]), ("stopped", "Zero both now"))
-        self.assertEqual(a.magnet_status_var.get(), "Stopped; both KEPCOs zeroed")
+        self.assertEqual(a.magnet_status_var.get(),
+                         "Stopped; Out-of-plane KEPCO zeroed; In-plane KEPCO 0 A sent, not read back")
         self.assertEqual(len(a.set_at), 2, "the first point, then the verified 0 A")
 
     def test_failed_keeps_the_error_and_the_dialog_says_how_each_ended(self):
@@ -188,7 +192,8 @@ class MagnetScanRunTests(Folder):
         shown.assert_called_once()
         self.assertEqual(shown.call_args.args[0], "MOKE current scan")
         self.assertIn("no GS reply", shown.call_args.args[1])
-        self.assertIn("At the end: Out-of-plane KEPCO zeroed; In-plane KEPCO zeroed", shown.call_args.args[1])
+        self.assertIn("At the end: Out-of-plane KEPCO zeroed; In-plane KEPCO 0 A sent, not read back",
+                      shown.call_args.args[1])
         self.assertEqual(log_events(recorder)[-1]["outcome"], "error")
         self.assertEqual(log_events(recorder)[-1]["error"], "no GS reply")
 
@@ -205,7 +210,8 @@ class MagnetScanRunTests(Folder):
         a._write_and_verify_magnet_current = write
         shown = self.run_scan(a)
         self.assertEqual(a.magnet_status_var.get(),
-                         "Completed; Out-of-plane KEPCO zero FAILED; In-plane KEPCO zeroed: check it")
+                         "Completed; Out-of-plane KEPCO zero FAILED; In-plane KEPCO 0 A sent, not read back: "
+                         "check it")
         shown.assert_called_once()
         self.assertEqual(shown.call_args.args[0], "MOKE outputs")
         self.assertIn("CHECK IT", shown.call_args.args[1])

@@ -660,6 +660,14 @@ class RTEStatusRowTests(unittest.TestCase):
         # ABORT stopped it, STOP did not (review, 2026-10-18).
         "Stopped; " + app.rte_outputs_text({"6221": "zeroed", "kepco": "zeroed"}, check=False)
         + "; stage stopped at -359.999° (ABORT)",
+        # A failure that also left an output not confirmed at zero says so
+        # (review, 2026-10-18), the error shortened to keep the line.
+        app.rte_failed_status_text(RuntimeError("6221 hit compliance; scan stopped and output turned off"),
+                                   {"6221": "zero FAILED: x", "kepco": "zeroed"}),
+        app.rte_failed_status_text(RuntimeError("VI_ERROR_TMO (-1073807339): Timeout expired before "
+                                                "operation completed"),
+                                   {"6221": "zero FAILED: x", "kepco": "zero FAILED: y"}),
+        app.rte_failed_status_text(RuntimeError("LS475 field drifted during acquisition; point discarded"), None),
         # An Angle Start that did not start (review, 2026-10-17): the longest
         # fixed reason, and the widest refusal the stage check or a fix can
         # give, cut to 44 characters (about 478 px in Arial 15 px).
@@ -742,6 +750,98 @@ class RTEStatusRowTests(unittest.TestCase):
 
 # Named to run after PanelDefaultTests' message boxes and before TCRackTests,
 # as RTEStatusRowTests does: it maps and destroys a program copy too.
+class ReviewFixWidgetTests(unittest.TestCase):
+    """Widgets and texts changed by the review of the merged areas (review,
+    2026-10-18): the MOKE magnet status says the other KEPCO was only sent
+    0 A, on one line in the lab's window; a STFMR Start cancelled at its
+    Yes/No or folder leaves the instrument rows and Apply output unlocked."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.root = tk.Tk()
+        except tk.TclError as error:  # headless build server
+            raise unittest.SkipTest(f"no display: {error}")
+        cls.app = build_lab_app(app, cls.root)  # as the lab PC shows it
+        cls.root.geometry(f"{LAB_WIDE}x{lab_window(cls.app)[1]}+0+0")
+        cls.root.update()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app.closing = True
+        cls.app.safe_close_hardware()
+        cls.root.destroy()
+
+    def select(self, text):
+        notebook = self.app.notebook
+        for index in range(notebook.index("end")):
+            if notebook.tab(index, "text") == text:
+                notebook.select(index)
+        self.root.update()
+
+    @staticmethod
+    def labels_of(widget, variable):
+        found = []
+        for child in widget.winfo_children():
+            try:
+                if str(child.cget("textvariable")) == str(variable):
+                    found.append(child)
+            except tk.TclError:
+                pass
+            found.extend(ReviewFixWidgetTests.labels_of(child, variable))
+        return found
+
+    def test_the_moke_status_fits_with_a_kepco_sent_not_read_back(self):
+        self.select("MOKE magnet")
+        variable = self.app.magnet_status_var
+        [label] = self.labels_of(self.root, variable)
+        labels = ("Out-of-plane KEPCO", "In-plane KEPCO")
+        sent = app.ZERO_SENT_NOT_READ_BACK
+        font = tkinter.font.Font(font=label.cget("font") or "TkDefaultFont")
+        try:
+            variable.set("Ready")
+            self.root.update()
+            one_line = label.winfo_height()
+            for results, prefix in (({labels[0]: "zeroed", labels[1]: sent}, "Completed; "),
+                                    ({labels[1]: "zeroed", labels[0]: sent}, "Stopped; "),
+                                    ({labels[0]: "zero FAILED: x", labels[1]: sent}, "Completed; ")):
+                message = prefix + app.scan_end_outputs_text(results, labels, together="both KEPCOs")
+                with self.subTest(message=message):
+                    self.assertIn("0 A sent, not read back", message)
+                    variable.set(message)
+                    self.root.update()
+                    self.assertLessEqual(font.measure(message), label.winfo_width(), message)
+                    self.assertEqual(label.winfo_height(), one_line, message)
+        finally:
+            variable.set("Ready")
+
+    def test_a_cancelled_stfmr_start_unlocks_the_rows_and_apply(self):
+        self.select("STFMR")
+        a = self.app
+        kepco = a.stfmr_lockin_controllers["kepco"]
+        connect = a.stfmr_lockin_connect_buttons["gauss"]
+        apply = a.stfmr_lockin_apply_output_button
+        during = {}
+
+        def cancelled_start():
+            # As a Start's dialogs leave the page: locked while it starts,
+            # then the Yes/No answered No.
+            a._update_stfmr_lockin_ui()
+            self.root.update()
+            during.update(connect=str(connect.cget("state")), apply=str(apply.cget("state")))
+
+        kepco.instrument = object()             # "connected", nothing sent
+        try:
+            a._run_stfmr_lockin_start_step(cancelled_start)
+            self.root.update()
+            self.assertEqual(during, {"connect": "disabled", "apply": "disabled"})
+            self.assertEqual(str(connect.cget("state")), "normal")
+            self.assertEqual(str(apply.cget("state")), "normal")
+        finally:
+            kepco.instrument = None
+            a._update_stfmr_lockin_ui()
+
+
 class ScanBoxFrequencyModeTests(unittest.TestCase):
     """The PPMS scan box's Frequency and Frequency+Current modes (user,
     2026-10-18): both in the Mode list, which keeps its width; Frequency's

@@ -902,6 +902,8 @@ class StartSettleTests(NoWindows):
     def test_the_wait_is_in_the_scan_time_estimate(self):
         obj = app.CombinedControlApp.__new__(app.CombinedControlApp)
         obj.ppms_field_scan_running = obj.ppms_environment_busy = False
+        # Start clears it first (review, 2026-10-18).
+        obj.ppms_field_scan_stop_event = threading.Event()
         obj._require_ppms_control_ready = mock.Mock()
         obj.ppms_simple_mode = Var("Field")
         obj.ppms_simple_range = [Var(v) for v in (100, 300, 100)]
