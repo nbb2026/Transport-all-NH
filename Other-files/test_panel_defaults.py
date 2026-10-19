@@ -57,8 +57,10 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertEqual(self.app.ppms_panel.ppms_transport_frequency_var.get(), "317.3")
         # The start-up scan (user's figure, 2026-10-18): Angle, 0 to -360 deg
         # in 5 deg steps, Settle s 0.5, Acquire s 2, Loops 1; round trip off
-        # since 2026-10-18 (user: "default not click Round trip").
-        self.assertEqual(panel.ppms_simple_mode.get(), "Angle")
+        # since 2026-10-18 (user: "default not click Round trip"); Angle+Field
+        # with the outer KEPCO 3 to 9 A in 1 A steps since 2026-10-19 (user).
+        self.assertEqual(panel.ppms_simple_mode.get(), "Angle+Field")
+        self.assertEqual([v.get() for v in panel.rte_outer_ranges["Angle+Field"]], ["3", "9", "1"])
         self.assertEqual([v.get() for v in panel.ppms_simple_range], ["0", "-360", "5"])
         self.assertIs(panel.rte_round_trip.get(), False)
         self.assertEqual((panel.ppms_field_scan_stable_var.get(), panel.ppms_acquisition_time_var.get(),

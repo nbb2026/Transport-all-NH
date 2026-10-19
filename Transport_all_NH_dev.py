@@ -2607,7 +2607,9 @@ RTE_TRANSPORT_CURRENT_RMS_MA = 1.0
 # -360 deg in 5 deg steps, Acquire s 2 (Settle s 0.5 and Loops 1 as before),
 # round trip off since 2026-10-18 (user: "default not click Round trip").
 # The Angle range is also what choosing Angle puts in the boxes.
-RTE_DEFAULT_SCAN_MODE = 'Angle'
+# SHV starts on Angle+Field, outer KEPCO 3 to 9 A in 1 A steps (user's figure,
+# 2026-10-19; it started on Angle).
+RTE_DEFAULT_SCAN_MODE = 'Angle+Field'
 RTE_ANGLE_DEFAULT_RANGE = ('0', '-360', '5')
 # The SHV scan modes.  Angle+Field and Angle+Current (user, 2026-10-18: "add
 # the angle + field scan mode, field is the outside loop"; "also angle+current
@@ -2621,7 +2623,7 @@ RTE_ANGLE_MODES = ('Angle', 'Angle+Field', 'Angle+Current')
 # steps, the user's figures; Angle+Current the Current scan's), and the
 # CSV's last column, the outer step's number.
 RTE_OUTER_ROWS = {
-    'Angle+Field': dict(label='Outer KEPCO A:', defaults=('0', '8', '2'), index_column='outer_field_index'),
+    'Angle+Field': dict(label='Outer KEPCO A:', defaults=('3', '9', '1'), index_column='outer_field_index'),
     'Angle+Current': dict(label='Outer 6221 mA RMS:', defaults=('0.01', '1', '0.01'),
                           index_column='outer_current_index'),
 }

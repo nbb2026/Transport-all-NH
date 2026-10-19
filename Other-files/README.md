@@ -1,5 +1,12 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## SHV start-up scan: Angle+Field (2026-10-19)
+
+- From the user's screenshot ("using this fig as default settings for SHV"): the SHV page starts on **Angle+Field**,
+  angles 0 to −360° in 5° steps, Loops 1, Settle s 0.5, Acquire s 2, round trip off, and the outer KEPCO current
+  **3 to 9 A in 1 A steps** (was 0 / 8 / 2); choosing Angle+Field puts the same values in the boxes.
+  `RTE_DEFAULT_SCAN_MODE`, `RTE_OUTER_ROWS`. Not checked on CI (the Actions minutes are used up until 2026-11-01).
+
 ## PPMS Angle+Field scan (2026-10-18)
 
 The user asked: "does PPMS module have angle+field scan? if not, add it." It did not. The field is the outer loop

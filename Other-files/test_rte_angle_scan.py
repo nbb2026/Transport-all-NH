@@ -1905,11 +1905,12 @@ class AnglePageTests(unittest.TestCase):
                           and "row" in w.grid_options and w.grid_options["row"] == 0], "only the scan rows on top")
         # Three scan rows (mode/Start/End/Step; units/Loops/Settle s/Acquire
         # s; Start scan/Stop/Save CSV as/Round trip), and the outer row of
-        # Angle+Field and Angle+Current (user, 2026-10-18), removed in Angle.
+        # Angle+Field and Angle+Current (user, 2026-10-18), shown at start-up,
+        # since the page starts on Angle+Field (user, 2026-10-19).
         self.assertEqual({w.grid_options["row"] for w in Recorder.made
-                          if w.parent is rows and "row" in w.grid_options and not w.grid_removed}, {0, 1, 2})
+                          if w.parent is rows and "row" in w.grid_options and not w.grid_removed}, {0, 1, 2, 3})
         self.assertEqual({w.grid_options["row"] for w in Recorder.made
-                          if w.parent is rows and "row" in w.grid_options and w.grid_removed}, {3})
+                          if w.parent is rows and "row" in w.grid_options and w.grid_removed}, set())
         labels = {w.options["text"]: w for w in Recorder.made
                   if w.parent is block and "text" in w.options and "command" not in w.options}
         buttons = {w.options.get("text"): w for w in Recorder.made if "command" in w.options}
@@ -1939,7 +1940,7 @@ class AnglePageTests(unittest.TestCase):
         self.assertIs(panel.ppms_field_scan_progress.parent.parent, scan)
         note = next(w for w in Recorder.made if w.options.get("textvariable") is panel.rte_scan_note)
         # The page starts on the user's Angle scan (2026-10-18).
-        self.assertEqual(panel.rte_scan_note.get(), "Angle: Stage °; field: KEPCO current A")
+        self.assertEqual(panel.rte_scan_note.get(), "Angle+Field: Stage °; outer: KEPCO A")
         self.assertIs(note.parent.parent, scan)
         self.assertEqual((rows.grid_options["row"], panel.ppms_field_scan_progress.parent.grid_options["row"],
                           note.parent.grid_options["row"]), (0, 1, 2))
@@ -3021,8 +3022,9 @@ class OuterPlanTests(unittest.TestCase):
                 with self.assertRaises(ValueError) as caught:
                     app.rte_outer_plan(*args)
                 self.assertIn(message, str(caught.exception))
-        # The defaults: 0 to 8 A in 2 A steps; the Current scan's range.
-        self.assertEqual(app.RTE_OUTER_ROWS["Angle+Field"]["defaults"], ("0", "8", "2"))
+        # The defaults: 3 to 9 A in 1 A steps (user's figure, 2026-10-19); the
+        # Current scan's range.
+        self.assertEqual(app.RTE_OUTER_ROWS["Angle+Field"]["defaults"], ("3", "9", "1"))
         self.assertEqual(app.RTE_OUTER_ROWS["Angle+Current"]["defaults"], ("0.01", "1", "0.01"))
         for mode in ("Angle+Field", "Angle+Current"):
             self.assertLessEqual(len(app.RTE_SCAN_NOTES[mode]), 40, "the note's 40-character box")
@@ -3053,8 +3055,12 @@ class OuterRowPageTests(unittest.TestCase):
         outer = [widget for widget, _options in panel.rte_outer_widgets]
         others = [w for w in Recorder.made if w.parent is rows and w not in outer]
         layout = lambda: [(w, dict(w.grid_options), w.grid_removed) for w in others]
+        # The page starts on Angle+Field with its outer row (user, 2026-10-19).
+        self.assertEqual(panel.ppms_simple_mode.get(), "Angle+Field")
+        self.assertFalse(any(w.grid_removed for w in outer))
+        self.mode(panel, "Angle")
         before = layout()
-        # The page starts on Angle, with round trip off and no outer row.
+        # Angle: round trip off and no outer row.
         self.assertEqual(panel.ppms_simple_mode.get(), "Angle")
         self.assertIs(panel.rte_round_trip.get(), False)
         self.assertTrue(all(w.grid_removed for w in outer))
@@ -3063,7 +3069,7 @@ class OuterRowPageTests(unittest.TestCase):
         self.assertEqual(sorted(w.grid_options["column"] for w in outer), list(range(7)))
         entries = panel.rte_outer_entries
         for mode, label, values, note in (
-                ("Angle+Field", "Outer KEPCO A:", ["0", "8", "2"], "Angle+Field: Stage °; outer: KEPCO A"),
+                ("Angle+Field", "Outer KEPCO A:", ["3", "9", "1"], "Angle+Field: Stage °; outer: KEPCO A"),
                 ("Angle+Current", "Outer 6221 mA RMS:", ["0.01", "1", "0.01"],
                  "Angle+Current: Stage °; outer: 6221 mA")):
             with self.subTest(mode=mode):
