@@ -210,10 +210,17 @@ class EndToEnd(unittest.TestCase):
         panel.zurich_controller = types.SimpleNamespace(mfli_connected=meter == "zurich", lock=threading.Lock(),
                                                         disconnect_mfli=lambda: None)
         panel.zurich_timeconstant.set(tc_zurich)
+        if meter == "zurich":
+            # The Zurich alone, chosen here: SHV starts with SR830-1 and
+            # SR830-2 measured since 2026-10-20 (user's figure).
+            for key in app.PPMS_SR830_KEYS:
+                panel.ppms_lockin_selection[key].set(False)
+            panel.ppms_lockin_selection["zurich"].set(True)
         if meter == "sr830":
             panel.ppms_instrument_controllers["830_a"] = types.SimpleNamespace(
                 connected=True, label="SR830-1", resource_name="GPIB0::8::INSTR", disconnect=lambda: None)
-            panel.ppms_lockin_selection["830_a"].set(True)
+            for key in app.PPMS_SR830_KEYS:
+                panel.ppms_lockin_selection[key].set(key == "830_a")
             panel.ppms_lockin_selection["zurich"].set(False)
             panel.ppms_transport_harmonic_a_var.set("1+2+3")
             panel.ppms_sr830_time_constant_codes = {"830_a": 0}     # 10 us: no real wait
@@ -441,7 +448,16 @@ class AngleScanTests(EndToEnd):
         self.assertEqual(h.panel.ppms_field_scan_total, 6)
         self.assertEqual({entry[-1] for entry in h.log}, {h.worker})
 
-    def test_the_zurich_alone_is_ready_by_default(self):
+    def test_the_lockins_at_start_up(self):
+        # The user's figure (2026-10-20): SR830-1 at 1 and SR830-2 at 2
+        # measured, SR830-3 at 3 and the Zurich at 1+2 not measured.
+        panel = build_page()
+        self.assertEqual({key: (str(panel._ppms_harmonic_var(key).get()), panel.ppms_lockin_selection[key].get())
+                          for key in app.PPMS_SR830_KEYS},
+                         {"830_a": ("1", True), "830_b": ("2", True), "830_c": ("3", False)})
+        self.assertEqual((panel.zurich_harmonic.get(), panel.ppms_lockin_selection["zurich"].get()), ("1+2", False))
+
+    def test_the_zurich_alone_runs(self):
         h = self.make(span=("0", "0", "5"), round_trip=False)
         panel = h.panel
         self.assertEqual(panel.ppms_lockin_selection["zurich"].get(), True)

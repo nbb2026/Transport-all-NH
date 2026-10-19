@@ -1,5 +1,12 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## SHV lock-ins at start-up (2026-10-20)
+
+- From the user's screenshot ("use setting in the figures as default", the SHV page): SR830-1 at harmonic **1**
+  and SR830-2 at **2** are measured; SR830-3 at 3 and the Zurich at 1+2 are not (until then the Zurich alone measured
+  and SR830-1 was at 1+2+3). A Start now needs SR830-1 and SR830-2 connected, or their Measure unticked. The PPMS
+  page is unchanged. Not checked on CI (the Actions minutes are used up until 2026-11-01).
+
 ## SHV start-up scan: Angle+Field (2026-10-19)
 
 - From the user's screenshot ("using this fig as default settings for SHV"): the SHV page starts on **Angle+Field**,

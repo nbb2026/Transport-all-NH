@@ -50445,12 +50445,16 @@ class RTEPanel(PPMSPanel):
         self.ppms_transport_current_var.set(f'{RTE_TRANSPORT_CURRENT_RMS_MA:g}')
         self.ppms_transport_frequency_var.set(f'{RTE_TRANSPORT_FREQUENCY_HZ:g}')
         self.zurich_expected_frequency = RTE_TRANSPORT_FREQUENCY_HZ
-        self.ppms_transport_harmonic_a_var.set('1+2+3')
+        # The lock-ins at start-up (user's figure, 2026-10-20): SR830-1 at
+        # harmonic 1 and SR830-2 at 2 measured, SR830-3 at 3 and the Zurich at
+        # 1+2 not measured (until then the Zurich alone measured, and SR830-1
+        # was at 1+2+3).
+        self.ppms_transport_harmonic_a_var.set('1')
         self.ppms_transport_harmonic_b_var.set('2')
         self.ppms_transport_harmonic_c_var.set('3')
         self.zurich_harmonic.set(RTE_ZURICH_DEFAULT_HARMONICS)
-        for key, measured in (('830_a', False), ('830_b', False),
-                              ('830_c', False), ('zurich', True)):
+        for key, measured in (('830_a', True), ('830_b', True),
+                              ('830_c', False), ('zurich', False)):
             self.ppms_lockin_selection[key].set(measured)
         # The start-up scan (user's figures, 2026-10-18): Angle, 0 to -360
         # deg in 5 deg steps, Acquire s 2, round trip off (user, 2026-10-18).

@@ -41,11 +41,13 @@ class PanelDefaultTests(unittest.TestCase):
         (2026-10-07), 1+2, at 1 mA RMS, 317.3 Hz, KEPCO current 8 A (the
         user's figures, 2026-10-18; it was 1+2+3, 0.1 mA RMS, 17.3 Hz, 0 A)."""
         panel = self.app.rte_panel
+        # The lock-ins since 2026-10-20 (user's figure): SR830-1 at 1 and
+        # SR830-2 at 2 measured, SR830-3 at 3 and the Zurich at 1+2 not.
         self.assertEqual(self.settings(panel), {
-            "830_a": ("1+2+3", False),
-            "830_b": ("2", False),
+            "830_a": ("1", True),
+            "830_b": ("2", True),
             "830_c": ("3", False),
-            "zurich": ("1+2", True),
+            "zurich": ("1+2", False),
         })
         self.assertEqual(self.app.notebook.tab(self.app.rte_panel_tab, "text"), "SHV")
         self.assertEqual(panel.ppms_transport_current_var.get(), "1")
@@ -73,10 +75,10 @@ class PanelDefaultTests(unittest.TestCase):
     def test_rte_selection_gives_one_plot_row_per_harmonic(self):
         panel = self.app.rte_panel
         orders = panel._ppms2_measured_orders()
-        # The Zurich at 1+2 by default (user's figure, 2026-10-18; was 1+2+3).
+        # SR830-1 at 1 and SR830-2 at 2 by default (user's figure, 2026-10-20).
         self.assertEqual(sorted(orders), [1, 2])
-        self.assertTrue(all(meters == ["zurich"] for meters in orders.values()),
-                        f"only the Zurich is measured by default: {orders}")
+        self.assertEqual({order: sorted(meters) for order, meters in orders.items()},
+                         {1: ["830_a"], 2: ["830_b"]}, f"SR830-1 and SR830-2 measured by default: {orders}")
 
     def test_rte_scan_runs_one_pass_per_harmonic(self):
         passes = self.app.rte_panel._rte_harmonic_passes(dict(
