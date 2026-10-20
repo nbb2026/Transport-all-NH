@@ -1,5 +1,11 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Defaults: camera binning 2×2; Avtech 40 V, 100 ns (2026-10-20)
+
+- User: "set default binning as 2*2": the difference display's Binning starts at **2×2** (`DIFFERENCE_SPATIAL_BINNING`, was 4×4).
+- User: "default of avtech 40V 100ns": the Avtech box starts at **40 V, 100 ns** (`AVTECH_DEFAULT_AMPLITUDE_V`,
+  `AVTECH_DEFAULT_WIDTH_NS`, was 10 V, 10 ns); the pulse sign scan's |V| V also starts at 40 V.
+
 ## CIDWM Avtech: Pulse count; the tick row and status line removed (2026-10-20)
 
 - User: "add pulse count function in avtech and delete the two rows at bottom". The Avtech box's Amplitude row has

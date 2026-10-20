@@ -1785,7 +1785,8 @@ MAGNET_SCAN_RESULTS_DIRECTORY = (
 # worker and the page both start from these.
 EXPOSURE_S = 0.1
 DIFFERENCE_TEMPORAL_AVERAGE_FRAMES = 4
-DIFFERENCE_SPATIAL_BINNING = 4
+# Display binning 2x2 by default (user, 2026-10-20; it was 4x4).
+DIFFERENCE_SPATIAL_BINNING = 2
 DIFFERENCE_MEAN_FILTER_SIZE = 2
 RING_BUFFER_FRAMES = 10
 CAMERA_WINDOW = f"{MAIN_WINDOW_TITLE} — Camera Live"
@@ -1966,8 +1967,10 @@ AVTECH_DEFAULT_RESOURCE = "GPIB0::8::INSTR"
 AVTECH_MAX_AMPLITUDE_V = 100.0
 AVTECH_MIN_WIDTH_S = 1e-9
 AVTECH_MAX_WIDTH_S = 5e-6
-AVTECH_DEFAULT_AMPLITUDE_V = 10.0
-AVTECH_DEFAULT_WIDTH_NS = 10.0
+# 40 V, 100 ns by default (user, 2026-10-20; it was 10 V, 10 ns); the pulse
+# sign scan's |V| V starts at the same 40 V.
+AVTECH_DEFAULT_AMPLITUDE_V = 40.0
+AVTECH_DEFAULT_WIDTH_NS = 100.0
 # Pulse count beside Width (ns), as the 6221 box has (user, 2026-10-20: "add
 # pulse count function in avtech"): Apply +/-V fires that many pulses, each
 # the whole single-pulse sequence below, one at a time.  The gap runs from

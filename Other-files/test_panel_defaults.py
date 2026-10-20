@@ -175,7 +175,7 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertEqual({key: var.get() for key, var in a.roi_edit_step_vars.items()},
                          {"A": "1", "W": "1", "H": "1", "X": "5", "Y": "5"})
         self.assertEqual((app.DIFFERENCE_TEMPORAL_AVERAGE_FRAMES, app.DIFFERENCE_SPATIAL_BINNING,
-                          app.DIFFERENCE_MEAN_FILTER_SIZE, app.EXPOSURE_S), (4, 4, 2, 0.1))
+                          app.DIFFERENCE_MEAN_FILTER_SIZE, app.EXPOSURE_S), (4, 2, 2, 0.1))
 
     def test_cidwm_pulse_sign_scan_row(self):
         """2026-10-12: Pulses, Signs and Wait after pulse s, with its own
@@ -189,13 +189,13 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertEqual(str(a.cidwm_scan_start_button.cget("text")), "Choose folder and start scan")
 
     def test_cidwm_avtech_box_and_the_scan_source(self):
-        """2026-10-13: the Avtech AVR-E3-B box (GPIB address 8, 10 V, 10 ns,
+        """2026-10-13: the Avtech AVR-E3-B box (GPIB address 8, 40 V, 100 ns since 2026-10-20,
         everything off until connected; since 2026-10-20 no tick) and the scan's pulse
         source, the 6221 by default."""
         a = self.app
         self.assertEqual((a.avtech_resource_var.get(), a.avtech_amplitude_var.get(), a.avtech_width_var.get(),
                           a.cidwm_scan_amplitude_var.get(), a.cidwm_scan_source_var.get()),
-                         ("GPIB0::8::INSTR", "10", "10", "10", "6221"))
+                         ("GPIB0::8::INSTR", "40", "100", "40", "6221"))
         self.assertEqual(str(a.avtech_connect_button.cget("state")), "normal")
         for button in (a.avtech_disconnect_button, a.avtech_apply_button, a.avtech_apply_negative_button,
                        a.avtech_off_button):
