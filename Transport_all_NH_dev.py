@@ -15978,23 +15978,52 @@ class EdgeResidualReference:
         return (slice(margin, height - margin), slice(margin, width - margin))
 
 
-def edge_residual(difference, reference: EdgeResidualReference, drift_px: float = 0.0) -> float:
+def _super_roi_grid(reference: EdgeResidualReference, roi):
+    """The camera ROI (cx, cy, w, h, angle in raw pixels) on Super's grid:
+    the grid cells at least half inside it.  Cached on the reference."""
+    key = tuple(float(roi[name]) for name in ("cx", "cy", "w", "h", "angle"))
+    cache = reference.__dict__.setdefault("_roi_cache", {})
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    height, width = reference.shape
+    min_y, max_y, min_x, max_x, mask = _rotated_roi_mask(roi, height, width)
+    full = np.zeros(reference.shape, dtype=np.float64)
+    if mask is not None:
+        full[min_y:max_y, min_x:max_x] = mask
+    inside = _super_block_mean(full, reference.factor) >= 0.5
+    if len(cache) >= 4:
+        cache.clear()
+    cache[key] = inside
+    return inside
+
+
+def edge_residual(difference, reference: EdgeResidualReference, drift_px: float = 0.0, roi=None) -> float:
     """E for one displayed difference image (see above): RMS of the
     fit-cleaned, high-passed difference on the BG's edge mask over the RMS of
     the high-passed BG there.  Lower is better; 0 for an exact copy of the BG.
-    ``drift_px``: the frame's largest |dx|, |dy| (full-resolution pixels)."""
+    ``drift_px``: the frame's largest |dx|, |dy| (full-resolution pixels).
+    ``roi``: the camera ROI; when given, only the edges inside it count and
+    the fit uses its pixels (user, 2026-10-20: "I select a ROI, why the super
+    mode saying the ROI is not used?"); None: the whole image."""
     d = np.asarray(difference, dtype=np.float64)
     if d.shape != reference.shape:
         raise ValueError(f"the difference ({d.shape}) and the BG ({reference.shape}) differ in size")
     d = _super_block_mean(d, reference.factor)
     rows, cols = reference.window(drift_px)
+    if roi is not None:
+        inside = _super_roi_grid(reference, roi)[rows, cols]
+        if int(inside.sum()) < 16:
+            raise ValueError("the ROI is too small or outside the image for Super")
+    else:
+        inside = np.ones(d[rows, cols].shape, dtype=bool)
     regressors = [
-        np.ones(d[rows, cols].shape),
-        reference.grid[rows, cols],
-        reference.gx[rows, cols],
-        reference.gy[rows, cols],
+        np.ones(int(inside.sum())),
+        reference.grid[rows, cols][inside],
+        reference.gx[rows, cols][inside],
+        reference.gy[rows, cols][inside],
     ]
-    target = d[rows, cols]
+    target = d[rows, cols][inside]
     gram = np.array([[float(np.vdot(a, b)) for b in regressors] for a in regressors])
     rhs = np.array([float(np.vdot(a, target)) for a in regressors])
     coefficients = np.linalg.lstsq(gram, rhs, rcond=None)[0]
@@ -16003,9 +16032,10 @@ def edge_residual(difference, reference: EdgeResidualReference, drift_px: float 
         + coefficients[2] * reference.gx + coefficients[3] * reference.gy
     )
     highpass = cleaned - _super_box_mean(cleaned, SUPER_HIGHPASS_PX)
-    edge = reference.edge[rows, cols]
+    edge = reference.edge[rows, cols] & inside
     if int(edge.sum()) < SUPER_MIN_EDGE_PIXELS:
-        raise ValueError("too few BG edges left inside the image for Super")
+        raise ValueError("too few BG edges inside the ROI for Super" if roi is not None
+                         else "too few BG edges left inside the image for Super")
     residual = float(np.mean(highpass[rows, cols][edge] ** 2))
     contrast = float(np.mean(reference.background_highpass[rows, cols][edge] ** 2))
     value = math.sqrt(residual / (contrast + SUPER_EPSILON))
@@ -16074,8 +16104,10 @@ class AutoFocusManager:
         self.status_var = status_var if status_var is not None else tk.StringVar(
             value="Focus: not run (needs the motor homed, the camera live and an ROI)"
         )
-        # The camera ROI the running search scores (copied at its start).
+        # The camera ROI the running search scores (copied at its start), and
+        # the one a Super search judges the edges in (None: the whole image).
         self.roi = None
+        self.super_roi = None
         self.buttons: list = []
         self.ticks: list = []
         self.camera_ready = False
@@ -16384,6 +16416,7 @@ class AutoFocusManager:
             value = edge_residual(
                 sum(images) / len(images), self._edge_reference(frames[0]),
                 max(self._frame_drift(frame) for frame in frames),
+                self.super_roi,
             )
         except ValueError as error:
             raise FocusError(f"Super cannot judge the image: {error}") from error
@@ -16399,8 +16432,14 @@ class AutoFocusManager:
         metric = self.running_metric
         try:
             if metric == "super":
-                # The whole image, the ROI not used (user, 2026-10-20: every
-                # edge narrow), against the BG the reference was taken with.
+                # The edges inside the camera ROI, taken once so every
+                # position is judged on the same pixels; the whole image when
+                # no ROI is drawn (user, 2026-10-20: "I select a ROI, why the
+                # super mode saying the ROI is not used?").  Against the BG
+                # the reference was taken with.
+                camera = self.app.__dict__.get("camera_window")
+                roi = getattr(camera, "roi", None)
+                self.super_roi = None if roi is None else dict(roi)
                 serial = self.super_serial
                 engine = SuperFocusSearch(
                     reference_um, current_um, max_um,
@@ -16584,7 +16623,8 @@ class AutoFocusManager:
         high = min(max_um, reference_um + FOCUS_RANGE_UM)
         if self.super_on:
             judged = (f"the BG's focus {reference_um:g} µm), to make the device edges in the "
-                      "difference image as narrow as possible (the whole image; the ROI is not used)")
+                      "difference image as narrow as possible (inside the camera ROI, or the whole image "
+                      "when none is drawn)")
         else:
             # The ROI's sharpness since a57e362 (this said the whole image).
             judged = f"{reference_um:g} µm), scoring the sharpness inside the camera ROI"
@@ -16812,7 +16852,7 @@ class AutoFocusManager:
         self._live_last = -math.inf
         if on:
             self.app.thread_log("Super on: drift tracking plus the focus servo for the narrowest edges "
-                                "(the whole image; the ROI is not used)")
+                                "(inside the camera ROI, or the whole image when none is drawn)")
             self._take_super_reference("Super chosen", was_keep, background_pending)
         else:
             self.super_serial = self.super_reference_um = None
@@ -16934,8 +16974,10 @@ class AutoFocusManager:
     def _live_worker(self, frame) -> None:
         value = error = None
         try:
+            camera = self.app.__dict__.get("camera_window")
+            roi = getattr(camera, "roi", None)
             value = edge_residual(self._frame_difference(frame), self._edge_reference(frame),
-                                  self._frame_drift(frame))
+                                  self._frame_drift(frame), None if roi is None else dict(roi))
         except Exception as caught:   # shown in the status; never stops Camera Live
             error = caught
         serial = getattr(frame, "background_serial", None)
@@ -16964,7 +17006,9 @@ class AutoFocusManager:
             residual = f"edge residual {super_residual_text(self.super_live_residual)}"
             if self.super_start_residual is not None:
                 residual += f" (start {super_residual_text(self.super_start_residual)})"
-        return f"Super: {residual}, {self._focus_offset_text()}; whole image, the ROI is not used"
+        camera = self.app.__dict__.get("camera_window")
+        area = "inside the ROI" if getattr(camera, "roi", None) is not None else "whole image (no ROI)"
+        return f"Super: {residual}, {self._focus_offset_text()}; {area}"
 
     def super_overlay_text(self) -> str:
         """Super's part of Camera Live's top line (Tk thread)."""

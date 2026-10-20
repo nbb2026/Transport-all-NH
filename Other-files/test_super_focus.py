@@ -110,6 +110,25 @@ class EdgeResidualTests(NumpyPatch):
             with self.subTest(shift=dx):
                 self.assertGreater(self.residual(self.noisy(fourier_shift(self.scene, dx))), 3 * exact)
 
+    def test_only_the_roi_counts_when_one_is_drawn(self):
+        """User, 2026-10-20: "I select a ROI, why the super mode saying the
+        ROI is not used?": with an ROI, only its edges count."""
+        size = self.scene.shape[0]
+        left = {"cx": size * 0.25, "cy": size * 0.5, "w": size * 0.45, "h": size * 0.9, "angle": 0.0}
+        right = dict(left, cx=size * 0.75)
+        frame = self.noisy(self.scene)
+        blurred_right = frame.copy()
+        blurred_right[:, size // 2:] = self.noisy(gaussian(self.scene, 2.0))[:, size // 2:]
+        exact_left = app.edge_residual(frame - self.background, self.reference, roi=left)
+        self.assertAlmostEqual(
+            app.edge_residual(blurred_right - self.background, self.reference, roi=left), exact_left, delta=0.3 * exact_left + 0.005,
+            msg="a blur outside the ROI is not counted")
+        self.assertGreater(app.edge_residual(blurred_right - self.background, self.reference, roi=right),
+                           5 * exact_left, "the blur inside the ROI is")
+        with self.assertRaises(ValueError):
+            app.edge_residual(frame - self.background, self.reference,
+                              roi={"cx": 5 * size, "cy": 5 * size, "w": 10.0, "h": 10.0, "angle": 0.0})
+
     def test_it_grows_with_the_defocus(self):
         values = [self.residual(self.noisy(gaussian(self.scene, sigma))) for sigma in (0.3, 0.6, 1.0, 2.0, 4.0)]
         self.assertEqual(values, sorted(values), values)
@@ -439,7 +458,7 @@ class SuperSearchManagerTests(SuperCase):
         targets = [counts / COUNTS_PER_UM for counts in m.controller.writes]
         self.assertTrue(all(abs(t - 7250.0) <= 10.0 + 0.01 for t in targets))
         self.assertTrue(any("Super focus move: absolute" in line for line in a.logs))
-        self.assertIn("the whole image; the ROI is not used", self.asked.call_args.args[1])
+        self.assertIn("inside the camera ROI, or the whole image when none is drawn", self.asked.call_args.args[1])
         self.assertIn("Edge", focus.super_overlay_text())
         self.assertIn("focus +1.5 µm", focus.super_detail_text())
 
@@ -624,7 +643,9 @@ class SuperFrameTests(SuperCase):
         self.assertIsNot(threads[0], threading.current_thread())
         self.assertIsNotNone(focus.super_live_residual)
         self.assertIn("Super: edge residual", focus.super_detail_text())
-        self.assertIn("whole image, the ROI is not used", focus.super_detail_text())
+        self.assertIn("; whole image (no ROI)", focus.super_detail_text())
+        a.camera_window.roi = {"cx": 32.0, "cy": 32.0, "w": 40.0, "h": 40.0, "angle": 0.0}
+        self.assertIn("; inside the ROI", focus.super_detail_text())
 
 
 class SuperKeepTests(SuperCase):
@@ -707,7 +728,7 @@ class PageModeTests(NumpyPatch):
         C.update_difference_status(a, "tracking", 0.02, -0.07, 0.17)
         self.assertEqual(a.difference_mode_var.get(), "super")
         self.assertTrue(a.difference_status_var.get().startswith("Super:"))
-        self.assertIn("ROI is not used", a.difference_detail_var.get())
+        self.assertIn("Super:", a.difference_detail_var.get())
 
     def test_entering_super_without_a_bg_asks_for_one(self):
         a = self.page(background=None)

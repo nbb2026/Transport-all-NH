@@ -1,5 +1,13 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Super uses the camera ROI (2026-10-20)
+
+- User: "I select a ROI, why the super mode saying the ROI is not used?". Super's edge residual now counts only the
+  BG edges inside the camera ROI (the fit also uses only its pixels); with no ROI drawn it still uses the whole image.
+  A search copies the ROI at its start, so every focus position is judged on the same pixels; the live readout uses
+  the ROI as it is now. The detail line says "inside the ROI" or "whole image (no ROI)". This supersedes "the whole
+  image, the ROI is not used" in the Super section below.
+
 ## CIDWM: the pulse sign scan beside the difference display; auto focus on one row (2026-10-20)
 
 - User: "use two columns for these two part": on CIDWM the pulse sign scan (left) and the MOKE difference display
