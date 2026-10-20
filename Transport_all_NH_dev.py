@@ -31556,6 +31556,8 @@ class CombinedControlApp:
 
     def _schedule_difference_clim_live_update(self, *_args) -> None:
         """Debounce typing and automatically enter manual CLim when valid."""
+        if self.__dict__.get("_difference_clim_boxes_following"):
+            return  # the boxes showing Auto's numbers, not typing
         if self.camera_window is None:
             return
         if self.camera_window.worker.background_mode == "off":
@@ -31565,6 +31567,27 @@ class CombinedControlApp:
             180,
             lambda: self.apply_difference_clim(show_error=False),
         )
+
+    def _show_auto_clim_in_boxes(self, clim) -> None:
+        """The CLim boxes follow the Auto (or Histogram) limits as they change
+        (user, 2026-10-20: "the input should also be changed simutaneously
+        with the auto numbers"), without switching to Manual; a box being
+        typed in is left alone.  Pressing Manual then keeps these numbers."""
+        try:
+            focused = self.root.focus_get()
+            typing = str(focused.cget("textvariable")) if focused is not None else ""
+        except (tk.TclError, AttributeError, KeyError):
+            typing = ""
+        values = (f"{float(clim[0]):.4g}", f"{float(clim[1]):.4g}")
+        self._difference_clim_boxes_following = True
+        try:
+            for variable, value in zip((self.difference_clim_low_var, self.difference_clim_high_var), values):
+                if typing and typing == str(variable):
+                    continue
+                if variable.get() != value:
+                    variable.set(value)
+        finally:
+            self._difference_clim_boxes_following = False
 
     def apply_difference_clim(self, show_error: bool = True) -> None:
         self._cancel_difference_clim_live_update()
@@ -32120,6 +32143,8 @@ class CombinedControlApp:
                     f"{contrast_mode.title()} "
                     f"[{active_clim[0]:.4g}, {active_clim[1]:.4g}]"
                 )
+                if contrast_mode != "MANUAL":
+                    self._show_auto_clim_in_boxes(active_clim)
             elif contrast_mode == "AUTO":
                 self.difference_clim_status_var.set("Auto (waiting for a difference frame)")
             else:

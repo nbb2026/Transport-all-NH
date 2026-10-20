@@ -1,5 +1,15 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Super re-focuses by itself; the CLim boxes follow Auto (2026-10-20)
+
+- User: "when the program found edge with white and dark in the fig. it should find focus to let the white & black
+  line narrow". In Super with Keep in focus ticked, a full Super focus search starts by itself (not only the ±0.5 µm
+  check) when the live edge residual is above 6 % and above 1.5× the best since the BG or the last search, at most
+  every 10 s when idle, and between scan points during a scan (`SUPER_AUTO_*`). Without Keep in focus nothing moves.
+- User: "the input should also be changed simutaneously with the auto numbers". In Auto (or Histogram) contrast the
+  two Difference CLim boxes show the limits in use as they change, without switching to Manual; a box being typed in
+  is left alone, and typing still switches to Manual. Pressing Manual keeps the numbers shown.
+
 ## Super uses the camera ROI (2026-10-20)
 
 - User: "I select a ROI, why the super mode saying the ROI is not used?". Super's edge residual now counts only the
