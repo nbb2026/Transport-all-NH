@@ -18,7 +18,7 @@ import threading
 import time
 import tkinter as tk
 from contextlib import contextmanager
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
@@ -1731,9 +1731,12 @@ MAGNET_CURRENT_LIMIT_A = 10.0
 MAGNET_SCAN_FRAME_TIMEOUT_S = 10.0
 # The magnet current scan's columns: Save CSV's, and since 2026-10-18 (user:
 # "live CSV like CIDWM") also the run folder's live CSV, in this order.
+# focus_position_um, last (user, 2026-10-20): the focus motor's tracked
+# absolute position for the point; blank without the motor (AutoFocusManager).
 MAGNET_SCAN_CSV_COLUMNS = (
     "elapsed_s", "loop", "point_in_loop", "points_per_loop", "target_current_A", "read_current_A",
     "measured_field_GS", "mean_roi_intensity", "std_roi_intensity", "sample_count",
+    "focus_position_um",
 )
 # The two magnet commands "Zero both now" must know about while they are
 # queued or running (audit/review, 2026-10-13).
@@ -1919,7 +1922,10 @@ KEITHLEY_RESULTS_DIRECTORY = (
 )
 # The MOKE-24 voltage scan's columns: Save CSV's, and since 2026-10-18 (user:
 # "live CSV like CIDWM") also the run folder's live CSV, in this order.
-KEITHLEY_SCAN_CSV_COLUMNS = ("set_voltage_V", "mean_roi_intensity", "std_roi_intensity", "sample_count")
+# focus_position_um last, as the MOKE magnet scan's (user, 2026-10-20).
+KEITHLEY_SCAN_CSV_COLUMNS = (
+    "set_voltage_V", "mean_roi_intensity", "std_roi_intensity", "sample_count", "focus_position_um",
+)
 
 # Keithley 6221 pulsed-current defaults.  The source program used the 6221
 # waveform generator; here a 50% duty unipolar square wave is used so the
@@ -1989,19 +1995,23 @@ CIDWM_SCAN_DIRECTORY = (
     Path(__file__).resolve().parent / f"{Path(__file__).stem}_CIDWM_Results"
 )
 # The pulse sign scan's CSV columns per pulse source, unchanged since the run
-# folder's live CSV moved to the shared recorder (user, 2026-10-18).
+# folder's live CSV moved to the shared recorder (user, 2026-10-18), but for
+# focus_position_um at the end.
 # in_compliance_at_readback: the 6221's condition when read just after INIT
 # (a µs pulse may have ended by then); the Avtech's amplitude and width are
 # read back before the pulse, overload_tripped is its output protection after
 # it; note: why a pulse that was applied has no images.
+# focus_position_um, after note, last (user, 2026-10-20): the focus motor's
+# tracked position when the pulse's images were taken; blank without it.
 CIDWM_SCAN_6221_COLUMNS = (
     "pulse", "sign", "set_current_mA", "current_mA", "pulse_width_us", "compliance_V", "elapsed_s",
     "in_compliance_at_readback", "roi_mean_processed", "processing", "raw_tiff", "processed_tiff",
-    "display_png", "note",
+    "display_png", "note", "focus_position_um",
 )
 CIDWM_SCAN_AVTECH_COLUMNS = (
     "pulse", "sign", "set_amplitude_V", "amplitude_V", "pulse_width_ns", "elapsed_s", "overload_tripped",
     "roi_mean_processed", "processing", "raw_tiff", "processed_tiff", "display_png", "note",
+    "focus_position_um",
 )
 K6221_PULSE_READBACK_INTERVAL_S = 0.25
 K6221_READBACK_MAX_POINTS = 2000
@@ -13196,6 +13206,11 @@ class CameraFrame:
     # its exposure (NaN without a difference image), so a scan can tell when
     # every frame in the average came after its pulse (CIDWM, 2026-10-12).
     window_start_monotonic: float = math.nan
+    # time.monotonic() when this raw frame began its exposure, at the latest,
+    # in every difference mode (window_start_monotonic is NaN with the
+    # difference off): the auto focus scores only frames begun after its
+    # move had settled (user, 2026-10-20).  NaN: unknown, never fresh.
+    exposure_start_monotonic: float = math.nan
 
 
 # Margin on a frame's exposure start (the frame's arrival less its exposure):
@@ -13903,6 +13918,7 @@ class CameraAcquisitionWorker:
                     spatial_binning=spatial_binning,
                     mean_filter_size=mean_filter_size,
                     window_start_monotonic=window_start,
+                    exposure_start_monotonic=exposure_start,
                 )
                 self._put_latest(frame)
         except BaseException as error:
@@ -15472,6 +15488,801 @@ def scan_end_outputs_text(results, outputs=(), check: bool = True, together: str
 PAIR_FLIP_LIMIT = 8
 
 
+# ---------------------------------------------------------------------------
+# Auto focus with the Cell-VSDM motor (user, 2026-10-20)
+# ---------------------------------------------------------------------------
+# User: "add a auto focus function here to make sure the focus is always
+# right? In MOKE magnet and CIDWM module. the range should be less than 10um
+# change in absolute position and step is 0.5um", "change the motor position
+# to realize it".  An "Auto focus" button (one search) and a "Keep in focus"
+# tick (a small check between scan points and pulses, and every 30 s when no
+# scan runs) on the MOKE difference display, so on both pages.  The focus
+# area is the whole camera image.
+#
+# Hard limits, checked before every move: a focus move only ever targets
+# reference + k x FOCUS_STEP_UM (absolute positions, so no rounding adds up),
+# with |target - reference| <= FOCUS_RANGE_UM and 0 <= target <=
+# MAX_POSITION_UM.  The reference is the position when the auto focus was
+# first started (kept while only the auto focus moves the motor) or when Keep
+# in focus was ticked (kept until it is unticked).  Every move goes through
+# the motor page's own write (MotorApp.submit_focus_target: its checks, its
+# executor, its bookkeeping and log); nothing writes a register here.
+FOCUS_RANGE_UM = 10.0
+FOCUS_STEP_UM = 0.5
+# Every scored position is reached moving up (+), from at least this many
+# steps below when the motor is above it, so a gear's backlash is taken up
+# the same way each time (its size is not known; 1 µm is assumed to cover it).
+FOCUS_BACKLASH_STEPS = 2
+# The search's first sweep: the current position +/- 3 steps (1.5 µm), then
+# a hill climb outwards until the best has two worse positions beyond it.
+FOCUS_LOCAL_HALF_STEPS = 3
+FOCUS_PAST_PEAK_STEPS = 2
+# (best - worst) / best below this: no focus peak (a featureless or dark
+# image); the whole window is swept once, then the motor goes back to start.
+FOCUS_MIN_CONTRAST = 0.03
+# Keep in focus steps only for a sharper image by more than this fraction.
+FOCUS_MIN_GAIN = 0.02
+FOCUS_FRAMES_PER_POSITION = 2
+# After a target is written: its travel time (MotorApp._focus_travel_s) and
+# then this, before a frame may begin its exposure.
+FOCUS_SETTLE_S = 0.5
+FOCUS_FRAME_TIMEOUT_S = 10.0
+# For the Tk thread to send a move, and for the motor to write it.
+FOCUS_MOVE_TIMEOUT_S = 10.0
+FOCUS_IDLE_INTERVAL_S = 30.0
+FOCUS_IDLE_TICK_MS = 1000
+# A scan waits at most this long for a running search to stop before it starts.
+FOCUS_STOP_WAIT_S = 15.0
+FOCUS_DOWNSAMPLE_TARGET_PX = 512
+FOCUS_POSITION_TOLERANCE_UM = 0.02
+FOCUS_CSV_COLUMN = "focus_position_um"
+FOCUS_DIALOG_TITLE = "Auto focus"
+
+
+def focus_sharpness(image) -> float:
+    """The focus score of a whole image: the variance of its 4-neighbour
+    Laplacian over its mean squared, on a float copy block-averaged to at most
+    FOCUS_DOWNSAMPLE_TARGET_PX per side (numpy only).  Scale-free: a brighter
+    exposure (I -> a I) scores the same.  0 for a dark or flat image."""
+    if np is None:
+        raise RuntimeError("numpy is required for the auto focus")
+    array = np.asarray(image, dtype=np.float64)
+    if array.ndim == 3:
+        array = array.mean(axis=2)
+    if array.ndim != 2 or min(array.shape) < 3:
+        raise ValueError(f"Auto focus needs a 2-D image, not shape {array.shape}")
+    factor = max(1, int(math.ceil(max(array.shape) / FOCUS_DOWNSAMPLE_TARGET_PX)))
+    if factor > 1 and min(array.shape) // factor >= 3:
+        height = array.shape[0] // factor * factor
+        width = array.shape[1] // factor * factor
+        array = array[:height, :width].reshape(
+            height // factor, factor, width // factor, factor
+        ).mean(axis=(1, 3))
+    mean = float(np.mean(array))
+    if not math.isfinite(mean) or mean <= 0.0:
+        return 0.0
+    laplacian = (
+        array[:-2, 1:-1] + array[2:, 1:-1] + array[1:-1, :-2] + array[1:-1, 2:]
+        - 4.0 * array[1:-1, 1:-1]
+    )
+    value = float(np.var(laplacian)) / (mean * mean)
+    return value if math.isfinite(value) else 0.0
+
+
+class FocusError(RuntimeError):
+    """The auto focus must stop: a refusal, a failed or unconfirmed move, or
+    no fresh camera frame.  Keep in focus is unticked."""
+
+
+class FocusCancelled(RuntimeError):
+    """Stop focus, a scan's Stop, the motor or camera going, or closing."""
+
+
+@dataclass
+class FocusResult:
+    kind: str                 # "search" or "check"
+    reference_um: float
+    start_um: float
+    best_um: float
+    start_score: float
+    best_score: float
+    peak_found: bool
+    at_window_edge: bool
+    moves: int
+    positions: list           # (position_um, score) in the order scored
+
+
+class FocusSearch:
+    """One Auto focus search or one Keep in focus check, on the grid
+    reference + k x step only, inside the window (FOCUS_RANGE_UM, 0 and the
+    motor's maximum).  ``move(target_um)`` returns once the motor confirmed
+    the target (raises otherwise); ``measure()`` scores frames begun after
+    the last move had settled; ``cancelled()`` is checked before every move
+    and score.  No Tk, no motor or camera here, so it is tested with fakes."""
+
+    def __init__(self, reference_um, current_um, max_position_um, move, measure, cancelled,
+                 *, range_um=FOCUS_RANGE_UM, step_um=FOCUS_STEP_UM, log=None):
+        self.reference_um = float(reference_um)
+        self.range_um = float(range_um)
+        self.step_um = float(step_um)
+        self.max_position_um = float(max_position_um)
+        self.move, self.measure, self.cancelled = move, measure, cancelled
+        self.log = log or (lambda text: None)
+        steps = int(math.floor(self.range_um / self.step_um + 1e-9))
+        self.k_min = max(-steps, int(math.ceil(-self.reference_um / self.step_um - 1e-9)))
+        self.k_max = min(steps, int(math.floor(
+            (self.max_position_um - self.reference_um) / self.step_um + 1e-9)))
+        offset = (float(current_um) - self.reference_um) / self.step_um
+        k = int(round(offset))
+        if abs(float(current_um) - self.position(k)) > FOCUS_POSITION_TOLERANCE_UM:
+            raise FocusError(
+                f"the motor at {float(current_um):g} µm is not on the {self.step_um:g} µm grid "
+                f"of the focus reference {self.reference_um:g} µm"
+            )
+        if not self.k_min <= k <= self.k_max:
+            raise FocusError(
+                f"the motor at {float(current_um):g} µm is outside the focus window "
+                f"{self.position(self.k_min):g}–{self.position(self.k_max):g} µm"
+            )
+        self.k = self.start_k = k
+        self.moves = 0
+        self.positions: list[tuple[float, float]] = []
+
+    def position(self, k: int) -> float:
+        return round(self.reference_um + k * self.step_um, 6)
+
+    def _check_cancel(self) -> None:
+        if self.cancelled():
+            raise FocusCancelled("auto focus stopped")
+
+    def _move_to(self, k: int) -> None:
+        self._check_cancel()
+        target = self.position(k)
+        if (
+            not self.k_min <= k <= self.k_max
+            or abs(target - self.reference_um) > self.range_um + 1e-9
+            or not 0.0 <= target <= self.max_position_um
+        ):
+            raise FocusError(f"focus target {target:g} µm is outside the focus window")
+        self.move(target)
+        self.k = k
+        self.moves += 1
+
+    def goto(self, k: int) -> None:
+        """To grid position k, arriving moving up (backlash): from above, first
+        to FOCUS_BACKLASH_STEPS below it (not below the window)."""
+        if k == self.k:
+            return
+        if k < self.k:
+            below = max(self.k_min, k - FOCUS_BACKLASH_STEPS)
+            if below < k:
+                self._move_to(below)
+        self._move_to(k)
+
+    def _score_here(self) -> float:
+        self._check_cancel()
+        score = float(self.measure())
+        self.positions.append((self.position(self.k), score))
+        self.log(f"Auto focus: {self.position(self.k):g} µm scores {score:.6g}")
+        return score
+
+    def _score_at(self, k: int, scores: dict) -> float:
+        self.goto(k)
+        scores[k] = self._score_here()
+        return scores[k]
+
+    @staticmethod
+    def _contrast(scores: dict) -> float:
+        best = max(scores.values())
+        return (best - min(scores.values())) / best if best > 0 else 0.0
+
+    def search(self) -> FocusResult:
+        start_k = self.k
+        scores: dict[int, float] = {}
+        start_score = self._score_here()
+        scores[start_k] = start_score
+        low = max(self.k_min, start_k - FOCUS_LOCAL_HALF_STEPS)
+        high = min(self.k_max, start_k + FOCUS_LOCAL_HALF_STEPS)
+        # Swept upwards, the start too (its first score was taken however
+        # the motor had arrived).
+        for k in range(low, high + 1):
+            self._score_at(k, scores)
+        # Outwards until the best has FOCUS_PAST_PEAK_STEPS worse positions
+        # on each side, or the window's edge.  Downwards in blocks, each swept
+        # upwards, so every score is taken moving up.
+        while True:
+            best = max(scores, key=scores.get)
+            top, bottom = max(scores), min(scores)
+            if top - best < FOCUS_PAST_PEAK_STEPS and top < self.k_max:
+                self._score_at(top + 1, scores)
+                continue
+            if best - bottom < FOCUS_PAST_PEAK_STEPS and bottom > self.k_min:
+                block = max(self.k_min, bottom - 2 * FOCUS_PAST_PEAK_STEPS)
+                for k in range(block, bottom):
+                    self._score_at(k, scores)
+                continue
+            break
+        if self._contrast(scores) < FOCUS_MIN_CONTRAST:
+            self.log("Auto focus: no clear peak near the start; sweeping the whole window")
+            scores = {}
+            for k in range(self.k_min, self.k_max + 1):
+                self._score_at(k, scores)
+        peak = self._contrast(scores) >= FOCUS_MIN_CONTRAST
+        best = max(scores, key=scores.get) if peak else start_k
+        self.goto(best)
+        final_score = self._score_here()
+        return FocusResult(
+            "search", self.reference_um, self.position(start_k), self.position(best),
+            start_score, final_score, peak, peak and best in (self.k_min, self.k_max),
+            self.moves, list(self.positions),
+        )
+
+    def check(self) -> FocusResult:
+        """Keep in focus: the current position, one step up and one step down
+        (in that order: 4 moves when nothing changes); then on towards the
+        sharper side while each step is sharper by FOCUS_MIN_GAIN, stopping at
+        the window's edge; then to the best, arriving moving up."""
+        start_k = self.k
+        start_score = self._score_here()
+        scores = {start_k: start_score}
+        for k in (start_k + 1, start_k - 1):
+            if self.k_min <= k <= self.k_max:
+                self._score_at(k, scores)
+        gain = 1.0 + FOCUS_MIN_GAIN
+        best_k = max(scores, key=scores.get)
+        at_edge = False
+        if best_k != start_k and scores[best_k] > start_score * gain:
+            direction = best_k - start_k
+            k = best_k + direction
+            while True:
+                if not self.k_min <= k <= self.k_max:
+                    at_edge = True
+                    break
+                if self._score_at(k, scores) > scores[best_k] * gain:
+                    best_k = k
+                    k += direction
+                    continue
+                break
+        else:
+            best_k = start_k
+        self.goto(best_k)
+        return FocusResult(
+            "check", self.reference_um, self.position(start_k), self.position(best_k),
+            start_score, scores[best_k], best_k != start_k, at_edge, self.moves, list(self.positions),
+        )
+
+
+class AutoFocusManager:
+    """The Auto focus button, the Keep in focus tick and the focus status
+    line of the MOKE difference display (MOKE magnet and CIDWM pages share
+    them), driving the Cell-VSDM motor (user, 2026-10-20).
+
+    Threads: the button's search and the 30 s idle check run on a thread of
+    their own; the between-points check runs on the scan's worker, between
+    its points.  None of them touches Tk: each move is sent from the Tk
+    thread through post_ui (MotorApp.submit_focus_target, which runs the
+    write on the motor's own executor), and frames are read from Camera
+    Live's latest_frame.  At most one search or check runs at a time."""
+
+    def __init__(self, app, keep_var=None, status_var=None) -> None:
+        self.app = app
+        self.keep_var = keep_var if keep_var is not None else tk.BooleanVar(value=False)
+        self.status_var = status_var if status_var is not None else tk.StringVar(
+            value="Focus: not run (needs the motor homed and the camera live)"
+        )
+        self.buttons: list = []
+        self.ticks: list = []
+        self.camera_ready = False
+        self.lock = threading.Lock()
+        self.cancel_event = threading.Event()
+        self.running_kind: str | None = None
+        # Plain copies of the tick for the scan workers, which may not read Tk.
+        self.keep_on = False
+        self.reference_um: float | None = None
+        # The motor's counts after the last confirmed focus move (or when the
+        # reference was taken): anything else means another command moved it.
+        self.expected_counts: int | None = None
+        # The counts when a focus move failed: the position is unknown until
+        # the motor's tracked position changes again (CSV blank).
+        self.unknown_counts: int | None = None
+        self.frames_after = -math.inf
+        self.last_check_monotonic = -math.inf
+        self.idle_after_id = None
+
+    # ----- helpers usable from any thread ---------------------------------
+    def _motor(self):
+        return self.app.__dict__.get("motor_app")
+
+    def _cancelled(self, stop_events=()) -> bool:
+        return (
+            self.cancel_event.is_set()
+            or bool(self.app.__dict__.get("closing"))
+            or any(event.is_set() for event in stop_events)
+        )
+
+    def _scan_running(self) -> bool:
+        return bool(
+            self.app.__dict__.get("magnet_scan_running")
+            or self.app.__dict__.get("keithley_scan_running")
+            or self.app.__dict__.get("k6221_scan_running")
+        )
+
+    def acquisition_busy(self) -> str | None:
+        """Why camera frames are being taken for something else now: a MOKE
+        magnet or MOKE-24 point collecting, a Camera Live recording, a
+        background (re)capture, or images being saved; else None."""
+        app = self.app
+        if app.__dict__.get("magnet_scan_collecting"):
+            return "a MOKE magnet point is acquiring"
+        if app.__dict__.get("keithley_collecting"):
+            return "a MOKE-24 point is acquiring"
+        camera = app.__dict__.get("camera_window")
+        if camera is not None:
+            if getattr(camera, "video_recorder", None) is not None or app.__dict__.get("camera_video_stopping"):
+                return "Camera Live is recording"
+            worker = getattr(camera, "worker", None)
+            if worker is not None and getattr(worker, "background_capture_requested", False):
+                return "a background is being captured"
+        if app.__dict__.get("active_file_exports"):
+            return "images are being saved"
+        return None
+
+    def position_for_row(self):
+        """The focus motor's tracked absolute position in µm for a scan's CSV
+        row; "" when the motor is not attached, connected and homed, or after
+        a failed focus move left it unknown."""
+        motor = self._motor()
+        if motor is None:
+            return ""
+        try:
+            if not (motor.controller.connected and motor.homed):
+                return ""
+            counts = int(motor.command_counts)
+            scale = float(motor.abs_counts_per_um)
+        except (AttributeError, TypeError, ValueError):
+            return ""
+        if self.unknown_counts is not None and counts == self.unknown_counts:
+            return ""
+        return round(counts / scale, 4)
+
+    def _log(self, text: str, recorder_attrs=()) -> None:
+        self.app.thread_log(text)
+        for attribute in recorder_attrs:
+            self.app._scan_log(attribute, "note", text=str(text))
+
+    def _call_on_tk(self, function, stop_events=(), timeout_s=FOCUS_MOVE_TIMEOUT_S):
+        """``function()`` on the Tk thread (post_ui); its result here.  If it
+        has not begun when this gives up, it never runs."""
+        handoff = Future()
+
+        def run():
+            if not handoff.set_running_or_notify_cancel():
+                return
+            try:
+                handoff.set_result(function())
+            except BaseException as error:
+                handoff.set_exception(error)
+
+        self.app.post_ui(run)
+        deadline = time.monotonic() + timeout_s
+        while not handoff.done():
+            if self._cancelled(stop_events) or time.monotonic() >= deadline:
+                if handoff.cancel():
+                    if self._cancelled(stop_events):
+                        raise FocusCancelled("auto focus stopped")
+                    raise FocusError("the program did not send the focus move within "
+                                     f"{timeout_s:g} s")
+                break  # already running on the Tk thread: take its result
+            time.sleep(0.01)
+        return handoff.result(timeout=timeout_s)
+
+    # ----- the worker side -------------------------------------------------
+    def _move(self, target_um: float, stop_events=(), recorder_attrs=()) -> None:
+        motor = self._motor()
+        if motor is None:
+            raise FocusError("the focus motor is not attached")
+        reference = self.reference_um
+
+        def send():
+            if self._cancelled(stop_events):
+                raise FocusCancelled("auto focus stopped")
+            if self.expected_counts is not None and motor.command_counts != self.expected_counts:
+                raise FocusError("the focus motor was moved by another command during the auto focus")
+            return motor.submit_focus_target(
+                target_um, f"{target_um - reference:+.1f} µm from the reference {reference:g} µm"
+            )
+
+        try:
+            future, counts, travel_s = self._call_on_tk(send, stop_events)
+        except (FocusCancelled, FocusError):
+            raise
+        except BaseException as error:
+            raise FocusError(f"the focus move to {target_um:g} µm was refused: {error}") from error
+        self._log(
+            f"Auto focus move: absolute {target_um:g} µm ({target_um - reference:+.1f} µm from the "
+            f"reference {reference:g} µm)", recorder_attrs,
+        )
+        deadline = time.monotonic() + FOCUS_MOVE_TIMEOUT_S
+        while not future.done():
+            if self._cancelled(stop_events):
+                raise FocusCancelled("auto focus stopped")
+            if time.monotonic() >= deadline:
+                self.unknown_counts = int(motor.command_counts)
+                raise FocusError(f"the focus move to {target_um:g} µm was not confirmed "
+                                 f"within {FOCUS_MOVE_TIMEOUT_S:g} s")
+            time.sleep(0.01)
+        error = future.exception()
+        if error is not None:
+            self.unknown_counts = int(motor.command_counts)
+            raise FocusError(f"the focus move to {target_um:g} µm failed: {error}")
+        # Confirmed when the motor page has taken the target as its tracked
+        # position (its _finish_task, on the Tk thread).
+        while motor.command_busy or motor.pending_target is not None or motor.command_counts != counts:
+            if self._cancelled(stop_events):
+                raise FocusCancelled("auto focus stopped")
+            if time.monotonic() >= deadline:
+                self.unknown_counts = int(motor.command_counts)
+                raise FocusError(f"the focus move to {target_um:g} µm was not confirmed by the motor page")
+            time.sleep(0.01)
+        self.expected_counts = counts
+        self.unknown_counts = None
+        self.frames_after = time.monotonic() + float(travel_s) + FOCUS_SETTLE_S
+
+    def _measure(self, stop_events=()) -> float:
+        """The score of FOCUS_FRAMES_PER_POSITION frames, averaged, each begun
+        after the last move had settled (and after this call)."""
+        after = max(self.frames_after, time.monotonic())
+        frames = []
+        camera = self.app.__dict__.get("camera_window")
+        latest = getattr(camera, "latest_frame", None)
+        try:
+            exposure_s = float(latest.exposure_ms) / 1000.0
+        except (AttributeError, TypeError, ValueError):
+            exposure_s = 0.0
+        if not math.isfinite(exposure_s):
+            exposure_s = 0.0
+        deadline = time.monotonic() + FOCUS_FRAME_TIMEOUT_S + (FOCUS_FRAMES_PER_POSITION + 1) * exposure_s
+        while len(frames) < FOCUS_FRAMES_PER_POSITION:
+            if self._cancelled(stop_events):
+                raise FocusCancelled("auto focus stopped")
+            camera = self.app.__dict__.get("camera_window")
+            if camera is None:
+                raise FocusError("the camera is not live")
+            frame = getattr(camera, "latest_frame", None)
+            try:
+                start = float(getattr(frame, "exposure_start_monotonic", math.nan))
+            except (TypeError, ValueError):
+                start = math.nan
+            if (
+                frame is not None and math.isfinite(start) and start > after
+                and all(frame is not taken for taken in frames)
+            ):
+                frames.append(frame)
+                continue
+            if time.monotonic() >= deadline:
+                raise FocusError(f"no camera frame begun after the focus move came within "
+                                 f"{deadline - after:.0f} s")
+            time.sleep(0.01)
+        images = [np.asarray(frame.raw, dtype=np.float64) for frame in frames]
+        return focus_sharpness(sum(images) / len(images))
+
+    def _run(self, kind, reference_um, current_um, max_um, stop_events=(), recorder_attrs=()):
+        """One search or check; reports through post_ui; never raises."""
+        def log(text):
+            self.app.thread_log(text)
+
+        result = error = None
+        try:
+            engine = FocusSearch(
+                reference_um, current_um, max_um,
+                move=lambda target: self._move(target, stop_events, recorder_attrs),
+                measure=lambda: self._measure(stop_events),
+                cancelled=lambda: self._cancelled(stop_events),
+                log=log,
+            )
+            result = engine.search() if kind == "search" else engine.check()
+        except BaseException as caught:
+            error = caught
+        finally:
+            with self.lock:
+                self.running_kind = None
+        self.app.post_ui(lambda: self._report(kind, result, error, recorder_attrs))
+        return result, error
+
+    # ----- the Tk side -----------------------------------------------------
+    def _report(self, kind, result, error, recorder_attrs=()) -> None:
+        name = "Auto focus" if kind == "search" else "Keep in focus check"
+        if result is not None:
+            change = result.best_um - result.reference_um
+            gain = (result.best_score / result.start_score - 1.0) * 100.0 if result.start_score > 0 else 0.0
+            if kind == "search" and not result.peak_found:
+                text = f"no clear peak within ±{FOCUS_RANGE_UM:g} µm; back at {result.best_um:g} µm"
+            else:
+                text = (f"{'best' if kind == 'search' else 'checked'} at {result.best_um:g} µm "
+                        f"({change:+.1f} µm), sharpness {gain:+.0f} %"
+                        + (", at the window edge" if result.at_window_edge else ""))
+            self.status_var.set(f"Focus: {text}")
+            self._log(f"{name}: {text} ({result.moves} moves; reference {result.reference_um:g} µm)",
+                      recorder_attrs)
+            for attribute in recorder_attrs:
+                self.app._scan_log(
+                    attribute, "focus", kind=kind, position_um=result.best_um,
+                    reference_um=result.reference_um, start_um=result.start_um, moves=result.moves,
+                    peak_found=result.peak_found, at_window_edge=result.at_window_edge,
+                )
+        elif isinstance(error, FocusCancelled):
+            self.status_var.set(f"Focus: {name.lower()} stopped")
+            self._log(f"{name} stopped: {error}", recorder_attrs)
+        else:
+            self._fail(f"{name} stopped: {error}", recorder_attrs)
+        self._update_controls()
+
+    def _fail(self, text: str, recorder_attrs=()) -> None:
+        """A failure: Keep in focus off, the status, the log and a dialog."""
+        self._set_keep(False)
+        self.status_var.set(f"Focus: {short_status_error(text, 90)}; Keep in focus off")
+        self._log(f"{text}; Keep in focus switched off", recorder_attrs)
+        dialog = getattr(self.app, "_dialog_after_drain", None)
+        if dialog is not None:
+            dialog("showwarning", FOCUS_DIALOG_TITLE, f"{text}.\n\nKeep in focus is off.")
+
+    def _set_keep(self, on: bool) -> None:
+        # The reference stays: only the operator's untick (keep_changed) or a
+        # new tick replaces it, and another command's move (expected_counts).
+        self.keep_on = bool(on)
+        try:
+            self.keep_var.set(bool(on))
+        except tk.TclError:
+            pass
+
+    def _update_controls(self) -> None:
+        running = self.running_kind is not None
+        text = "Stop focus" if self.running_kind == "search" else "Auto focus"
+        # The style with the text: the look given while it read Stop focus
+        # (red) would otherwise stay on Auto focus.
+        role = button_role(text)
+        for button in self.buttons:
+            try:
+                button.configure(
+                    text=text,
+                    style=button_role_style(role) if role else "TButton",
+                    state="normal" if self.camera_ready or running else "disabled",
+                )
+            except tk.TclError:
+                pass
+        for tick in self.ticks:
+            try:
+                tick.configure(state="normal" if self.camera_ready else "disabled")
+            except tk.TclError:
+                pass
+
+    def set_camera_ready(self, ready: bool) -> None:
+        self.camera_ready = bool(ready)
+        if not ready:
+            self.cancel("the camera is not live", untick=True)
+        self._update_controls()
+
+    def refusal(self) -> str | None:
+        """Why a focus search or check may not start now (Tk thread), or None."""
+        motor = self._motor()
+        if motor is None:
+            return "the focus motor (Motor Control page) is not attached"
+        reason = motor.focus_move_refusal()
+        if reason:
+            return reason
+        camera = self.app.__dict__.get("camera_window")
+        if camera is None or not self.app.__dict__.get("camera_connected"):
+            return "the camera is not live"
+        if getattr(camera, "latest_frame", None) is None:
+            return "the camera has not produced a frame yet"
+        return None
+
+    def _current(self):
+        motor = self._motor()
+        counts = int(motor.command_counts)
+        return counts, counts / float(motor.abs_counts_per_um), float(motor.max_position_um)
+
+    def _claim(self, kind: str) -> bool:
+        with self.lock:
+            if self.running_kind is not None:
+                return False
+            self.running_kind = kind
+            self.cancel_event.clear()
+            return True
+
+    def _confirm(self, what: str, reference_um: float, max_um: float) -> bool:
+        low = max(0.0, reference_um - FOCUS_RANGE_UM)
+        high = min(max_um, reference_um + FOCUS_RANGE_UM)
+        return bool(messagebox.askyesno(
+            FOCUS_DIALOG_TITLE,
+            f"{what} moves the focus motor in {FOCUS_STEP_UM:g} µm steps within "
+            f"{low:g}–{high:g} µm (±{FOCUS_RANGE_UM:g} µm around "
+            f"{reference_um:g} µm), scoring the whole camera image.\n\nThe objective is close to "
+            "the sample: confirm this range is safe and continue?",
+            icon="warning", parent=self.app.root,
+        ))
+
+    def toggle_search(self) -> None:
+        """The Auto focus button: one search now; while it runs, Stop focus."""
+        if self.running_kind == "search":
+            self.cancel("Stop focus pressed")
+            return
+        reason = self.refusal()
+        if reason is None and self.running_kind is not None:
+            reason = "a Keep in focus check is running"
+        if reason is None and self._scan_running():
+            reason = "a scan is running (Keep in focus checks between its points)"
+        if reason is None:
+            reason = self.acquisition_busy()
+        if reason:
+            self.status_var.set(f"Focus: not started; {reason}")
+            messagebox.showwarning(FOCUS_DIALOG_TITLE, f"Auto focus was not started: {reason}.",
+                                   parent=self.app.root)
+            return
+        counts, current_um, max_um = self._current()
+        # The reference stays while only the auto focus moves the motor, so
+        # repeated searches never walk it more than FOCUS_RANGE_UM away.
+        if self.reference_um is None or counts != self.expected_counts:
+            if self.keep_on:
+                self._fail("The focus motor was moved by another command since Keep in focus was ticked")
+                return
+            reference = current_um
+        else:
+            reference = self.reference_um
+        if not self._confirm("Auto focus", reference, max_um):
+            return
+        if not self._claim("search"):
+            return
+        self.reference_um, self.expected_counts = reference, counts
+        self.status_var.set(f"Focus: searching around {reference:g} µm…")
+        self._update_controls()
+        threading.Thread(
+            target=self._run, args=("search", reference, current_um, max_um),
+            name="auto-focus", daemon=True,
+        ).start()
+
+    def keep_changed(self) -> None:
+        """The Keep in focus tick: the reference is the position now."""
+        if not self.keep_var.get():
+            self.keep_on = False
+            if self.running_kind == "check":
+                self.cancel("Keep in focus unticked")
+            self.reference_um = None
+            self.status_var.set("Focus: Keep in focus off")
+            return
+        reason = self.refusal()
+        if reason is None and self.running_kind is not None:
+            reason = "an auto focus search is running"
+        if reason:
+            self._set_keep(False)
+            self.status_var.set(f"Focus: Keep in focus not started; {reason}")
+            messagebox.showwarning(FOCUS_DIALOG_TITLE, f"Keep in focus was not started: {reason}.",
+                                   parent=self.app.root)
+            return
+        counts, current_um, max_um = self._current()
+        if not self._confirm("Keep in focus", current_um, max_um):
+            self._set_keep(False)
+            return
+        self.reference_um, self.expected_counts = current_um, counts
+        self.keep_on = True
+        self.last_check_monotonic = -math.inf
+        self.status_var.set(f"Focus: keeping within ±{FOCUS_RANGE_UM:g} µm of {current_um:g} µm")
+        self._log(f"Keep in focus on: reference {current_um:g} µm, ±{FOCUS_RANGE_UM:g} µm, "
+                  f"{FOCUS_STEP_UM:g} µm steps")
+
+    def _check_ready_on_tk(self):
+        """For a Keep in focus check (Tk thread): (reference, current, max),
+        or None to skip it this time; a hard refusal unticks."""
+        if not self.keep_on or self.reference_um is None:
+            return None
+        motor = self._motor()
+        if motor is not None and (motor.command_busy or motor.init_off_busy):
+            return None  # busy with the operator's command: next time
+        reason = self.refusal()
+        if reason:
+            self._fail(f"Keep in focus stopped: {reason}")
+            return None
+        counts, current_um, max_um = self._current()
+        if counts != self.expected_counts:
+            self._fail("Keep in focus stopped: the focus motor was moved by another command")
+            return None
+        return self.reference_um, current_um, max_um
+
+    def idle_tick(self) -> None:
+        """Every FOCUS_IDLE_TICK_MS: with Keep in focus on and no scan, a check
+        every FOCUS_IDLE_INTERVAL_S on its own thread."""
+        root = self.app.__dict__.get("root")
+        try:
+            if root is not None and not self.app.__dict__.get("closing"):
+                self.idle_after_id = root.after(FOCUS_IDLE_TICK_MS, self.idle_tick)
+        except tk.TclError:
+            self.idle_after_id = None
+        if (
+            not self.keep_on or self.running_kind is not None or self._scan_running()
+            or self.acquisition_busy() or self.app.__dict__.get("closing")
+            or time.monotonic() - self.last_check_monotonic < FOCUS_IDLE_INTERVAL_S
+        ):
+            return
+        ready = self._check_ready_on_tk()
+        if ready is None or not self._claim("check"):
+            return
+        self.last_check_monotonic = time.monotonic()
+        self.status_var.set("Focus: checking…")
+        events = (_IdleStop(self),)
+        threading.Thread(
+            target=self._run, args=("check", *ready, events),
+            name="auto-focus-check", daemon=True,
+        ).start()
+
+    def cancel(self, reason: str, untick: bool = False) -> None:
+        """Stop any search or check at once: no further move is sent (Tk thread)."""
+        running = self.running_kind
+        self.cancel_event.set()
+        if untick and self.keep_on:
+            self._set_keep(False)
+            self.status_var.set(f"Focus: Keep in focus off; {reason}")
+            self.app.thread_log(f"Keep in focus switched off: {reason}")
+        if running is not None:
+            self.app.thread_log(f"Auto focus stopped: {reason}")
+
+    def motor_stopping(self, reason: str) -> None:
+        """MotorApp.motion_stop_listeners: Init OFF, Disconnect, closing."""
+        self.cancel(reason, untick=True)
+
+    # ----- the scans' hooks (their workers) --------------------------------
+    def before_scan(self) -> None:
+        """At a MOKE magnet, MOKE-24 or CIDWM scan's start, on its worker:
+        any search or idle check stops first, so no focus move overlaps the
+        scan's first point."""
+        if self.running_kind is None:
+            return
+        self.cancel_event.set()
+        deadline = time.monotonic() + FOCUS_STOP_WAIT_S
+        while self.running_kind is not None:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"the auto focus did not stop within {FOCUS_STOP_WAIT_S:g} s")
+            time.sleep(0.02)
+
+    def between_points(self, recorder_attr: str, stop_event) -> None:
+        """Keep in focus between a scan's points (its worker), after the
+        point's row and images are saved and before the next step, never
+        while a frame for a point is being taken.  A failure unticks Keep in
+        focus and the scan goes on; Stop ends the check at once."""
+        if not self.keep_on or stop_event.is_set() or self.app.__dict__.get("closing"):
+            return
+        if self.app.__dict__.get("magnet_scan_collecting") or self.app.__dict__.get("keithley_collecting"):
+            return
+        if not self._claim("check"):
+            return
+        events = (stop_event,)
+        attrs = (recorder_attr,)
+        try:
+            ready = self._call_on_tk(self._check_ready_on_tk, events)
+        except BaseException as error:
+            with self.lock:
+                self.running_kind = None
+            if not isinstance(error, FocusCancelled):
+                self.app.post_ui(lambda: self._fail(f"Keep in focus stopped: {error}", attrs))
+            return
+        if ready is None:
+            with self.lock:
+                self.running_kind = None
+            return
+        self.app.post_ui(lambda: self.status_var.set("Focus: checking between points…"))
+        self._run("check", *ready, events, attrs)
+        self.last_check_monotonic = time.monotonic()
+
+
+class _IdleStop:
+    """An idle check's extra stop: a scan or an acquisition has started."""
+
+    def __init__(self, manager: AutoFocusManager) -> None:
+        self.manager = manager
+
+    def is_set(self) -> bool:
+        return self.manager._scan_running() or self.manager.acquisition_busy() is not None
+
+
 class CombinedControlApp:
     """Tk LED panel with a strictly main-thread UI event queue."""
 
@@ -15564,6 +16375,8 @@ class CombinedControlApp:
         # Every page's Recapture BG and 100× marker buttons (MOKE magnet, CIDWM).
         self.difference_capture_buttons: list[ttk.Button] = []
         self.objective_100x_marker_buttons: list[ttk.Button] = []
+        # Auto focus with the Cell-VSDM motor, on the same box (user, 2026-10-20).
+        self.auto_focus = AutoFocusManager(self)
         self.difference_clim_low_var = tk.StringVar(value="-2")
         self.difference_clim_high_var = tk.StringVar(value="2")
         self.difference_clim_status_var = tk.StringVar(value="Auto")
@@ -16554,6 +17367,7 @@ class CombinedControlApp:
         self._update_magnet_controls()
         self.root.after(20, self.drain_ui_queue)
         self.root.after(250, self._magnet_poll_timer)
+        self.auto_focus.idle_after_id = self.root.after(FOCUS_IDLE_TICK_MS, self.auto_focus.idle_tick)
         self.k6221_monitor_after_id = self.root.after(
             300, self._k6221_monitor_timer
         )
@@ -26060,6 +26874,39 @@ class CombinedControlApp:
             foreground="#9a4d00",
             wraplength=380,
         ).grid(row=2, column=0, sticky="w", pady=(3, 0))
+
+        # Auto focus (user, 2026-10-20): a row of its own under the mode row
+        # (two more controls there would widen the box at 1101 px), and its
+        # status under it, wrapped as the line above, so the box's natural
+        # width does not change (the CIDWM pair layout depends on it).
+        focus = self.auto_focus
+        focus_row = ttk.Frame(mode_box)
+        focus_row.grid(row=3, column=0, sticky="w", pady=(4, 0))
+        # Wide enough for "Stop focus" too, so the toggle never resizes.
+        focus_button = ttk.Button(
+            focus_row,
+            text="Auto focus",
+            command=focus.toggle_search,
+            state="disabled",
+            width=11,
+        )
+        focus_button.grid(row=0, column=0, sticky="w")
+        focus_tick = ttk.Checkbutton(
+            focus_row,
+            text="Keep in focus",
+            variable=focus.keep_var,
+            command=focus.keep_changed,
+            state="disabled",
+        )
+        focus_tick.grid(row=0, column=1, sticky="w", padx=(8, 0))
+        focus.buttons.append(focus_button)
+        focus.ticks.append(focus_tick)
+        ttk.Label(
+            mode_box,
+            textvariable=focus.status_var,
+            style="Muted.TLabel",
+            wraplength=380,
+        ).grid(row=4, column=0, sticky="w", pady=(2, 0))
         return mode_box
 
     def _build_moke_roi_edit_box(self, parent, page: str) -> ttk.LabelFrame:
@@ -28790,6 +29637,10 @@ class CombinedControlApp:
     def attach_motor(self, motor_app_class) -> None:
         self.motor_app_class = motor_app_class
         self.motor_app = motor_app_class(self.motor_tab, embedded=True)
+        # Init OFF, Disconnect and closing stop the auto focus at once.
+        focus = self.__dict__.get("auto_focus")
+        if focus is not None:
+            self.motor_app.motion_stop_listeners.append(focus.motor_stopping)
         self._apply_commercial_look(self.motor_tab)
 
     def _apply_commercial_look(self, widget=None) -> None:
@@ -28829,6 +29680,10 @@ class CombinedControlApp:
             button.configure(state=state)
         for button in self.camera_video_buttons:
             button.configure(state=state)
+        # The camera gone: a running focus search stops, Keep in focus is off.
+        focus = self.__dict__.get("auto_focus")
+        if focus is not None:
+            focus.set_camera_ready(enabled)
 
     def _update_camera_launcher_controls(self) -> None:
         has_window = self.camera_window is not None
@@ -32466,6 +33321,9 @@ class CombinedControlApp:
         current step (user, 2026-10-18).  The KEPCOs' zeroing follows in
         _magnet_scan_worker."""
         recorder = self.__dict__.get("magnet_scan_recorder")
+        focus = self.__dict__.get("auto_focus")
+        if focus is not None:
+            focus.before_scan()  # no focus move overlaps the first point
         # Refuse before the first write when the gaussmeter is not connected.
         self._require_gauss_meter(key)
         self._scan_log(
@@ -32473,12 +33331,12 @@ class CombinedControlApp:
             settle_s=settle_s, collect_s=collect_s,
             image_session=None if image_session is None else str(image_session),
         )
-        for (
+        for position, (
             loop_index,
             point_index,
             points_per_loop,
             target_current,
-        ) in sequence:
+        ) in enumerate(sequence, start=1):
             if recorder is not None:
                 recorder.check()  # a failed log write ends the scan here
             if self.magnet_scan_stop_event.is_set():
@@ -32586,6 +33444,7 @@ class CombinedControlApp:
                 mean_value,
                 std_value,
                 count,
+                "" if focus is None else focus.position_for_row(),
             )
             with self.magnet_scan_data_lock:
                 self.magnet_scan_rows.append(row)
@@ -32603,6 +33462,10 @@ class CombinedControlApp:
                     self._append_magnet_scan_point(selected, values)
                 )
             )
+            # Keep in focus between points, after the point is saved and
+            # before the next current step (user, 2026-10-20).
+            if focus is not None and position < len(sequence):
+                focus.between_points("magnet_scan_recorder", self.magnet_scan_stop_event)
 
     @staticmethod
     def _magnet_kepco_labels(key: str | None) -> tuple[str, str]:
@@ -32688,7 +33551,7 @@ class CombinedControlApp:
             mean_value,
             _std_value,
             count,
-        ) = row
+        ) = row[:10]  # then focus_position_um (2026-10-20)
         self.magnet_last_currents[key] = read_current
         self.magnet_current_vars[key].set(f"{read_current:+.3f} A")
         self.magnet_scan_completed_points = min(
@@ -34116,6 +34979,9 @@ class CombinedControlApp:
         voltage step (user, 2026-10-18).  The zeroing follows in
         _keithley_scan_worker."""
         recorder = self.__dict__.get("keithley_scan_recorder")
+        focus = self.__dict__.get("auto_focus")
+        if focus is not None:
+            focus.before_scan()  # no focus move overlaps the first point
         self._scan_log("keithley_scan_recorder", "scan_started", model=self.keithley_controller.model,
                        points=len(sequence), settle_s=settle_s, collect_s=collect_s,
                        image_session=None if image_session is None else str(image_session))
@@ -34204,7 +35070,8 @@ class CombinedControlApp:
                     f"{image_timestamp}.tiff"
                 )
                 save_processed_f32_tiff(snapshot, image_session / filename)
-            row = (float(voltage), mean_value, std_value, count)
+            row = (float(voltage), mean_value, std_value, count,
+                   "" if focus is None else focus.position_for_row())
             with self.keithley_data_lock:
                 self.keithley_step_rows.append(row)
             if recorder is not None:
@@ -34214,6 +35081,9 @@ class CombinedControlApp:
                 recorder.event("point_saved", index=index, set_voltage_V=float(voltage),
                                read_voltage_V=float(actual_voltage), roi_samples=count)
             self.post_ui(lambda values=row: self._append_keithley_step_row(values))
+            # Keep in focus between points (user, 2026-10-20).
+            if focus is not None and index < len(sequence):
+                focus.between_points("keithley_scan_recorder", self.keithley_stop_event)
 
     def _keithley_zero_outputs_after_scan(self) -> dict[str, str]:
         """At a scan's end, on the 2410 worker (user, 2026-10-18): 0 V and
@@ -35494,11 +36364,17 @@ class CombinedControlApp:
         started = time.monotonic()
         # The columns of the live CSV, unchanged (CIDWM_SCAN_*_COLUMNS).
         columns = CIDWM_SCAN_AVTECH_COLUMNS if avtech else CIDWM_SCAN_6221_COLUMNS
+        focus = self.__dict__.get("auto_focus")
+        if focus is not None:
+            focus.before_scan()  # no focus move overlaps the first pulse's images
 
         def write_row(values) -> None:
             # A row onto the live CSV, opened and closed for it and fsynced
             # (user, 2026-10-18: the shared recorder), then point_saved.
-            recorder.append_row(dict(zip(columns, values)))
+            # values end at note; focus_position_um follows (2026-10-20).
+            row = dict(zip(columns, values))
+            row[FOCUS_CSV_COLUMN] = "" if focus is None else focus.position_for_row()
+            recorder.append_row(row)
             recorder.event("point_saved", index=recorder.rows_written, pulse=values[0], sign=values[1],
                            note=values[-1])
 
@@ -35639,6 +36515,10 @@ class CombinedControlApp:
                     + (f"; ROI mean {mean:.6g}" if math.isfinite(mean) else "")
                 )
             )
+            # Keep in focus between pulses, after the images are saved and
+            # before the next pulse (user, 2026-10-20).
+            if focus is not None and index < len(signs):
+                focus.between_points("cidwm_scan_recorder", self.k6221_stop_event)
         return {"done": done, "total": len(signs), "directory": str(run_directory)}
 
     @staticmethod
@@ -46849,6 +47729,9 @@ class CombinedControlApp:
                     pass
 
     def safe_close_motor(self) -> None:
+        focus = self.__dict__.get("auto_focus")
+        if focus is not None:
+            focus.cancel_event.set()  # no further focus move (any thread)
         motor = self.motor_app
         if motor is None:
             return
@@ -47272,6 +48155,9 @@ class CombinedControlApp:
             return
         self.closing = True
         self.operation_var.set("Closing all modules…")
+        focus = self.__dict__.get("auto_focus")
+        if focus is not None:
+            focus.cancel("the program closing")  # no further focus move
         self.magnet_scan_stop_event.set()
         self.magnet_field_zero_stop_event.set()
         self.keithley_stop_event.set()
@@ -47786,6 +48672,13 @@ def create_motor_subsystem():
             self.homed = False
             self.command_counts = 0
             self.pending_target = None
+            # Told, on the Tk thread, when Init OFF, Disconnect or closing
+            # begins, so the auto focus sends no further move (user,
+            # 2026-10-20).  Each takes the reason text.
+            self.motion_stop_listeners = []
+            # For the auto focus: the absolute scale and its software range.
+            self.abs_counts_per_um = ABS_SCALE_COUNTS_PER_UM
+            self.max_position_um = MAX_POSITION_UM
     
             self.port_var = tk.StringVar(value=DEFAULT_PORT)
             self.connection_var = tk.StringVar(value="Not connected")
@@ -48112,9 +49005,11 @@ def create_motor_subsystem():
                 self.progress.stop()
             self._update_controls()
     
-        def _submit(self, description: str, function, success: str, tag: str = "generic") -> None:
+        def _submit(self, description: str, function, success: str, tag: str = "generic"):
+            """The command on the motor's executor; its future (None when busy,
+            nothing sent), which the auto focus waits on (2026-10-20)."""
             if self.command_busy:
-                return
+                return None
             self._set_busy(True, description)
             future = self.executor.submit(function)
     
@@ -48122,6 +49017,78 @@ def create_motor_subsystem():
                 self.ui_queue.put(("task_done", success, completed.exception(), tag))
     
             future.add_done_callback(done)
+            return future
+
+        def _notify_motion_stop(self, reason: str) -> None:
+            for listener in list(self.motion_stop_listeners):
+                try:
+                    listener(reason)
+                except Exception as error:
+                    self.log(f"Motion stop listener error: {error}")
+
+        def focus_move_refusal(self) -> Optional[str]:
+            """Why an automatic focus move may not be sent now (Tk thread),
+            or None: the checks the motor page's own moves make, with the
+            safety tick required as for Up / Down (user, 2026-10-20)."""
+            if self.closing:
+                return "the motor page is closing"
+            if not self.controller.connected:
+                return "the focus motor is not connected"
+            if not self.initialized:
+                return "the focus motor is not initialised (Init ON)"
+            if not self.homed:
+                return "the focus motor is not homed"
+            if not self.safety_var.get():
+                return "the motor page's safety tick (mechanical path, limits and direction) is off"
+            if self.command_busy or self.init_off_busy:
+                return "the focus motor is busy with another command"
+            return None
+
+        def _focus_travel_s(self, delta_counts: int) -> float:
+            """An upper bound on a move's travel time, from the profile boxes:
+            distance / speed + speed / acceleration (a trapezoid's time; a
+            short move's triangle is never longer).  The status register says
+            nothing about motion, so the auto focus waits this long after the
+            target is written.  It takes the speed's 51200 pulses per turn as
+            the absolute target's counts (not confirmed on the stage); for
+            0.5 to 2 µm moves the speed / acceleration term dominates anyway.
+            Boxes that do not parse: a slow 1 rps, 1 rps/s profile."""
+            try:
+                speed, accel, decel = self._parse_profile()
+            except ValueError:
+                speed, accel, decel = 1.0, 1.0, 1.0
+            ramp = min(accel, decel)
+            return abs(delta_counts) / profile_raw(speed) + speed / ramp
+
+        def submit_focus_target(self, position_um: float, description: str):
+            """Go to absolute position's write, for the auto focus (user,
+            2026-10-20), on the Tk thread: the same software range, refusals
+            (focus_move_refusal), executor, pending_target bookkeeping and
+            log, without its Yes/No (the auto focus asked once when started).
+            Returns (future, counts, travel_s); raises instead of sending."""
+            refusal = self.focus_move_refusal()
+            if refusal:
+                raise MotorProtocolError(refusal)
+            position = float(position_um)
+            if not 0.0 <= position <= MAX_POSITION_UM:
+                raise MotorProtocolError(
+                    f"Auto focus target {position:g} µm is outside 0–{MAX_POSITION_UM:g} µm"
+                )
+            counts = absolute_um_to_counts(position)
+            travel_s = self._focus_travel_s(counts - self.command_counts)
+
+            def command():
+                self.controller.write_target_counts(counts, f"absolute {position:g} µm (auto focus: {description})")
+
+            self.pending_target = (counts, f"absolute {position:g} µm; raw={counts} (auto focus)")
+            future = self._submit(
+                "Auto focus: writing absolute target…", command,
+                f"Auto focus: absolute target {position:g} µm written", "target",
+            )
+            if future is None:
+                self.pending_target = None
+                raise MotorProtocolError("the focus motor is busy with another command")
+            return future, counts, travel_s
     
         def _finish_task(self, success: str, error: Optional[BaseException], tag: str) -> None:
             self.poll_pause.clear()
@@ -48179,6 +49146,7 @@ def create_motor_subsystem():
                 self._start_poll_thread()
     
         def disconnect(self) -> None:
+            self._notify_motion_stop("the motor disconnecting")
             self.poll_stop.set()
             self.home_cancel.set()
             self._set_busy(True, "Disconnecting…")
@@ -48227,6 +49195,7 @@ def create_motor_subsystem():
             )
     
         def init_off(self) -> None:
+            self._notify_motion_stop("Init OFF")
             if not self.controller.connected or self.init_off_busy:
                 return
             self.init_off_busy = True
@@ -48425,6 +49394,7 @@ def create_motor_subsystem():
         def on_close(self) -> None:
             if self.closing:
                 return
+            self._notify_motion_stop("the motor page closing")
             if self.controller.connected and self.initialized:
                 if messagebox.askyesno(APP_TITLE, "Send Init OFF before closing?\n\n\"Yes\" is recommended.", icon="warning", parent=self.root):
                     self.home_cancel.set()

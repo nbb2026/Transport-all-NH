@@ -1,5 +1,55 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Auto focus with the Cell-VSDM motor: MOKE magnet and CIDWM (2026-10-20)
+
+- User: "can you add a auto focus function here to make sure the focus is always right? In MOKE magnet and CIDWM
+  module. the range should be less than 10um change in absolute position and step is 0.5um pls", then "change the
+  motor position to realize it I mean". Their choices: an **Auto focus** button (one search) and a **Keep in focus**
+  tick; the focus area is the whole image.
+- **Where:** the MOKE difference display box (`_build_moke_difference_box`, so both the MOKE magnet and CIDWM pages,
+  sharing one state): a new row under the mode row with **Auto focus** (reads **Stop focus** while it searches) and
+  **Keep in focus**, and a status line under it ("Focus: best at 7252 µm (+2.0 µm), sharpness +35 %"), wrapped at
+  380 px as the line above it, so the box is no wider. Both are enabled with the camera.
+- **Limits, before every move:** only absolute targets reference + k × 0.5 µm (`FOCUS_STEP_UM`; no rounding adds
+  up), |target − reference| ≤ 10 µm (`FOCUS_RANGE_UM`, ≤ 41 positions) and 0 ≤ target ≤ `MAX_POSITION_UM`. The
+  reference is the position when Auto focus was first started (kept while only the auto focus moves the motor, so
+  repeated searches cannot walk away), or when Keep in focus was ticked (kept until it is unticked). Either asks one
+  Yes/No naming the range first. The user wrote "less than 10um"; the window is ±10 µm as agreed for the brief: one
+  constant to change.
+- **Moves:** every move is the motor page's own absolute write (`MotorApp.submit_focus_target`: the motor's checks,
+  its `motor-command` executor, `pending_target` bookkeeping and log), sent from the Tk thread through `post_ui`;
+  the search runs on a thread of its own (or the scan's worker) and never touches Tk. A move is confirmed when the
+  write's future succeeds and the motor page has taken the target as its tracked position. The status register says
+  nothing about motion, so frames are taken only after a travel bound (distance / speed + speed / acceleration from
+  the profile boxes) plus 0.5 s settle (`FOCUS_SETTLE_S`).
+- **Score:** `focus_sharpness`: variance of the 4-neighbour Laplacian over the mean squared (scale-free), on the
+  whole raw frame block-averaged to ≤ 512 px, numpy only; the mean of 2 frames per position, each begun after the
+  move had settled (`CameraFrame.exposure_start_monotonic`, new: the raw frame's exposure start in every difference
+  mode, since `window_start_monotonic` is NaN with the difference off).
+- **Search** (`FocusSearch.search`): current ± 1.5 µm swept upwards, then a hill climb outwards until the best has
+  two worse positions on each side (downwards in blocks, each swept upwards), or the window's edge. No clear peak
+  ((best − worst) / best < 3 %): the whole window once, then back to the start if still none. **Backlash:** every
+  scored position and the final one are reached moving up (+); from above, the motor first goes 1 µm (2 steps) below
+  (not below the window). The real backlash is not known.
+- **Keep in focus** (`FocusSearch.check`): the current position, +0.5 µm and −0.5 µm (4 moves when nothing changes),
+  then on towards the side sharper by more than 2 % while each step improves, stopping at the window's edge. It
+  runs between the points of the MOKE magnet and MOKE-24 scans and between the CIDWM pulse sign scan's pulses, on
+  the scan's worker, after the point's row and images are saved and before the next step (never after the last
+  point, never while a point is collecting), and every 30 s when no scan runs, on its own thread (not during a
+  recording, a background capture or an image save). A scan's start first stops any running search or check.
+- **Safety:** refused with the reason (status and dialog) when the motor is not attached, connected, initialised or
+  homed, its safety tick is off, it is busy, the camera is not live, or a scan or recording runs (the button). A
+  failed or unconfirmed move stops it, unticks Keep in focus and says so; the scan goes on. Stop focus, unticking,
+  a scan's Stop, the motor's Init OFF / Disconnect / close, the camera going and program close stop it before the
+  next move. Another command moving the motor during a search, or since Keep in focus was ticked, stops it too.
+  Every move is in the program log and, during a scan, a note in the run log, with a "focus" event per check.
+- **Data:** `focus_position_um`, the motor's tracked absolute position, is the new last column of the MOKE magnet
+  (`MAGNET_SCAN_CSV_COLUMNS`), MOKE-24 (`KEITHLEY_SCAN_CSV_COLUMNS`) and CIDWM (`CIDWM_SCAN_*_COLUMNS`, after
+  `note`) CSVs, live and Save CSV; blank without the motor connected and homed, or after a failed focus move.
+- Tests: `test_auto_focus.py` (window-free; fake motor with the real MotorApp methods, fake camera). Not run with
+  the hardware, and not on CI (the Actions minutes are used up until 2026-11-01): the new row's layout at 1101 and
+  2000 px is unchecked; the travel bound assumes the speed's 51200 pulses per turn are the target's counts.
+
 ## CIDWM layout: connections together, settings together, then the scan (2026-10-20)
 
 - User: "rearrange the GUI of CIDWM, make connections together, settings together, then scan. like SHV and PPMS
