@@ -3172,9 +3172,9 @@ class AvtechPulserController(SafeVisaIdentityController):
     read back, output on, "trigger:source immediate" (the remote Single Pulse
     button), then hold and the output off, read back.  Connecting,
     disconnecting and every stop leave the trigger on hold and the output
-    off.  The polarity is the unit's (-P, -N or -PN; Avtech: no -PN on -W3
-    units): the amplitude read back must have the sign asked for, or no
-    pulse is fired.
+    off.  The polarity is the unit's, from its *IDN? model (-P, -N or -PN;
+    the lab's AVR-E3-B-W3-PN-OT gives both, 2026-10-20): the amplitude read
+    back must have the sign asked for, or no pulse is fired.
     """
 
     # The instrument's own overload error ("1001, Device-specific error;
@@ -27371,25 +27371,45 @@ class CombinedControlApp:
         )
         scan.grid(row=2, column=0, sticky="ew", pady=(7, 0))
         scan.columnconfigure(11, weight=1)
+        # One row per pulse source, each with its own width (user, 2026-10-20:
+        # "add pulse width settings here and seperate the 6221 & Avtech").  The
+        # width boxes are the pulse outputs' own (the 6221's Width µs, the
+        # Avtech's Width ns), so a width typed here or there is the one used.
+        # The row of the source not chosen is greyed out.
+        self.cidwm_scan_source_entries = {"6221": [], "avtech": []}
+        for row, (source, name, fields) in enumerate((
+            ("6221", "6221:", (("|I| mA:", self.cidwm_scan_current_var, 7),
+                               ("Width µs:", self.k6221_width_var, 7))),
+            ("avtech", "Avtech:", (("|V| V:", self.cidwm_scan_amplitude_var, 7),
+                                   ("Width ns:", self.avtech_width_var, 7))),
+        )):
+            ttk.Label(scan, text=name).grid(row=row, column=0, sticky="w", padx=(0, 6))
+            for column, (label, variable, width) in enumerate(fields):
+                ttk.Label(scan, text=label).grid(
+                    row=row, column=1 + 2 * column, sticky="e", padx=(0 if column == 0 else 10, 3)
+                )
+                entry = ttk.Entry(scan, textvariable=variable, width=width)
+                entry.grid(row=row, column=2 + 2 * column, sticky="w", pady=(0, 2))
+                self.cidwm_scan_source_entries[source].append(entry)
+        common = ttk.Frame(scan)
+        common.grid(row=2, column=0, columnspan=12, sticky="w", pady=(2, 0))
         for column, (label, variable, width) in enumerate((
-            ("|I| mA:", self.cidwm_scan_current_var, 7),
-            ("|V| V:", self.cidwm_scan_amplitude_var, 7),
             ("Pulses:", self.cidwm_scan_pulses_var, 7),
             ("Signs:", self.cidwm_scan_signs_var, 14),
             ("Wait after pulse s:", self.cidwm_scan_wait_var, 6),
         )):
-            ttk.Label(scan, text=label).grid(
+            ttk.Label(common, text=label).grid(
                 row=0, column=2 * column, sticky="e", padx=(0 if column == 0 else 10, 3)
             )
-            ttk.Entry(scan, textvariable=variable, width=width).grid(
+            ttk.Entry(common, textvariable=variable, width=width).grid(
                 row=0, column=2 * column + 1, sticky="w"
             )
-        # The buttons on their own line, so the row fits the lab's default
-        # 1101 px window with the |I| box.
+        # The buttons on their own line, so the rows fit the lab's default
+        # 1101 px window.
         buttons = ttk.Frame(scan)
-        buttons.grid(row=1, column=0, columnspan=12, sticky="w", pady=(4, 0))
-        # The pulse source (user, 2026-10-13): the 6221 (|I| mA, its pulse
-        # output's width and compliance) or the Avtech (|V| V, its width).
+        buttons.grid(row=3, column=0, columnspan=12, sticky="w", pady=(4, 0))
+        # The pulse source (user, 2026-10-13): the 6221 (|I| mA, its Width µs
+        # and its pulse output's compliance) or the Avtech (|V| V, Width ns).
         ttk.Label(buttons, text="Pulse source:").grid(row=0, column=0, padx=(0, 3))
         self.cidwm_scan_source_buttons = []
         for column, (value, text) in enumerate((("6221", "6221"), ("avtech", "Avtech")), 1):
@@ -27411,14 +27431,14 @@ class CombinedControlApp:
             scan,
             text="Signs: + and - per pulse, repeated to fill Pulses (+- alternates, ++-- goes in pairs)",
             style="Muted.TLabel",
-        ).grid(row=2, column=0, columnspan=12, sticky="w", pady=(4, 0))
+        ).grid(row=4, column=0, columnspan=12, sticky="w", pady=(4, 0))
         ttk.Label(
             scan,
-            text="6221: |I| mA, width and compliance from its pulse output; Avtech: |V| V, width from its box",
+            text="6221: compliance from its pulse output; the width boxes are the pulse outputs' own",
             style="Muted.TLabel",
-        ).grid(row=3, column=0, columnspan=12, sticky="w")
+        ).grid(row=5, column=0, columnspan=12, sticky="w")
         scan_status = ttk.Label(scan, width=1)
-        scan_status.grid(row=4, column=0, columnspan=12, sticky="ew", pady=(2, 0))
+        scan_status.grid(row=6, column=0, columnspan=12, sticky="ew", pady=(2, 0))
         show_trimmed(scan_status, self.cidwm_scan_status_var)
 
         # CIDWM: under the pulse sign scan, the MOKE magnet page's
@@ -36111,6 +36131,12 @@ class CombinedControlApp:
             self.cidwm_scan_stop_button.configure(state="normal" if running else "disabled")
             for button in self.__dict__.get("cidwm_scan_source_buttons", ()):
                 button.configure(state="disabled" if running else "normal")
+            # The row of the source not chosen is greyed out, and both while a
+            # scan runs (user, 2026-10-20: the 6221 and Avtech rows separate).
+            chosen = self._cidwm_scan_source()
+            for source, entries in self.__dict__.get("cidwm_scan_source_entries", {}).items():
+                for entry in entries:
+                    entry.configure(state="normal" if source == chosen and not running else "disabled")
         self.k6221_off_button.configure(state="normal" if connected else "disabled")
         if "cidwm_save_images_button" in self.__dict__:
             self.cidwm_save_images_button.configure(

@@ -1,5 +1,17 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## CIDWM pulse sign scan: a row per source, each with its width (2026-10-20)
+
+- User: "add pulse width settings here and seperate the 6221 & Avtech". The scan box now has a **6221** row
+  (|I| mA, Width µs) and an **Avtech** row (|V| V, Width ns), then Pulses / Signs / Wait after pulse s, then the
+  source choice and the buttons. The width boxes share their values with the pulse outputs' own boxes (the 6221's
+  Width µs, the Avtech's Width ns), so one width is used either way. The row of the source not chosen is greyed
+  out, and both are while a scan runs. The 6221's compliance still comes from its pulse output. Scan logic unchanged.
+- The lab's Avtech is an AVR-E3-B-W3-PN-OT (SN 14100, firmware v6.4.21OL): a -W3 unit that gives both polarities.
+  The comments that said -W3 units have no -PN are corrected (program and Avtech_pulse_test.py); the program
+  already took the polarity from *IDN?.
+- Not checked on CI (the Actions minutes are used up until 2026-11-01): the scan box is one row taller.
+
 ## SHV lock-ins at start-up (2026-10-20)
 
 - From the user's screenshot ("use setting in the figures as default", the SHV page): SR830-1 at harmonic **1**

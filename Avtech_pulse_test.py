@@ -37,8 +37,9 @@ SAFETY
   - OUT needs a 50 ohm load; up to 100 V.  The generator cannot detect a
     missing load.  Change cables only with the output off.
   - First test into a 50 ohm load with an oscilloscope, not the sample.
-  - -W3 units give one polarity only (-PN is not offered on -W3): a pulse of
-    the other sign is refused before anything is fired.
+  - The polarity is the unit's, from its *IDN? model (-P, -N or -PN; the
+    lab's AVR-E3-B-W3-PN-OT gives both): a pulse of a sign the unit cannot
+    give is refused before anything is fired.
   - Amplitude above 0 and at most 100 V; width 1 ns - 5 us.  Below 10 V
     Avtech advises an external attenuator.
 """
