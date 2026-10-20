@@ -236,7 +236,7 @@ class SinglePulseTests(unittest.TestCase):
 
     def test_the_defaults(self):
         self.assertEqual((app.AVTECH_DEFAULT_RESOURCE, app.AVTECH_DEFAULT_AMPLITUDE_V,
-                          app.AVTECH_DEFAULT_WIDTH_NS), ("GPIB0::8::INSTR", 40.0, 100.0))
+                          app.AVTECH_DEFAULT_WIDTH_NS), ("GPIB0::8::INSTR", 90.0, 10.0))
 
 
 class ConnectTests(unittest.TestCase):

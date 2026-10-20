@@ -183,7 +183,7 @@ class PanelDefaultTests(unittest.TestCase):
         a = self.app
         self.assertEqual((a.cidwm_scan_current_var.get(), a.cidwm_scan_pulses_var.get(),
                           a.cidwm_scan_signs_var.get(), a.cidwm_scan_wait_var.get()),
-                         ("2", "10", "+-", "1"))
+                         ("3", "10", "+-", "1"))
         self.assertEqual(str(a.cidwm_scan_start_button.cget("state")), "disabled")
         self.assertEqual(str(a.cidwm_scan_stop_button.cget("state")), "disabled")
         self.assertEqual(str(a.cidwm_scan_start_button.cget("text")), "Choose folder and start scan")
@@ -195,7 +195,7 @@ class PanelDefaultTests(unittest.TestCase):
         a = self.app
         self.assertEqual((a.avtech_resource_var.get(), a.avtech_amplitude_var.get(), a.avtech_width_var.get(),
                           a.cidwm_scan_amplitude_var.get(), a.cidwm_scan_source_var.get()),
-                         ("GPIB0::8::INSTR", "40", "100", "40", "6221"))
+                         ("GPIB0::8::INSTR", "90", "10", "90", "6221"))
         self.assertEqual(str(a.avtech_connect_button.cget("state")), "normal")
         for button in (a.avtech_disconnect_button, a.avtech_apply_button, a.avtech_apply_negative_button,
                        a.avtech_off_button):
@@ -359,7 +359,7 @@ class PanelDefaultTests(unittest.TestCase):
 
         self.assertFalse(hasattr(a, "apply_k6221_continuous_output"))
         self.assertEqual((a.k6221_current_var.get(), a.k6221_width_var.get(), a.k6221_count_var.get(),
-                          a.k6221_compliance_var.get()), ("2", "50", "1", "100"))
+                          a.k6221_compliance_var.get()), ("3", "50", "1", "100"))
         # The live readback stays, in the Pulse settings box.
         self.assertEqual(a.k6221_readback_output_var.get(), "OUTP: OFF")
         self.assertIsNotNone(a.k6221_compliance_state_label)

@@ -1935,7 +1935,7 @@ K6221_MAX_COMPLIANCE_V = 105.0
 # CIDWM (was MOKE-6221) pulse output defaults (user's figure, 2026-10-12; were 1 mA,
 # 10 us and 50 V).  The controller's own start values stay as they were:
 # MS-fourState.py copies them.
-K6221_DEFAULT_CURRENT_MA = 2.0
+K6221_DEFAULT_CURRENT_MA = 3.0  # user's figure, 2026-10-20 (was 2)
 K6221_OUTPUT_PULSE_WIDTH_US = 50.0
 K6221_OUTPUT_COMPLIANCE_V = 100.0
 # Front panel TRIAX -> OUTPUT LOW -> FLOATING.  Earth-grounding the output low
@@ -1967,10 +1967,10 @@ AVTECH_DEFAULT_RESOURCE = "GPIB0::8::INSTR"
 AVTECH_MAX_AMPLITUDE_V = 100.0
 AVTECH_MIN_WIDTH_S = 1e-9
 AVTECH_MAX_WIDTH_S = 5e-6
-# 40 V, 100 ns by default (user, 2026-10-20; it was 10 V, 10 ns); the pulse
-# sign scan's |V| V starts at the same 40 V.
-AVTECH_DEFAULT_AMPLITUDE_V = 40.0
-AVTECH_DEFAULT_WIDTH_NS = 100.0
+# 90 V, 10 ns by default (user's figure, 2026-10-20; before that 40 V, 100 ns,
+# and 10 V, 10 ns); the pulse sign scan's |V| V starts at the same 90 V.
+AVTECH_DEFAULT_AMPLITUDE_V = 90.0
+AVTECH_DEFAULT_WIDTH_NS = 10.0
 # Pulse count beside Width (ns), as the 6221 box has (user, 2026-10-20: "add
 # pulse count function in avtech"): Apply +/-V fires that many pulses, each
 # the whole single-pulse sequence below, one at a time.  The gap runs from

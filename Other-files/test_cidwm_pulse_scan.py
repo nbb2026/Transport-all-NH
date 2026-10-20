@@ -283,7 +283,7 @@ class SizeTests(unittest.TestCase):
                 self.page(size)._parse_cidwm_pulse_scan()
 
     def test_the_default(self):
-        self.assertEqual(app.K6221_DEFAULT_CURRENT_MA, 2.0)
+        self.assertEqual(app.K6221_DEFAULT_CURRENT_MA, 3.0)
 
 
 class AvtechSource:
