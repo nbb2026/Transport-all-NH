@@ -47823,7 +47823,7 @@ def create_motor_subsystem():
             self.accel_var = tk.StringVar(value="10.000")
             self.decel_var = tk.StringVar(value="10.000")
             self.absolute_var = tk.StringVar(value="0.000")
-            self.step_var = tk.StringVar(value="0.000")
+            self.step_var = tk.StringVar(value="0.5")  # user, 2026-10-20
             self.safety_var = tk.BooleanVar(value=False)
             self.log_visible_var = tk.BooleanVar(value=False)
             self.bottom_status_var = tk.StringVar(value="Ready; connect, Init ON, then Home")
