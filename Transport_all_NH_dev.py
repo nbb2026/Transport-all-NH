@@ -27629,12 +27629,26 @@ class CombinedControlApp:
             mode_row, mode_choices, mode_actions, gap=0, stack_gap=3
         )
 
-        ttk.Label(
+        # The detail spans the box's whole width (user, 2026-10-20: "make the
+        # row's width aligning with the module box"), wrapping at the box's
+        # width, which the page gives it.  Its natural width stays one
+        # character, so the text never widens the box: a box whose width
+        # followed its own wrapped text flipped forever (2026-10-12).
+        detail = ttk.Label(
             mode_box,
             textvariable=self.difference_detail_var,
             foreground="#9a4d00",
+            width=1,
             wraplength=380,
-        ).grid(row=2, column=0, sticky="w", pady=(3, 0))
+        )
+        detail.grid(row=2, column=0, sticky="ew", pady=(3, 0))
+
+        def follow_width(event) -> None:
+            wrap = max(100, int(event.width) - 4)
+            if int(float(str(event.widget.cget("wraplength")) or 0)) != wrap:
+                event.widget.configure(wraplength=wrap)
+
+        detail.bind("<Configure>", follow_width, add="+")
 
         # Auto focus (user, 2026-10-20): a row of its own under the mode row
         # (two more controls there would widen the box at 1101 px), and its
