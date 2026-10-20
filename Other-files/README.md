@@ -1,5 +1,41 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Super: the difference display's narrowest-edges focus mode (2026-10-20)
+
+- User, with a Drift tracking screenshot whose device edges show a bright line on one side and a dark line on the
+  other: "the DC is work but the current focus is lose so the edge of my device is shown. I want to add a super mode
+  in MOKE difference display to make sure the edge of device is as narrow as possible!"
+- **Where:** a fourth radio, **Super**, after Off / Plain difference / Drift tracking in the MOKE difference display
+  (both pages). The camera runs Drift tracking, the same subtraction and registration; Super adds a focus servo.
+  The **Auto focus** button reads **Super focus** while Super is chosen (one search; **Stop focus** while it runs)
+  and **Keep in focus** keeps the edges narrowest; outside Super both are unchanged (the ROI's sharpness).
+- **Reference:** the focus motor's tracked position when the BG arrived (a new `CameraFrame.background_serial` per
+  capture). Entering Super without a BG captures one, as Drift tracking does; Recapture BG (or [N]) in Super
+  records a new reference, stops a running search and unticks Keep in focus. The BG's focus is "unknown" (Super
+  does not move) when the motor was not homed, busy, still settling after a focus move, moved between the request
+  and the capture, or a search was running. Leaving Super (another mode, or [B]) stops it and unticks Keep.
+- **Edge residual E** (`edge_residual`, lower is better): the displayed difference D (drift-corrected, averaged,
+  binned and mean-filtered, before CLim) and the BG B (given the same binning and mean filter), block-averaged to
+  about 1024 px. Mask: the top 8 % of B's Sobel gradient, dilated by 2 px. D less its least-squares fit by
+  a + g·B + sx·∂B/∂x + sy·∂B/∂y (a brightness change and the leftover whole-image misregistration, which focus
+  cannot fix), both high-passed by a 31 px box mean (a uniform magnetic contrast leaves only a faint rim), then
+  E = RMS(D on the mask) / RMS(B on the mask), shown in %. Not the ratio to D off the edges: that carries the
+  domains and, when defocused, the widening residual (on a synthetic Hall cross it fell again past a 2 px blur).
+  The whole image counts, also with an ROI drawn; the status says so.
+- **Servo:** the auto focus's walk (`SuperFocusSearch`, a `FocusSearch` scoring 1/E): the same window (±10 µm of
+  the reference, 0.5 µm steps, 0..`MAX_POSITION_UM`), backlash approach, moves (`submit_focus_target`, from the
+  Tk thread), refusals and cancels. A clear minimum needs E_worst ≥ 1.11 E_best (else back to the start); Keep
+  steps only for an E 5 % lower. 2 different difference frames per position, each with its whole temporal average
+  begun after the move had settled (`window_start_monotonic`), against the reference's BG. Keep runs between scan
+  points and every 30 s idle, as before.
+- **Status:** "Super: edge residual 1.8 % (start 4.2 %), focus +1.5 µm from the BG's focus" after a search; the
+  live E (at most once a second, on its own thread) on the display's detail line and the Camera Live top line.
+- **Data:** at a MOKE magnet, MOKE-24 or CIDWM scan's start in Super, the run log gets the reference (note and a
+  "focus" event, kind super_reference); every servo move is a note and every check a "focus" event with E.
+- Tests: `test_super_focus.py` (window-free); `test_auto_focus.py`'s FakeFocus takes the scan's recorder name;
+  `test_panel_defaults.py` (CI only) counts 8 mode radios. Not run on hardware or CI: the mode row's width at 1101
+  and 2000 px, and whether E's minimum on the real sample is the BG's focus, are unchecked.
+
 ## Auto focus on the ROI (2026-10-20)
 
 - User: "can you change to not full screen focus but ROI selected?". The auto focus now scores only the pixels inside

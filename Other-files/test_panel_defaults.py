@@ -341,7 +341,12 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertIn("Camera settings", titles)
         self.assertNotIn("Pulse current scan and ROI acquisition", titles)
         self.assertEqual((len(a.difference_capture_buttons), len(a.objective_100x_marker_buttons)), (2, 2))
-        self.assertEqual(len(a.difference_mode_buttons), 6)
+        # Off / Plain difference / Drift tracking / Super on each page (Super:
+        # user, 2026-10-20).
+        self.assertEqual(len(a.difference_mode_buttons), 8)
+        self.assertEqual([str(b.cget("value")) for b in a.difference_mode_buttons[:4]],
+                         ["off", "plain", "tracking", "super"])
+        self.assertEqual(str(a.difference_mode_buttons[3].cget("text")), "Super")
         texts = []
         pending = [a.k6221_tab]
         while pending:

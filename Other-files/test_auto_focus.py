@@ -748,10 +748,12 @@ class FakeFocus:
 
     def __init__(self, a, collecting_attr, rows_attr, position=7251.5):
         self.a, self.collecting_attr, self.rows_attr, self.position = a, collecting_attr, rows_attr, position
-        self.calls, self.before = [], 0
+        self.calls, self.before, self.before_attrs = [], 0, []
 
-    def before_scan(self):
+    def before_scan(self, recorder_attr=None):
+        # The scan's recorder: Super logs its reference there (2026-10-20).
         self.before += 1
+        self.before_attrs.append(recorder_attr)
 
     def position_for_row(self):
         return self.position
@@ -787,6 +789,7 @@ class ScanHookTests(NumpyPatch):
         a.auto_focus = FakeFocus(a, "magnet_scan_collecting", "magnet_scan_rows")
         helper.run_scan(a)
         self.assertEqual(a.auto_focus.before, 1)
+        self.assertEqual(a.auto_focus.before_attrs, ["magnet_scan_recorder"])
         self.assertEqual(a.auto_focus.calls, [("magnet_scan_recorder", False, 1),
                                               ("magnet_scan_recorder", False, 2)],
                          "after each point's row, not while collecting, not after the last")
@@ -813,6 +816,7 @@ class ScanHookTests(NumpyPatch):
         a.auto_focus = FakeFocus(a, "keithley_collecting", "keithley_step_rows")
         a._keithley_scan_worker([1.0, 2.0], 0.0, 0.0, None)
         self.assertEqual(a.auto_focus.calls, [("keithley_scan_recorder", False, 1)])
+        self.assertEqual(a.auto_focus.before_attrs, ["keithley_scan_recorder"])
         rows = csv_rows(recorder)
         self.assertEqual(rows[0][-1], "focus_position_um")
         self.assertEqual([row[-1] for row in rows[1:]], ["7251.5", "7251.5"])
@@ -845,6 +849,7 @@ class ScanHookTests(NumpyPatch):
                                      ["7251.5"] * 3 if with_focus else [""] * 3)
                     if with_focus:
                         self.assertEqual(len(a.auto_focus.calls), 2, "between pulses, not after the last")
+                        self.assertEqual(a.auto_focus.before_attrs, ["cidwm_scan_recorder"])
                         self.assertEqual([len(names) for names in saved], [2, 4],
                                          "after the pulse's images are saved")
 

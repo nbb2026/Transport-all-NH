@@ -13211,6 +13211,25 @@ class CameraFrame:
     # difference off): the auto focus scores only frames begun after its
     # move had settled (user, 2026-10-20).  NaN: unknown, never fresh.
     exposure_start_monotonic: float = math.nan
+    # The BG this difference was taken against (with the difference on; 0
+    # and None off): a serial new at every capture, for any camera worker,
+    # and the raw BG array itself (never changed in place).  Super records
+    # the focus motor's position when a new serial arrives and judges the
+    # edges against this BG (user, 2026-10-20).
+    background_serial: int = 0
+    background_raw: object = None
+
+
+_BACKGROUND_SERIAL_LOCK = threading.Lock()
+_BACKGROUND_SERIAL = [0]
+
+
+def next_background_serial() -> int:
+    """A new BG serial, unique across camera workers (a reconnect starts a
+    new worker, whose BG must still read as new)."""
+    with _BACKGROUND_SERIAL_LOCK:
+        _BACKGROUND_SERIAL[0] += 1
+        return _BACKGROUND_SERIAL[0]
 
 
 # Margin on a frame's exposure start (the frame's arrival less its exposure):
@@ -13423,6 +13442,7 @@ class CameraAcquisitionWorker:
         self.background_enabled = False
         self.background_capture_requested = False
         self.background = None
+        self.background_serial = 0
         # Float32/downsampled derivatives of ``background``; acquisition
         # thread only.  Rebuilt whenever ``background`` is replaced.
         self._background_prepared: DriftBackground | None = None
@@ -13853,11 +13873,13 @@ class CameraAcquisitionWorker:
 
                 if capture_background:
                     self.background = image_raw.copy()
+                    self.background_serial = next_background_serial()
                     self.logger("Camera background captured")
 
                 if background_enabled:
                     if self.background is None:
                         self.background = image_raw.copy()
+                        self.background_serial = next_background_serial()
                     prepared = self._background_prepared
                     if prepared is None or prepared.raw is not self.background:
                         prepared = DriftBackground(self.background)
@@ -13919,6 +13941,8 @@ class CameraAcquisitionWorker:
                     mean_filter_size=mean_filter_size,
                     window_start_monotonic=window_start,
                     exposure_start_monotonic=exposure_start,
+                    background_serial=self.background_serial if background_enabled else 0,
+                    background_raw=self.background if background_enabled else None,
                 )
                 self._put_latest(frame)
         except BaseException as error:
@@ -14167,6 +14191,11 @@ class TkCameraWindow:
                 break
         if newest is not None:
             self.latest_frame = newest
+            # A new BG's focus, and Super's live edge residual (cheap here:
+            # the residual itself runs on a thread of its own).
+            focus = self.app.__dict__.get("auto_focus")
+            if focus is not None:
+                focus.frame_arrived(newest)
             if not self.connection_announced:
                 self.connection_announced = True
                 self.app.camera_connection_ready()
@@ -14356,7 +14385,15 @@ class TkCameraWindow:
         if mean_filter_size > 1:
             average_text += f" + Mean {mean_filter_size}x{mean_filter_size}"
         exposure_text = f"Exp {frame.exposure_ms:g} ms"
-        if frame.background_mode == "tracking":
+        focus = self.app.__dict__.get("auto_focus")
+        if frame.background_mode == "tracking" and focus is not None and focus.super_on:
+            camera_status = (
+                f"Super ON   dx {frame.drift_dx:+.2f}   dy {frame.drift_dy:+.2f}   "
+                f"match {frame.drift_response:.2f}   {focus.super_overlay_text()}   {exposure_text}   "
+                f"{average_text}   Contrast {contrast}"
+            )
+            status_color = "#ff9df0"
+        elif frame.background_mode == "tracking":
             camera_status = (
                 f"Tracking subtraction ON   dx {frame.drift_dx:+.2f}   "
                 f"dy {frame.drift_dy:+.2f}   match {frame.drift_response:.2f}   {exposure_text}   "
@@ -14967,6 +15004,12 @@ class TkCameraWindow:
         return selected
 
     def capture_background(self) -> None:
+        # Recapture BG and [N]: the motor's position now, which the new BG's
+        # focus must match; in Super a running focus search stops (the new
+        # BG's focus becomes its reference when it arrives: frame_arrived).
+        focus = self.app.__dict__.get("auto_focus")
+        if focus is not None:
+            focus.note_capture_request()
         self.worker.capture_background()
         self.app.reset_difference_live_time_window(restart_clock=True)
         self.app.append_log("Recapturing the background from the next frame…")
@@ -15623,8 +15666,15 @@ class FocusSearch:
     and score.  No Tk, no motor or camera here, so it is tested with fakes."""
 
     def __init__(self, reference_um, current_um, max_position_um, move, measure, cancelled,
-                 *, range_um=FOCUS_RANGE_UM, step_um=FOCUS_STEP_UM, log=None):
+                 *, range_um=FOCUS_RANGE_UM, step_um=FOCUS_STEP_UM, log=None,
+                 min_contrast=None, min_gain=None, name="Auto focus", describe=None):
         self.reference_um = float(reference_um)
+        # Super (2026-10-20) uses the same walk with its own thresholds and
+        # log wording (SuperFocusSearch); the defaults are the auto focus's.
+        self.min_contrast = FOCUS_MIN_CONTRAST if min_contrast is None else float(min_contrast)
+        self.min_gain = FOCUS_MIN_GAIN if min_gain is None else float(min_gain)
+        self.name = str(name)
+        self.describe = describe or (lambda score: f"scores {score:.6g}")
         self.range_um = float(range_um)
         self.step_um = float(step_um)
         self.max_position_um = float(max_position_um)
@@ -15685,7 +15735,7 @@ class FocusSearch:
         self._check_cancel()
         score = float(self.measure())
         self.positions.append((self.position(self.k), score))
-        self.log(f"Auto focus: {self.position(self.k):g} µm scores {score:.6g}")
+        self.log(f"{self.name}: {self.position(self.k):g} µm {self.describe(score)}")
         return score
 
     def _score_at(self, k: int, scores: dict) -> float:
@@ -15724,12 +15774,12 @@ class FocusSearch:
                     self._score_at(k, scores)
                 continue
             break
-        if self._contrast(scores) < FOCUS_MIN_CONTRAST:
-            self.log("Auto focus: no clear peak near the start; sweeping the whole window")
+        if self._contrast(scores) < self.min_contrast:
+            self.log(f"{self.name}: no clear peak near the start; sweeping the whole window")
             scores = {}
             for k in range(self.k_min, self.k_max + 1):
                 self._score_at(k, scores)
-        peak = self._contrast(scores) >= FOCUS_MIN_CONTRAST
+        peak = self._contrast(scores) >= self.min_contrast
         best = max(scores, key=scores.get) if peak else start_k
         self.goto(best)
         final_score = self._score_here()
@@ -15750,7 +15800,7 @@ class FocusSearch:
         for k in (start_k + 1, start_k - 1):
             if self.k_min <= k <= self.k_max:
                 self._score_at(k, scores)
-        gain = 1.0 + FOCUS_MIN_GAIN
+        gain = 1.0 + self.min_gain
         best_k = max(scores, key=scores.get)
         at_edge = False
         if best_k != start_k and scores[best_k] > start_score * gain:
@@ -15774,6 +15824,234 @@ class FocusSearch:
         )
 
 
+# ---------------------------------------------------------------------------
+# Super: the difference display's edge-residual focus servo (user, 2026-10-20)
+# ---------------------------------------------------------------------------
+# User, with a Drift tracking screenshot whose device edges show as a bright
+# line on one side and a dark line on the other: "the DC is work but the
+# current focus is lose so the edge of my device is shown. I want to add a
+# super mode in MOKE difference display to make sure the edge of device is as
+# narrow as possible!"  Super is Drift tracking (the same subtraction and
+# registration) plus a focus servo that moves the Cell-VSDM motor to where
+# those edge lines are smallest, i.e. back to the focus the BG was taken at.
+# It reuses the auto focus's walk (FocusSearch), moves, limits and hooks:
+# targets reference + k x FOCUS_STEP_UM within FOCUS_RANGE_UM of the
+# reference, which here is the motor's position when the BG was captured.
+#
+# The score is the edge residual E (lower is better), from the displayed
+# difference D (drift-corrected, averaged, binned and mean-filtered as shown;
+# before CLim) and the BG B, on a grid block-averaged to about
+# SUPER_GRID_TARGET_PX per side (a multiple of the display binning):
+#   edge mask: the top (100 - SUPER_EDGE_PERCENTILE) % of B's Sobel gradient,
+#     dilated by SUPER_EDGE_DILATE_PX;
+#   D less its least-squares fit by a + g B + sx dB/dx + sy dB/dy: a brightness
+#     change and the frame's leftover whole-image misregistration, which focus
+#     cannot change (a 0.05 px registration jitter would otherwise move E more
+#     than a 0.3 px blur does);
+#   both high-passed (less their SUPER_HIGHPASS_PX box mean), so a uniform
+#     magnetic contrast inside a region leaves only a faint rim;
+#   E = RMS(D on the mask) / RMS(B on the mask): what is left of the device's
+#     edge contrast in the difference, shown in %.
+# Not the ratio to D on the non-edge pixels: those carry the magnetic contrast
+# (E would move with the domains) and, when defocused, the widening residual
+# itself (a synthetic Hall cross gave a ratio that fell again past a 2 px
+# blur).  B's edge contrast is fixed for one BG, so E changes only when D
+# does, and an exposure change scales both.  The whole image counts, also
+# with an ROI drawn (the user wants every edge narrow).
+SUPER_GRID_TARGET_PX = 1024
+SUPER_EDGE_PERCENTILE = 92.0
+SUPER_EDGE_DILATE_PX = 2
+SUPER_HIGHPASS_PX = 31
+# Grid pixels left out at the border, more by the frame's drift: the drift
+# correction's reflected edge and the high-pass's reach.
+SUPER_BORDER_PX = 16
+SUPER_MIN_EDGE_PIXELS = 16
+SUPER_EPSILON = 1e-9
+# The search: no clear minimum unless the worst E is this fraction above the
+# best (1 - E_best / E_worst); Keep in focus steps only for an E lower by
+# this fraction.  Higher than the sharpness's: E near focus is set by noise
+# and registration jitter.
+SUPER_MIN_CONTRAST = 0.10
+SUPER_MIN_GAIN = 0.05
+# The live E in the status and on Camera Live: at most once per this, on a
+# thread of its own (about 50 ms of numpy for a 2048 x 2048 frame).
+SUPER_LIVE_INTERVAL_S = 1.0
+SUPER_MODE_LABEL = "Super"
+
+
+def _super_block_mean(array, factor: int):
+    if factor <= 1:
+        return array
+    height = array.shape[0] // factor * factor
+    width = array.shape[1] // factor * factor
+    return array[:height, :width].reshape(height // factor, factor, width // factor, factor).mean(axis=(1, 3))
+
+
+def _super_sobel(array):
+    """(d/dx, d/dy) of a 2-D float array: Sobel, divided by 8 (a ramp of slope 1 gives 1)."""
+    p = np.pad(array, 1, mode="edge")
+    gx = (p[:-2, 2:] + 2.0 * p[1:-1, 2:] + p[2:, 2:]) - (p[:-2, :-2] + 2.0 * p[1:-1, :-2] + p[2:, :-2])
+    gy = (p[2:, :-2] + 2.0 * p[2:, 1:-1] + p[2:, 2:]) - (p[:-2, :-2] + 2.0 * p[:-2, 1:-1] + p[:-2, 2:])
+    return gx / 8.0, gy / 8.0
+
+
+def _super_dilate(mask, radius: int):
+    """A boolean mask grown by ``radius`` pixels (a square)."""
+    out = mask.copy()
+    for axis in (0, 1):
+        for _ in range(int(radius)):
+            grown = out.copy()
+            if axis == 0:
+                grown[1:] |= out[:-1]
+                grown[:-1] |= out[1:]
+            else:
+                grown[:, 1:] |= out[:, :-1]
+                grown[:, :-1] |= out[:, 1:]
+            out = grown
+    return out
+
+
+def _super_box_mean(array, size: int):
+    """The ``size`` x ``size`` box mean, reflected at the border (integral image)."""
+    half = int(size) // 2
+    size = 2 * half + 1
+    if half < 1 or min(array.shape) <= half:
+        return np.full(array.shape, float(np.mean(array)))
+    padded = np.pad(array, half, mode="reflect")
+    integral = np.pad(padded, ((1, 0), (1, 0))).cumsum(axis=0).cumsum(axis=1)
+    height, width = array.shape
+    total = (
+        integral[size:size + height, size:size + width] - integral[:height, size:size + width]
+        - integral[size:size + height, :width] + integral[:height, :width]
+    )
+    return total / float(size * size)
+
+
+class EdgeResidualReference:
+    """The BG prepared for edge_residual (once per BG and display binning):
+    the grid, the edge mask, the fit's regressors and the BG's own
+    high-passed edge contrast.  Read-only once built, so threads share it."""
+
+    def __init__(self, background, spatial_binning: int = 1, mean_filter_size: int = 1) -> None:
+        if np is None:
+            raise RuntimeError("numpy is required for Super")
+        array = np.asarray(background, dtype=np.float64)
+        if array.ndim != 2:
+            raise ValueError(f"Super needs a 2-D BG, not shape {array.shape}")
+        self.shape = array.shape
+        self.spatial_binning = int(spatial_binning)
+        self.mean_filter_size = int(mean_filter_size)
+        # The BG as the difference is shown: the same binning and mean filter.
+        processed = array.astype(np.float32)
+        if self.spatial_binning > 1:
+            processed = spatial_bin_average_full_size(processed, self.spatial_binning)
+        if self.mean_filter_size > 1:
+            processed = mean_filter_full_size(processed, self.mean_filter_size)
+        binning = max(1, self.spatial_binning)
+        needed = max(1, int(math.ceil(max(self.shape) / SUPER_GRID_TARGET_PX)))
+        self.factor = binning * int(math.ceil(needed / binning))
+        grid = _super_block_mean(np.asarray(processed, dtype=np.float64), self.factor)
+        if min(grid.shape) <= 2 * SUPER_BORDER_PX + 4:
+            raise ValueError(f"the image ({array.shape[1]} x {array.shape[0]}) is too small for Super")
+        self.grid = grid
+        self.gx, self.gy = _super_sobel(grid)
+        valid = np.zeros(grid.shape, dtype=bool)
+        border = SUPER_BORDER_PX
+        valid[border:-border, border:-border] = True
+        gradient = np.hypot(self.gx, self.gy)
+        threshold = float(np.percentile(gradient[valid], SUPER_EDGE_PERCENTILE))
+        core = (gradient > threshold) & valid
+        if not math.isfinite(threshold) or threshold <= 0.0 or int(core.sum()) < SUPER_MIN_EDGE_PIXELS:
+            raise ValueError("the BG shows no edges for Super to judge (a flat or dark image)")
+        self.edge = _super_dilate(core, SUPER_EDGE_DILATE_PX)
+        self.edge &= valid
+        self.background_highpass = grid - _super_box_mean(grid, SUPER_HIGHPASS_PX)
+
+    def window(self, drift_px: float = 0.0):
+        """The grid slice that counts: SUPER_BORDER_PX in from the edge, more
+        by the frame's drift (its reflected border)."""
+        extra = int(math.ceil(abs(float(drift_px)) / self.factor)) if math.isfinite(drift_px) else 0
+        margin = SUPER_BORDER_PX + extra
+        height, width = self.grid.shape
+        if 2 * margin + 4 >= min(height, width):
+            raise ValueError("the drift leaves too little of the image for Super")
+        return (slice(margin, height - margin), slice(margin, width - margin))
+
+
+def edge_residual(difference, reference: EdgeResidualReference, drift_px: float = 0.0) -> float:
+    """E for one displayed difference image (see above): RMS of the
+    fit-cleaned, high-passed difference on the BG's edge mask over the RMS of
+    the high-passed BG there.  Lower is better; 0 for an exact copy of the BG.
+    ``drift_px``: the frame's largest |dx|, |dy| (full-resolution pixels)."""
+    d = np.asarray(difference, dtype=np.float64)
+    if d.shape != reference.shape:
+        raise ValueError(f"the difference ({d.shape}) and the BG ({reference.shape}) differ in size")
+    d = _super_block_mean(d, reference.factor)
+    rows, cols = reference.window(drift_px)
+    regressors = [
+        np.ones(d[rows, cols].shape),
+        reference.grid[rows, cols],
+        reference.gx[rows, cols],
+        reference.gy[rows, cols],
+    ]
+    target = d[rows, cols]
+    gram = np.array([[float(np.vdot(a, b)) for b in regressors] for a in regressors])
+    rhs = np.array([float(np.vdot(a, target)) for a in regressors])
+    coefficients = np.linalg.lstsq(gram, rhs, rcond=None)[0]
+    cleaned = d - (
+        coefficients[0] + coefficients[1] * reference.grid
+        + coefficients[2] * reference.gx + coefficients[3] * reference.gy
+    )
+    highpass = cleaned - _super_box_mean(cleaned, SUPER_HIGHPASS_PX)
+    edge = reference.edge[rows, cols]
+    if int(edge.sum()) < SUPER_MIN_EDGE_PIXELS:
+        raise ValueError("too few BG edges left inside the image for Super")
+    residual = float(np.mean(highpass[rows, cols][edge] ** 2))
+    contrast = float(np.mean(reference.background_highpass[rows, cols][edge] ** 2))
+    value = math.sqrt(residual / (contrast + SUPER_EPSILON))
+    if not math.isfinite(value):
+        raise ValueError("the edge residual is not finite")
+    return value
+
+
+class SuperFocusSearch(FocusSearch):
+    """FocusSearch minimising the edge residual: it walks the same grid,
+    window and backlash with ``measure_residual()`` (E) scored as 1/E, so its
+    "best" is the lowest E; its contrast, 1 - E_best / E_worst, and its
+    Keep in focus gain (E lower by SUPER_MIN_GAIN) use Super's thresholds."""
+
+    def __init__(self, reference_um, current_um, max_position_um, move, measure_residual, cancelled,
+                 *, log=None, **options):
+        def measure() -> float:
+            value = float(measure_residual())
+            if not math.isfinite(value) or value < 0.0:
+                raise FocusError(f"the edge residual {value!r} is not usable")
+            return 1.0 / max(value, SUPER_EPSILON)
+
+        super().__init__(
+            reference_um, current_um, max_position_um, move, measure, cancelled, log=log,
+            min_contrast=SUPER_MIN_CONTRAST, min_gain=SUPER_MIN_GAIN, name="Super focus",
+            describe=lambda score: f"edge residual {super_residual_text(SuperFocusSearch.residual(score))}",
+            **options,
+        )
+
+    @staticmethod
+    def residual(score: float) -> float:
+        """E back from a score (1/E)."""
+        return 1.0 / score if score > 0 else math.inf
+
+
+def super_residual_text(value) -> str:
+    """E as the status shows it: a percentage of the BG's edge contrast."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return "--"
+    if not math.isfinite(value):
+        return "--"
+    return f"{value * 100.0:.2g} %" if value < 0.1 else f"{value * 100.0:.0f} %"
+
+
 class AutoFocusManager:
     """The Auto focus button, the Keep in focus tick and the focus status
     line of the MOKE difference display (MOKE magnet and CIDWM pages share
@@ -15784,7 +16062,11 @@ class AutoFocusManager:
     its points.  None of them touches Tk: each move is sent from the Tk
     thread through post_ui (MotorApp.submit_focus_target, which runs the
     write on the motor's own executor), and frames are read from Camera
-    Live's latest_frame.  At most one search or check runs at a time."""
+    Live's latest_frame.  At most one search or check runs at a time.
+
+    In Super (the difference display's fourth mode, 2026-10-20) the same
+    button and tick judge the edge residual instead (edge_residual: lower is
+    better), around the focus motor's position at the BG capture."""
 
     def __init__(self, app, keep_var=None, status_var=None) -> None:
         self.app = app
@@ -15812,6 +16094,29 @@ class AutoFocusManager:
         self.frames_after = -math.inf
         self.last_check_monotonic = -math.inf
         self.idle_after_id = None
+        # What the running search or check judges: "sharpness" (the ROI's,
+        # Auto focus) or "super" (the edge residual); taken at its claim.
+        self.running_metric = "sharpness"
+        # Super (user, 2026-10-20).  super_on is the Tk thread's copy of the
+        # mode, read by the workers as a plain bool.  The BG's focus: for the
+        # newest BG seen (background_serial), the motor's tracked position
+        # when it arrived, or why it is unknown (background_focus).
+        self.super_on = False
+        self.seen_serial = 0
+        self.background_focus = None      # (serial, um or None, counts or None, reason or None)
+        self.capture_request_counts = None
+        self.super_serial = None
+        self.super_reference_um: float | None = None
+        self.super_reference_reason: str | None = "no BG has been captured yet"
+        # E: the last one measured (live or by the servo), and at the start
+        # of the last search or check.
+        self.super_live_residual: float | None = None
+        self.super_live_error: str | None = None
+        self.super_start_residual: float | None = None
+        self._live_busy = False
+        self._live_last = -math.inf
+        self._edge_lock = threading.Lock()
+        self._edge_cache = None           # (key, EdgeResidualReference)
 
     # ----- helpers usable from any thread ---------------------------------
     def _motor(self):
@@ -15901,11 +16206,15 @@ class AutoFocusManager:
         return handoff.result(timeout=timeout_s)
 
     # ----- the worker side -------------------------------------------------
-    def _move(self, target_um: float, stop_events=(), recorder_attrs=()) -> None:
+    def _move(self, target_um: float, stop_events=(), recorder_attrs=(), reference_um=None) -> None:
         motor = self._motor()
         if motor is None:
             raise FocusError("the focus motor is not attached")
-        reference = self.reference_um
+        # The running search's own reference: an untick or a mode change may
+        # clear reference_um while this thread still runs.
+        reference = self.reference_um if reference_um is None else float(reference_um)
+        name = "Super focus" if self.running_metric == "super" else "Auto focus"
+        whose = "the BG's focus" if self.running_metric == "super" else "the reference"
 
         def send():
             if self._cancelled(stop_events):
@@ -15923,8 +16232,8 @@ class AutoFocusManager:
         except BaseException as error:
             raise FocusError(f"the focus move to {target_um:g} µm was refused: {error}") from error
         self._log(
-            f"Auto focus move: absolute {target_um:g} µm ({target_um - reference:+.1f} µm from the "
-            f"reference {reference:g} µm)", recorder_attrs,
+            f"{name} move: absolute {target_um:g} µm ({target_um - reference:+.1f} µm from "
+            f"{whose} {reference:g} µm)", recorder_attrs,
         )
         deadline = time.monotonic() + FOCUS_MOVE_TIMEOUT_S
         while not future.done():
@@ -15990,13 +16299,118 @@ class AutoFocusManager:
         images = [np.asarray(frame.raw, dtype=np.float64) for frame in frames]
         return focus_sharpness(sum(images) / len(images), self.roi)
 
+    # ----- Super: the edge residual ----------------------------------------
+    def _edge_reference(self, frame) -> EdgeResidualReference:
+        """The BG prepared for this frame's binning, built once (any thread)."""
+        background = getattr(frame, "background_raw", None)
+        if background is None:
+            raise ValueError("the frame carries no BG")
+        key = (
+            int(getattr(frame, "background_serial", 0) or 0), id(background),
+            int(getattr(frame, "spatial_binning", 1) or 1), int(getattr(frame, "mean_filter_size", 1) or 1),
+            tuple(np.shape(background)),
+        )
+        with self._edge_lock:
+            cached = self._edge_cache
+            if cached is not None and cached[0] == key:
+                return cached[1]
+            reference = EdgeResidualReference(background, key[2], key[3])
+            self._edge_cache = (key, reference)
+            return reference
+
+    @staticmethod
+    def _frame_difference(frame):
+        shown = getattr(frame, "display_difference", None)
+        return shown if shown is not None else getattr(frame, "difference", None)
+
+    @staticmethod
+    def _frame_drift(frame) -> float:
+        try:
+            drift = max(abs(float(frame.drift_dx)), abs(float(frame.drift_dy)))
+        except (AttributeError, TypeError, ValueError):
+            return 0.0
+        return drift if math.isfinite(drift) else 0.0
+
+    def _measure_super(self, stop_events=(), serial=None) -> float:
+        """E of FOCUS_FRAMES_PER_POSITION displayed difference frames,
+        averaged, each a different frame whose whole temporal average began
+        after the last move had settled (window_start_monotonic), all against
+        the BG ``serial`` (a recaptured BG stops the search)."""
+        after = max(self.frames_after, time.monotonic())
+        frames = []
+        camera = self.app.__dict__.get("camera_window")
+        latest = getattr(camera, "latest_frame", None)
+        try:
+            exposure_s = float(latest.exposure_ms) / 1000.0
+        except (AttributeError, TypeError, ValueError):
+            exposure_s = 0.0
+        if not math.isfinite(exposure_s):
+            exposure_s = 0.0
+        try:
+            average = max(1, int(getattr(latest, "temporal_average_count", 1) or 1))
+        except (TypeError, ValueError):
+            average = 1
+        # A block average spans up to two blocks of frames (its cross-fade).
+        deadline = time.monotonic() + FOCUS_FRAME_TIMEOUT_S + (
+            2 * average + FOCUS_FRAMES_PER_POSITION + 1) * exposure_s
+        while len(frames) < FOCUS_FRAMES_PER_POSITION:
+            if self._cancelled(stop_events):
+                raise FocusCancelled("auto focus stopped")
+            camera = self.app.__dict__.get("camera_window")
+            if camera is None:
+                raise FocusError("the camera is not live")
+            frame = getattr(camera, "latest_frame", None)
+            if frame is not None:
+                if getattr(frame, "background_serial", None) != serial:
+                    raise FocusCancelled("the BG was recaptured")
+                if getattr(frame, "background_mode", None) != "tracking" or self._frame_difference(frame) is None:
+                    raise FocusCancelled("the difference display left Super")
+            try:
+                start = float(getattr(frame, "window_start_monotonic", math.nan))
+            except (TypeError, ValueError):
+                start = math.nan
+            if (
+                frame is not None and math.isfinite(start) and start > after
+                and all(frame is not taken for taken in frames)
+            ):
+                frames.append(frame)
+                continue
+            if time.monotonic() >= deadline:
+                raise FocusError(f"no difference frame begun after the focus move came within "
+                                 f"{deadline - after:.0f} s")
+            time.sleep(0.01)
+        images = [np.asarray(self._frame_difference(frame), dtype=np.float64) for frame in frames]
+        try:
+            value = edge_residual(
+                sum(images) / len(images), self._edge_reference(frames[0]),
+                max(self._frame_drift(frame) for frame in frames),
+            )
+        except ValueError as error:
+            raise FocusError(f"Super cannot judge the image: {error}") from error
+        self.super_live_residual = value
+        return value
+
     def _run(self, kind, reference_um, current_um, max_um, stop_events=(), recorder_attrs=()):
         """One search or check; reports through post_ui; never raises."""
         def log(text):
             self.app.thread_log(text)
 
         result = error = None
+        metric = self.running_metric
         try:
+            if metric == "super":
+                # The whole image, the ROI not used (user, 2026-10-20: every
+                # edge narrow), against the BG the reference was taken with.
+                serial = self.super_serial
+                engine = SuperFocusSearch(
+                    reference_um, current_um, max_um,
+                    move=lambda target: self._move(target, stop_events, recorder_attrs, reference_um),
+                    measure_residual=lambda: self._measure_super(stop_events, serial),
+                    cancelled=lambda: self._cancelled(stop_events),
+                    log=log,
+                )
+                result = engine.search() if kind == "search" else engine.check()
+                return result, None
             # The camera ROI, taken once so every position is scored on the
             # same pixels (user, 2026-10-20: focus on the ROI, not the whole
             # image); no ROI, no focus.
@@ -16007,7 +16421,7 @@ class AutoFocusManager:
             self.roi = dict(roi)
             engine = FocusSearch(
                 reference_um, current_um, max_um,
-                move=lambda target: self._move(target, stop_events, recorder_attrs),
+                move=lambda target: self._move(target, stop_events, recorder_attrs, reference_um),
                 measure=lambda: self._measure(stop_events),
                 cancelled=lambda: self._cancelled(stop_events),
                 log=log,
@@ -16018,11 +16432,14 @@ class AutoFocusManager:
         finally:
             with self.lock:
                 self.running_kind = None
-        self.app.post_ui(lambda: self._report(kind, result, error, recorder_attrs))
+            self.app.post_ui(lambda: self._report(kind, result, error, recorder_attrs, metric))
         return result, error
 
     # ----- the Tk side -----------------------------------------------------
-    def _report(self, kind, result, error, recorder_attrs=()) -> None:
+    def _report(self, kind, result, error, recorder_attrs=(), metric="sharpness") -> None:
+        if metric == "super":
+            self._report_super(kind, result, error, recorder_attrs)
+            return
         name = "Auto focus" if kind == "search" else "Keep in focus check"
         if result is not None:
             change = result.best_um - result.reference_um
@@ -16049,6 +16466,39 @@ class AutoFocusManager:
             self._fail(f"{name} stopped: {error}", recorder_attrs)
         self._update_controls()
 
+    def _report_super(self, kind, result, error, recorder_attrs=()) -> None:
+        name = "Super focus" if kind == "search" else "Super keep check"
+        if result is not None:
+            start = SuperFocusSearch.residual(result.start_score)
+            best = SuperFocusSearch.residual(result.best_score)
+            self.super_start_residual, self.super_live_residual = start, best
+            offset = result.best_um - result.reference_um
+            if kind == "search" and not result.peak_found:
+                text = (f"no clear edge-residual minimum within ±{FOCUS_RANGE_UM:g} µm of the BG's focus; "
+                        f"back at {result.best_um:g} µm, edge residual {super_residual_text(best)}")
+            else:
+                text = (f"edge residual {super_residual_text(best)} (start {super_residual_text(start)}), "
+                        f"focus {offset:+.1f} µm from the BG's focus"
+                        + (", at the window edge" if result.at_window_edge else ""))
+            self.status_var.set(f"Super: {text}")
+            self._log(f"{name}: {text}; at {result.best_um:g} µm ({result.moves} moves; the BG's focus "
+                      f"{result.reference_um:g} µm)", recorder_attrs)
+            for attribute in recorder_attrs:
+                self.app._scan_log(
+                    attribute, "focus", kind=kind, metric="super", position_um=result.best_um,
+                    reference_um=result.reference_um, start_um=result.start_um, moves=result.moves,
+                    peak_found=result.peak_found, at_window_edge=result.at_window_edge,
+                    edge_residual_start=round(start, 6), edge_residual=round(best, 6),
+                )
+        elif isinstance(error, FocusCancelled):
+            why = str(error)
+            self.status_var.set(f"Super: {name.lower()} stopped"
+                                + ("" if why in ("", "auto focus stopped") else f" ({why})"))
+            self._log(f"{name} stopped: {error}", recorder_attrs)
+        else:
+            self._fail(f"{name} stopped: {error}", recorder_attrs)
+        self._update_controls()
+
     def _fail(self, text: str, recorder_attrs=()) -> None:
         """A failure: Keep in focus off, the status, the log and a dialog."""
         self._set_keep(False)
@@ -16069,7 +16519,9 @@ class AutoFocusManager:
 
     def _update_controls(self) -> None:
         running = self.running_kind is not None
-        text = "Stop focus" if self.running_kind == "search" else "Auto focus"
+        # The same button runs Super's search while Super is chosen.
+        idle_text = "Super focus" if self.super_on else "Auto focus"
+        text = "Stop focus" if self.running_kind == "search" else idle_text
         # The style with the text: the look given while it read Stop focus
         # (red) would otherwise stay on Auto focus.
         role = button_role(text)
@@ -16096,6 +16548,8 @@ class AutoFocusManager:
 
     def refusal(self) -> str | None:
         """Why a focus search or check may not start now (Tk thread), or None."""
+        if self.super_on:
+            return self.super_refusal()
         motor = self._motor()
         if motor is None:
             return "the focus motor (Motor Control page) is not attached"
@@ -16121,18 +16575,24 @@ class AutoFocusManager:
             if self.running_kind is not None:
                 return False
             self.running_kind = kind
+            self.running_metric = "super" if self.super_on else "sharpness"
             self.cancel_event.clear()
             return True
 
     def _confirm(self, what: str, reference_um: float, max_um: float) -> bool:
         low = max(0.0, reference_um - FOCUS_RANGE_UM)
         high = min(max_um, reference_um + FOCUS_RANGE_UM)
+        if self.super_on:
+            judged = (f"the BG's focus {reference_um:g} µm), to make the device edges in the "
+                      "difference image as narrow as possible (the whole image; the ROI is not used)")
+        else:
+            # The ROI's sharpness since a57e362 (this said the whole image).
+            judged = f"{reference_um:g} µm), scoring the sharpness inside the camera ROI"
         return bool(messagebox.askyesno(
             FOCUS_DIALOG_TITLE,
             f"{what} moves the focus motor in {FOCUS_STEP_UM:g} µm steps within "
-            f"{low:g}–{high:g} µm (±{FOCUS_RANGE_UM:g} µm around "
-            f"{reference_um:g} µm), scoring the whole camera image.\n\nThe objective is close to "
-            "the sample: confirm this range is safe and continue?",
+            f"{low:g}–{high:g} µm (±{FOCUS_RANGE_UM:g} µm around {judged}.\n\nThe objective "
+            "is close to the sample: confirm this range is safe and continue?",
             icon="warning", parent=self.app.root,
         ))
 
@@ -16154,21 +16614,36 @@ class AutoFocusManager:
                                    parent=self.app.root)
             return
         counts, current_um, max_um = self._current()
+        if self.super_on:
+            # Super's window is always around the BG's focus.
+            if self.keep_on and counts != self.expected_counts:
+                self._fail("The focus motor was moved by another command since Keep in focus was ticked")
+                return
+            reference = self.super_reference_um
+            reason = self._window_refusal(reference, current_um, max_um)
+            if reason:
+                self.status_var.set(f"Super: not started; {reason}")
+                messagebox.showwarning(FOCUS_DIALOG_TITLE, f"Super focus was not started: {reason}.",
+                                       parent=self.app.root)
+                return
         # The reference stays while only the auto focus moves the motor, so
         # repeated searches never walk it more than FOCUS_RANGE_UM away.
-        if self.reference_um is None or counts != self.expected_counts:
+        elif self.reference_um is None or counts != self.expected_counts:
             if self.keep_on:
                 self._fail("The focus motor was moved by another command since Keep in focus was ticked")
                 return
             reference = current_um
         else:
             reference = self.reference_um
-        if not self._confirm("Auto focus", reference, max_um):
+        if not self._confirm("Super focus" if self.super_on else "Auto focus", reference, max_um):
             return
         if not self._claim("search"):
             return
         self.reference_um, self.expected_counts = reference, counts
-        self.status_var.set(f"Focus: searching around {reference:g} µm…")
+        if self.super_on:
+            self.status_var.set(f"Super: searching for the narrowest edges around the BG's focus {reference:g} µm…")
+        else:
+            self.status_var.set(f"Focus: searching around {reference:g} µm…")
         self._update_controls()
         threading.Thread(
             target=self._run, args=("search", reference, current_um, max_um),
@@ -16194,6 +16669,26 @@ class AutoFocusManager:
                                    parent=self.app.root)
             return
         counts, current_um, max_um = self._current()
+        if self.super_on:
+            reference = self.super_reference_um
+            reason = self._window_refusal(reference, current_um, max_um)
+            if reason:
+                self._set_keep(False)
+                self.status_var.set(f"Super: Keep in focus not started; {reason}")
+                messagebox.showwarning(FOCUS_DIALOG_TITLE, f"Keep in focus was not started: {reason}.",
+                                       parent=self.app.root)
+                return
+            if not self._confirm("Keep in focus (Super)", reference, max_um):
+                self._set_keep(False)
+                return
+            self.reference_um, self.expected_counts = reference, counts
+            self.keep_on = True
+            self.last_check_monotonic = -math.inf
+            self.status_var.set(f"Super: keeping the edges narrowest within ±{FOCUS_RANGE_UM:g} µm "
+                                f"of the BG's focus {reference:g} µm")
+            self._log(f"Keep in focus on (Super): the BG's focus {reference:g} µm, ±{FOCUS_RANGE_UM:g} µm, "
+                      f"{FOCUS_STEP_UM:g} µm steps, lowest edge residual")
+            return
         if not self._confirm("Keep in focus", current_um, max_um):
             self._set_keep(False)
             return
@@ -16263,11 +16758,237 @@ class AutoFocusManager:
         """MotorApp.motion_stop_listeners: Init OFF, Disconnect, closing."""
         self.cancel(reason, untick=True)
 
+    # ----- Super (Tk thread) -------------------------------------------------
+    def super_refusal(self) -> str | None:
+        """Why a Super search or check may not start now, or None: the motor's
+        refusals, Camera Live in drift tracking, and a known BG focus."""
+        motor = self._motor()
+        if motor is None:
+            return "the focus motor (Motor Control page) is not attached"
+        reason = motor.focus_move_refusal()
+        if reason:
+            return reason
+        camera = self.app.__dict__.get("camera_window")
+        if camera is None or not self.app.__dict__.get("camera_connected"):
+            return "the camera is not live"
+        frame = getattr(camera, "latest_frame", None)
+        if frame is None:
+            return "the camera has not produced a frame yet"
+        if getattr(frame, "background_mode", None) != "tracking" or self._frame_difference(frame) is None:
+            return "Super needs the drift-tracking difference on Camera Live"
+        if self.super_reference_um is None:
+            return (f"the BG's focus is unknown ({self.super_reference_reason}): Recapture BG with "
+                    "the focus motor connected, homed and still")
+        if getattr(frame, "background_serial", None) != self.super_serial:
+            return "the BG is being recaptured"
+        return None
+
+    @staticmethod
+    def _window_refusal(reference_um, current_um, max_um) -> str | None:
+        """Why the motor cannot start a Super walk around ``reference_um``:
+        off its 0.5 µm grid or outside its window (FocusSearch's own checks)."""
+        if reference_um is None:
+            return "the BG's focus is unknown: Recapture BG"
+        try:
+            FocusSearch(reference_um, current_um, max_um, None, None, None)
+        except FocusError as error:
+            return (f"{error} (Super's window is ±{FOCUS_RANGE_UM:g} µm around the BG's focus "
+                    f"{reference_um:g} µm; Recapture BG here to centre it on this position)")
+        return None
+
+    def set_super(self, on: bool, why: str = "", background_pending: bool = False) -> None:
+        """The difference mode entered or left Super: any search or check
+        stops and Keep in focus goes off (its window and judge change).
+        ``background_pending``: no BG yet, the next frame becomes one."""
+        on = bool(on)
+        if on == self.super_on:
+            return
+        was_keep = self.keep_on
+        self.cancel(why or ("Super chosen" if on else "Super left"), untick=True)
+        self.super_on = on
+        self.reference_um = None   # each mode takes its own reference
+        self.super_live_residual = self.super_start_residual = None
+        self.super_live_error = None
+        self._live_last = -math.inf
+        if on:
+            self.app.thread_log("Super on: drift tracking plus the focus servo for the narrowest edges "
+                                "(the whole image; the ROI is not used)")
+            self._take_super_reference("Super chosen", was_keep, background_pending)
+        else:
+            self.super_serial = self.super_reference_um = None
+            self.super_reference_reason = "Super is off"
+            self.status_var.set("Focus: Super off" + ("; Keep in focus off" if was_keep else ""))
+            self.app.thread_log(f"Super off ({why or 'another mode chosen'})")
+        self._update_controls()
+
+    def note_capture_request(self) -> None:
+        """Recapture BG (or a mode needing a BG) was asked for: the motor's
+        counts now, which must still hold when the BG arrives; in Super a
+        running search or check stops and Keep in focus goes off."""
+        motor = self._motor()
+        try:
+            self.capture_request_counts = None if motor is None else int(motor.command_counts)
+        except (AttributeError, TypeError, ValueError):
+            self.capture_request_counts = None
+        if self.super_on:
+            self.cancel("Recapture BG", untick=True)
+
+    def frame_arrived(self, frame) -> None:
+        """Camera Live's newest frame (Tk thread, every frame: cheap): a new
+        BG's focus, and in Super the live E, at most every SUPER_LIVE_INTERVAL_S."""
+        try:
+            serial = int(getattr(frame, "background_serial", 0) or 0)
+        except (TypeError, ValueError):
+            serial = 0
+        if serial and serial != self.seen_serial:
+            self.seen_serial = serial
+            self._background_captured(frame, serial)
+        if self.super_on:
+            self._schedule_live(frame)
+
+    def _background_captured(self, frame, serial: int) -> None:
+        """The motor's tracked position as the focus of the BG that arrived
+        with ``frame``, or why it is not known: only a still, homed motor
+        whose position has not changed since the capture was asked for."""
+        um = counts = reason = None
+        motor = self._motor()
+        try:
+            start = float(getattr(frame, "exposure_start_monotonic", math.nan))
+        except (TypeError, ValueError):
+            start = math.nan
+        if motor is None:
+            reason = "the focus motor was not attached"
+        else:
+            try:
+                ready = bool(motor.controller.connected and motor.homed)
+                busy = bool(motor.command_busy or motor.init_off_busy or motor.pending_target is not None)
+                counts = int(motor.command_counts)
+                scale = float(motor.abs_counts_per_um)
+            except (AttributeError, TypeError, ValueError):
+                ready, busy = False, False
+            if not ready:
+                reason = "the focus motor was not connected and homed"
+            elif busy:
+                reason = "the focus motor was busy with a command"
+            elif self.running_kind is not None:
+                reason = "a focus search or check was running"
+            elif not math.isfinite(start):
+                reason = "the BG frame's exposure time is not known"
+            elif start <= self.frames_after:
+                reason = "the focus motor was still settling after a focus move"
+            elif self.capture_request_counts is not None and counts != self.capture_request_counts:
+                reason = "the focus motor moved while the BG was being captured"
+            elif self.unknown_counts is not None and counts == self.unknown_counts:
+                reason = "the last focus move failed, so the position is not known"
+            else:
+                um = round(counts / scale, 4)
+        self.capture_request_counts = None
+        self.background_focus = (serial, um, counts if um is not None else None, reason)
+        if self.super_on:
+            self._take_super_reference("a new BG", self.keep_on)
+
+    def _take_super_reference(self, why: str, was_keep: bool = False, pending: bool = False) -> None:
+        """Super's reference: the focus of the newest BG (Recapture BG in
+        Super records a new one).  Keep in focus goes off; tick it again."""
+        self.cancel(why, untick=True)
+        self.reference_um = None
+        self.super_live_residual = self.super_start_residual = None
+        self.super_live_error = None
+        info = None if pending else self.background_focus
+        keep_text = "; Keep in focus off (tick it again)" if was_keep else ""
+        if info is not None and info[0] == self.seen_serial and info[1] is not None:
+            self.super_serial, self.super_reference_um = info[0], info[1]
+            self.super_reference_reason = None
+            self.status_var.set(f"Super: reference {info[1]:g} µm (the BG's focus); Super focus searches "
+                                f"±{FOCUS_RANGE_UM:g} µm around it{keep_text}")
+            self.app.thread_log(f"Super focus reference: {info[1]:g} µm, the focus motor's position when "
+                                f"the BG was captured ({why})")
+            return
+        self.super_reference_um = None
+        if info is None or info[0] != self.seen_serial:
+            self.super_serial = None
+            self.super_reference_reason = "no BG has been captured yet"
+            self.status_var.set(f"Super: waiting for the BG capture{keep_text}")
+            return
+        self.super_serial = info[0]
+        self.super_reference_reason = info[3]
+        self.status_var.set(f"Super: the BG's focus is unknown ({info[3]}); Recapture BG with the "
+                            f"motor homed and still{keep_text}")
+        self.app.thread_log(f"Super: the BG's focus is unknown: {info[3]}")
+
+    def _schedule_live(self, frame) -> None:
+        if self._live_busy or self.running_kind is not None:
+            return    # a search scores its own frames (super_live_residual)
+        if time.monotonic() - self._live_last < SUPER_LIVE_INTERVAL_S:
+            return
+        if (
+            getattr(frame, "background_mode", None) != "tracking"
+            or self._frame_difference(frame) is None
+            or getattr(frame, "background_raw", None) is None
+        ):
+            return
+        self._live_busy = True
+        self._live_last = time.monotonic()
+        threading.Thread(target=self._live_worker, args=(frame,), name="super-residual", daemon=True).start()
+
+    def _live_worker(self, frame) -> None:
+        value = error = None
+        try:
+            value = edge_residual(self._frame_difference(frame), self._edge_reference(frame),
+                                  self._frame_drift(frame))
+        except Exception as caught:   # shown in the status; never stops Camera Live
+            error = caught
+        serial = getattr(frame, "background_serial", None)
+        self.app.post_ui(lambda: self._live_done(serial, value, error))
+
+    def _live_done(self, serial, value, error) -> None:
+        self._live_busy = False
+        if not self.super_on or serial != self.seen_serial:
+            return
+        self.super_live_residual = value
+        self.super_live_error = None if error is None else short_status_error(str(error), 80)
+
+    def _focus_offset_text(self) -> str:
+        if self.super_reference_um is None:
+            return "BG focus unknown"
+        position = self.position_for_row()
+        if position == "":
+            return "focus position unknown"
+        return f"focus {float(position) - self.super_reference_um:+.1f} µm"
+
+    def super_detail_text(self) -> str:
+        """Super's line on the difference display (Tk thread)."""
+        if self.super_live_error:
+            residual = f"edge residual not judged ({self.super_live_error})"
+        else:
+            residual = f"edge residual {super_residual_text(self.super_live_residual)}"
+            if self.super_start_residual is not None:
+                residual += f" (start {super_residual_text(self.super_start_residual)})"
+        return f"Super: {residual}, {self._focus_offset_text()}; whole image, the ROI is not used"
+
+    def super_overlay_text(self) -> str:
+        """Super's part of Camera Live's top line (Tk thread)."""
+        text = f"Edge {super_residual_text(self.super_live_residual)}"
+        if self.super_start_residual is not None:
+            text += f" (start {super_residual_text(self.super_start_residual)})"
+        return f"{text}   {self._focus_offset_text()}"
+
     # ----- the scans' hooks (their workers) --------------------------------
-    def before_scan(self) -> None:
+    def before_scan(self, recorder_attr: str | None = None) -> None:
         """At a MOKE magnet, MOKE-24 or CIDWM scan's start, on its worker:
         any search or idle check stops first, so no focus move overlaps the
-        scan's first point."""
+        scan's first point.  In Super the run log gets its reference."""
+        if recorder_attr and self.super_on:
+            reference = self.super_reference_um
+            if reference is not None:
+                text = (f"Super focus reference: {reference:g} µm (the focus motor's position when the BG was "
+                        f"captured), ±{FOCUS_RANGE_UM:g} µm, {FOCUS_STEP_UM:g} µm steps; Keep in focus "
+                        + ("on" if self.keep_on else "off"))
+            else:
+                text = f"Super: the BG's focus is unknown ({self.super_reference_reason}); no Super focus move"
+            self._log(text, (recorder_attr,))
+            self.app._scan_log(recorder_attr, "focus", kind="super_reference", metric="super",
+                               reference_um=reference, keep_in_focus=bool(self.keep_on))
         if self.running_kind is None:
             return
         self.cancel_event.set()
@@ -26866,6 +27587,9 @@ class CombinedControlApp:
                 ("off", "Off"),
                 ("plain", "Plain difference"),
                 ("tracking", "Drift tracking"),
+                # Drift tracking plus the edge-residual focus servo (user,
+                # 2026-10-20); the camera worker runs drift tracking.
+                ("super", SUPER_MODE_LABEL),
             )
         ):
             button = ttk.Radiobutton(
@@ -30687,11 +31411,34 @@ class CombinedControlApp:
             or self.magnet_scan_running
             or self.k6221_scan_running
         ):
-            self.difference_mode_var.set(self.camera_window.worker.background_mode)
+            self.difference_mode_var.set(self._difference_display_mode())
             self.difference_status_var.set("The difference mode cannot be changed during a scan")
             return
         mode = self.difference_mode_var.get()
+        focus = self.__dict__.get("auto_focus")
+        if mode == "super":
+            # Super is drift tracking for the camera; a missing BG is
+            # captured from the next frame as for Drift tracking, and its
+            # focus becomes Super's reference.
+            pending = getattr(self.camera_window.worker, "background", None) is None
+            if pending and focus is not None:
+                focus.note_capture_request()
+            self.camera_window.set_background_mode("tracking")
+            if focus is not None:
+                focus.set_super(True, "Super chosen", background_pending=pending)
+            return
+        if focus is not None:
+            focus.set_super(False, f"the difference mode set to {mode}")
         self.camera_window.set_background_mode(mode)
+
+    def _difference_display_mode(self) -> str:
+        """The mode radio's value: the camera worker's mode, and "super" for
+        its drift tracking while Super is on."""
+        mode = self.camera_window.worker.background_mode if self.camera_window is not None else "off"
+        focus = self.__dict__.get("auto_focus")
+        if mode == "tracking" and focus is not None and focus.super_on:
+            return "super"
+        return mode
 
     def _cancel_difference_clim_live_update(self) -> None:
         if self.difference_clim_after_id is None:
@@ -31073,7 +31820,7 @@ class CombinedControlApp:
             self.difference_status_var.set("The difference mode cannot be changed during a scan")
             return
         enabled = self.camera_window.toggle_background()
-        self.difference_mode_var.set(self.camera_window.worker.background_mode)
+        self.difference_mode_var.set(self._difference_display_mode())
         self.difference_status_var.set("Difference mode: on" if enabled else "Difference mode: off")
 
     def toggle_100x_marker(self) -> None:
@@ -31240,7 +31987,7 @@ class CombinedControlApp:
             return
         self.camera_window.capture_background()
         self.difference_status_var.set("Capturing a new background…")
-        self.difference_mode_var.set(self.camera_window.worker.background_mode)
+        self.difference_mode_var.set(self._difference_display_mode())
         self.difference_detail_var.set("The next frame becomes the new background.")
 
     def update_difference_status(
@@ -31250,7 +31997,15 @@ class CombinedControlApp:
         dy: float,
         response: float,
     ) -> None:
-        self.difference_mode_var.set(mode)
+        # Super follows the camera worker's mode (not the frame's, which lags
+        # a mode change by a frame): [B] or another mode leaves it.
+        focus = self.__dict__.get("auto_focus")
+        if focus is not None and focus.super_on:
+            worker = getattr(self.camera_window, "worker", None)
+            if getattr(worker, "background_mode", mode) != "tracking":
+                focus.set_super(False, "the difference display left drift tracking")
+        super_on = focus is not None and focus.super_on and mode == "tracking"
+        self.difference_mode_var.set("super" if super_on else mode)
         if self.camera_window is not None:
             contrast_mode, active_clim = (
                 self.camera_window.worker.difference_contrast_state()
@@ -31264,7 +32019,12 @@ class CombinedControlApp:
                 self.difference_clim_status_var.set("Auto (waiting for a difference frame)")
             else:
                 self.difference_clim_status_var.set("Fixed (waiting for a difference frame)")
-        if mode == "tracking":
+        if super_on:
+            self.difference_status_var.set("Super: drift tracking + focus servo for the narrowest edges")
+            self.difference_detail_var.set(
+                f"Drift dx={dx:+.2f} px, dy={dy:+.2f} px; match {response:.2f}. {focus.super_detail_text()}"
+            )
+        elif mode == "tracking":
             self.difference_status_var.set("Drift-tracking difference mode")
             self.difference_detail_var.set(
                 f"Drift dx={dx:+.2f} px, dy={dy:+.2f} px; match {response:.2f} (1 = identical)"
@@ -33357,7 +34117,7 @@ class CombinedControlApp:
         recorder = self.__dict__.get("magnet_scan_recorder")
         focus = self.__dict__.get("auto_focus")
         if focus is not None:
-            focus.before_scan()  # no focus move overlaps the first point
+            focus.before_scan("magnet_scan_recorder")  # no focus move overlaps the first point
         # Refuse before the first write when the gaussmeter is not connected.
         self._require_gauss_meter(key)
         self._scan_log(
@@ -35015,7 +35775,7 @@ class CombinedControlApp:
         recorder = self.__dict__.get("keithley_scan_recorder")
         focus = self.__dict__.get("auto_focus")
         if focus is not None:
-            focus.before_scan()  # no focus move overlaps the first point
+            focus.before_scan("keithley_scan_recorder")  # no focus move overlaps the first point
         self._scan_log("keithley_scan_recorder", "scan_started", model=self.keithley_controller.model,
                        points=len(sequence), settle_s=settle_s, collect_s=collect_s,
                        image_session=None if image_session is None else str(image_session))
@@ -36400,7 +37160,7 @@ class CombinedControlApp:
         columns = CIDWM_SCAN_AVTECH_COLUMNS if avtech else CIDWM_SCAN_6221_COLUMNS
         focus = self.__dict__.get("auto_focus")
         if focus is not None:
-            focus.before_scan()  # no focus move overlaps the first pulse's images
+            focus.before_scan("cidwm_scan_recorder")  # no focus move overlaps the first pulse's images
 
         def write_row(values) -> None:
             # A row onto the live CSV, opened and closed for it and fsynced
