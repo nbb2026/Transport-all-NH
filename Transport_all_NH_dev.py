@@ -15539,11 +15539,16 @@ FOCUS_CSV_COLUMN = "focus_position_um"
 FOCUS_DIALOG_TITLE = "Auto focus"
 
 
-def focus_sharpness(image) -> float:
-    """The focus score of a whole image: the variance of its 4-neighbour
-    Laplacian over its mean squared, on a float copy block-averaged to at most
+def focus_sharpness(image, roi=None) -> float:
+    """The focus score of an image: the variance of its 4-neighbour Laplacian
+    over its mean squared, on a float copy block-averaged to at most
     FOCUS_DOWNSAMPLE_TARGET_PX per side (numpy only).  Scale-free: a brighter
-    exposure (I -> a I) scores the same.  0 for a dark or flat image."""
+    exposure (I -> a I) scores the same.  0 for a dark or flat image.
+
+    With ``roi`` (the camera's ROI: cx, cy, w, h, angle in raw pixels) only
+    the ROI counts (user, 2026-10-20: "not full screen focus but ROI
+    selected"): the image is cropped to the ROI's bounding box and the score
+    taken over the Laplacian's pixels inside the (rotated) ROI."""
     if np is None:
         raise RuntimeError("numpy is required for the auto focus")
     array = np.asarray(image, dtype=np.float64)
@@ -15551,6 +15556,23 @@ def focus_sharpness(image) -> float:
         array = array.mean(axis=2)
     if array.ndim != 2 or min(array.shape) < 3:
         raise ValueError(f"Auto focus needs a 2-D image, not shape {array.shape}")
+    if roi is not None:
+        min_y, max_y, min_x, max_x, mask = _rotated_roi_mask(roi, array.shape[0], array.shape[1])
+        if mask is None or mask.shape[0] < 3 or mask.shape[1] < 3:
+            raise ValueError("the ROI lies outside the image or is under 3 x 3 pixels")
+        crop = array[min_y:max_y, min_x:max_x]
+        inner = mask[1:-1, 1:-1]
+        if not inner.any():
+            raise ValueError("the ROI is too thin for the auto focus (under 3 pixels across)")
+        mean = float(np.mean(crop[mask]))
+        if not math.isfinite(mean) or mean <= 0.0:
+            return 0.0
+        laplacian = (
+            crop[:-2, 1:-1] + crop[2:, 1:-1] + crop[1:-1, :-2] + crop[1:-1, 2:]
+            - 4.0 * crop[1:-1, 1:-1]
+        )
+        value = float(np.var(laplacian[inner])) / (mean * mean)
+        return value if math.isfinite(value) else 0.0
     factor = max(1, int(math.ceil(max(array.shape) / FOCUS_DOWNSAMPLE_TARGET_PX)))
     if factor > 1 and min(array.shape) // factor >= 3:
         height = array.shape[0] // factor * factor
@@ -15768,8 +15790,10 @@ class AutoFocusManager:
         self.app = app
         self.keep_var = keep_var if keep_var is not None else tk.BooleanVar(value=False)
         self.status_var = status_var if status_var is not None else tk.StringVar(
-            value="Focus: not run (needs the motor homed and the camera live)"
+            value="Focus: not run (needs the motor homed, the camera live and an ROI)"
         )
+        # The camera ROI the running search scores (copied at its start).
+        self.roi = None
         self.buttons: list = []
         self.ticks: list = []
         self.camera_ready = False
@@ -15964,7 +15988,7 @@ class AutoFocusManager:
                                  f"{deadline - after:.0f} s")
             time.sleep(0.01)
         images = [np.asarray(frame.raw, dtype=np.float64) for frame in frames]
-        return focus_sharpness(sum(images) / len(images))
+        return focus_sharpness(sum(images) / len(images), self.roi)
 
     def _run(self, kind, reference_um, current_um, max_um, stop_events=(), recorder_attrs=()):
         """One search or check; reports through post_ui; never raises."""
@@ -15973,6 +15997,14 @@ class AutoFocusManager:
 
         result = error = None
         try:
+            # The camera ROI, taken once so every position is scored on the
+            # same pixels (user, 2026-10-20: focus on the ROI, not the whole
+            # image); no ROI, no focus.
+            camera = self.app.__dict__.get("camera_window")
+            roi = getattr(camera, "roi", None)
+            if roi is None:
+                raise FocusError("draw a camera ROI first: the auto focus judges the focus inside it")
+            self.roi = dict(roi)
             engine = FocusSearch(
                 reference_um, current_um, max_um,
                 move=lambda target: self._move(target, stop_events, recorder_attrs),
@@ -16075,6 +16107,8 @@ class AutoFocusManager:
             return "the camera is not live"
         if getattr(camera, "latest_frame", None) is None:
             return "the camera has not produced a frame yet"
+        if getattr(camera, "roi", None) is None:
+            return "draw a camera ROI first: the auto focus judges the focus inside it"
         return None
 
     def _current(self):

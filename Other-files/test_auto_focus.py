@@ -101,6 +101,24 @@ class SharpnessTests(NumpyPatch):
         with self.assertRaises(ValueError):
             app.focus_sharpness(np.ones(10))
 
+    def test_only_the_roi_counts(self):
+        """User, 2026-10-20: "not full screen focus but ROI selected"."""
+        rng = np.random.default_rng(3)
+        image = np.full((100, 100), 500.0)
+        image[60:90, 60:90] += 300.0 * rng.random((30, 30))     # sharp texture outside the ROI
+        roi = {"cx": 25.0, "cy": 25.0, "w": 30.0, "h": 30.0, "angle": 0.0}
+        self.assertGreater(app.focus_sharpness(image), 0.0)
+        self.assertEqual(app.focus_sharpness(image, roi), 0.0, "the flat ROI scores 0")
+        image[10:40, 10:40] += 300.0 * rng.random((30, 30))     # now texture inside it
+        inside = app.focus_sharpness(image, roi)
+        self.assertGreater(inside, 0.0)
+        image[60:90, 60:90] = 500.0                              # the outside no longer matters
+        self.assertAlmostEqual(app.focus_sharpness(image, roi), inside, places=12)
+        rotated = dict(roi, angle=30.0)
+        self.assertGreater(app.focus_sharpness(image, rotated), 0.0)
+        with self.assertRaises(ValueError):
+            app.focus_sharpness(image, {"cx": 500.0, "cy": 500.0, "w": 10.0, "h": 10.0, "angle": 0.0})
+
 
 class Curve:
     """A fake focus stage for FocusSearch: the score is a function of the
@@ -286,6 +304,8 @@ class Camera:
         self.controller, self.focus_um = controller, focus_um
         self.video_recorder = None
         self.worker = types.SimpleNamespace(background_capture_requested=False)
+        # The auto focus scores inside the camera ROI (user, 2026-10-20).
+        self.roi = {"cx": 32.0, "cy": 32.0, "w": 40.0, "h": 40.0, "angle": 0.0}
 
     @property
     def latest_frame(self):
@@ -512,6 +532,15 @@ class ManagerSearchTests(ManagerCase):
         self.assertEqual(len(a.dialogs), 1)
         self.assertEqual(a.dialogs[0][0], "showwarning")
         self.assertEqual(focus.position_for_row(), "", "unknown after a failed write")
+
+    def test_no_roi_no_focus(self):
+        """No camera ROI: nothing moves, and the status says to draw one."""
+        a, m, focus = self.page()
+        a.camera_window.roi = None
+        self.assertIn("ROI", focus.refusal())
+        focus.toggle_search()
+        self.assertIsNone(focus.running_kind, "refused: nothing started")
+        self.assertEqual(m.controller.writes, [], "no move without an ROI")
 
     def test_an_unconfirmed_move_stops_and_unticks(self):
         with mock.patch.object(app, "FOCUS_MOVE_TIMEOUT_S", 0.3):
