@@ -798,8 +798,8 @@ class FieldOutputTests(unittest.TestCase):
         """User, 2026-10-20: "make connections together, settings together,
         then scan. like SHV and PPMS module": "Instruments" (a row per
         instrument, then the 6221 safety tick), "Pulse settings" (a 6221 and
-        an Avtech row), the pulse sign scan, then MOKE magnet's difference
-        display beside Images (2026-10-12) and Camera settings."""
+        an Avtech row), the pulse sign scan beside MOKE magnet's difference
+        display (2026-10-20), then Images and Camera settings."""
         self.arranged(LAB_WIDE, "CIDWM", self.a.stfmr_lockin_resource_widgets)
         a = self.a
         frames = self.page_frames(a.k6221_tab)
@@ -814,12 +814,18 @@ class FieldOutputTests(unittest.TestCase):
                      "Pulse current vs ROI mean intensity (current round-trip scan)"):
             self.assertNotIn(gone, frames)
         outer = instruments.master
-        self.assertEqual([(box.master, int(box.grid_info()["row"])) for box in (instruments, settings, scan)],
-                         [(outer, 0), (outer, 1), (outer, 2)], "stacked, in this order")
-        tops = [box.winfo_rooty() for box in (instruments, settings, scan, difference, camera)]
+        self.assertEqual([(box.master, int(box.grid_info()["row"])) for box in (instruments, settings)],
+                         [(outer, 0), (outer, 1)], "stacked, in this order")
+        # The scan and the difference display in two columns (user,
+        # 2026-10-20: "use two columns for these two part"), at the wide window.
+        pair = scan.master
+        self.assertIs(pair.master, outer)
+        self.assertEqual(int(pair.grid_info()["row"]), 2)
+        self.assertIs(difference.master, pair)
+        self.assertLess(scan.winfo_rootx(), difference.winfo_rootx(), "scan on the left")
+        self.assertEqual(scan.winfo_rooty(), difference.winfo_rooty(), "side by side")
+        tops = [box.winfo_rooty() for box in (instruments, settings, scan, images, camera)]
         self.assertEqual(tops, sorted(tops), "top to bottom")
-        self.assertIs(difference.master, images.master)
-        self.assertLess(difference.winfo_rootx(), images.winfo_rootx(), "difference display on the left")
         self.assertEqual(int(outer.rowconfigure(5)["weight"]), 1, "spare height below the controls")
 
         def place(widget):

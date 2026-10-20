@@ -27602,8 +27602,11 @@ class CombinedControlApp:
             )
             button.grid(row=0, column=column, padx=(0, 6), sticky="w")
             self.difference_mode_buttons.append(button)
+        # Recapture BG and the marker under the mode choices, so the box is
+        # narrow enough to sit beside the CIDWM pulse sign scan (user,
+        # 2026-10-20: "use two columns for these two part").
         mode_actions = ttk.Frame(mode_row)
-        mode_actions.grid(row=0, column=1, sticky="w")
+        mode_actions.grid(row=1, column=0, sticky="w", pady=(3, 0))
         capture_button = ttk.Button(
             mode_actions,
             text="Recapture BG",
@@ -27638,8 +27641,12 @@ class CombinedControlApp:
         # status under it, wrapped as the line above, so the box's natural
         # width does not change (the CIDWM pair layout depends on it).
         focus = self.auto_focus
+        # Button, tick and status on one row (user, 2026-10-20: "using one row
+        # for this function"); the status takes the rest of the row, cut with
+        # "…" rather than wrapped or widening the box.
         focus_row = ttk.Frame(mode_box)
-        focus_row.grid(row=3, column=0, sticky="w", pady=(4, 0))
+        focus_row.grid(row=3, column=0, sticky="ew", pady=(4, 0))
+        focus_row.columnconfigure(2, weight=1)
         # Wide enough for "Stop focus" too, so the toggle never resizes.
         focus_button = ttk.Button(
             focus_row,
@@ -27659,12 +27666,10 @@ class CombinedControlApp:
         focus_tick.grid(row=0, column=1, sticky="w", padx=(8, 0))
         focus.buttons.append(focus_button)
         focus.ticks.append(focus_tick)
-        ttk.Label(
-            mode_box,
-            textvariable=focus.status_var,
-            style="Muted.TLabel",
-            wraplength=380,
-        ).grid(row=4, column=0, sticky="w", pady=(2, 0))
+        focus_status = ttk.Label(focus_row, style="Muted.TLabel", width=1)
+        focus_status.grid(row=0, column=2, sticky="ew", padx=(8, 0))
+        show_trimmed(focus_status, focus.status_var)
+        mode_box.columnconfigure(0, weight=1)
         return mode_box
 
     def _build_moke_roi_edit_box(self, parent, page: str) -> ttk.LabelFrame:
@@ -29046,10 +29051,16 @@ class CombinedControlApp:
         # The pulse sign scan (user, 2026-10-12): Pulses pulses at the pulse
         # output's |I|, width and compliance, each with its sign from Signs,
         # and after each the raw and processed TIFFs.
+        # The pulse sign scan and the MOKE difference display in two columns
+        # (user, 2026-10-20: "use two columns for these two part"); stacked
+        # when the window is too narrow for both.
+        scan_pair = ttk.Frame(outer)
+        scan_pair.grid(row=2, column=0, sticky="ew", pady=(7, 0))
+        scan_pair.columnconfigure(1, weight=1)
         scan = ttk.LabelFrame(
-            outer, text="Pulse sign scan (display, raw + processed TIFF after each pulse)", padding=7
+            scan_pair, text="Pulse sign scan (display, raw + processed TIFF after each pulse)", padding=7
         )
-        scan.grid(row=2, column=0, sticky="ew", pady=(7, 0))
+        scan.grid(row=0, column=0, sticky="nsew")
         scan.columnconfigure(11, weight=1)
         # One row per pulse source, each with its own width (user, 2026-10-20:
         # "add pulse width settings here and seperate the 6221 & Avtech").  The
@@ -29125,18 +29136,18 @@ class CombinedControlApp:
         # difference display beside one Save images button, then its display
         # rows as "Camera settings" (user, 2026-10-12: no ROI editing, no live
         # ROI plot).  They share the camera settings with MOKE magnet.
+        # The difference display takes the spare width beside the scan box,
+        # which keeps its natural width, so the display's width never depends
+        # on its own rows' layout (2026-10-12: a pair whose spare width went
+        # the other way flipped forever and the program hung at start-up).
+        difference_box = self._build_moke_difference_box(scan_pair)
+        difference_box.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+        self._arrange_pair_by_width(scan_pair, scan, difference_box, gap=7)
         moke = ttk.Frame(outer)
         moke.grid(row=3, column=0, sticky="ew", pady=(7, 3))
-        # The Images box keeps its natural width and the difference display
-        # takes the rest, as on MOKE magnet, so the display's width never
-        # depends on its own mode row's layout (2026-10-12: with the spare
-        # width on the Images side, that row flipped between side by side
-        # and stacked forever and the program hung at start-up).
         moke.columnconfigure(0, weight=1)
-        difference_box = self._build_moke_difference_box(moke)
-        difference_box.grid(row=0, column=0, sticky="nsew")
         images = ttk.LabelFrame(moke, text="Images", padding=7)
-        images.grid(row=0, column=1, sticky="nsew")
+        images.grid(row=0, column=0, sticky="nsew")
         self.cidwm_save_images_button = ttk.Button(
             images, text="Save images", command=self.save_cidwm_images
         )
@@ -29147,7 +29158,6 @@ class CombinedControlApp:
                  "difference raw image (float32 TIFF), into the folder you choose",
             style="Muted.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
-        self._arrange_pair_by_width(moke, difference_box, images, gap=7)
         # The display rows in one box (user, 2026-10-12: "Camera settings").
         camera_settings = ttk.LabelFrame(outer, text="Camera settings", padding=4)
         camera_settings.grid(row=4, column=0, sticky="ew", pady=(0, 4))

@@ -1,5 +1,15 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## CIDWM: the pulse sign scan beside the difference display; auto focus on one row (2026-10-20)
+
+- User: "use two columns for these two part": on CIDWM the pulse sign scan (left) and the MOKE difference display
+  (right) share a row, stacked when the window is too narrow for both (`_arrange_pair_by_width`); Images moves to
+  the row below, then Camera settings. Recapture BG and Add 100× marker now sit under the mode choices, which
+  makes the difference box narrow enough (also on MOKE magnet).
+- User: "using one row for this function": Auto focus, Keep in focus and the focus status share one row; the status
+  is cut with "…" (the full text stays in the log).
+- Not checked on CI (the Actions minutes are used up until 2026-11-01).
+
 ## Super: the difference display's narrowest-edges focus mode (2026-10-20)
 
 - User, with a Drift tracking screenshot whose device edges show a bright line on one side and a dark line on the
