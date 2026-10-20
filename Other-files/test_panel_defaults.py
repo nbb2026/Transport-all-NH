@@ -195,7 +195,7 @@ class PanelDefaultTests(unittest.TestCase):
         a = self.app
         self.assertEqual((a.avtech_resource_var.get(), a.avtech_amplitude_var.get(), a.avtech_width_var.get(),
                           a.cidwm_scan_amplitude_var.get(), a.cidwm_scan_source_var.get()),
-                         ("GPIB0::8::INSTR", "90", "10", "90", "6221"))
+                         ("GPIB0::8::INSTR", "100", "50", "100", "6221"))
         self.assertEqual(str(a.avtech_connect_button.cget("state")), "normal")
         for button in (a.avtech_disconnect_button, a.avtech_apply_button, a.avtech_apply_negative_button,
                        a.avtech_off_button):

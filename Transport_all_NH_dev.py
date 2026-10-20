@@ -1973,10 +1973,10 @@ AVTECH_DEFAULT_RESOURCE = "GPIB0::8::INSTR"
 AVTECH_MAX_AMPLITUDE_V = 100.0
 AVTECH_MIN_WIDTH_S = 1e-9
 AVTECH_MAX_WIDTH_S = 5e-6
-# 90 V, 10 ns by default (user's figure, 2026-10-20; before that 40 V, 100 ns,
-# and 10 V, 10 ns); the pulse sign scan's |V| V starts at the same 90 V.
-AVTECH_DEFAULT_AMPLITUDE_V = 90.0
-AVTECH_DEFAULT_WIDTH_NS = 10.0
+# 100 V, 50 ns by default (user, 2026-10-20; before that 90 V, 10 ns, 40 V,
+# 100 ns and 10 V, 10 ns); the pulse sign scan's |V| V starts at the same 100 V.
+AVTECH_DEFAULT_AMPLITUDE_V = 100.0
+AVTECH_DEFAULT_WIDTH_NS = 50.0
 # Pulse count beside Width (ns), as the 6221 box has (user, 2026-10-20: "add
 # pulse count function in avtech"): Apply +/-V fires that many pulses, each
 # the whole single-pulse sequence below, one at a time.  The gap runs from
