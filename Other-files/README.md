@@ -1,5 +1,12 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Auto focus on the ROI (2026-10-20)
+
+- User: "can you change to not full screen focus but ROI selected?". The auto focus now scores only the pixels inside
+  the camera ROI (rotated ROIs included), copied at the start of each search or check so every position is scored on
+  the same pixels. With no ROI drawn, Auto focus and Keep in focus are refused ("draw a camera ROI first") and
+  nothing moves. This supersedes "the focus area is the whole image" in the auto-focus section below.
+
 ## Auto focus with the Cell-VSDM motor: MOKE magnet and CIDWM (2026-10-20)
 
 - User: "can you add a auto focus function here to make sure the focus is always right? In MOKE magnet and CIDWM
