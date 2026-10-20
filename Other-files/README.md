@@ -1,5 +1,26 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## CIDWM layout: connections together, settings together, then the scan (2026-10-20)
+
+- User: "rearrange the GUI of CIDWM, make connections together, settings together, then scan. like SHV and PPMS
+  module". Layout only: the same widgets, variables, commands and attribute names; no instrument, scan or save change.
+- **Instruments** (was "Keithley 6221 / VISA" and the Avtech box's Resource row): one row per instrument in shared
+  columns, as the PPMS rack (name, 18-character address, Connect, Disconnect, lamp, state): **6221** and **Avtech
+  AVR-E3-B (50 Ω load required)**. The 6221 safety tick under them, unchanged and still required.
+- **Pulse settings** (was "DC unipolar pulse output (0 A ↔ ±I, 50% duty)" and the Avtech box's pulse row), two lines
+  per source in shared columns: **6221** |I| mA, Width µs, Pulse count, Compliance V, Apply +I, Apply −I; under it its
+  read-back (OUTP, Compliance state, Output) with the red **6221 stop now / zero** under the Apply buttons. **Avtech**
+  |V| V, Width ns, Pulse count, Apply +V, Apply −V; under it its **Output** label with the red **Avtech output off**.
+  A muted note keeps "6221: DC unipolar pulse output (0 A ↔ ±I, 50% duty)". The red buttons are as before (colours,
+  padding). Two lines, not one, so no line is wider than the old Avtech pulse row (about 830 px at the lab's 96 DPI,
+  estimated); the page still fits the 1101 px window.
+- The boxes are stacked at every width (the old connection / pulse output side-by-side pair is gone); then the pulse
+  sign scan, MOKE difference display beside Images, and Camera settings, all unchanged.
+- Tests: `test_stfmr_field_output.py` (`test_cidwm_boxes_connections_then_settings_then_scan`: boxes, order, rows,
+  columns; `test_cidwm_red_buttons_are_never_clipped`: both red buttons, not squeezed, inside their box at 1101,
+  1500 and 2000 px) and `test_panel_defaults.py` (the box titles). Both are GUI modules: not run here, and not on CI
+  yet (the Actions minutes are used up until 2026-11-01).
+
 ## Defaults: camera binning 2×2; Avtech 40 V, 100 ns (2026-10-20)
 
 - User: "set default binning as 2*2": the difference display's Binning starts at **2×2** (`DIFFERENCE_SPATIAL_BINNING`, was 4×4).

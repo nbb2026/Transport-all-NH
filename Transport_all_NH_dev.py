@@ -27287,88 +27287,109 @@ class CombinedControlApp:
         outer.grid(row=0, column=0, sticky="nsew")
         outer.columnconfigure(0, weight=1)
 
-        # Compact, as on the STFMR page: the connection beside the pulse
-        # output, and the pulse scan beside ROI editing.  Each pair stacks by
-        # itself when the window is too narrow for both.  (User, 2026-10-12:
-        # no AC/DC continuous output on this page.)
-        top = ttk.Frame(outer)
-        top.grid(row=0, column=0, sticky="ew")
-        top.columnconfigure(1, weight=1)
-        connection = ttk.LabelFrame(top, text="Keithley 6221 / VISA", padding=7)
-        connection.grid(row=0, column=0, sticky="nsew")
-        connection.columnconfigure(5, weight=1)
-        ttk.Label(connection, text="Resource:").grid(row=0, column=0)
-        ttk.Entry(
-            connection, textvariable=self.k6221_resource_var, width=18
-        ).grid(row=0, column=1, padx=(0, 8))
-        self.k6221_connect_button = ttk.Button(
-            connection, text="Connect", command=self.connect_k6221
-        )
-        self.k6221_connect_button.grid(row=0, column=2, padx=3)
-        self.k6221_disconnect_button = ttk.Button(
-            connection, text="Disconnect", command=self.disconnect_k6221
-        )
-        self.k6221_disconnect_button.grid(row=0, column=3, padx=3)
-        self._create_connection_indicator(connection, "keithley6221").grid(
-            row=0, column=4, padx=(8, 1)
-        )
-        ttk.Label(connection, textvariable=self.k6221_connection_var).grid(
-            row=0, column=5, sticky="e", padx=(1, 0)
-        )
+        # Connections together, then the pulse settings together, then the
+        # scan, as on the SHV and PPMS pages (user, 2026-10-20: "make
+        # connections together, settings together, then scan. like SHV and
+        # PPMS module").  Stacked at every width: no side-by-side pair here.
+        # (User, 2026-10-12: no AC/DC continuous output on this page.)
+        #
+        # "Instruments": one row per instrument in shared columns (name,
+        # address, Connect, Disconnect, lamp, state), as the PPMS rack.
+        connection = ttk.LabelFrame(outer, text="Instruments", padding=7)
+        connection.grid(row=0, column=0, sticky="ew")
+        connection.columnconfigure(6, weight=1)
+        for row, (name, key, resource, connect, disconnect, state) in enumerate((
+            ("6221", "keithley6221", self.k6221_resource_var,
+             self.connect_k6221, self.disconnect_k6221, self.k6221_connection_var),
+            ("Avtech AVR-E3-B (50 Ω load required)", "avtech", self.avtech_resource_var,
+             self.connect_avtech, self.disconnect_avtech, self.avtech_connection_var),
+        )):
+            pady = (0 if row == 0 else 3, 0)
+            ttk.Label(connection, text=name).grid(row=row, column=0, sticky="w", padx=(0, 6), pady=pady)
+            ttk.Entry(connection, textvariable=resource, width=18).grid(row=row, column=1, pady=pady)
+            connect_button = ttk.Button(connection, text="Connect", width=8, command=connect)
+            connect_button.grid(row=row, column=2, padx=(6, 0), pady=pady)
+            disconnect_button = ttk.Button(connection, text="Disconnect", width=10, command=disconnect)
+            disconnect_button.grid(row=row, column=3, pady=pady)
+            self._create_connection_indicator(connection, key).grid(row=row, column=4, padx=3, pady=pady)
+            ttk.Label(connection, textvariable=state, width=13).grid(row=row, column=5, sticky="w", pady=pady)
+            if key == "avtech":
+                self.avtech_connect_button = connect_button
+                self.avtech_disconnect_button = disconnect_button
+            else:
+                self.k6221_connect_button = connect_button
+                self.k6221_disconnect_button = disconnect_button
         ttk.Checkbutton(
             connection,
             text="6221 wiring, sample current/compliance and output parameters confirmed safe",
             variable=self.k6221_safety_var,
             command=self._update_k6221_controls,
         ).grid(
-            row=1,
+            row=2,
             column=0,
-            columnspan=6,
+            columnspan=7,
             sticky="w",
             pady=(8, 0),
         )
 
-        output = ttk.LabelFrame(
-            top, text="DC unipolar pulse output (0 A ↔ ±I, 50% duty)", padding=7
-        )
-        output.grid(row=0, column=1, sticky="nsew")
-        output.columnconfigure(0, weight=1)
-        # The fields, then the Apply and red stop buttons on the line below
-        # with the live readback, so the box is narrow enough to sit beside
-        # the connection at the lab's 2000 px window (Windows fonts).
-        output_fields = ttk.Frame(output)
-        output_fields.grid(row=0, column=0, sticky="w")
-        readback = ttk.Frame(output)
-        readback.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-        readback.columnconfigure(5, weight=1)
-        # The size of the pulse; its sign is the button's (user, 2026-10-12:
-        # negative pulses), so the direction changes without retyping.
-        ttk.Label(output_fields, text="Pulse current |I| (mA):").grid(row=0, column=0)
-        ttk.Entry(output_fields, textvariable=self.k6221_current_var, width=9).grid(
-            row=0, column=1, padx=(0, 10)
-        )
-        ttk.Label(output_fields, text="High-level width (us):").grid(row=0, column=2)
-        ttk.Entry(output_fields, textvariable=self.k6221_width_var, width=9).grid(
-            row=0, column=3, padx=(0, 10)
-        )
-        ttk.Label(output_fields, text="Pulse count:").grid(row=0, column=4)
-        ttk.Entry(output_fields, textvariable=self.k6221_count_var, width=9).grid(
-            row=0, column=5, padx=(0, 10)
-        )
-        ttk.Label(output_fields, text="Compliance (V):").grid(row=0, column=6)
-        ttk.Entry(output_fields, textvariable=self.k6221_compliance_var, width=8).grid(
-            row=0, column=7, padx=(0, 10)
-        )
+        # "Pulse settings": a 6221 and an Avtech row in shared columns (name,
+        # size, width, Pulse count, the 6221's compliance, Apply +, Apply −).
+        # Each source takes two lines, so no line is wider than the old
+        # Avtech pulse row and the page fits the lab's 1101 px window: the
+        # fields and Apply buttons, then its read-back with the red button
+        # under the Apply buttons.  The size of the pulse; its sign is the
+        # button's (user, 2026-10-12: negative pulses), so the direction
+        # changes without retyping.  The Avtech fires Pulse count pulses per
+        # button (user, 2026-10-20), each its single-pulse sequence; the
+        # output is off between pulses.
+        output = ttk.LabelFrame(outer, text="Pulse settings", padding=7)
+        output.grid(row=1, column=0, sticky="ew", pady=(7, 0))
+        output.columnconfigure(12, weight=1)
+
+        def source_fields(line: int, name: str, fields) -> None:
+            pady = (0 if line == 0 else 6, 0)
+            ttk.Label(output, text=name).grid(row=line, column=0, sticky="w", padx=(0, 6), pady=pady)
+            for column, (label, variable) in enumerate(fields):
+                ttk.Label(output, text=label).grid(
+                    row=line, column=1 + 2 * column, sticky="e", padx=(0 if column == 0 else 10, 3), pady=pady
+                )
+                ttk.Entry(output, textvariable=variable, width=7).grid(
+                    row=line, column=2 + 2 * column, sticky="w", pady=pady
+                )
+
+        source_fields(0, "6221", (("|I| mA:", self.k6221_current_var), ("Width µs:", self.k6221_width_var),
+                                  ("Pulse count:", self.k6221_count_var),
+                                  ("Compliance V:", self.k6221_compliance_var)))
         self.k6221_apply_button = ttk.Button(
-            readback, text="Apply +I pulse", command=lambda: self.apply_k6221_output(1)
+            output, text="Apply +I pulse", command=lambda: self.apply_k6221_output(1)
         )
-        self.k6221_apply_button.grid(row=0, column=0, padx=(0, 3))
+        self.k6221_apply_button.grid(row=0, column=9, sticky="ew", padx=(10, 3))
         self.k6221_apply_negative_button = ttk.Button(
-            readback, text="Apply −I pulse", command=lambda: self.apply_k6221_output(-1)
+            output, text="Apply −I pulse", command=lambda: self.apply_k6221_output(-1)
         )
-        self.k6221_apply_negative_button.grid(row=0, column=1, padx=(3, 3))
-        self.k6221_off_button = tk.Button(
+        self.k6221_apply_negative_button.grid(row=0, column=10, sticky="ew", padx=(3, 0))
+        # The read-back lines span the field columns; a longer text has room
+        # there (the fields are wider than the longest read-back).
+        readback = ttk.Frame(output)
+        readback.grid(row=1, column=1, columnspan=8, sticky="w", pady=(4, 0))
+        # The 6221's live readback (read every 0.3 s while idle): the output
+        # state and whether the 6221 is in compliance; then the output set.
+        ttk.Label(
+            readback, textvariable=self.k6221_readback_output_var, style="Metric.TLabel"
+        ).grid(row=0, column=0, sticky="w", padx=(0, 12))
+        self.k6221_compliance_state_label = ttk.Label(
             readback,
+            textvariable=self.k6221_compliance_state_var,
+            foreground="#666666",
+            font=(self.ui_font_family, self.ui_font_size, "bold"),
+        )
+        self.k6221_compliance_state_label.grid(row=0, column=1, sticky="w", padx=(0, 12))
+        ttk.Label(
+            readback, textvariable=self.k6221_output_var, style="Metric.TLabel"
+        ).grid(row=0, column=2, sticky="w")
+        # The red button, its size as before, under the Apply buttons.
+        self.k6221_off_button = tk.Button(
+            output,
             text="6221 stop now / zero",
             command=self.stop_k6221,
             bg=THEME_COLORS["danger"],
@@ -27378,78 +27399,25 @@ class CombinedControlApp:
             padx=10,
             pady=3,
         )
-        self.k6221_off_button.grid(row=0, column=2, padx=(8, 18))
-        # The live readback (read every 0.3 s while idle): the output state
-        # and whether the 6221 is in compliance; then the output set.
-        ttk.Label(
-            readback, textvariable=self.k6221_readback_output_var, style="Metric.TLabel"
-        ).grid(row=0, column=3, sticky="w", padx=(0, 12))
-        self.k6221_compliance_state_label = ttk.Label(
-            readback,
-            textvariable=self.k6221_compliance_state_var,
-            foreground="#666666",
-            font=(self.ui_font_family, self.ui_font_size, "bold"),
-        )
-        self.k6221_compliance_state_label.grid(row=0, column=4, sticky="w")
-        ttk.Label(
-            readback, textvariable=self.k6221_output_var, style="Metric.TLabel"
-        ).grid(row=0, column=5, sticky="e", padx=(12, 0))
-        self._arrange_pair_by_width(top, connection, output, gap=7)
-
-        # The Avtech pulse generator (user, 2026-10-13): Pulse count pulses
-        # per button (user, 2026-10-20), each Avtech's single-pulse sequence;
-        # the output is off between pulses.
-        avtech = ttk.LabelFrame(
-            outer, text="Avtech AVR-E3-B pulse generator (GPIB; 50 Ω load required)", padding=7
-        )
-        avtech.grid(row=1, column=0, sticky="ew", pady=(7, 0))
-        avtech.columnconfigure(0, weight=1)
-        avtech_connection = ttk.Frame(avtech)
-        avtech_connection.grid(row=0, column=0, sticky="w")
-        ttk.Label(avtech_connection, text="Resource:").grid(row=0, column=0)
-        ttk.Entry(avtech_connection, textvariable=self.avtech_resource_var, width=18).grid(
-            row=0, column=1, padx=(0, 8)
-        )
-        self.avtech_connect_button = ttk.Button(
-            avtech_connection, text="Connect", command=self.connect_avtech
-        )
-        self.avtech_connect_button.grid(row=0, column=2, padx=3)
-        self.avtech_disconnect_button = ttk.Button(
-            avtech_connection, text="Disconnect", command=self.disconnect_avtech
-        )
-        self.avtech_disconnect_button.grid(row=0, column=3, padx=3)
-        self._create_connection_indicator(avtech_connection, "avtech").grid(row=0, column=4, padx=(8, 1))
-        ttk.Label(avtech_connection, textvariable=self.avtech_connection_var).grid(
-            row=0, column=5, sticky="w", padx=(1, 12)
-        )
-        ttk.Label(avtech_connection, textvariable=self.avtech_output_var, style="Metric.TLabel").grid(
-            row=0, column=6, sticky="w"
-        )
-        avtech_pulse = ttk.Frame(avtech)
-        avtech_pulse.grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Label(avtech_pulse, text="Amplitude |V| (V):").grid(row=0, column=0)
-        ttk.Entry(avtech_pulse, textvariable=self.avtech_amplitude_var, width=8).grid(
-            row=0, column=1, padx=(0, 10)
-        )
-        ttk.Label(avtech_pulse, text="Width (ns):").grid(row=0, column=2)
-        ttk.Entry(avtech_pulse, textvariable=self.avtech_width_var, width=8).grid(
-            row=0, column=3, padx=(0, 10)
-        )
-        # As the 6221 box's Pulse count (user, 2026-10-20: "like 6221").
-        ttk.Label(avtech_pulse, text="Pulse count:").grid(row=0, column=4)
-        ttk.Entry(avtech_pulse, textvariable=self.avtech_count_var, width=7).grid(
-            row=0, column=5, padx=(0, 10)
-        )
+        self.k6221_off_button.grid(row=1, column=9, columnspan=2, sticky="w", padx=(10, 0), pady=(4, 0))
+        source_fields(2, "Avtech", (("|V| V:", self.avtech_amplitude_var), ("Width ns:", self.avtech_width_var),
+                                    ("Pulse count:", self.avtech_count_var)))
         self.avtech_apply_button = ttk.Button(
-            avtech_pulse, text="Apply +V pulse", command=lambda: self.apply_avtech_pulse(1)
+            output, text="Apply +V pulse", command=lambda: self.apply_avtech_pulse(1)
         )
-        self.avtech_apply_button.grid(row=0, column=6, padx=(0, 3))
+        self.avtech_apply_button.grid(row=2, column=9, sticky="ew", padx=(10, 3), pady=(6, 0))
         self.avtech_apply_negative_button = ttk.Button(
-            avtech_pulse, text="Apply −V pulse", command=lambda: self.apply_avtech_pulse(-1)
+            output, text="Apply −V pulse", command=lambda: self.apply_avtech_pulse(-1)
         )
-        self.avtech_apply_negative_button.grid(row=0, column=7, padx=(3, 3))
+        self.avtech_apply_negative_button.grid(row=2, column=10, sticky="ew", padx=(3, 0), pady=(6, 0))
+        # The Avtech's Output label, its short state after Apply ±V (user,
+        # 2026-10-20), on its own read-back line as the 6221's.
+        ttk.Label(output, textvariable=self.avtech_output_var, style="Metric.TLabel").grid(
+            row=3, column=1, columnspan=8, sticky="w", pady=(4, 0)
+        )
+        # Red, its size as before.
         self.avtech_off_button = tk.Button(
-            avtech_pulse,
+            output,
             text="Avtech output off",
             command=self.avtech_output_off,
             bg=THEME_COLORS["danger"],
@@ -27459,9 +27427,16 @@ class CombinedControlApp:
             padx=10,
             pady=3,
         )
-        self.avtech_off_button.grid(row=0, column=8, padx=(8, 0))
-        # The safety tick row and the status line are gone (user,
-        # 2026-10-20); the Output label above has the short state.
+        self.avtech_off_button.grid(row=3, column=9, columnspan=2, sticky="w", padx=(10, 0), pady=(4, 0))
+        # What the old "DC unipolar pulse output (0 A ↔ ±I, 50% duty)" box
+        # title said, kept as a short note.
+        ttk.Label(
+            output,
+            text="6221: DC unipolar pulse output (0 A ↔ ±I, 50% duty)",
+            style="Muted.TLabel",
+        ).grid(row=4, column=0, columnspan=11, sticky="w", pady=(6, 0))
+        # No Avtech safety tick or status line (user, 2026-10-20); the Output
+        # label has the short state.
 
         # The pulse sign scan (user, 2026-10-12): Pulses pulses at the pulse
         # output's |I|, width and compliance, each with its sign from Signs,

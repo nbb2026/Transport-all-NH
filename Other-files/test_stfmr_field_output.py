@@ -794,39 +794,91 @@ class FieldOutputTests(unittest.TestCase):
         self.assertGreater(canvas.winfo_height(), canvas.winfo_reqheight(), "plots should take the spare height")
 
     # ------------------------------------------------------------ CIDWM
-    def test_cidwm_sections_pair_up_and_the_plot_takes_the_height(self):
-        """2026-10-12: MOKE-6221 is CIDWM: the pulse output beside the
-        connection, the pulse sign scan, then MOKE magnet's difference
-        display beside Save images, and the display rows."""
+    def test_cidwm_boxes_connections_then_settings_then_scan(self):
+        """User, 2026-10-20: "make connections together, settings together,
+        then scan. like SHV and PPMS module": "Instruments" (a row per
+        instrument, then the 6221 safety tick), "Pulse settings" (a 6221 and
+        an Avtech row), the pulse sign scan, then MOKE magnet's difference
+        display beside Images (2026-10-12) and Camera settings."""
         self.arranged(LAB_WIDE, "CIDWM", self.a.stfmr_lockin_resource_widgets)
-        frames = self.page_frames(self.a.k6221_tab)
-        connection = frames["Keithley 6221 / VISA"]
-        pulse = frames["DC unipolar pulse output (0 A ↔ ±I, 50% duty)"]
-        difference = frames["MOKE difference display"]
-        images = frames["Images"]
-        for gone in ("AC/DC continuous output and live readback",
+        a = self.a
+        frames = self.page_frames(a.k6221_tab)
+        scan_title = "Pulse sign scan (display, raw + processed TIFF after each pulse)"
+        instruments, settings, scan = frames["Instruments"], frames["Pulse settings"], frames[scan_title]
+        difference, images, camera = frames["MOKE difference display"], frames["Images"], frames["Camera settings"]
+        for gone in ("Keithley 6221 / VISA", "DC unipolar pulse output (0 A ↔ ±I, 50% duty)",
+                     "Avtech AVR-E3-B pulse generator (GPIB; 50 Ω load required)",
+                     "AC/DC continuous output and live readback",
                      "Pulse current scan and ROI acquisition", "ROI editing", "MOKE ROI editing",
                      "ROI mean intensity vs time (live)",
                      "Pulse current vs ROI mean intensity (current round-trip scan)"):
             self.assertNotIn(gone, frames)
-        self.assertIs(connection.master, pulse.master)
+        outer = instruments.master
+        self.assertEqual([(box.master, int(box.grid_info()["row"])) for box in (instruments, settings, scan)],
+                         [(outer, 0), (outer, 1), (outer, 2)], "stacked, in this order")
+        tops = [box.winfo_rooty() for box in (instruments, settings, scan, difference, camera)]
+        self.assertEqual(tops, sorted(tops), "top to bottom")
         self.assertIs(difference.master, images.master)
-        self.assertLess(connection.winfo_rootx(), pulse.winfo_rootx(), "connection on the left")
         self.assertLess(difference.winfo_rootx(), images.winfo_rootx(), "difference display on the left")
-        outer = connection.master.master
-        self.assertIn("Pulse sign scan (display, raw + processed TIFF after each pulse)", frames)
-        self.assertIn("Camera settings", frames)
-        # 2026-10-13: the Avtech box between the 6221 rows and the scan.
-        avtech = frames["Avtech AVR-E3-B pulse generator (GPIB; 50 Ω load required)"]
-        self.assertIs(avtech.master, outer)
-        self.assertEqual(int(avtech.grid_info()["row"]), 1)
-        self.assertLess(pulse.winfo_rooty(), avtech.winfo_rooty())
-        self.assertLess(avtech.winfo_rooty(),
-                        frames["Pulse sign scan (display, raw + processed TIFF after each pulse)"].winfo_rooty())
         self.assertEqual(int(outer.rowconfigure(5)["weight"]), 1, "spare height below the controls")
 
-    def test_cidwm_red_stop_button_is_never_clipped(self):
-        """At narrow widths it used to extend 62 px past the window edge."""
+        def place(widget):
+            info = widget.grid_info()
+            return widget.master, int(info["row"]), int(info["column"])
+
+        # Instruments: the 6221 row, the Avtech row, the tick, in shared
+        # columns (name, address, Connect, Disconnect, lamp, state).
+        for row, (connect, disconnect, resource) in enumerate((
+                (a.k6221_connect_button, a.k6221_disconnect_button, a.k6221_resource_var),
+                (a.avtech_connect_button, a.avtech_disconnect_button, a.avtech_resource_var))):
+            self.assertEqual((place(connect), place(disconnect)),
+                             ((instruments, row, 2), (instruments, row, 3)))
+            (entry,) = [w for w in instruments.grid_slaves(row=row, column=1)]
+            self.assertEqual(str(entry.cget("textvariable")), str(resource))
+            (lamp,) = instruments.grid_slaves(row=row, column=4)
+            self.assertIsInstance(lamp, tk.Canvas)
+        names = [str(w.cget("text")) for w in instruments.grid_slaves(column=0) if w.winfo_class() == "TLabel"]
+        self.assertEqual(sorted(names), ["6221", "Avtech AVR-E3-B (50 Ω load required)"])
+        (tick,) = instruments.grid_slaves(row=2, column=0)
+        self.assertEqual(str(tick.cget("variable")), str(a.k6221_safety_var))
+        for left, right in ((a.k6221_connect_button, a.avtech_connect_button),
+                            (a.k6221_disconnect_button, a.avtech_disconnect_button)):
+            self.assertEqual(left.winfo_rootx(), right.winfo_rootx(), "the columns line up")
+
+        # Pulse settings: each source's fields and Apply buttons, then its
+        # read-back with the red button under the Apply buttons.
+        self.assertEqual([place(w) for w in (a.k6221_apply_button, a.k6221_apply_negative_button,
+                                             a.k6221_off_button, a.avtech_apply_button,
+                                             a.avtech_apply_negative_button, a.avtech_off_button)],
+                         [(settings, 0, 9), (settings, 0, 10), (settings, 1, 9),
+                          (settings, 2, 9), (settings, 2, 10), (settings, 3, 9)])
+        for left, right in ((a.k6221_apply_button, a.avtech_apply_button),
+                            (a.k6221_apply_negative_button, a.avtech_apply_negative_button),
+                            (a.k6221_off_button, a.avtech_off_button)):
+            self.assertEqual(left.winfo_rootx(), right.winfo_rootx(), "the columns line up")
+        for red in (a.k6221_off_button, a.avtech_off_button):
+            self.assertEqual(str(red.cget("bg")), app.THEME_COLORS["danger"])
+            self.assertEqual((int(red.cget("padx")), int(red.cget("pady"))), (10, 3), "its size as before")
+        variables = {str(w.cget("textvariable")): int(w.grid_info()["row"])
+                     for w in descendants(settings) if w.winfo_class() == "TEntry"}
+        self.assertEqual(variables, {str(v): row for row, group in (
+            (0, (a.k6221_current_var, a.k6221_width_var, a.k6221_count_var, a.k6221_compliance_var)),
+            (2, (a.avtech_amplitude_var, a.avtech_width_var, a.avtech_count_var))) for v in group})
+        readbacks = {str(w.cget("textvariable")): w for w in descendants(settings)
+                     if w.winfo_class() == "TLabel" and str(w.cget("textvariable"))}
+        for variable, row in ((a.k6221_readback_output_var, 1), (a.k6221_compliance_state_var, 1),
+                              (a.k6221_output_var, 1), (a.avtech_output_var, 3)):
+            label = readbacks[str(variable)]
+            line = label if label.master is settings else label.master
+            self.assertEqual(int(line.grid_info()["row"]), row, str(variable))
+        self.assertIs(readbacks[str(a.k6221_compliance_state_var)], a.k6221_compliance_state_label)
+        texts = [str(w.cget("text")) for w in descendants(settings) if w.winfo_class() == "TLabel"]
+        self.assertIn("6221: DC unipolar pulse output (0 A ↔ ±I, 50% duty)", texts)
+
+    def test_cidwm_red_buttons_are_never_clipped(self):
+        """At narrow widths the 6221's used to extend 62 px past the window
+        edge.  Since 2026-10-20 (user) both red buttons sit in the Pulse
+        settings box: neither is squeezed or past its box's border."""
         try:
             for width in (self.LAB_DEFAULT, 1500, LAB_WIDE):  # the lab's real widths
                 self.arranged(width, "CIDWM", self.a.stfmr_lockin_resource_widgets)
@@ -835,9 +887,14 @@ class FieldOutputTests(unittest.TestCase):
                 over = [w for w in descendants(tab)
                         if w.winfo_ismapped() and w.winfo_rootx() + w.winfo_width() > right + 1]
                 self.assertEqual(over, [], f"widgets past the edge at {width} px")
-                stop = self.a.k6221_off_button
-                self.assertTrue(stop.winfo_ismapped())
-                self.assertLessEqual(stop.winfo_rootx() + stop.winfo_width(), right)
+                for stop in (self.a.k6221_off_button, self.a.avtech_off_button):
+                    with self.subTest(width=width, button=str(stop.cget("text"))):
+                        box = stop.master
+                        self.assertTrue(stop.winfo_ismapped())
+                        self.assertLessEqual(stop.winfo_rootx() + stop.winfo_width(), right)
+                        self.assertGreaterEqual(stop.winfo_width(), stop.winfo_reqwidth(), "squeezed")
+                        self.assertLessEqual(stop.winfo_x() + stop.winfo_width(), box.winfo_width() - 2,
+                                             "past its box's right border")
         finally:
             self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
 

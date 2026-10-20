@@ -327,7 +327,11 @@ class PanelDefaultTests(unittest.TestCase):
             if widget.winfo_class() == "TLabelframe":
                 titles.add(str(widget.cget("text")))
         self.assertNotIn("AC/DC continuous output and live readback", titles)
-        self.assertIn("DC unipolar pulse output (0 A ↔ ±I, 50% duty)", titles)
+        # 2026-10-20 (user): the pulse output's box is "Pulse settings" (with
+        # the Avtech row), its old title a note there; the connections in
+        # "Instruments".
+        self.assertTrue({"Instruments", "Pulse settings"} <= titles)
+        self.assertNotIn("DC unipolar pulse output (0 A ↔ ±I, 50% duty)", titles)
         # 2026-10-12, CIDWM: MOKE magnet's difference display and ROI editing
         # (one set of variables: one camera), no pulse current scan.
         self.assertIn("MOKE difference display", titles)
@@ -356,7 +360,7 @@ class PanelDefaultTests(unittest.TestCase):
         self.assertFalse(hasattr(a, "apply_k6221_continuous_output"))
         self.assertEqual((a.k6221_current_var.get(), a.k6221_width_var.get(), a.k6221_count_var.get(),
                           a.k6221_compliance_var.get()), ("2", "50", "1", "100"))
-        # The live readback stays, in the pulse box.
+        # The live readback stays, in the Pulse settings box.
         self.assertEqual(a.k6221_readback_output_var.get(), "OUTP: OFF")
         self.assertIsNotNone(a.k6221_compliance_state_label)
 
