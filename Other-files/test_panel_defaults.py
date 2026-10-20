@@ -190,7 +190,7 @@ class PanelDefaultTests(unittest.TestCase):
 
     def test_cidwm_avtech_box_and_the_scan_source(self):
         """2026-10-13: the Avtech AVR-E3-B box (GPIB address 8, 10 V, 10 ns,
-        everything off until connected and ticked) and the scan's pulse
+        everything off until connected; since 2026-10-20 no tick) and the scan's pulse
         source, the 6221 by default."""
         a = self.app
         self.assertEqual((a.avtech_resource_var.get(), a.avtech_amplitude_var.get(), a.avtech_width_var.get(),
@@ -201,7 +201,11 @@ class PanelDefaultTests(unittest.TestCase):
                        a.avtech_off_button):
             self.assertEqual(str(button.cget("state")), "disabled", str(button.cget("text")))
         self.assertEqual([str(b.cget("text")) for b in a.cidwm_scan_source_buttons], ["6221", "Avtech"])
-        self.assertFalse(a.avtech_safety_var.get())
+        # The safety tick and the status line are gone, Pulse count is 1
+        # (user, 2026-10-20).
+        self.assertNotIn("avtech_safety_var", a.__dict__)
+        self.assertNotIn("avtech_status_var", a.__dict__)
+        self.assertEqual(a.avtech_count_var.get(), "1")
 
     def _boxes(self):
         found, pending = [], list(self.app.root.winfo_children())

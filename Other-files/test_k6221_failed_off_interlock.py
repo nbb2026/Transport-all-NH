@@ -81,8 +81,11 @@ def page(instrument):
         setattr(a, name, mock.Mock())
     # The Avtech, ready to pulse.
     a.avtech_controller = mock.Mock(connected=True)
-    a.avtech_safety_var, a.avtech_status_var = Var(True), Var()
-    a.avtech_busy = False
+    # No safety tick and no status line since 2026-10-20 (user): the
+    # Pulse count box and the train's stop event instead.
+    a.avtech_count_var = Var("1")
+    a.avtech_stop_event = threading.Event()
+    a.avtech_busy, a.avtech_output_unknown = False, False
     a.avtech_executor = mock.Mock()
     a._parse_avtech_pulse = lambda: (1.0, 10e-9)
     return a

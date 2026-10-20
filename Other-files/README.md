@@ -1,5 +1,26 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## CIDWM Avtech: Pulse count; the tick row and status line removed (2026-10-20)
+
+- User: "add pulse count function in avtech and delete the two rows at bottom". The Avtech box's Amplitude row has
+  **Pulse count:** after Width (ns) (default 1, whole numbers 1 to 10000, checked before anything is sent). Apply
+  ±V fires that many pulses of the button's sign. Each pulse is the whole reviewed single-pulse sequence again
+  (`AvtechPulserController.pulse_train` calls `single_pulse` N times: hold, *CLS, delay 0, width and amplitude read
+  back, output on, trigger:source immediate, hold, output off read back, overload check), **1 s apart**
+  (`AVTECH_PULSE_GAP_S`; at most 5 µs per 1 s, far inside the 5 % duty-cycle limit). No burst or internal-trigger
+  commands. A failure, an overload or **Avtech output off** stops the train at once; a stop switches the output
+  off once more and reads it back; an off not read back sets the unknown-output interlock. It runs on the Avtech
+  worker.
+- The safety tick is gone (user: "Remove completely"), for Apply ±V and the pulse sign scan's Avtech source; the
+  other checks stay (connected, idle, limits, polarity, the 6221 interlocks; an unknown Avtech output now also
+  refuses Apply ±V until Avtech output off or a reconnect reads it off). The box title keeps "50 Ω load required".
+- The status line is gone: the **Output** label on the Resource row has the short state ("Output: pulse 3/10",
+  "Output: OFF; last +40 V 200 ns", "… (10/10)", "Output: OFF; stopped at 3/10", "Output: OFF; OVERLOAD",
+  "Output: check the Avtech"); the full text goes to the page log. Error dialogs are unchanged.
+- The pulse sign scan still fires one Avtech pulse per point, whatever Pulse count says. Avtech_pulse_test.py is
+  unchanged. Not checked on CI (the Actions minutes are used up until 2026-11-01): the box is two rows shorter and
+  its Amplitude row a Pulse count box wider; the Output label is longer after a pulse.
+
 ## CIDWM pulse sign scan: a row per source, each with its width (2026-10-20)
 
 - User: "add pulse width settings here and seperate the 6221 & Avtech". The scan box now has a **6221** row

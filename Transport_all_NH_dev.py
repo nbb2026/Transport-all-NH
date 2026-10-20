@@ -1968,6 +1968,15 @@ AVTECH_MIN_WIDTH_S = 1e-9
 AVTECH_MAX_WIDTH_S = 5e-6
 AVTECH_DEFAULT_AMPLITUDE_V = 10.0
 AVTECH_DEFAULT_WIDTH_NS = 10.0
+# Pulse count beside Width (ns), as the 6221 box has (user, 2026-10-20: "add
+# pulse count function in avtech"): Apply +/-V fires that many pulses, each
+# the whole single-pulse sequence below, one at a time.  The gap runs from
+# the end of one sequence (output read back off) to the start of the next,
+# so the duty cycle is at most 5 us / 1 s = 0.0005 %, far inside the 5 %
+# limit.  The 6221 has no pulse interval of its own to copy, hence 1 s.
+AVTECH_DEFAULT_PULSE_COUNT = 1
+AVTECH_MAX_PULSE_COUNT = 10_000
+AVTECH_PULSE_GAP_S = 1.0
 # After the wait, at most this long for a camera frame newer than the pulse.
 CIDWM_SCAN_FRAME_TIMEOUT_S = 10.0
 # Then at most this long for Camera Live to draw such a frame (its display is
@@ -3440,6 +3449,88 @@ class AvtechPulserController(SafeVisaIdentityController):
                 "amplitude_v": amplitude_read, "width_s": width_read,
                 "overload": overload, "pulse_end": time.monotonic(),
             }
+
+    @staticmethod
+    def validate_count(count) -> int:
+        """A pulse count: a whole number 1 - AVTECH_MAX_PULSE_COUNT (user,
+        2026-10-20).  Text must be digits only, so "1.5", "1e3" and "10.0"
+        are refused rather than rounded."""
+        if isinstance(count, str):
+            text = count.strip()
+            if not re.fullmatch(r"[0-9]+", text):
+                raise ValueError(
+                    f"The Avtech pulse count must be a whole number from 1 to {AVTECH_MAX_PULSE_COUNT}"
+                )
+            count = int(text)
+        if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= AVTECH_MAX_PULSE_COUNT:
+            raise ValueError(
+                f"The Avtech pulse count must be a whole number from 1 to {AVTECH_MAX_PULSE_COUNT}"
+            )
+        return count
+
+    def pulse_train(self, amplitude_v: float, width_s: float, count, *, gap_s: float = AVTECH_PULSE_GAP_S,
+                    stop_event: threading.Event | None = None,
+                    progress: Callable[[int, int], None] | None = None) -> dict:
+        """``count`` pulses of ``amplitude_v`` (signed) and ``width_s`` (user,
+        2026-10-20: the Avtech's Pulse count, "like 6221").
+
+        Each pulse is the whole reviewed single_pulse sequence again, the
+        settings included: its hold, *CLS, delay 0, width and amplitude read
+        back, output on, one "trigger:source immediate", then hold and the
+        output read back off.  Setting them once and only re-triggering would
+        skip the read-backs and the "output off before" check the review
+        required each time, and the generator has no burst command in this
+        code.  ``gap_s`` is waited on ``stop_event`` between pulses.
+
+        The train stops at once on a failure (the AvtechPulseError of that
+        pulse, with ``pulse_index`` and ``pulses_done`` added), an overload
+        (returned, ``overload`` True) or ``stop_event`` (the Avtech output off
+        button): the last sequence has already read the output back off, and
+        a stop switches it off once more and reads it back.  Returns the last
+        read-back, ``pulses`` done, ``count``, ``stopped`` and ``pulse_end``."""
+        amplitude_v, width_s = self.validate(amplitude_v, width_s)
+        count = self.validate_count(count)
+        gap_s = float(gap_s)
+        if not (math.isfinite(gap_s) and 0.0 <= gap_s <= 3600.0):
+            raise ValueError("The Avtech pulse gap must be within 0 - 3600 s")
+        done = 0
+        result: dict = {"amplitude_v": math.nan, "width_s": math.nan, "overload": False,
+                        "pulse_end": time.monotonic()}
+        stopped = False
+        for index in range(1, count + 1):
+            if stop_event is not None and stop_event.is_set():
+                stopped = True
+                break
+            if progress is not None:
+                progress(index, count)
+            try:
+                result = self.single_pulse(amplitude_v, width_s)
+            except AvtechPulseError as error:
+                error.pulse_index, error.pulses_done = index, done
+                raise
+            done += 1
+            if result["overload"]:
+                break
+            if index < count:
+                if stop_event is not None:
+                    if stop_event.wait(gap_s):
+                        stopped = True
+                        break
+                else:
+                    time.sleep(gap_s)
+        if stopped:
+            try:
+                self.switch_off()
+            except BaseException as error:
+                stop_error = AvtechPulseError(
+                    f"stopped after {done}/{count} pulses, then: {error}",
+                    amplitude_v=result["amplitude_v"], width_s=result["width_s"],
+                    overload=result["overload"],
+                )
+                stop_error.pulse_index, stop_error.pulses_done = done, done
+                stop_error.output_unknown = True
+                raise stop_error from error
+        return dict(result, pulses=done, count=count, stopped=stopped)
 
 
 class STFMRKepco4886Controller:
@@ -15761,10 +15852,17 @@ class CombinedControlApp:
         self.avtech_resource_var = tk.StringVar(value=AVTECH_DEFAULT_RESOURCE)
         self.avtech_amplitude_var = tk.StringVar(value=f"{AVTECH_DEFAULT_AMPLITUDE_V:g}")
         self.avtech_width_var = tk.StringVar(value=f"{AVTECH_DEFAULT_WIDTH_NS:g}")
-        self.avtech_safety_var = tk.BooleanVar(value=False)
+        self.avtech_count_var = tk.StringVar(value=str(AVTECH_DEFAULT_PULSE_COUNT))
+        # Set by the Avtech output off button: a running Apply +/-V train
+        # stops after the pulse in progress (user, 2026-10-20).
+        self.avtech_stop_event = threading.Event()
+        self.avtech_train_running = False
+        # No safety tick and no status line any more (user, 2026-10-20:
+        # "delete the two rows at bottom"; the tick: "Remove completely").
+        # The box title keeps "50 Ω load required"; the Output label on the
+        # Resource row has the short state, the page log the full text.
         self.avtech_connection_var = tk.StringVar(value="Not connected")
         self.avtech_output_var = tk.StringVar(value="Output: OFF")
-        self.avtech_status_var = tk.StringVar(value="Avtech: not connected")
         self.cidwm_scan_source_var = tk.StringVar(value="6221")
         self.cidwm_scan_amplitude_var = tk.StringVar(value=f"{AVTECH_DEFAULT_AMPLITUDE_V:g}")
         self.cidwm_scan_source = "6221"  # the running scan's
@@ -27295,8 +27393,9 @@ class CombinedControlApp:
         ).grid(row=0, column=5, sticky="e", padx=(12, 0))
         self._arrange_pair_by_width(top, connection, output, gap=7)
 
-        # The Avtech pulse generator (user, 2026-10-13): one pulse per button,
-        # Avtech's single-pulse sequence; the output is off between pulses.
+        # The Avtech pulse generator (user, 2026-10-13): Pulse count pulses
+        # per button (user, 2026-10-20), each Avtech's single-pulse sequence;
+        # the output is off between pulses.
         avtech = ttk.LabelFrame(
             outer, text="Avtech AVR-E3-B pulse generator (GPIB; 50 Ω load required)", padding=7
         )
@@ -27333,14 +27432,19 @@ class CombinedControlApp:
         ttk.Entry(avtech_pulse, textvariable=self.avtech_width_var, width=8).grid(
             row=0, column=3, padx=(0, 10)
         )
+        # As the 6221 box's Pulse count (user, 2026-10-20: "like 6221").
+        ttk.Label(avtech_pulse, text="Pulse count:").grid(row=0, column=4)
+        ttk.Entry(avtech_pulse, textvariable=self.avtech_count_var, width=7).grid(
+            row=0, column=5, padx=(0, 10)
+        )
         self.avtech_apply_button = ttk.Button(
             avtech_pulse, text="Apply +V pulse", command=lambda: self.apply_avtech_pulse(1)
         )
-        self.avtech_apply_button.grid(row=0, column=4, padx=(0, 3))
+        self.avtech_apply_button.grid(row=0, column=6, padx=(0, 3))
         self.avtech_apply_negative_button = ttk.Button(
             avtech_pulse, text="Apply −V pulse", command=lambda: self.apply_avtech_pulse(-1)
         )
-        self.avtech_apply_negative_button.grid(row=0, column=5, padx=(3, 3))
+        self.avtech_apply_negative_button.grid(row=0, column=7, padx=(3, 3))
         self.avtech_off_button = tk.Button(
             avtech_pulse,
             text="Avtech output off",
@@ -27352,16 +27456,9 @@ class CombinedControlApp:
             padx=10,
             pady=3,
         )
-        self.avtech_off_button.grid(row=0, column=6, padx=(8, 0))
-        ttk.Checkbutton(
-            avtech,
-            text="Avtech: 50 Ω load at the output (a missing load is not detected), wiring and amplitude confirmed safe",
-            variable=self.avtech_safety_var,
-            command=self._update_k6221_controls,  # also the scan's Start
-        ).grid(row=2, column=0, sticky="w", pady=(6, 0))
-        avtech_status = ttk.Label(avtech, width=1)
-        avtech_status.grid(row=3, column=0, sticky="ew", pady=(2, 0))
-        show_trimmed(avtech_status, self.avtech_status_var)
+        self.avtech_off_button.grid(row=0, column=8, padx=(8, 0))
+        # The safety tick row and the status line are gone (user,
+        # 2026-10-20); the Output label above has the short state.
 
         # The pulse sign scan (user, 2026-10-12): Pulses pulses at the pulse
         # output's |I|, width and compliance, each with its sign from Signs,
@@ -35233,8 +35330,9 @@ class CombinedControlApp:
                 "CIDWM pulse sign scan", "A MOKE magnet or MOKE-24 scan is running", parent=self.root
             )
             return
-        safety = self.avtech_safety_var if source == "avtech" else self.k6221_safety_var
-        if not safety.get():
+        # The 6221 keeps its tick; the Avtech has none (user, 2026-10-20:
+        # "Remove completely").
+        if source == "6221" and not self.k6221_safety_var.get():
             messagebox.showwarning(
                 "CIDWM pulse sign scan", f"Tick the {name} safety confirmation first", parent=self.root
             )
@@ -35442,7 +35540,9 @@ class CombinedControlApp:
             actual = None
             if avtech:
                 # One pulse; the Avtech is off again (read back) when
-                # this returns, or it raises.
+                # this returns, or it raises.  ONE pulse per scan point,
+                # whatever the Avtech box's Pulse count says (user,
+                # 2026-10-20): the count is for Apply ±V only.
                 try:
                     actual = controller.single_pulse(set_value, settings["width_s"])
                 except AvtechPulseError as error:
@@ -35702,7 +35802,7 @@ class CombinedControlApp:
             messagebox.showwarning("Avtech", "Enter a VISA resource name", parent=self.root)
             return
         self.avtech_busy = True
-        self.avtech_status_var.set(f"Avtech: connecting to {resource}…")
+        self.append_log(f"Avtech: connecting to {resource}…")
         self._update_k6221_controls()
         future = self.avtech_executor.submit(self.avtech_controller.connect, resource)
         future.add_done_callback(
@@ -35719,14 +35819,13 @@ class CombinedControlApp:
                 # Its off failed: the 6221 waits (M4, review, 2026-10-18).
                 self.avtech_output_unknown = True
                 self.avtech_output_var.set("Output: check the Avtech")
-            self.avtech_status_var.set(f"Avtech: connection failed: {short_status_error(error)}")
+            self.append_log(f"Avtech: connection failed: {error}")
             self._dialog_after_drain("showerror", "Avtech", str(error))
         else:
             self.avtech_connection_var.set("Connected")
             self.avtech_output_unknown = False  # off, read back
             self.avtech_output_var.set("Output: OFF")
-            self.avtech_safety_var.set(False)
-            self.avtech_status_var.set(
+            self.append_log(
                 f"Avtech: {identity} | trigger on hold, output off (read back) | {self._avtech_polarity_text()}"
             )
         self._update_avtech_controls()
@@ -35734,7 +35833,7 @@ class CombinedControlApp:
 
     def disconnect_avtech(self) -> None:
         self.avtech_busy = True
-        self.avtech_status_var.set("Avtech: switching off and disconnecting…")
+        self.append_log("Avtech: switching off and disconnecting…")
         self._update_k6221_controls()
         future = self.avtech_executor.submit(self.avtech_controller.disconnect)
         future.add_done_callback(
@@ -35744,29 +35843,32 @@ class CombinedControlApp:
     def _finish_avtech_disconnect(self, error) -> None:
         self.avtech_busy = False
         self.avtech_connection_var.set("Not connected")
-        self.avtech_safety_var.set(False)
         # A failed off holds the 6221 until a reconnect reads it back off
         # (M4, review, 2026-10-18).
         self.avtech_output_unknown = error is not None
         if error is None:
             self.avtech_output_var.set("Output: OFF")
-            self.avtech_status_var.set("Avtech: output off and disconnected")
+            self.append_log("Avtech: output off and disconnected")
         else:
             self.avtech_output_var.set("Output: check the Avtech")
-            self.avtech_status_var.set(f"Avtech: disconnect warning: {short_status_error(error)}")
+            self.append_log(f"Avtech: disconnect warning: {error}")
             self._dialog_after_drain("showerror", "Avtech", str(error))
         self._update_avtech_controls()
         self._update_k6221_controls()
 
+    def _parse_avtech_count(self) -> int:
+        """The box's Pulse count, 1 - AVTECH_MAX_PULSE_COUNT, whole numbers
+        only (user, 2026-10-20)."""
+        return AvtechPulserController.validate_count(str(self.avtech_count_var.get()))
+
     def apply_avtech_pulse(self, polarity: int = 1) -> None:
-        """Apply +V pulse (polarity 1) or Apply −V pulse (−1): one pulse of
-        |Amplitude| with the button's sign and Width, the output off before
-        and after."""
+        """Apply +V pulse (polarity 1) or Apply −V pulse (−1): Pulse count
+        pulses of |Amplitude| with the button's sign and Width, the output
+        off before and after each, AVTECH_PULSE_GAP_S apart.  No safety tick
+        and no question (user, 2026-10-20: the tick "Remove completely"):
+        the checks below are the interlocks."""
         if not self.avtech_controller.connected:
             messagebox.showwarning("Avtech", "Connect the Avtech first", parent=self.root)
-            return
-        if not self.avtech_safety_var.get():
-            messagebox.showwarning("Avtech", "Tick the Avtech safety confirmation first", parent=self.root)
             return
         if self.avtech_busy or self.k6221_busy or self.k6221_scan_running:
             return
@@ -35779,43 +35881,93 @@ class CombinedControlApp:
                 parent=self.root,
             )
             return
+        if self.__dict__.get("avtech_output_unknown", False):
+            messagebox.showwarning(
+                "Avtech", "The Avtech's output state is unknown: press Avtech output off "
+                "or reconnect it first",
+                parent=self.root,
+            )
+            return
+        # Everything is checked before anything is sent.
         try:
             amplitude_v, width_s = self._parse_avtech_pulse()
+            count = self._parse_avtech_count()
         except ValueError as error:
             messagebox.showwarning("Avtech", str(error), parent=self.root)
             return
         signed = (1 if polarity >= 0 else -1) * amplitude_v
         self.avtech_busy = True
-        self.avtech_status_var.set(f"Avtech: one pulse of {signed:+g} V, {width_s * 1e9:g} ns…")
+        self.avtech_train_running = True
+        self.avtech_stop_event.clear()
+        gap = f", {AVTECH_PULSE_GAP_S:g} s apart" if count > 1 else ""
+        self.append_log(f"Avtech: {count} pulse{'s' if count > 1 else ''} of {signed:+g} V, "
+                        f"{width_s * 1e9:g} ns{gap}, the output read back off after each…")
+        self.avtech_output_var.set(f"Output: pulse 1/{count}")
         self._update_k6221_controls()
-        future = self.avtech_executor.submit(self.avtech_controller.single_pulse, signed, width_s)
+
+        def progress(index: int, total: int) -> None:
+            self.post_ui(lambda: self.avtech_output_var.set(f"Output: pulse {index}/{total}"))
+
+        # On the Avtech's own worker, never the Tk thread.
+        future = self.avtech_executor.submit(
+            lambda: self.avtech_controller.pulse_train(
+                signed, width_s, count, gap_s=AVTECH_PULSE_GAP_S,
+                stop_event=self.avtech_stop_event, progress=progress,
+            )
+        )
         future.add_done_callback(
-            lambda completed: self.post_ui(lambda: self._finish_avtech_pulse(completed, signed))
+            lambda completed: self.post_ui(lambda: self._finish_avtech_pulse(completed, signed, count))
         )
 
-    def _finish_avtech_pulse(self, future, signed: float) -> None:
+    @staticmethod
+    def _avtech_output_text(result: dict | None = None, error=None, count: int = 1) -> str:
+        """The Output label's short state after Apply ±V (user, 2026-10-20:
+        it replaces the status line, so it adds no height)."""
+        if error is not None:
+            if getattr(error, "output_unknown", False) or "check the generator" in str(error):
+                return "Output: check the Avtech"
+            at = getattr(error, "pulse_index", 1)
+            if getattr(error, "overload", False):
+                return "Output: OFF; OVERLOAD" + (f" at {at}/{count}" if count > 1 else "")
+            return "Output: OFF; pulse failed" + (f" at {at}/{count}" if count > 1 else "")
+        done = result.get("pulses", 1)
+        if result["overload"]:
+            return "Output: OFF; OVERLOAD" + (f" at {done}/{count}" if count > 1 else "")
+        if result.get("stopped"):
+            return f"Output: OFF; stopped at {done}/{count}"
+        last = f"last {result['amplitude_v']:+g} V {result['width_s'] * 1e9:g} ns"
+        return f"Output: OFF; {last}" + (f" ({done}/{count})" if count > 1 else "")
+
+    def _finish_avtech_pulse(self, future, signed: float, count: int = 1) -> None:
         self.avtech_busy = False
+        self.avtech_train_running = False
         try:
             result = future.result()
         except BaseException as error:
             # Its off after the pulse not read back: the 6221 waits (M4,
             # review, 2026-10-18).
-            self.avtech_output_unknown = "check the generator" in str(error)
-            self.avtech_output_var.set("Output: OFF" if not self.avtech_output_unknown
-                                       else "Output: check the Avtech")
+            self.avtech_output_unknown = bool(getattr(error, "output_unknown", False)) or (
+                "check the generator" in str(error))
+            self.avtech_output_var.set(self._avtech_output_text(error=error, count=count))
             fired = bool(getattr(error, "fired", False))
-            text = f"Avtech: {'' if fired else 'pulse failed: '}{error}"
-            self.avtech_status_var.set(text)
+            where = f"pulse {getattr(error, 'pulse_index', 1)}/{count}: " if count > 1 else ""
+            text = f"Avtech: {where}{'' if fired else 'pulse failed: '}{error}"
             self.append_log(text)
             self._dialog_after_drain("showerror", "Avtech pulse", str(error))
         else:
             self.avtech_output_unknown = False  # off, read back
-            self.avtech_output_var.set("Output: OFF")
-            text = (f"Avtech: pulse {result['amplitude_v']:+g} V, {result['width_s'] * 1e9:g} ns "
-                    "(read back); output off")
+            self.avtech_output_var.set(self._avtech_output_text(result, count=count))
+            done = result.get("pulses", 1)
+            if done:
+                text = (f"Avtech: {done}/{count} pulse{'s' if count > 1 else ''} "
+                        f"{result['amplitude_v']:+g} V, {result['width_s'] * 1e9:g} ns "
+                        "(read back); output off")
+            else:
+                text = f"Avtech: 0/{count} pulses; output off"
+            if result.get("stopped"):
+                text += " | stopped by Avtech output off (read back off)"
             if result["overload"]:
-                text += " | OVERLOAD: output protection tripped (short or too-low load impedance)"
-            self.avtech_status_var.set(text)
+                text += " | OVERLOAD: output protection tripped (short or too-low load impedance); train stopped"
             self.append_log(text)
             if result["overload"]:
                 self._dialog_after_drain("showwarning", "Avtech pulse", text)
@@ -35824,18 +35976,24 @@ class CombinedControlApp:
     def avtech_output_off(self) -> None:
         """The red button: the trigger on hold and the output off, read back.
         During a pulse sign scan on the Avtech it stops the scan, which ends
-        with the output off."""
-        if not self.avtech_controller.connected:
-            return
+        with the output off; during an Apply ±V train it stops the train after
+        the pulse in progress, which then switches the output off again and
+        reads it back (user, 2026-10-20)."""
         if self.k6221_scan_running and self.cidwm_scan_source == "avtech":
             self.k6221_stop_event.set()
             self._note_cidwm_stop("Avtech output off")
-            self.avtech_status_var.set("Avtech: stopping the scan; the output goes off after this pulse")
+            self.append_log("Avtech: stopping the scan; the output goes off after this pulse")
+            return
+        if self.__dict__.get("avtech_train_running", False):
+            self.avtech_stop_event.set()
+            self.append_log("Avtech: stopping the pulse train; the output goes off after this pulse")
+            return
+        if not self.avtech_controller.connected:
             return
         if self.avtech_busy:
-            return  # a pulse (off after it), or a connect/disconnect (off in it)
+            return  # a connect/disconnect (off in it)
         self.avtech_busy = True
-        self.avtech_status_var.set("Avtech: trigger on hold, output off…")
+        self.append_log("Avtech: trigger on hold, output off…")
         self._update_k6221_controls()
         future = self.avtech_executor.submit(self.avtech_controller.switch_off)
         future.add_done_callback(
@@ -35848,10 +36006,10 @@ class CombinedControlApp:
         self.avtech_output_unknown = error is not None
         if error is None:
             self.avtech_output_var.set("Output: OFF")
-            self.avtech_status_var.set("Avtech: trigger on hold, output off (read back)")
+            self.append_log("Avtech: trigger on hold, output off (read back)")
         else:
             self.avtech_output_var.set("Output: check the Avtech")
-            self.avtech_status_var.set(f"Avtech: {short_status_error(error)}")
+            self.append_log(f"Avtech: {error}")
             self._dialog_after_drain("showerror", "Avtech", str(error))
         self._update_k6221_controls()
 
@@ -35887,15 +36045,19 @@ class CombinedControlApp:
         self.avtech_connect_button.configure(state="normal" if not connected and idle else "disabled")
         self.avtech_disconnect_button.configure(state="normal" if connected and idle else "disabled")
         can_pulse = (
-            connected and idle and self.avtech_safety_var.get() and not self.k6221_busy
+            connected and idle and not self.k6221_busy
+            and not self.__dict__.get("avtech_output_unknown", False)
             and not self.__dict__.get("k6221_output_unknown", False)
             and not self.magnet_scan_running and not self.keithley_scan_running
         )
         allowed = self.avtech_controller.polarities or (1, -1)
         for button, sign in ((self.avtech_apply_button, 1), (self.avtech_apply_negative_button, -1)):
             button.configure(state="normal" if can_pulse and sign in allowed else "disabled")
+        # Enabled during an Apply ±V train too: it stops the train (user,
+        # 2026-10-20).
+        training = self.__dict__.get("avtech_train_running", False)
         self.avtech_off_button.configure(
-            state="normal" if scanning or (connected and not self.avtech_busy) else "disabled"
+            state="normal" if scanning or training or (connected and not self.avtech_busy) else "disabled"
         )
 
     def stop_k6221(self, button: str = "6221 stop now / zero") -> None:
@@ -36122,7 +36284,6 @@ class CombinedControlApp:
                 can_start = (
                     avtech.connected and not self.avtech_busy and not running
                     and not self.k6221_busy and not self.__dict__.get("k6221_output_unknown", False)
-                    and self.avtech_safety_var.get()
                     and not self.magnet_scan_running and not self.keithley_scan_running
                 )
             else:
@@ -41713,6 +41874,8 @@ class CombinedControlApp:
             return
         self.avtech_closed = True
         self.k6221_stop_event.set()  # a pulse sign scan on the Avtech stops too
+        if "avtech_stop_event" in self.__dict__:
+            self.avtech_stop_event.set()  # and an Apply ±V train (user, 2026-10-20)
         self._note_cidwm_stop("the program closing")
         outputs = dict(self.__dict__.get("cidwm_close_outputs") or {})
         outputs["Avtech"] = "off, read back" if self.avtech_controller.connected else "not connected"
