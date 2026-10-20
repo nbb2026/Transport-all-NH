@@ -662,6 +662,39 @@ class SuperKeepTests(SuperCase):
         self.assertAlmostEqual(m.controller.position_um, 7251.0, places=2)
         self.assertIn("focus +1.0 µm from the BG's focus", focus.status_var.get())
 
+    def test_widened_edges_start_a_full_search_by_themselves(self):
+        """User, 2026-10-20: when the white and black edge lines show, find
+        the focus that makes them narrow, without pressing Super focus."""
+        a, m, focus = self.page(focus_um=7254.0)
+        focus.camera_ready = True
+        focus.keep_var.set(True)
+        focus.keep_changed()
+        focus.last_check_monotonic = time.monotonic()        # a check just ran
+        focus.super_live_residual = 0.03                     # narrow: nothing
+        focus.idle_tick()
+        self.assertIsNone(focus.running_kind)
+        focus.super_live_residual = 0.22                     # the lines are back
+        self.assertTrue(focus.super_edges_widened())
+        focus.last_check_monotonic = time.monotonic() - app.SUPER_AUTO_COOLDOWN_S - 1
+        focus.idle_tick()
+        self.assertEqual((focus.running_kind, focus.running_metric), ("search", "super"))
+        self.pump(a, m, self.idle(focus))
+        self.pump(a, m, lambda: a.ui.empty())
+        self.assertAlmostEqual(m.controller.position_um, 7254.0, places=2)
+        self.assertIsNotNone(focus.super_best_residual)
+
+    def test_no_auto_search_without_keep_or_outside_super(self):
+        a, m, focus = self.page(focus_um=7254.0)
+        focus.camera_ready = True
+        focus.super_live_residual = 0.5
+        self.assertFalse(focus.super_edges_widened(), "Keep in focus off")
+        focus.keep_var.set(True)
+        focus.keep_changed()
+        focus.super_best_residual = 0.4
+        self.assertFalse(focus.super_edges_widened(), "under 1.5 x the best since the last search")
+        focus.super_on = False
+        self.assertFalse(focus.super_edges_widened(), "not in Super")
+
     def test_keep_takes_the_bgs_focus_as_its_window_after_a_search(self):
         a, m, focus = self.page(focus_um=7252.0)
         self.search(a, m, focus)

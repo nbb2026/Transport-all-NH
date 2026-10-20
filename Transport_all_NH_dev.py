@@ -15876,6 +15876,15 @@ SUPER_MIN_GAIN = 0.05
 # The live E in the status and on Camera Live: at most once per this, on a
 # thread of its own (about 50 ms of numpy for a 2048 x 2048 frame).
 SUPER_LIVE_INTERVAL_S = 1.0
+# Super with Keep in focus re-focuses by itself when the white and black edge
+# lines come back (user, 2026-10-20: "when the program found edge with white
+# and dark in the fig. it should find focus to let the white & black line
+# narrow"): a full Super focus search, not the ±0.5 µm check, once the live
+# edge residual is above SUPER_AUTO_MIN_RESIDUAL and SUPER_AUTO_RATIO times the
+# best since the BG (or the last search), at most every SUPER_AUTO_COOLDOWN_S.
+SUPER_AUTO_MIN_RESIDUAL = 0.06
+SUPER_AUTO_RATIO = 1.5
+SUPER_AUTO_COOLDOWN_S = 10.0
 SUPER_MODE_LABEL = "Super"
 
 
@@ -16145,6 +16154,8 @@ class AutoFocusManager:
         self.super_live_residual: float | None = None
         self.super_live_error: str | None = None
         self.super_start_residual: float | None = None
+        # The lowest edge residual since the BG or the last Super search.
+        self.super_best_residual: float | None = None
         self._live_busy = False
         self._live_last = -math.inf
         self._edge_lock = threading.Lock()
@@ -16511,6 +16522,7 @@ class AutoFocusManager:
             start = SuperFocusSearch.residual(result.start_score)
             best = SuperFocusSearch.residual(result.best_score)
             self.super_start_residual, self.super_live_residual = start, best
+            self.super_best_residual = best
             offset = result.best_um - result.reference_um
             if kind == "search" and not result.peak_found:
                 text = (f"no clear edge-residual minimum within ±{FOCUS_RANGE_UM:g} µm of the BG's focus; "
@@ -16757,6 +16769,16 @@ class AutoFocusManager:
             return None
         return self.reference_um, current_um, max_um
 
+    def super_edges_widened(self) -> bool:
+        """Super with Keep in focus: the live edge residual says the white and
+        black edge lines have come back (see SUPER_AUTO_*)."""
+        live = self.__dict__.get("super_live_residual")
+        if not self.super_on or not self.keep_on or live is None or not math.isfinite(live):
+            return False
+        best = self.__dict__.get("super_best_residual")
+        floor = SUPER_AUTO_MIN_RESIDUAL if best is None else max(SUPER_AUTO_MIN_RESIDUAL, SUPER_AUTO_RATIO * best)
+        return live > floor
+
     def idle_tick(self) -> None:
         """Every FOCUS_IDLE_TICK_MS: with Keep in focus on and no scan, a check
         every FOCUS_IDLE_INTERVAL_S on its own thread."""
@@ -16766,20 +16788,28 @@ class AutoFocusManager:
                 self.idle_after_id = root.after(FOCUS_IDLE_TICK_MS, self.idle_tick)
         except tk.TclError:
             self.idle_after_id = None
+        since = time.monotonic() - self.last_check_monotonic
+        widened = self.super_edges_widened() and since >= SUPER_AUTO_COOLDOWN_S
         if (
             not self.keep_on or self.running_kind is not None or self._scan_running()
             or self.acquisition_busy() or self.app.__dict__.get("closing")
-            or time.monotonic() - self.last_check_monotonic < FOCUS_IDLE_INTERVAL_S
+            or (since < FOCUS_IDLE_INTERVAL_S and not widened)
         ):
             return
         ready = self._check_ready_on_tk()
-        if ready is None or not self._claim("check"):
+        kind = "search" if widened else "check"
+        if ready is None or not self._claim(kind):
             return
         self.last_check_monotonic = time.monotonic()
-        self.status_var.set("Focus: checking…")
+        if widened:
+            self.status_var.set("Super: the edge lines widened; finding the focus…")
+            self.app.thread_log(f"Super: edge residual {super_residual_text(self.super_live_residual)}; "
+                                "a Super focus search by itself (Keep in focus)")
+        else:
+            self.status_var.set("Focus: checking…")
         events = (_IdleStop(self),)
         threading.Thread(
-            target=self._run, args=("check", *ready, events),
+            target=self._run, args=(kind, *ready, events),
             name="auto-focus-check", daemon=True,
         ).start()
 
@@ -16848,6 +16878,7 @@ class AutoFocusManager:
         self.super_on = on
         self.reference_um = None   # each mode takes its own reference
         self.super_live_residual = self.super_start_residual = None
+        self.super_best_residual = None
         self.super_live_error = None
         self._live_last = -math.inf
         if on:
@@ -16933,6 +16964,7 @@ class AutoFocusManager:
         self.cancel(why, untick=True)
         self.reference_um = None
         self.super_live_residual = self.super_start_residual = None
+        self.super_best_residual = None
         self.super_live_error = None
         info = None if pending else self.background_focus
         keep_text = "; Keep in focus off (tick it again)" if was_keep else ""
@@ -17051,7 +17083,10 @@ class AutoFocusManager:
             return
         if self.app.__dict__.get("magnet_scan_collecting") or self.app.__dict__.get("keithley_collecting"):
             return
-        if not self._claim("check"):
+        # The white and black edge lines back: a full Super focus search here
+        # instead of the ±0.5 µm check (see SUPER_AUTO_*).
+        kind = "search" if self.super_edges_widened() else "check"
+        if not self._claim(kind):
             return
         events = (stop_event,)
         attrs = (recorder_attr,)
@@ -17067,8 +17102,10 @@ class AutoFocusManager:
             with self.lock:
                 self.running_kind = None
             return
-        self.app.post_ui(lambda: self.status_var.set("Focus: checking between points…"))
-        self._run("check", *ready, events, attrs)
+        self.app.post_ui(lambda: self.status_var.set(
+            "Super: the edge lines widened; finding the focus between points…" if kind == "search"
+            else "Focus: checking between points…"))
+        self._run(kind, *ready, events, attrs)
         self.last_check_monotonic = time.monotonic()
 
 
