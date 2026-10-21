@@ -1,5 +1,25 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Lake Shore magnet supplies: review fixes (2026-10-21)
+
+- The FMR page's busy state (`_set_stfmr_scan_busy`) had lost its `def` in the Lake Shore commit: Start, the LS648's
+  Zero / OFF and Disconnect failed with either supply. Restored; `test_lakeshore_pages.FmrBusyTests` runs it unstubbed,
+  and an AST check of every class's `self._x(` calls (and of code after a return) finds nothing else missing.
+- User: the FMR page's LS648 drives a different magnet, so it no longer blocks the ST-FMR stage (SHV's LS643 and the
+  page's own other supply still do).
+- Tolerance per model from the 648 manual (1.9.2 / 1.9.3: ±20 mA ±0.05 % setting and reading): max(50 mA, 0.2 %) for
+  both (no 643 manual at hand). SETI? must read back exactly (to the mA), the ramp done must be seen, and RDGI? within
+  the tolerance is the sanity check; a zero needs SETI? 0 exactly and |RDGI?| <= 50 mA.
+- Ramp segments (Enabled by default, their rates replace RATE): RSEG? 1, or RSEG? unanswered, with any RSEGS? current
+  above 0 refuses to arm ("disable Ramp Segments on the front panel (the program uses one rate)"), at Connect and
+  before each setpoint. RSEG is never written.
+- OPST? reads and clears: a setpoint already there (SETI? and RDGI?) sends nothing; otherwise OPST? is read and
+  discarded just before SETI. Each Apply and Start clears an old stop request first. A STOP that cannot be sent is
+  said ("the supply may still be ramping to X"). A scan end never ramps a Lake Shore on the Tk thread: with no worker
+  its zero is reported not confirmed (check it). The zero ramps at min(the page's rate, RATE? at Connect); the
+  program's close never slower than 0.01 A/s, its wait bounded by |I| / rate x 1.5 + 15 s, with the expected time
+  logged.
+
 ## Lake Shore 643 / 648 magnet supplies on SHV, ST-FMR and FMR (2026-10-21)
 
 - User: "Add LS643 connection & control for SHV and STFMR. Add LS648 connection & control for FMR. LS means
@@ -12,10 +32,10 @@
   one leased session per page. Connect sends `*IDN?` (must be `LSCI,MODEL643` / `LSCI,MODEL648`) and only queries:
   `SETI? RDGI? RDGV? RATE? LIMIT? XPGM? OPST? ERST?`, and `MAGWTR? INTWTR? RSEG?` (shown and logged, optional). No
   setpoint is sent unless armed (XPGM Internal, no blocking `ERST?` bit, read again before each one). A setpoint is
-  `RATE` (read back), `SETI` (read back), then a wait until `RDGI?` is within max(10 mA, 0.2 %) and `OPST?` says
-  ramp done; a Stop, an `ERST?` error, compliance, power limit or a time-out (|dI| / rate x 1.5 + 15 s) sends
-  `STOP` and leaves the output there. Zero is `SETI 0` at the rate, waited for until |RDGI?| <= 10 mA with `SETI?`
-  0; it is never stopped (the supply has no remote output-off: 0 A is "off"). No LIMIT, IEEE, XPGM, water, lock,
+  `RATE` (read back), `SETI` (read back), then a wait until `RDGI?` is within max(10 mA, 0.2 %) (50 mA since the
+  review, below) and `OPST?` says ramp done; a Stop, an `ERST?` error, compliance, power limit or a time-out (|dI| / rate x 1.5 + 15 s) sends
+  `STOP` and leaves the output there. Zero is `SETI 0` at the rate, waited for until |RDGI?| <= 10 mA (50 mA since
+  the review) with `SETI?` 0; it is never stopped (the supply has no remote output-off: 0 A is "off"). No LIMIT, IEEE, XPGM, water, lock,
   mode or ERCL write.
 - Limits: |I| <= 40 A (643) / 100 A (648), lowered by `LIMIT?`; the **Rate A/s** box (1 A/s at start-up, 0.0001 to
   10 A/s, lowered by `LIMIT?`) takes the voltage limit's place while a Lake Shore is chosen. **The rate is to be
@@ -24,7 +44,7 @@
   page's worker and the LS475 settle starts at the setpoint. Every end (completed, stopped, failed, the program
   closing) ramps it to 0 A and says "zero FAILED: check it" otherwise; Disconnect ramps it to 0 A first. The
   ST-FMR stage refuses to turn unless its chosen supply is connected and at zero and no other page's supply (4886,
-  SHV's LS643 or FMR's LS648) is on. The Yes/No estimates count the ramps. CSVs keep their columns and add
+  SHV's LS643 or FMR's LS648; the LS648 no longer since the review, below) is on. The Yes/No estimates count the ramps. CSVs keep their columns and add
   `magnet_supply` and `magnet_measured_current_a` (the Lake Shore's `RDGI?`) last; `run_prepared` has
   `magnet_supply` (identity, limits, rate).
 - Unverified on the real 643 / 648: the terminators (the 648 manual's default is CR LF; LF was used by

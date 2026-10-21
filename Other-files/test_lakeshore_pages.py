@@ -46,6 +46,8 @@ class WorkerExecutor:
         self.fail = False
 
     def submit(self, fn, *args):
+        if self.fail:
+            raise RuntimeError("cannot schedule new futures after shutdown")
         future = self.pool.submit(fn, *args)
         wait([future], timeout=120)
         return future
@@ -147,7 +149,8 @@ class ShvLakeShoreTests(ete.EndToEnd):
         self.assertEqual([float(r["kepco_programmed_current_a"]) for r in rows], [-1.0, 0.0, 1.0])
         self.assertEqual(h.panel.ppms_field_scan_status_var.get(), "Completed; LS643 and 6221 zeroed")
         # The estimate counts the ramps: from 0 A through -1, 0, +1 A and
-        # back to 0 A at 2 A/s, 2 s, and 0.5 s of read-backs per setpoint.
+        # back to 0 A at 2 A/s, 2 s, and LAKESHORE_SETPOINT_OVERHEAD_S of
+        # read-backs per setpoint.
         line = next(text for text in h.logged if text.startswith("SHV Field scan;"))
         self.assertIn("LS643 ramps at 2 A/s", line)
         with_ramps = at_least_seconds(line)
@@ -158,7 +161,8 @@ class ShvLakeShoreTests(ete.EndToEnd):
         other.panel.rte_controllers["kepco"] = other.kepco
         self.start(other)
         without = at_least_seconds(next(text for text in other.logged if text.startswith("SHV Field scan;")))
-        self.assertAlmostEqual(with_ramps - without, expected, delta=0.15)
+        # The line shows whole seconds.
+        self.assertAlmostEqual(with_ramps - without, expected, delta=1.0)
 
     def test_an_angle_field_scan_ramps_each_outer_field_before_its_sweep(self):
         h = ete.OuterScanTests.make_outer(self, "Angle+Field", ("0", "2", "1"))
@@ -169,7 +173,9 @@ class ShvLakeShoreTests(ete.EndToEnd):
         self.assertIn("3 LS643 steps from +0 A to +2 A (ramped at 2 A/s)", question)
         self.assertIn("it ramps there and the step waits until RDGI? is at it", question)
         self.assertIn("(the turning counted, the move to the first angle not). The LS643 ramps at 2 A/s", question)
-        self.assertEqual(fake.sent(), ["RATE 2.0000", "SETI 0.000", "SETI 1.000", "SETI 2.000", "SETI 0.000"])
+        # The first outer field is 0 A, where the supply already is: nothing
+        # sent for it (review, 2026-10-21).
+        self.assertEqual(fake.sent(), ["RATE 2.0000", "SETI 1.000", "SETI 2.000", "SETI 0.000"])
         # Each outer field is reached before its settle and its angle sweep.
         settle = app.STFMR_FIELD_SETTLE_REQUIRED_SAMPLES
         per_step = settle + 2 * 2          # the settle, then two angles' before / after reads
@@ -178,6 +184,31 @@ class ShvLakeShoreTests(ete.EndToEnd):
         self.assertEqual([float(r["kepco_programmed_current_a"]) for r in rows], [0.0, 0.0, 1.0, 1.0, 2.0, 2.0])
         self.assertEqual({entry[-1] for entry in h.log}, {h.worker})
         self.assertEqual(h.panel.ppms_field_scan_status_var.get(), "Completed; LS643 and 6221 zeroed; stage at +10.000°")
+
+    def test_a_repeated_setpoint_with_an_event_style_opst_is_not_waited_for(self):
+        # OPST? reads and clears (review, 2026-10-21): the second -1 A of a
+        # two-loop scan at -1 A is already there, so no SETI and no wait for a
+        # ramp done that never comes.
+        h = self.make()
+        controller, fake = self.lakeshore(h, opst_event=True)
+        self.field_scan(h, ("-1", "-1", "1"))
+        h.panel.ppms_field_scan_loop_var.set("2")
+        h.panel.rte_round_trip.set(True)
+        self.start(h)
+        h.showerror.assert_not_called()
+        self.assertEqual(fake.sent(), ["RATE 2.0000", "SETI -1.000", "SETI 0.000"])
+        self.assertEqual([float(r["kepco_programmed_current_a"]) for r in self.rows(h)], [-1.0, -1.0])
+        self.assertEqual(h.panel.ppms_field_scan_status_var.get(), "Completed; LS643 and 6221 zeroed")
+
+    def test_an_old_stop_request_does_not_stop_the_next_apply(self):
+        h = self.make()
+        controller, fake = self.lakeshore(h)
+        controller.request_stop()           # left by a Zero / OFF nobody's zero cleared
+        h.panel.rte_drive_target.set("2")
+        h.panel._rte_apply_drive()
+        self.pump(h)
+        h.showerror.assert_not_called()
+        self.assertAlmostEqual(fake.current, 2.0, places=6)
 
     def test_a_stop_during_a_ramp_sends_stop_and_the_end_zeroes(self):
         h = self.make()
@@ -421,6 +452,24 @@ class StfmrLakeShoreTests(NoWindows):
         self.assertEqual({(r["magnet_supply"], r["magnet_measured_current_a"]) for r in rows}, {("KEPCO 4886", "")})
 
 
+class StfmrNoWorkerTests(StfmrLakeShoreTests):
+    def test_without_a_worker_the_end_never_zeroes_the_lakeshore_on_the_tk_thread(self):
+        h = self.sweep()
+        h.start_stfmr_lockin_scan()
+        recorder = h.stfmr_lockin_recorder
+        while not h.stfmr_lockin_rows:
+            h.root.step()
+        sent = list(h.fake.sent())
+        h.stfmr_lockin_executor.fail = True
+        h.stop_stfmr_lockin_scan()
+        h.root.drain()
+        self.assertEqual(h.fake.sent(), sent, "no SETI 0 from the Tk thread")
+        self.assertEqual(h.fake.page_threads(), {h.stfmr_lockin_executor.ident})
+        zeroed = next(e for e in stfmr_events(recorder) if e["event"] == "outputs_zeroed")
+        self.assertEqual(zeroed["LS643"], stfmr_app.LAKESHORE_ZERO_NOT_RUN)
+        self.assertIn("CHECK IT: LS643", self.error.call_args.args[1])
+
+
 class StfmrPanelTests(StfmrLakeShoreTests):
     def test_apply_and_zero_off_ramp_on_the_worker(self):
         h = self.sweep()
@@ -482,10 +531,12 @@ class StfmrStageInterlockTests(unittest.TestCase):
         a.rte_panel.__dict__["rte_controllers"] = {"lakeshore": mock.Mock(output_on=True), "kepco": None}
         with self.assertRaisesRegex(RuntimeError, "SHV page's LS643 output is not at zero"):
             a._stfmr_lockin_require_4886_off()
+        # The FMR page's LS648 drives a different magnet (user, 2026-10-21,
+        # after review): it never blocks this stage.
         a.rte_panel.__dict__["rte_controllers"] = {}
         a.stfmr_controllers = {"lakeshore": mock.Mock(output_on=True)}
-        with self.assertRaisesRegex(RuntimeError, "FMR page's LS648"):
-            a._stfmr_lockin_require_4886_off()
+        a._stfmr_lockin_require_4886_off()
+        self.assertEqual(a._stfmr_lockin_other_lakeshore_on(), [])
         # With the LS643 chosen, this page's own 4886 counts as another supply.
         a.stfmr_controllers = {}
         kepco.output_owned = True
@@ -501,6 +552,71 @@ class StfmrStageInterlockTests(unittest.TestCase):
 
 
 # ---- FMR: the LS648 -----------------------------------------------------------------------------
+class FmrBusyTests(fmr_run.FmrRun):
+    """The review's B1 (2026-10-21): _set_stfmr_scan_busy had lost its def,
+    and every FMR test stubbed it.  Here it is the page's own, on stand-in
+    buttons: a KEPCO scan from Start to its end, and the LS648's Zero / OFF
+    then Disconnect."""
+
+    def page(self):
+        a = self.make()
+        del a._set_stfmr_scan_busy                      # the real method, not the harness's stub
+        a.stfmr_mfli_controller = mock.Mock(mfli_connected=False)
+        a.instrument_connection_indicators = {}
+        a.stfmr_device_connect_buttons = {key: mock.Mock() for key in app.STFMR_DEFAULT_RESOURCES}
+        a.stfmr_device_disconnect_buttons = {key: mock.Mock() for key in app.STFMR_DEFAULT_RESOURCES}
+        a.stfmr_device_resource_widgets = {key: mock.Mock() for key in app.STFMR_DEFAULT_RESOURCES}
+        for name in ("stfmr_apply_output_button", "stfmr_read_output_button", "stfmr_zero_output_button",
+                     "stfmr_read_gauss_button", "stfmr_fmr_start_button", "stfmr_frequency_start_button"):
+            setattr(a, name, mock.Mock())
+        return a
+
+    @staticmethod
+    def last_state(button):
+        return button.configure.call_args.kwargs["state"]
+
+    def test_a_kepco_scan_runs_from_start_to_its_end_with_the_real_busy_state(self):
+        a = self.page()
+        self.drive(a, a.start_stfmr_fmr_scan)
+        self.error.assert_not_called()
+        self.assertEqual(a.stfmr_fmr_status_var.get(), "Completed; 4886 and RF zeroed; 6 points saved")
+        self.assertEqual(self.last_state(a.stfmr_fmr_start_button), "normal", "idle again")
+        self.assertEqual(self.last_state(a.stfmr_fmr_stop_button), "disabled")
+        self.assertEqual(self.last_state(a.stfmr_apply_output_button), "normal")
+
+    def test_the_lakeshore_zero_off_and_disconnect(self):
+        a = self.page()
+        errors = []
+
+        def post_ui(callback):
+            try:
+                callback()
+            except BaseException as error:      # a done callback's error is otherwise only logged
+                errors.append(error)
+                raise
+        a.post_ui = post_ui
+        self.addCleanup(lambda: self.assertEqual(errors, []))
+        a.stfmr_executor = WorkerExecutor(self, "stfmr-control")
+        controller, fake = connected_supply("648", owner="FMR", current=3.0)[:2]
+        self.addCleanup(app._INSTRUMENT_LEASES.clear)
+        a.stfmr_controllers["lakeshore"] = controller
+        a.stfmr_magnet_choice, a.stfmr_closed = "LS648", False
+        ls_row = (mock.Mock(), mock.Mock(), mock.Mock())
+        a.stfmr_supply_rows = {"lakeshore": ls_row}
+        a.stfmr_device_connection_vars = {"lakeshore": fmr_run.Var("Connected")}
+        a.zero_stfmr_kepco_output()
+        self.assertEqual(a.__dict__.get("stfmr_magnet_job_pending"), 0, "the job counted down")
+        self.assertLessEqual(abs(fake.current), 0.05)
+        self.assertEqual(self.last_state(a.stfmr_zero_output_button), "normal")
+        self.assertEqual(self.last_state(ls_row[2]), "normal", "Disconnect usable again")
+        with mock.patch.object(app, "release_shared_visa_manager"):
+            a.disconnect_stfmr_device("lakeshore")
+        self.assertFalse(controller.connected)
+        self.assertEqual(a.stfmr_device_connection_vars["lakeshore"].get(), "Not connected")
+        self.assertEqual(fake.page_threads(), {a.stfmr_executor.ident})
+
+
+
 class FmrLakeShoreTests(fmr_run.FmrRun):
     def make_ls(self, rate=5.0, **fake_options):
         a = self.make()
@@ -569,6 +685,17 @@ class FmrLakeShoreTests(fmr_run.FmrRun):
         a.stfmr_output_target_var = fmr_run.Var("100.5")
         a.apply_stfmr_kepco_output()
         self.assertIn("within ±100 A", self.error.call_args.args[1])
+
+    def test_without_a_worker_the_end_never_zeroes_the_lakeshore_on_the_tk_thread(self):
+        a, controller, fake = self.make_ls()
+        controller.ramp_to(2.0, 5.0)
+        sent = list(fake.sent())
+        a.stfmr_executor.fail = True
+        results = []
+        a._stfmr_zero_then(results.append)
+        self.assertEqual(fake.sent(), sent)
+        self.assertEqual(results[0]["LS648"], app.LAKESHORE_ZERO_NOT_RUN)
+        self.assertEqual(results[0]["PNA RF"], "zeroed")
 
     def test_the_frequency_sweep_feeds_the_lakeshore_back_to_the_field(self):
         a, controller, fake = self.make_ls(rate=10.0)

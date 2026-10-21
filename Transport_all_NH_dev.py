@@ -2718,11 +2718,16 @@ STFMR_FMR_MAGNET_CHOICES = ("KEPCO4886", "LS648")
 # persistent setting (no LIMIT, IEEE, XPGM, MAGWTR, INTWTR, LOCK, MODE, ERCL).
 # max_current_a is the program's own limit on |I| (user, 2026-10-21); the
 # instrument's LIMIT? may lower it, never raise it.
+# tolerance_a / tolerance_rel: how close RDGI? must come to a setpoint, the
+# sanity check beside the exact SETI? read-back and OPST?'s ramp done (review,
+# 2026-10-21).  The 648 manual's 1.9.2 / 1.9.3 give setting and reading
+# accuracy of ±20 mA ±0.05 % each, so up to 40 mA + 0.1 % apart: max(50 mA,
+# 0.2 %).  No 643 manual was at hand: the same is used for it.
 LAKESHORE_MAGNET_MODELS = {
     "643": {"label": "Lake Shore 643", "short": "LS643", "model": "MODEL643", "max_current_a": 40.0,
-            "resource": "GPIB0::11::INSTR"},
+            "resource": "GPIB0::11::INSTR", "tolerance_a": 0.05, "tolerance_rel": 0.002},
     "648": {"label": "Lake Shore 648", "short": "LS648", "model": "MODEL648", "max_current_a": 100.0,
-            "resource": "GPIB0::10::INSTR"},
+            "resource": "GPIB0::10::INSTR", "tolerance_a": 0.05, "tolerance_rel": 0.002},
 }
 # The choice on each page: SHV and ST-FMR have the 643, FMR the 648.
 MAGNET_SUPPLY_KEPCO = "KEPCO 4886"
@@ -2743,13 +2748,23 @@ LAKESHORE_POLL_S = 0.25
 LAKESHORE_RAMP_TIME_FACTOR = 1.5
 LAKESHORE_RAMP_MARGIN_S = 15.0
 # What a setpoint costs beyond its ramp, for the time estimates: the arm
-# check, RDGI?, RATE?, SETI and SETI? (6 x 50 ms), then at least one poll.
-LAKESHORE_SETPOINT_OVERHEAD_S = 0.5
+# check (XPGM?, ERST?, RSEG?), SETI?, RDGI?, RATE?, OPST?, SETI and SETI? (9 x
+# 50 ms), then at least one poll.
+LAKESHORE_SETPOINT_OVERHEAD_S = 0.7
 # STOP "will stop the output current ramp within 2 s" (manual, STOP).
 LAKESHORE_STOP_SETTLE_S = 2.0
-# SETI? answers in mA (+nnn.nnn), RATE? in 0.1 mA/s (+n.nnnn).
-LAKESHORE_SETPOINT_READBACK_A = 0.0015
+# SETI? answers in mA (+nnn.nnn), RATE? in 0.1 mA/s (+n.nnnn): a setpoint is
+# read back exactly, to the mA (half a mA is the rounding).
+LAKESHORE_SETPOINT_READBACK_A = 0.0005
 LAKESHORE_RATE_READBACK_A_S = 0.00015
+# The program closing ramps a Lake Shore to 0 A never slower than this, so the
+# program can exit; the wait is |I| / rate x LAKESHORE_RAMP_TIME_FACTOR +
+# LAKESHORE_RAMP_MARGIN_S at most, then it is reported and the program exits
+# (review, 2026-10-21).
+LAKESHORE_CLOSE_MIN_RATE_A_S = 0.01
+# A scan end's state when its Lake Shore zero could not be run on the page's
+# worker: it is never run on the Tk thread (review, 2026-10-21).
+LAKESHORE_ZERO_NOT_RUN = "zero not confirmed (the page's worker is gone): check it"
 # OPST? bits (manual 5.2.5.2): compliance, ramp done, power limit.
 LAKESHORE_OPST_COMPLIANCE = 1
 LAKESHORE_OPST_RAMP_DONE = 2
@@ -3936,10 +3951,20 @@ class LakeShoreZeroError(LakeShoreRampError):
     come under the tolerance, or SETI? did not read back 0."""
 
 
-def lakeshore_current_tolerance_a(current_a) -> float:
-    """How close RDGI? must come to a setpoint to count as there: 10 mA or
-    0.2 % of |I|, whichever is larger (2026-10-21)."""
-    return max(0.01, 0.002 * abs(float(current_a)))
+def lakeshore_current_tolerance_a(current_a, model: str = "648") -> float:
+    """How close RDGI? must come to a setpoint, the sanity check beside the
+    exact SETI? read-back and the ramp done: per model from its specs
+    (LAKESHORE_MAGNET_MODELS), max(50 mA, 0.2 % of |I|) for both (review,
+    2026-10-21; it was max(10 mA, 0.2 %), tighter than the 648's ±20 mA
+    ±0.05 % setting and reading accuracy)."""
+    info = LAKESHORE_MAGNET_MODELS[str(model)]
+    return max(float(info["tolerance_a"]), float(info["tolerance_rel"]) * abs(float(current_a)))
+
+
+def lakeshore_tolerance_text(model: str = "648") -> str:
+    """The tolerance as the run logs name it."""
+    info = LAKESHORE_MAGNET_MODELS[str(model)]
+    return f"max({info['tolerance_a']:g} A, {100 * info['tolerance_rel']:g} % of |I|)"
 
 
 def lakeshore_ramp_seconds(currents, rate_a_s) -> float:
@@ -4028,13 +4053,15 @@ class LakeShoreMagnetSupplyController(SafeVisaIdentityController):
     check_648.py), at least 50 ms after every command and every reply before
     the next (so at most 20 per second), on one session leased to one page.
     Connect sends *IDN? and queries only: no setpoint, no setting.  A
-    setpoint is RATE (read back), then SETI (read back), then a wait until
-    RDGI? is within tolerance and OPST? says the ramp is done; a Stop, an
-    ERST? error, compliance or the power limit, or a time-out sends STOP and
-    leaves the output where it is.  The supply has no remote output-off, so
-    0 A is "off": zero() is SETI 0 at the rate, waiting until |RDGI?| is
-    under the tolerance, never stopped and never ended by an error bit
-    (the zero is the way out of one).  No persistent setting is written."""
+    setpoint is RATE (read back), then SETI (read back exactly), then a wait
+    until OPST? says the ramp is done with RDGI? within the tolerance; a
+    Stop, an ERST? error, compliance or the power limit, or a time-out sends
+    STOP and leaves the output where it is.  The supply has no remote
+    output-off, so 0 A is "off": zero() is SETI 0 at the rate, waiting
+    until SETI? reads 0 and |RDGI?| is within the tolerance, never stopped
+    and never ended by an error bit (the zero is the way out of one).  Ramp
+    segments, whose rates replace RATE (manual 4.9), refuse to arm.  No
+    persistent setting is written (RSEG included)."""
 
     def __init__(self, logger: Callable[[str], None], model: str, owner_scope: str = "STFMR") -> None:
         info = LAKESHORE_MAGNET_MODELS[str(model)]
@@ -4044,6 +4071,8 @@ class LakeShoreMagnetSupplyController(SafeVisaIdentityController):
         self.short_label = info["short"]
         self.model_token = info["model"]
         self.program_max_a = float(info["max_current_a"])
+        # RATE? as Connect read it: a zero never ramps faster (review, 2026-10-21).
+        self.connect_rate_a_s = math.nan
         # Replaced by the offline tests' simulated clock.
         self.clock = time.monotonic
         self.sleep = time.sleep
@@ -4066,8 +4095,11 @@ class LakeShoreMagnetSupplyController(SafeVisaIdentityController):
         self.xpgm = None
         self.magnet_water = None
         self.internal_water = None
+        # RSEG? (None: not answered) and RSEGS? 1..5 as (segment, current,
+        # rate); an active one refuses to arm (review, 2026-10-21).
         self.ramp_segments = None
-        self.ramp_segment_rates: tuple[float, ...] = ()
+        self.ramp_segment_table: tuple[tuple[int, float, float], ...] = ()
+        self.ramp_segment_problem = ""
         self.last_ramp: dict[str, object] = {}
         self.last_zero_notes: list[str] = []
 
@@ -4156,6 +4188,10 @@ class LakeShoreMagnetSupplyController(SafeVisaIdentityController):
             self.logger(f"{self.owner_scope} {self.short_label}: {command} not answered ({short_status_error(error, 60)})")
             return None
 
+    def tolerance_a(self, current_a) -> float:
+        """lakeshore_current_tolerance_a for this model."""
+        return lakeshore_current_tolerance_a(current_a, self.model)
+
     def _stopped(self, stop_event) -> bool:
         return self._stop_request.is_set() or (stop_event is not None and stop_event.is_set())
 
@@ -4163,6 +4199,13 @@ class LakeShoreMagnetSupplyController(SafeVisaIdentityController):
         """From any thread, no I/O: a ramp in progress sends STOP at its next
         poll and ends stopped.  zero() clears it."""
         self._stop_request.set()
+
+    def clear_stop_request(self) -> None:
+        """From the Tk thread before each Apply or Start is submitted (no
+        I/O): an old Zero / OFF's request must not stop the new ramp (review,
+        2026-10-21: a request left by a Zero while not connected made every
+        later Apply fail)."""
+        self._stop_request.clear()
 
     # ---- connection -------------------------------------------------------------
     def connect(self, resource_name: str) -> str:
@@ -4197,7 +4240,7 @@ class LakeShoreMagnetSupplyController(SafeVisaIdentityController):
         setpoint = self._number("SETI?")
         current = self._number("RDGI?")
         voltage = self._number("RDGV?")
-        self.rate_a_s = self._number("RATE?")
+        self.rate_a_s = self.connect_rate_a_s = self._number("RATE?")
         self.limit_current_a, self.limit_rate_a_s = self._numbers("LIMIT?", 2)
         self.xpgm = int(self._number("XPGM?"))
         opst = int(self._number("OPST?"))
@@ -4208,22 +4251,45 @@ class LakeShoreMagnetSupplyController(SafeVisaIdentityController):
         self.magnet_water = None if water is None else int(water)
         water = self._optional_number("INTWTR?")
         self.internal_water = None if water is None else int(water)
-        # With ramp segments on, the rate depends on the current (manual
-        # 4.9): a ramp's time-out then counts the slowest segment rate.
-        segments = self._optional_number("RSEG?")
-        self.ramp_segments = None if segments is None else int(segments)
-        rates = []
-        if self.ramp_segments == 1:
-            for segment in range(1, 6):
-                try:
-                    rates.append(self._numbers(f"RSEGS? {segment}", 2)[1])
-                except Exception as error:
-                    self.logger(f"{self.owner_scope} {self.short_label}: RSEGS? {segment} not answered "
-                                f"({short_status_error(error, 60)})")
-        self.ramp_segment_rates = tuple(rate for rate in rates if rate > 0)
+        self._check_ramp_segments(first=True)
         self.setpoint_a = setpoint
         self._update_reading(current, voltage, opst, hardware, operational)
         self._update_arm_problem(self.xpgm, hardware, operational)
+
+    def _check_ramp_segments(self, first: bool = False) -> str:
+        """Ramp segments (manual 4.9; Enabled by default) replace RATE by
+        each segment's rate, so the program's one rate and its time-outs
+        would not hold: with RSEG? 1, or RSEG? not answered, any segment
+        whose RSEGS? current is above 0 refuses to arm (review, 2026-10-21).
+        Read only: RSEG is never written.  At Connect (``first``) and before
+        each setpoint while RSEG? answers."""
+        if not first and self.ramp_segments is None:
+            return self.ramp_segment_problem      # not answered at Connect: the table read then stands
+        segments = self._optional_number("RSEG?")
+        self.ramp_segments = None if segments is None else int(segments)
+        if self.ramp_segments == 0:
+            self.ramp_segment_problem = ""
+            return ""
+        if first or not self.ramp_segment_table:
+            table = []
+            for segment in range(1, 6):
+                try:
+                    current, rate = self._numbers(f"RSEGS? {segment}", 2)
+                except Exception as error:
+                    self.logger(f"{self.owner_scope} {self.short_label}: RSEGS? {segment} not answered "
+                                f"({short_status_error(error, 60)})")
+                    continue
+                table.append((segment, current, rate))
+            self.ramp_segment_table = tuple(table)
+        active = [(segment, current, rate) for segment, current, rate in self.ramp_segment_table if current > 0]
+        if not active:
+            self.ramp_segment_problem = ""
+            return ""
+        state = "RSEG? 1" if self.ramp_segments == 1 else "RSEG? not answered"
+        listed = ", ".join(f"segment {segment} up to {current:g} A at {rate:g} A/s" for segment, current, rate in active)
+        self.ramp_segment_problem = (f"ramp segments may be on ({state}; {listed}): disable Ramp Segments on the "
+                                     "front panel (the program uses one rate)")
+        return self.ramp_segment_problem
 
     def _update_arm_problem(self, xpgm, hardware: int, operational: int) -> str:
         problems = []
@@ -4234,28 +4300,34 @@ class LakeShoreMagnetSupplyController(SafeVisaIdentityController):
         if blocking:
             problems.append(f"an error is latched (ERST? {hardware},{operational}: {', '.join(blocking)}): remove "
                             "its cause and clear it on the front panel (Status)")
+        if self.ramp_segment_problem:
+            problems.append(self.ramp_segment_problem)
         self.arm_problem = "; ".join(problems)
         return self.arm_problem
 
     def _require_armed(self) -> None:
-        """Before every setpoint but a zero: XPGM? Internal and no blocking
-        ERST? error, read now; else nothing is sent."""
+        """Before every setpoint but a zero: XPGM? Internal, no blocking
+        ERST? error and no active ramp segment, read now; else nothing is
+        sent."""
         self.xpgm = int(self._number("XPGM?"))
         hardware, operational = (int(value) for value in self._numbers("ERST?", 2))
+        self._check_ramp_segments()
         if self._update_arm_problem(self.xpgm, hardware, operational):
             raise RuntimeError(f"The {self.short_label} is not armed: {self.arm_problem}; no setpoint was sent")
 
     def _update_reading(self, current, voltage, opst, hardware, operational) -> dict[str, object]:
         setpoint = self.setpoint_a
         self.current_a, self.voltage_v = current, voltage
-        at_zero = (math.isfinite(setpoint) and abs(setpoint) <= LAKESHORE_SETPOINT_READBACK_A
-                   and abs(current) <= lakeshore_current_tolerance_a(0.0))
+        # SETI? 0 exactly (to the mA) and |RDGI?| within the tolerance.
+        at_zero = (math.isfinite(setpoint) and abs(setpoint) < LAKESHORE_SETPOINT_READBACK_A
+                   and abs(current) <= self.tolerance_a(0.0))
         self.output_on = not at_zero
-        at_setpoint = (math.isfinite(setpoint) and abs(current - setpoint) <= lakeshore_current_tolerance_a(setpoint)
-                       and bool(opst & LAKESHORE_OPST_RAMP_DONE))
+        # OPST? "reads and clears" (manual), so the shown state is the
+        # current against the setpoint; the ramp done counts in a ramp's wait.
+        at_setpoint = math.isfinite(setpoint) and abs(current - setpoint) <= self.tolerance_a(setpoint)
         self.reading = dict(
             model=self.short_label, setpoint_a=setpoint, current_a=current, voltage_v=voltage, opst=int(opst),
-            ramping=not opst & LAKESHORE_OPST_RAMP_DONE, at_setpoint=at_setpoint,
+            ramping=not at_setpoint, at_setpoint=at_setpoint,
             compliance=bool(opst & LAKESHORE_OPST_COMPLIANCE), power_limit=bool(opst & LAKESHORE_OPST_POWER_LIMIT),
             hardware_errors=int(hardware), operational_errors=int(operational),
             errors=lakeshore_error_names(hardware, operational),
@@ -4288,7 +4360,10 @@ class LakeShoreMagnetSupplyController(SafeVisaIdentityController):
                     programming_mode=LAKESHORE_XPGM_MODES.get(self.xpgm, self.xpgm),
                     magnet_water=LAKESHORE_WATER_MODES.get(self.magnet_water, self.magnet_water),
                     internal_water=LAKESHORE_WATER_MODES.get(self.internal_water, self.internal_water),
-                    ramp_segments=self.ramp_segments, ramp_segment_rates_a_s=list(self.ramp_segment_rates),
+                    instrument_rate_at_connect_a_s=self.connect_rate_a_s,
+                    ramp_segments=self.ramp_segments,
+                    ramp_segment_table=[list(entry) for entry in self.ramp_segment_table],
+                    setpoint_tolerance=lakeshore_tolerance_text(self.model),
                     arm_problem=self.arm_problem, reading=dict(self.reading))
 
     # ---- setpoints -----------------------------------------------------------------
@@ -4304,22 +4379,26 @@ class LakeShoreMagnetSupplyController(SafeVisaIdentityController):
         self.rate_a_s = present
         self.program_rate_a_s = rate
 
-    def _send_stop(self) -> None:
+    def _stop_ramp(self, target: float) -> tuple[float, str]:
+        """STOP, then RDGI? once the ramp has stopped (within 2 s, manual):
+        (where it is, nan if unread; what to say of the STOP).  A STOP that
+        could not be sent is said in the error (review, 2026-10-21): the
+        supply may then still be ramping to the setpoint."""
         try:
             self._write("STOP")
+            said = "STOP sent"
         except Exception as error:
             self.logger(f"{self.owner_scope} {self.short_label}: STOP failed: {error}")
-
-    def _read_after_stop(self) -> float:
-        """RDGI? once the ramp has stopped (within 2 s of STOP, manual)."""
+            said = (f"STOP could not be sent: {short_status_error(error, 60)}; the supply may still be ramping to "
+                    f"{target:+g} A")
+        self.output_on = True
         self.sleep(LAKESHORE_STOP_SETTLE_S)
         try:
             self.current_a = self._number("RDGI?")
         except Exception as error:
             self.logger(f"{self.owner_scope} {self.short_label}: RDGI? after STOP failed: {error}")
-            return math.nan
-        self.output_on = True
-        return self.current_a
+            return math.nan, said
+        return self.current_a, said
 
     def ramp_to(self, target_a, rate_a_s, stop_event=None, on_progress=None) -> dict[str, object]:
         """Ramp to ``target_a`` at ``rate_a_s`` and wait until it is there.
@@ -4336,12 +4415,29 @@ class LakeShoreMagnetSupplyController(SafeVisaIdentityController):
                 raise LakeShoreRampStopped(f"{self.short_label} ramp to {target:+g} A not started: Stop requested; "
                                            "nothing was sent", self.current_a)
             self._require_armed()
+            setpoint = self._number("SETI?")
             start = self._number("RDGI?")
             self.current_a = start
+            if abs(setpoint - target) < LAKESHORE_SETPOINT_READBACK_A and abs(start - target) <= self.tolerance_a(target):
+                # Already there (a repeated setpoint): nothing is sent, and no
+                # ramp-done is waited for that would never come, OPST?
+                # reading and clearing (review, 2026-10-21).
+                self.setpoint_a = setpoint
+                voltage = self._number("RDGV?")
+                opst = int(self._number("OPST?"))
+                hardware, operational = (int(value) for value in self._numbers("ERST?", 2))
+                reading = self._update_reading(start, voltage, opst, hardware, operational)
+                self.last_ramp = dict(target_a=target, start_a=start, rate_a_s=rate, seconds=0.0, current_a=start,
+                                      voltage_v=voltage, sent=False)
+                return reading
             self._set_rate(rate)
             if self._stopped(stop_event):
                 raise LakeShoreRampStopped(f"{self.short_label} ramp to {target:+g} A not started: Stop requested; "
                                            "no setpoint was sent", start)
+            # Read and discarded just before SETI: OPST? reads and clears,
+            # so a ramp done left from the last ramp cannot count for this
+            # one (review, 2026-10-21).
+            self._number("OPST?")
             # Claimed before the write, as the 4886's OUTP ON: a write that
             # fails may still have reached the supply.
             self.output_on = True
@@ -4349,38 +4445,33 @@ class LakeShoreMagnetSupplyController(SafeVisaIdentityController):
             try:
                 readback = self._number("SETI?")
             except Exception as error:
-                self._send_stop()
-                where = self._read_after_stop()
-                raise LakeShoreRampError(f"{self.short_label} SETI? after SETI {target:.3f} failed ({error}); STOP "
-                                         f"sent, output left at {where:+.3f} A", where) from error
-            if abs(readback - target) > LAKESHORE_SETPOINT_READBACK_A:
+                where, said = self._stop_ramp(target)
+                raise LakeShoreRampError(f"{self.short_label} SETI? after SETI {target:.3f} failed ({error}); "
+                                         f"{said}, output at {where:+.3f} A", where) from error
+            if abs(readback - target) >= LAKESHORE_SETPOINT_READBACK_A:
                 self.setpoint_a = readback
-                self._send_stop()
-                where = self._read_after_stop()
+                where, said = self._stop_ramp(target)
                 raise LakeShoreRampError(f"{self.short_label} SETI? read back {readback:+.3f} A after SETI "
-                                         f"{target:.3f}; STOP sent, output left at {where:+.3f} A", where)
+                                         f"{target:.3f}; {said}, output at {where:+.3f} A", where)
             self.setpoint_a = readback
             return self._wait_for(target, start, rate, stop_event, on_progress, zeroing=False)
 
     def _wait_for(self, target, start, rate, stop_event, on_progress, *, zeroing: bool) -> dict[str, object]:
-        rates = [rate, *self.ramp_segment_rates]
-        slowest = min(value for value in rates if value > 0)
-        distance = abs(target - start) if math.isfinite(start) else self.effective_max_a
-        timeout = distance / slowest * LAKESHORE_RAMP_TIME_FACTOR + LAKESHORE_RAMP_MARGIN_S
+        timeout = self.ramp_timeout_s(start, target, rate)
         began = self.clock()
-        tolerance = lakeshore_current_tolerance_a(target)
+        tolerance = self.tolerance_a(target)
         notes = []
-        # The manual says OPST? "reads and clears" its register: a ramp-done
-        # bit seen once counts until the current is at the setpoint, so a
+        # The manual says OPST? "reads and clears" its register: the stale
+        # bit was read away before SETI (ramp_to), and a ramp done seen at
+        # any poll since counts until the current is at the setpoint, so a
         # poll that read it a moment early cannot hide it (unverified on the
         # real supplies, 2026-10-21).
         ramp_done_seen = False
         while True:
             if not zeroing and self._stopped(stop_event):
-                self._send_stop()
-                where = self._read_after_stop()
-                raise LakeShoreRampStopped(f"{self.short_label} ramp to {target:+g} A stopped: STOP sent, output "
-                                           f"left at {where:+.3f} A", where)
+                where, said = self._stop_ramp(target)
+                raise LakeShoreRampStopped(f"{self.short_label} ramp to {target:+g} A stopped: {said}, output at "
+                                           f"{where:+.3f} A", where)
             current = self._number("RDGI?")
             voltage = self._number("RDGV?")
             opst = int(self._number("OPST?"))
@@ -4397,11 +4488,10 @@ class LakeShoreMagnetSupplyController(SafeVisaIdentityController):
             if reading["power_limit"]:
                 problems.append("in power limit (OPST?)")
             if problems and not zeroing:
-                self._send_stop()
-                where = self._read_after_stop()
+                where, said = self._stop_ramp(target)
                 raise LakeShoreRampError(
                     f"{self.short_label} ramp to {target:+g} A ended: {', '.join(problems)} (OPST? {opst}, ERST? "
-                    f"{hardware},{operational}); STOP sent, output left at {where:+.3f} A; no further setpoint is "
+                    f"{hardware},{operational}); {said}, output at {where:+.3f} A; no further setpoint is "
                     "sent", where)
             if problems:
                 note = ", ".join(problems)
@@ -4419,33 +4509,53 @@ class LakeShoreMagnetSupplyController(SafeVisaIdentityController):
                     raise LakeShoreZeroError(
                         f"{self.short_label} zero not confirmed: RDGI? {current:+.3f} A after {timeout:.0f} s"
                         + (f" ({'; '.join(notes)})" if notes else ""), current)
-                self._send_stop()
-                where = self._read_after_stop()
+                where, said = self._stop_ramp(target)
                 raise LakeShoreRampError(
                     f"{self.short_label} did not reach {target:+g} A within {timeout:.0f} s (RDGI? {current:+.3f} A, "
-                    f"OPST? {opst}{'' if ramp_done_seen else ', ramp done never seen'}); STOP sent, "
-                    f"output left at {where:+.3f} A", where)
+                    f"OPST? {opst}{'' if ramp_done_seen else ', ramp done never seen'}); {said}, "
+                    f"output at {where:+.3f} A", where)
             self.sleep(LAKESHORE_POLL_S)
 
-    def zero(self, rate_a_s=None) -> dict[str, object]:
-        """SETI 0 at the rate (``rate_a_s``, else the last the program set,
-        else LAKESHORE_DEFAULT_RATE_A_S, never above the effective maximum)
-        and wait until |RDGI?| is under the tolerance with SETI? 0: the
-        Lake Shore's "Zero / OFF" (it has no remote output-off; 0 A is off).
-        Allowed armed or not; never stopped by a Stop, never ended by an
-        error bit (they are noted).  Nothing is written when SETI? is
-        already 0 and the current under the tolerance.  Raises
-        LakeShoreZeroError when the zero is not confirmed."""
+    def ramp_timeout_s(self, start, target, rate) -> float:
+        """A ramp's or a zero's longest wait: |dI| / rate x
+        LAKESHORE_RAMP_TIME_FACTOR + LAKESHORE_RAMP_MARGIN_S (the full
+        effective maximum when where it starts is unknown)."""
+        distance = abs(target - start) if math.isfinite(start) else self.effective_max_a
+        return distance / rate * LAKESHORE_RAMP_TIME_FACTOR + LAKESHORE_RAMP_MARGIN_S
+
+    def zero_rate_a_s(self, rate_a_s=None, minimum_rate_a_s=None) -> float:
+        """The zero's rate (review, 2026-10-21): ``rate_a_s`` (the page's),
+        else the last the program set, else LAKESHORE_DEFAULT_RATE_A_S; never
+        faster than RATE? read at Connect nor the effective maximum, never
+        slower than ``minimum_rate_a_s`` (the program closing's) nor the
+        manual's 0.0001 A/s."""
+        try:
+            rate = float(rate_a_s if rate_a_s is not None else self.program_rate_a_s or LAKESHORE_DEFAULT_RATE_A_S)
+        except (TypeError, ValueError):
+            rate = LAKESHORE_DEFAULT_RATE_A_S
+        if not math.isfinite(rate) or rate < LAKESHORE_MIN_RATE_A_S:
+            rate = LAKESHORE_DEFAULT_RATE_A_S
+        if math.isfinite(self.connect_rate_a_s) and self.connect_rate_a_s > 0:
+            rate = min(rate, self.connect_rate_a_s)
+        rate = min(rate, self.effective_max_rate_a_s)
+        if minimum_rate_a_s is not None:
+            rate = max(rate, float(minimum_rate_a_s))
+        return max(rate, LAKESHORE_MIN_RATE_A_S)
+
+    def zero(self, rate_a_s=None, minimum_rate_a_s=None) -> dict[str, object]:
+        """SETI 0 at zero_rate_a_s(``rate_a_s``, ``minimum_rate_a_s``) and
+        wait until SETI? reads 0 exactly and |RDGI?| is within the
+        tolerance: the Lake Shore's "Zero / OFF" (it has no remote
+        output-off; 0 A is off).  Allowed armed or not; never stopped by a
+        Stop, never ended by an error bit (they are noted); the wait is
+        bounded by ramp_timeout_s and the expected time is logged.  Nothing
+        is written when SETI? is already 0 and the current within the
+        tolerance.  Raises LakeShoreZeroError when the zero is not
+        confirmed."""
         with self.lock:
             self._stop_request.clear()
             self._require()
-            try:
-                rate = float(rate_a_s if rate_a_s is not None else self.program_rate_a_s or LAKESHORE_DEFAULT_RATE_A_S)
-            except (TypeError, ValueError):
-                rate = LAKESHORE_DEFAULT_RATE_A_S
-            if not math.isfinite(rate) or rate < LAKESHORE_MIN_RATE_A_S:
-                rate = LAKESHORE_DEFAULT_RATE_A_S
-            rate = min(rate, self.effective_max_rate_a_s)
+            rate = self.zero_rate_a_s(rate_a_s, minimum_rate_a_s)
             problems = []
             start = math.nan
             try:
@@ -4453,13 +4563,18 @@ class LakeShoreMagnetSupplyController(SafeVisaIdentityController):
                 start = self.current_a = self._number("RDGI?")
             except Exception as error:
                 problems.append(f"read before the zero: {short_status_error(error, 60)}")
-            if (not problems and abs(self.setpoint_a) <= LAKESHORE_SETPOINT_READBACK_A
-                    and abs(start) <= lakeshore_current_tolerance_a(0.0)):
+            if (not problems and abs(self.setpoint_a) < LAKESHORE_SETPOINT_READBACK_A
+                    and abs(start) <= self.tolerance_a(0.0)):
                 self.output_on = False
                 self.last_zero_notes = []
-                self.reading = dict(self.reading, setpoint_a=self.setpoint_a, current_a=start, output_on=False)
+                self.reading = dict(self.reading, setpoint_a=self.setpoint_a, current_a=start, output_on=False,
+                                    at_setpoint=True, ramping=False)
                 return dict(self.reading)
             self.output_on = True
+            expected = abs(start) / rate if math.isfinite(start) else math.nan
+            self.logger(f"{self.owner_scope} {self.short_label}: ramping to 0 A at {rate:g} A/s"
+                        + (f" from {start:+.3f} A, about {expected:.0f} s" if math.isfinite(expected) else "")
+                        + f" (waited for at most {self.ramp_timeout_s(start, 0.0, rate):.0f} s)")
             try:
                 self._set_rate(rate)
             except Exception as error:
@@ -4476,7 +4591,7 @@ class LakeShoreMagnetSupplyController(SafeVisaIdentityController):
                 raise LakeShoreZeroError(
                     f"{error}" + (f"; {'; '.join(problems)}" if problems else ""),
                     getattr(error, "current_a", self.current_a)) from error
-            if abs(self.setpoint_a) > LAKESHORE_SETPOINT_READBACK_A:
+            if abs(self.setpoint_a) >= LAKESHORE_SETPOINT_READBACK_A:
                 self.output_on = True
                 raise LakeShoreZeroError(f"{self.short_label} zero not confirmed: SETI? reads "
                                          f"{self.setpoint_a:+.3f} A", self.current_a)
@@ -4506,17 +4621,19 @@ class LakeShoreMagnetSupplyController(SafeVisaIdentityController):
         if self.instrument is not None:
             self.zero()
 
-    def disconnect(self) -> None:
+    def disconnect(self, closing: bool = False) -> None:
         """Ramp to 0 first (as the 4886's disconnect zeroes its output),
         then close the session whatever the zero did; a zero that was not
-        confirmed raises after the close, and output_on stays True."""
+        confirmed raises after the close, and output_on stays True.
+        ``closing``: the program closing, which ramps never slower than
+        LAKESHORE_CLOSE_MIN_RATE_A_S, so its bounded wait lets it exit."""
         with self.lock:
             if self.instrument is None and self.resource_manager is None:
                 return
             failure = None
             if self.instrument is not None:
                 try:
-                    self.zero()
+                    self.zero(minimum_rate_a_s=LAKESHORE_CLOSE_MIN_RATE_A_S if closing else None)
                 except BaseException as error:
                     failure = error
             self._close_session()
@@ -22359,6 +22476,8 @@ class CombinedControlApp:
         # Apply output waits for those).
         self.stfmr_lockin_stop_event.clear()
         supply = self._stfmr_lockin_supply()
+        # Nor an old Zero / OFF's request (review, 2026-10-21).
+        controller.clear_stop_request()
         self.thread_log(f"STFMR LS643: ramping to {target:+g} A at {rate:g} A/s")
         self._stfmr_lockin_magnet_job(
             lambda: supply.start(target, None),
@@ -22795,7 +22914,8 @@ class CombinedControlApp:
         supplies = self._stfmr_lockin_other_lakeshore_on()
         if supplies:
             # The Lake Shores (user, 2026-10-21): SHV's LS643 is this page's
-            # supply; the FMR page's LS648 is counted too, to be safe.
+            # supply.  The FMR page's LS648 drives another magnet and is not
+            # counted (user, 2026-10-21, after review).
             raise RuntimeError(f"The {' and '.join(supplies)} output is not at zero (or not confirmed at zero): "
                                "zero it there (Zero / OFF) first: the stage must not turn with the magnet on")
         others = self._stfmr_lockin_other_4886_on()
@@ -22804,16 +22924,17 @@ class CombinedControlApp:
                                "off): zero it there (Zero / OFF) first: the stage must not turn with the magnet on")
 
     def _stfmr_lockin_other_lakeshore_on(self) -> list[str]:
-        """The magnet supplies other than this page's chosen one whose
-        output is not confirmed at zero (user, 2026-10-21), for the stage's
-        checks: this page's LS643 while the 4886 is chosen, SHV's LS643 and
-        the FMR page's LS648 (connected or left not confirmed at zero by a
-        Disconnect).  Read from __dict__, as _stfmr_lockin_other_4886_on."""
+        """The Lake Shore supplies of this magnet, other than this page's
+        chosen one, whose output is not confirmed at zero (user,
+        2026-10-21), for the stage's checks: this page's LS643 while the 4886
+        is chosen, and SHV's LS643 (connected, or left not confirmed at zero
+        by a Disconnect).  The FMR page's LS648 drives a different magnet and
+        never blocks this stage (user, 2026-10-21, after review).  Read from
+        __dict__, as _stfmr_lockin_other_4886_on."""
         own = self.stfmr_lockin_controllers.get("lakeshore") if self._stfmr_lockin_lakeshore_chosen() else None
         rte = self.__dict__.get("rte_panel")
         candidates = (("this page's LS643", None if own is not None
                        else self.stfmr_lockin_controllers.get("lakeshore")),
-                      ("FMR page's LS648", (self.__dict__.get("stfmr_controllers") or {}).get("lakeshore")),
                       ("SHV page's LS643", ((getattr(rte, "__dict__", {}).get("rte_controllers") or {}).get("lakeshore")
                                             if rte is not None else None)))
         return [name for name, supply in candidates
@@ -24311,6 +24432,10 @@ class CombinedControlApp:
             if not self._stfmr_lockin_log_event("scan_started", total_points=total_points,
                                                 expected_saved_points=estimated_saved):
                 return
+            if supply.lakeshore:
+                # An old Zero / OFF's request must not stop the sweep's first
+                # ramp (review, 2026-10-21).
+                supply.lakeshore_controller.clear_stop_request()
             self._configure_stfmr_lockin_frequency(initial=True)
 
         if not angle_plan["used"]:
@@ -24330,7 +24455,7 @@ class CombinedControlApp:
             return dict(name=supply.name, resource=str(getattr(kepco, "resource_name", "") or ""),
                         connected=bool(getattr(kepco, "connected", False)), max_current_a=STFMR_KEPCO_MAX_CURRENT_A)
         return dict(name=supply.name, rate_a_s=supply.rate_a_s, ramp_s_counted=ramp_s,
-                    setpoint_tolerance="max(0.01 A, 0.2 % of |I|)", **supply.lakeshore_controller.describe())
+                    **supply.lakeshore_controller.describe())
 
     # ---- the stage angles and Start's stage check (user, 2026-10-17) ------------
     def _stfmr_lockin_angle_plan(self) -> dict[str, object]:
@@ -26106,8 +26231,15 @@ class CombinedControlApp:
         try:
             future = self.stfmr_lockin_executor.submit(self._stfmr_lockin_zero_outputs)
         except BaseException:
-            # The worker is gone (the page is closing): here, at once.
-            self._end_stfmr_lockin_scan(self._stfmr_lockin_zero_outputs(), error=error, stopped=stopped)
+            # The worker is gone (the page is closing): here, at once.  The
+            # LS643's ramp to 0 A is never run on the Tk thread (review,
+            # 2026-10-21): its zero is reported not confirmed.
+            if self._stfmr_lockin_lakeshore_chosen():
+                results = {self._stfmr_lockin_supply_label(): LAKESHORE_ZERO_NOT_RUN,
+                           **self._stfmr_lockin_zero_outputs(magnet=False)}
+            else:
+                results = self._stfmr_lockin_zero_outputs()
+            self._end_stfmr_lockin_scan(results, error=error, stopped=stopped)
             return
 
         def zeroed(done) -> None:
@@ -27228,8 +27360,12 @@ class CombinedControlApp:
         try:
             future = self.stfmr_executor.submit(self._stfmr_fmr_zero_outputs, False)
         except BaseException:
+            # The worker is gone: the LS648's ramp to 0 A is never run on the
+            # Tk thread (review, 2026-10-21); only the RF here, the zero
+            # reported not confirmed.
             self.stfmr_fmr_ending = False
-            then(self._stfmr_fmr_zero_outputs(readout=False))
+            then({self._stfmr_supply_label(): LAKESHORE_ZERO_NOT_RUN,
+                  **self._stfmr_fmr_zero_outputs(readout=False, magnet=False)})
             return
 
         def zeroed() -> None:
@@ -27258,8 +27394,9 @@ class CombinedControlApp:
             return dict(name=supply.name, resource=str(getattr(kepco, "resource_name", "") or ""),
                         connected=bool(getattr(kepco, "connected", False)), max_current_a=STFMR_KEPCO_MAX_CURRENT_A)
         return dict(name=supply.name, rate_a_s=supply.rate_a_s, ramp_s_counted=ramp_s,
-                    setpoint_tolerance="max(0.01 A, 0.2 % of |I|)", **supply.lakeshore_controller.describe())
+                    **supply.lakeshore_controller.describe())
 
+    def _set_stfmr_scan_busy(self, busy: bool) -> None:
         # A Lake Shore job of the panel (user, 2026-10-21) locks what a
         # scan locks, except Stop.
         jobs = self._stfmr_magnet_jobs_pending()
@@ -27590,6 +27727,10 @@ class CombinedControlApp:
         self.stfmr_fmr_started = time.monotonic()
         # The supply's name for the rows and the end (user, 2026-10-21).
         self.stfmr_scan_supply_label, self.stfmr_scan_supply_name = name, supply.name
+        if supply.lakeshore:
+            # An old Zero / OFF's request must not stop the first ramp
+            # (review, 2026-10-21).
+            supply.lakeshore_controller.clear_stop_request()
         self.stfmr_fmr_running = True
         self.stfmr_fmr_stop_event.clear()
         self.stfmr_fmr_save_button.configure(state="disabled")
@@ -28054,6 +28195,8 @@ class CombinedControlApp:
         self.stfmr_frequency_feedback_iteration = 0
         self.stfmr_frequency_feedback_max_iterations = iterations
         self.stfmr_scan_supply_label, self.stfmr_scan_supply_name = name, supply.name
+        if supply.lakeshore:
+            supply.lakeshore_controller.clear_stop_request()
         self.stfmr_frequency_running = True
         self.stfmr_frequency_stop_event.clear()
         self.stfmr_frequency_save_button.configure(state="disabled")
@@ -29012,6 +29155,8 @@ class CombinedControlApp:
             messagebox.showerror("FMR LS648", str(error), parent=self.root)
             return
         supply = self._stfmr_supply()
+        # An old Zero / OFF's request must not stop this ramp (review, 2026-10-21).
+        controller.clear_stop_request()
         self.thread_log(f"FMR LS648: ramping to {target:+g} A at {rate:g} A/s")
         self._stfmr_magnet_job(lambda: supply.start(target, None),
                                lambda _reading: self.stfmr_status_var.set(f"LS648 at {target:+g} A; check the 475"),
@@ -50440,7 +50585,7 @@ class CombinedControlApp:
 
             def close_lakeshore() -> None:
                 try:
-                    lakeshore.disconnect()
+                    lakeshore.disconnect(closing=True)
                     state = "zeroed"
                 except BaseException as error:
                     state = f"zero FAILED: {error}"
@@ -50551,7 +50696,7 @@ class CombinedControlApp:
 
             def close_lakeshore() -> None:
                 try:
-                    lakeshore.disconnect()
+                    lakeshore.disconnect(closing=True)
                     state = "zeroed"
                 except BaseException as error:
                     state = f"zero FAILED: {error}"
@@ -55831,6 +55976,8 @@ class RTEPanel(PPMSPanel):
             # the ramp sends STOP and its zero runs next (user, 2026-10-21).
             self.ppms_field_scan_stop_event.clear()
             supply = self._rte_supply()
+            # An old Zero's request must not stop this ramp (review, 2026-10-21).
+            supply.lakeshore_controller.clear_stop_request()
 
             def ramp():
                 try:
@@ -56385,6 +56532,10 @@ class RTEPanel(PPMSPanel):
                     self.ppms_field_scan_status_var.set(status)
                     self._update_ppms_control_ui()
             self.rte_scan_outputs = None     # this scan's zeroing, set by its worker
+            if supply.lakeshore:
+                # An old Zero's request must not stop this scan's first ramp
+                # (review, 2026-10-21).
+                supply.lakeshore_controller.clear_stop_request()
             try:
                 # Angle: the held KEPCO current; Angle+Field and Angle+Current
                 # also the outer loop (user, 2026-10-18).
@@ -56594,7 +56745,7 @@ class RTEPanel(PPMSPanel):
                         identity=str(getattr(kepco, 'identity', '') or ''),
                         connected=bool(getattr(kepco, 'connected', False)), max_current_a=STFMR_KEPCO_MAX_CURRENT_A)
         return dict(name=supply.name, used=used, rate_a_s=rate, ramp_s_counted=ramp_s,
-                    setpoint_tolerance='max(0.01 A, 0.2 % of |I|)', **supply.lakeshore_controller.describe())
+                    **supply.lakeshore_controller.describe())
 
     def _rte_log(self, name, **details):
         """One event in the running scan's log, from either thread; never
@@ -57202,7 +57353,13 @@ class RTEPanel(PPMSPanel):
             others = [controller for key, controller in self.rte_controllers.items() if key != 'newmark']
             for controller in ([stage] if stage is not None else []) + [*others, *self.ppms_instrument_controllers.values()]:
                 try:
-                    controller.disconnect()
+                    if isinstance(controller, LakeShoreMagnetSupplyController):
+                        # Never slower than LAKESHORE_CLOSE_MIN_RATE_A_S, and a
+                        # bounded wait, so the program can exit (review,
+                        # 2026-10-21).
+                        controller.disconnect(closing=True)
+                    else:
+                        controller.disconnect()
                 except Exception as error:
                     self.thread_log(f'SHV shutdown warning: {error}')
             # The device is free for the other page once its handle is closed

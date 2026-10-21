@@ -30,7 +30,7 @@ class FakeLS64x:
     """A Lake Shore 643 / 648 as its GPIB session: query(), write(), close()."""
 
     def __init__(self, clock, model="643", *, current=0.0, setpoint=None, rate=50.0, limit=(135.1, 50.0),
-                 xpgm=0, hardware=0, operational=0, identity=None):
+                 xpgm=0, hardware=0, operational=0, identity=None, rseg=0, segments=(), opst_event=False):
         self.clock = clock
         self.model = model
         self.identity = identity or f"LSCI,MODEL{model},1234567,1.0/1.0"
@@ -42,6 +42,14 @@ class FakeLS64x:
         self.hardware = hardware
         self.operational = operational
         self.halted = False
+        # Ramp segments: RSEG? (None: not answered) and RSEGS? n's
+        # (current, rate) for n = 1..5 (missing ones read as 0, 0).
+        self.rseg = rseg
+        self.segments = list(segments)
+        # OPST? as an event register (the manual's "reads and clears"): the
+        # ramp done is reported once after the ramp ends, then cleared.
+        self.opst_event = opst_event
+        self.done_latched = False
         self.compliance = False
         self.power_limit = False
         # Called with (fake) after each step of simulated time: a test makes
@@ -58,6 +66,8 @@ class FakeLS64x:
         self.journal = None
         # SETI 0 halts the output where it is: a zero that never arrives.
         self.freeze_on_zero = False
+        # STOP's write fails (a stalled bus): the ramp goes on.
+        self.fail_stop = False
         self.closed = False
         self.t = clock.now
         self.timeout = None
@@ -74,12 +84,17 @@ class FakeLS64x:
         nxt = self.current + move
         if self.stall_at is not None and abs(nxt) > self.stall_at:
             nxt = math.copysign(self.stall_at, nxt)
+        arrived = abs(nxt - self.setpoint) < 1e-9 and abs(self.current - self.setpoint) >= 1e-9
         self.current = nxt
+        if arrived:
+            self.done_latched = True
         if self.on_advance is not None:
             self.on_advance(self)
 
     def _opst(self):
         done = abs(self.current - self.setpoint) < 1e-9 and not self.halted
+        if self.opst_event:
+            done, self.done_latched = self.done_latched, False
         return (2 if done else 0) | (1 if self.compliance else 0) | (4 if self.power_limit else 0)
 
     def _io(self, text):
@@ -102,12 +117,19 @@ class FakeLS64x:
             "RATE?": f"{self.rate:+.4f}",
             "LIMIT?": f"{self.limit[0]:+.3f},{self.limit[1]:+.4f}",
             "XPGM?": str(self.xpgm),
-            "OPST?": f"{self._opst():03d}",
             "ERST?": f"{self.hardware:03d},{self.operational:03d}",
             "MAGWTR?": "2",
             "INTWTR?": "2",
-            "RSEG?": "0",
         }
+        if self.rseg is not None:
+            replies["RSEG?"] = str(self.rseg)
+        if command.startswith("RSEGS? "):
+            index = int(command.split()[1])
+            current, rate = self.segments[index - 1] if index <= len(self.segments) else (0.0, 0.0)
+            replies[command] = f"{current:+.3f},{rate:+.4f}"
+        if command == "OPST?":
+            # Only when asked: as an event register, a read clears it.
+            replies[command] = f"{self._opst():03d}"
         if command not in replies:
             raise TimeoutError(f"VI_ERROR_TMO {command}")
         return replies[command] + "\r"
@@ -122,7 +144,10 @@ class FakeLS64x:
             # "Setting value is limited by LIMIT" (manual).
             self.setpoint = math.copysign(min(abs(target), self.limit[0]), target)
             self.halted = self.freeze_on_zero and target == 0
+            self.done_latched = False
         elif name == "STOP":
+            if self.fail_stop:
+                raise TimeoutError("VI_ERROR_TMO STOP")
             self.halted = True
         else:
             raise AssertionError(f"the program sent {command!r}")
@@ -263,7 +288,9 @@ class RampTests(unittest.TestCase):
         reading = controller.ramp_to(5.0, 1.0)
         self.assertEqual(fake.sent(), ["RATE 1.0000", "SETI 5.000"])
         index = fake.commands.index("RATE 1.0000")
-        self.assertEqual(fake.commands[index - 1:index + 4], ["RATE?", "RATE 1.0000", "RATE?", "SETI 5.000", "SETI?"])
+        # OPST? read and discarded just before SETI (it reads and clears, review 2026-10-21).
+        self.assertEqual(fake.commands[index - 1:index + 5],
+                         ["RATE?", "RATE 1.0000", "RATE?", "OPST?", "SETI 5.000", "SETI?"])
         self.assertAlmostEqual(reading["current_a"], 5.0, places=6)
         self.assertTrue(reading["at_setpoint"])
         self.assertGreaterEqual(clock.now - began, 5.0, "5 A at 1 A/s takes 5 s")
@@ -391,10 +418,123 @@ class ZeroTests(unittest.TestCase):
         release(first)
 
 
+class ReviewTests(unittest.TestCase):
+    """The review of 2026-10-21: ramp segments, OPST? that reads and clears,
+    a STOP that cannot be sent, the zero's rate and the close's bound."""
+
+    def tearDown(self):
+        app._INSTRUMENT_LEASES.clear()
+
+    def test_ramp_segments_on_or_unanswered_with_an_active_segment_refuse_to_arm(self):
+        words = "disable Ramp Segments on the front panel (the program uses one rate)"
+        for options in ({"rseg": 1, "segments": [(20.0, 0.5)]}, {"rseg": None, "segments": [(0.0, 1.0), (5.0, 2.0)]}):
+            with self.subTest(options=options):
+                controller, fake, _clock = connected_supply(**options)
+                self.assertIn(words, controller.arm_problem)
+                with self.assertRaisesRegex(RuntimeError, "not armed.*Ramp Segments"):
+                    controller.ramp_to(1.0, 1.0)
+                self.assertEqual(fake.sent(), [], "no RATE, SETI or RSEG write")
+                # A zero is still allowed (the way out).
+                fake.current = fake.setpoint = 1.0
+                controller.zero(1.0)
+                self.assertEqual(fake.sent(), ["RATE 1.0000", "SETI 0.000"])
+                release(controller)
+        for options in ({"rseg": 1, "segments": [(0.0, 3.0)]}, {"rseg": 0, "segments": [(20.0, 0.5)]}):
+            with self.subTest(options=options):
+                controller, fake, _clock = connected_supply(**options)
+                self.assertEqual(controller.arm_problem, "")
+                controller.ramp_to(1.0, 1.0)
+                release(controller)
+        # RSEG? and RSEGS? both unanswered (no such feature): armed.
+        clock = Clock()
+        fake = FakeLS64x(clock, "643", rseg=None)
+        fake.unanswered = {"RSEGS?"}
+        controller = app.LakeShoreMagnetSupplyController(Mock(), "643")
+        controller.clock, controller.sleep = clock.monotonic, clock.sleep
+        with patch.object(app, "pyvisa", object()), \
+                patch.object(app, "acquire_shared_visa_manager", return_value=Manager(fake)), \
+                patch.object(app, "release_shared_visa_manager"):
+            controller.connect("GPIB0::11::INSTR")
+        self.assertEqual(controller.arm_problem, "")
+        release(controller)
+
+    def test_ramp_segments_switched_on_after_connect_refuse_the_next_setpoint(self):
+        controller, fake, _clock = connected_supply(rseg=0, segments=[(10.0, 0.2)])
+        controller.ramp_to(1.0, 1.0)
+        fake.rseg = 1
+        with self.assertRaisesRegex(RuntimeError, "Ramp Segments"):
+            controller.ramp_to(2.0, 1.0)
+        self.assertEqual(fake.sent()[-1], "SETI 1.000")
+        release(controller)
+
+    def test_an_event_style_opst_and_a_repeated_setpoint(self):
+        controller, fake, clock = connected_supply(opst_event=True)
+        controller.ramp_to(-1.0, 1.0)
+        began = clock.now
+        controller.ramp_to(-1.0, 1.0)
+        self.assertEqual(fake.sent(), ["RATE 1.0000", "SETI -1.000"], "already there: nothing sent")
+        self.assertLess(clock.now - began, 1.0, "no wait for a ramp done that never comes")
+        # A ramp done left from before cannot count: read away before SETI.
+        fake.done_latched = True
+        controller.ramp_to(3.0, 1.0)
+        index = fake.commands.index("SETI 3.000")
+        self.assertEqual(fake.commands[index - 1], "OPST?")
+        self.assertAlmostEqual(fake.current, 3.0, places=6)
+        release(controller)
+
+    def test_a_stop_that_cannot_be_sent_is_said(self):
+        controller, fake, _clock = connected_supply()
+        fake.fail_stop = True
+        fake.on_advance = lambda f: controller.request_stop() if f.current >= 2.0 else None
+        with self.assertRaisesRegex(app.LakeShoreRampStopped,
+                                    "STOP could not be sent: .*the supply may still be ramping to \\+8 A"):
+            controller.ramp_to(8.0, 1.0)
+        # The request stays until cleared: the pages clear it before each
+        # Apply or Start (review, 2026-10-21).
+        with self.assertRaises(app.LakeShoreRampStopped):
+            controller.ramp_to(9.0, 1.0)
+        controller.clear_stop_request()
+        fake.fail_stop = False
+        fake.on_advance = lambda f: setattr(f, "hardware", 8) if f.current >= 8.5 else None
+        with self.assertRaisesRegex(app.LakeShoreRampError, "STOP sent, output at"):
+            controller.ramp_to(9.0, 1.0)
+        release(controller)
+
+    def test_the_zero_never_ramps_faster_than_rate_at_connect(self):
+        controller, fake, clock = connected_supply(rate=0.5, current=2.0)
+        began = clock.now
+        controller.zero(2.0)
+        self.assertEqual(fake.sent(), ["SETI 0.000"], "RATE? reads 0.5 already: not written")
+        self.assertGreaterEqual(clock.now - began, 4.0, "2 A at 0.5 A/s")
+        release(controller)
+
+    def test_the_closing_zero_is_never_slower_than_10_ma_per_s_and_its_wait_is_bounded(self):
+        controller, fake, clock = connected_supply(rate=0.001, current=0.2)
+        logger = controller.logger
+        with patch.object(app, "release_shared_visa_manager"):
+            controller.disconnect(closing=True)
+        self.assertEqual(fake.sent(), ["RATE 0.0100", "SETI 0.000"])
+        logged = " ".join(str(call.args[0]) for call in logger.call_args_list)
+        self.assertIn("ramping to 0 A at 0.01 A/s from +0.200 A, about 20 s (waited for at most 45 s)", logged)
+        # A zero that does not arrive: reported after the bound, then closed.
+        controller, fake, clock = connected_supply(rate=0.001, current=0.2)
+        fake.freeze_on_zero = True
+        began = clock.now
+        with patch.object(app, "release_shared_visa_manager"), \
+                self.assertRaisesRegex(RuntimeError, "zero FAILED"):
+            controller.disconnect(closing=True)
+        self.assertLess(clock.now - began, 0.2 / 0.01 * 1.5 + 15.0 + 2.0)
+        self.assertFalse(controller.connected)
+
+
 class HelperTests(unittest.TestCase):
     def test_tolerance_rate_box_and_ramp_time(self):
-        self.assertEqual(app.lakeshore_current_tolerance_a(0.0), 0.01)
-        self.assertAlmostEqual(app.lakeshore_current_tolerance_a(40.0), 0.08)
+        # max(50 mA, 0.2 %): the 648 manual's ±20 mA ±0.05 % setting and
+        # reading accuracy each (review, 2026-10-21; it was 10 mA).
+        for model in ("643", "648"):
+            self.assertEqual(app.lakeshore_current_tolerance_a(0.0, model), 0.05)
+            self.assertAlmostEqual(app.lakeshore_current_tolerance_a(40.0, model), 0.08)
+            self.assertAlmostEqual(app.lakeshore_current_tolerance_a(-100.0, model), 0.2)
         self.assertEqual(app.parse_lakeshore_rate("1"), 1.0)
         for text in ("0", "10.01", "abc", "nan", "0.00009"):
             with self.subTest(text=text), self.assertRaises(ValueError):
