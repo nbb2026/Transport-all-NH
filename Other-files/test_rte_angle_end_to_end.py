@@ -1129,7 +1129,9 @@ class OuterScanTests(RunLogBase):
         self.assertEqual([(float(r["kepco_programmed_current_a"]), float(r["stage_angle_deg"]), r["outer_field_index"])
                           for r in rows],
                          [(0., 0., "1"), (0., 10., "1"), (1., 0., "2"), (1., 10., "2"), (2., 0., "3"), (2., 10., "3")])
-        self.assertEqual(list(rows[0])[-2:], ["field_drift_g", "outer_field_index"])
+        # The magnet supply's two columns after them since 2026-10-21 (user).
+        self.assertEqual(list(rows[0])[-4:], ["field_drift_g", "outer_field_index", "magnet_supply",
+                                              "magnet_measured_current_a"])
         self.assertEqual({(r["scan_mode"], r["kepco_voltage_limit_v"]) for r in rows}, {("Angle+Field", "5.0")})
         self.assertEqual([r["point"] for r in rows], ["1", "2"] * 3)
         self.assertEqual([r["first_point_windows"] for r in rows], ["2", "1", "1", "1", "1", "1"])
@@ -1284,7 +1286,9 @@ class OuterScanTests(RunLogBase):
                            r["first_point_windows"]) for r in rows],
                          [(.5, 0., "1", "2"), (.5, 10., "1", "1"), (1., 0., "2", "2"), (1., 10., "2", "1"),
                           (1.5, 0., "3", "2"), (1.5, 10., "3", "1")])
-        self.assertEqual(list(rows[0])[-2:], ["field_drift_g", "outer_current_index"])
+        # The magnet supply's two columns after them since 2026-10-21 (user).
+        self.assertEqual(list(rows[0])[-4:], ["field_drift_g", "outer_current_index", "magnet_supply",
+                                              "magnet_measured_current_a"])
         self.assertEqual({r["kepco_programmed_current_a"] for r in rows}, {"1.5"})
         self.assertEqual(panel.ppms_field_scan_status_var.get(), "Completed; KEPCO and 6221 zeroed; stage at +10.000°")
         events = self.events(h)
@@ -1335,7 +1339,7 @@ class OuterScanTests(RunLogBase):
         h.log.clear()
         self.start(h)
         rows = self.rows(h)
-        self.assertEqual(list(rows[0])[-1], "field_drift_g")
+        self.assertEqual(list(rows[0])[-3:], ["field_drift_g", "magnet_supply", "magnet_measured_current_a"])
         self.assertEqual({r["scan_mode"] for r in rows}, {"Angle"})
         self.assertEqual([e[1] for e in h.log if e[0] == "kepco"], ["set_output", "force_off"])
         drawn = next(c for c in reversed(h.draw.call_args_list) if c.args[1])

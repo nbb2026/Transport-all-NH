@@ -1,5 +1,37 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Lake Shore 643 / 648 magnet supplies on SHV, ST-FMR and FMR (2026-10-21)
+
+- User: "Add LS643 connection & control for SHV and STFMR. Add LS648 connection & control for FMR. LS means
+  lakeshore." Each page chooses its magnet supply in the KEPCO row's label: **KEPCO 4886** (the default, so nothing
+  changes until a Lake Shore is chosen) or **Lake Shore 643** (SHV), **LS643** (ST-FMR), **LS648** (FMR). The row then
+  shows the chosen supply's address (LS648 `GPIB0::10::INSTR`, LS643 `GPIB0::11::INSTR`), Connect, Disconnect, lamp
+  and state in the same place. The choice is locked while a scan runs and while the supply being left is not
+  confirmed at zero.
+- `LakeShoreMagnetSupplyController`: LF terminators, at least 50 ms after every command and reply (manual 5.3.5),
+  one leased session per page. Connect sends `*IDN?` (must be `LSCI,MODEL643` / `LSCI,MODEL648`) and only queries:
+  `SETI? RDGI? RDGV? RATE? LIMIT? XPGM? OPST? ERST?`, and `MAGWTR? INTWTR? RSEG?` (shown and logged, optional). No
+  setpoint is sent unless armed (XPGM Internal, no blocking `ERST?` bit, read again before each one). A setpoint is
+  `RATE` (read back), `SETI` (read back), then a wait until `RDGI?` is within max(10 mA, 0.2 %) and `OPST?` says
+  ramp done; a Stop, an `ERST?` error, compliance, power limit or a time-out (|dI| / rate x 1.5 + 15 s) sends
+  `STOP` and leaves the output there. Zero is `SETI 0` at the rate, waited for until |RDGI?| <= 10 mA with `SETI?`
+  0; it is never stopped (the supply has no remote output-off: 0 A is "off"). No LIMIT, IEEE, XPGM, water, lock,
+  mode or ERCL write.
+- Limits: |I| <= 40 A (643) / 100 A (648), lowered by `LIMIT?`; the **Rate A/s** box (1 A/s at start-up, 0.0001 to
+  10 A/s, lowered by `LIMIT?`) takes the voltage limit's place while a Lake Shore is chosen. **The rate is to be
+  confirmed with the user.**
+- Scans step the chosen supply through `MagnetSupply`: the KEPCO gets its old calls; the Lake Shore ramps on the
+  page's worker and the LS475 settle starts at the setpoint. Every end (completed, stopped, failed, the program
+  closing) ramps it to 0 A and says "zero FAILED: check it" otherwise; Disconnect ramps it to 0 A first. The
+  ST-FMR stage refuses to turn unless its chosen supply is connected and at zero and no other page's supply (4886,
+  SHV's LS643 or FMR's LS648) is on. The Yes/No estimates count the ramps. CSVs keep their columns and add
+  `magnet_supply` and `magnet_measured_current_a` (the Lake Shore's `RDGI?`) last; `run_prepared` has
+  `magnet_supply` (identity, limits, rate).
+- Unverified on the real 643 / 648: the terminators (the 648 manual's default is CR LF; LF was used by
+  check_648.py), the `OPST?` ramp-done bit staying set at the setpoint, and the optional queries on the 643. Window-
+  free tests: `test_lakeshore_magnet_supply` (FakeLS64x on a virtual clock) and `test_lakeshore_pages`. Not checked
+  on CI (the Actions minutes are used up until 2026-11-01).
+
 ## Super re-focuses by itself; the CLim boxes follow Auto (2026-10-20)
 
 - User: "when the program found edge with white and dark in the fig. it should find focus to let the white & black

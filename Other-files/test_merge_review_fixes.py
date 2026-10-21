@@ -178,7 +178,9 @@ class FMRCloseReadoutTests(unittest.TestCase):
 
     def test_safe_close_passes_readout_false(self):
         source = inspect.getsource(App.safe_close_stfmr)
-        self.assertIn("self._stfmr_fmr_zero_outputs(readout=False)", source)
+        # magnet=: the LS648's zero then runs on a thread of its own
+        # (2026-10-21); the readout is never set either way.
+        self.assertIn("self._stfmr_fmr_zero_outputs(readout=False, magnet=not deferred)", source)
 
 
 # ---- SF3 and SF6: the SMB100A carrier read-back and the first read-backs -----------------------

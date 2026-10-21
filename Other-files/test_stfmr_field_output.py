@@ -169,12 +169,19 @@ class FieldOutputTests(unittest.TestCase):
                                          (disconnect, self.a.stfmr_lockin_disconnect_buttons["kepco"])):
                         self.assertEqual((mine.winfo_rootx(), mine.winfo_width()),
                                          (theirs.winfo_rootx(), theirs.winfo_width()))
+                    # The labels as the LS475 row's: the KEPCO row's label is
+                    # the magnet-supply choice since 2026-10-21 (user), a
+                    # Combobox whose column every row shares.
                     labels = {}
-                    for frame, key in ((entry.master, "motor"), (kepco.master, "kepco")):
+                    gauss = self.a.stfmr_lockin_resource_widgets["gauss"]
+                    for frame, key in ((entry.master, "motor"), (gauss.master, "gauss")):
                         labels[key] = [w for w in frame.winfo_children() if w.winfo_class() == "TLabel"]
                     self.assertEqual([str(w.cget("text")) for w in labels["motor"]][0], "Motor:")
                     self.assertEqual([(w.winfo_rootx(), w.winfo_width()) for w in labels["motor"]],
-                                     [(w.winfo_rootx(), w.winfo_width()) for w in labels["kepco"]])
+                                     [(w.winfo_rootx(), w.winfo_width()) for w in labels["gauss"]])
+                    choice = self.a.stfmr_lockin_magnet_choice_combo
+                    self.assertIs(choice.master, kepco.master)
+                    self.assertLessEqual(choice.winfo_rootx() + choice.winfo_width(), kepco.winfo_rootx())
                     self.assertTrue(entry.winfo_ismapped() and connect.winfo_ismapped())
             self.assertEqual(self.a.stfmr_lockin_motor_resource_var.get(), "auto")
             self.assertEqual(int(entry.cget("width")), 18)

@@ -338,11 +338,12 @@ class ModulationSweepTests(SweepTests):
             header = handle.readline().strip().split(",")
         self.assertEqual(header, list(app.STFMRScanRecorder.FIELDNAMES))
         # 35 since the stage's angle, last (user, 2026-10-17).
-        self.assertEqual(len(header), 35)
+        self.assertEqual(len(header), 37)     # magnet_supply and magnet_measured_current_a since 2026-10-21
         self.assertEqual(header.index("modulation_frequency_hz"), 16)
         self.assertEqual(header.index("sr830_time_constant_s"), 29)
-        self.assertEqual(header[-5:], ["settle_s", "effective_settle_s", "acquire_s", "sample_count",
-                                       "stage_angle_deg"])
+        self.assertEqual(header[-7:-2], ["settle_s", "effective_settle_s", "acquire_s", "sample_count",
+                                         "stage_angle_deg"])
+        self.assertEqual(header[-2:], ["magnet_supply", "magnet_measured_current_a"])
 
     def test_the_confirmation_lists_them_and_the_estimate_counts_them(self):
         h, recorder = self.sweep()

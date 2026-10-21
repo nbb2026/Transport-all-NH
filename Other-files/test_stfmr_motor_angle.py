@@ -311,9 +311,10 @@ class AngleSweepTests(MotorBase):
         # stage_angle_deg is the CSV's last column (older columns keep their
         # places) and holds the angle read back after the move.
         header = run.recorder.csv_path.read_text(encoding="utf-8-sig").splitlines()[0].split(",")
-        self.assertEqual(header[-1], "stage_angle_deg")
-        self.assertEqual(app.STFMRScanRecorder.FIELDNAMES[-1], "stage_angle_deg")
-        self.assertEqual(list(run.h.stfmr_lockin_rows[0])[-1], "stage_angle_deg")
+        # The magnet supply's two columns after it since 2026-10-21 (user).
+        self.assertEqual(header[-3:], ["stage_angle_deg", "magnet_supply", "magnet_measured_current_a"])
+        self.assertEqual(app.STFMRScanRecorder.FIELDNAMES[-3], "stage_angle_deg")
+        self.assertEqual(list(run.h.stfmr_lockin_rows[0])[-3], "stage_angle_deg")
         history = events(run.recorder)
         settings = history[0]["settings"]
         self.assertEqual((settings["angles_deg"], settings["angle_start_deg"], settings["angle_stop_deg"],
@@ -1442,7 +1443,10 @@ class PageWidgetTests(unittest.TestCase):
         kepco = a.stfmr_lockin_resource_widgets["kepco"].master
         self.assertIs(frame.master, kepco.master, "in the STFMR instrument connections box")
         row = page.in_row(frame, 0)
-        kepco_row = page.in_row(kepco, 0)
+        # Laid out as the LS475 row: the KEPCO row's label is the magnet
+        # supply choice since 2026-10-21 (user), a Combobox.
+        self.assertEqual(page.in_row(kepco, 0)[0].kind, "Combobox")
+        kepco_row = page.in_row(a.stfmr_lockin_resource_widgets["gauss"].master, 0)
         # The lamp (column 4) is the page's own stand-in, not a recorded widget.
         self.assertEqual([w.grid_options["column"] for w in row], [0, 1, 2, 3, 5])
         self.assertEqual([w.kind for w in row], [w.kind for w in kepco_row])
@@ -1456,6 +1460,7 @@ class PageWidgetTests(unittest.TestCase):
                          ("Connect", "Disconnect", "disabled"))
         self.assertIs(row[4].options["textvariable"], a.stfmr_lockin_motor_status_var)
         self.assertEqual(frame.column_options, kepco.column_options)
+        self.assertEqual(frame.column_options, a.stfmr_lockin_resource_widgets["gauss"].master.column_options)
         # The angle row, right below the Mod. row: three pairs.
         table = a.stfmr_lockin_meter_combo.master
         cells = page.in_row(table, 4)

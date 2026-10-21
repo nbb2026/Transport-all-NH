@@ -476,7 +476,9 @@ class PowerSweepTests(PowerSweepCase):
         with recorder.csv_path.open(encoding="utf-8-sig") as handle:
             header = handle.readline().strip().split(",")
         self.assertEqual(header, list(app.STFMRScanRecorder.FIELDNAMES))
-        self.assertEqual(len(header), 35)      # stage_angle_deg last since 2026-10-17 (user)
+        # stage_angle_deg since 2026-10-17, then magnet_supply and
+        # magnet_measured_current_a last since 2026-10-21 (user).
+        self.assertEqual(len(header), 37)
         self.assertEqual(header.index("microwave_power_dbm"), 15)
 
     def test_the_confirmation_lists_the_powers_and_the_estimate_counts_them(self):

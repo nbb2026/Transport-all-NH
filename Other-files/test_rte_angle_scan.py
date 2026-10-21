@@ -1146,7 +1146,11 @@ class AngleScanWorkerTests(StageBase):
         self.assertEqual([r["measured_field_g"] for r in rows], [30., 31., -5., 40., 40.])
         self.assertEqual([r["field_drift_g"] for r in rows], [32., 1., -36., 45., 0.])
         keys = list(rows[0])
-        self.assertEqual(keys[-2:], ["field_before_g", "field_drift_g"], "after every older column")
+        self.assertEqual(keys[-4:-2], ["field_before_g", "field_drift_g"], "after every older column")
+        # The magnet supply and its measured current, last since 2026-10-21
+        # (user: the Lake Shore choice); the KEPCO's current is not read back.
+        self.assertEqual(keys[-2:], ["magnet_supply", "magnet_measured_current_a"])
+        self.assertEqual({(r["magnet_supply"], r["magnet_measured_current_a"]) for r in rows}, {("KEPCO 4886", "")})
         panel.rte_controllers["kepco"].safe_output_off.assert_not_called()
         self.assert_zeroed_at_the_end(panel)
         self.assertEqual(h.sim.moves, ["X50000", "X100000", "X50000", "X0"])

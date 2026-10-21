@@ -2705,6 +2705,68 @@ STFMR_LOCKIN_DEFAULT_RESOURCES = {
 }
 STFMR_KEPCO_MAX_CURRENT_A = 10.0
 STFMR_KEPCO_MAX_VOLTAGE_V = 20.0
+# The magnet-supply choice of the ST-FMR and FMR pages' KEPCO row, its label
+# (user, 2026-10-21): the 4886, or the page's Lake Shore.
+STFMR_LOCKIN_MAGNET_CHOICES = ("KEPCO4886", "LS643")
+STFMR_FMR_MAGNET_CHOICES = ("KEPCO4886", "LS648")
+# The Lake Shore 643 and 648 electromagnet power supplies (user, 2026-10-21:
+# "Add LS643 connection & control for SHV and STFMR. Add LS648 connection &
+# control for FMR").  Each page chooses its magnet supply; the KEPCO 4886 is
+# the default, so nothing changes until a Lake Shore is chosen.  Lake Shore's
+# own Python driver treats the two as one class with the same commands; only
+# commands of the 648 manual's section 5.4 are sent, and none that changes a
+# persistent setting (no LIMIT, IEEE, XPGM, MAGWTR, INTWTR, LOCK, MODE, ERCL).
+# max_current_a is the program's own limit on |I| (user, 2026-10-21); the
+# instrument's LIMIT? may lower it, never raise it.
+LAKESHORE_MAGNET_MODELS = {
+    "643": {"label": "Lake Shore 643", "short": "LS643", "model": "MODEL643", "max_current_a": 40.0,
+            "resource": "GPIB0::11::INSTR"},
+    "648": {"label": "Lake Shore 648", "short": "LS648", "model": "MODEL648", "max_current_a": 100.0,
+            "resource": "GPIB0::10::INSTR"},
+}
+# The choice on each page: SHV and ST-FMR have the 643, FMR the 648.
+MAGNET_SUPPLY_KEPCO = "KEPCO 4886"
+# The ramp rate: the user gave none, so a Rate A/s box with 1 A/s at start-up,
+# refused above 10 A/s and below the 0.0001 A/s the manual allows (2026-10-21,
+# to be confirmed with the user).  The 648's own default is 50 A/s, so RATE is
+# always set and read back before a setpoint.
+LAKESHORE_DEFAULT_RATE_A_S = 1.0
+LAKESHORE_MAX_RATE_A_S = 10.0
+LAKESHORE_MIN_RATE_A_S = 0.0001
+# Manual 5.3.5: no communication for 50 ms after a command or after a reply,
+# and at most 20 per second (50 ms apart keeps both).
+LAKESHORE_IO_GAP_S = 0.05
+# A ramp's wait reads RDGI?, RDGV?, OPST? and ERST? every LAKESHORE_POLL_S
+# (with the 50 ms gaps, about every 0.45 s), and gives up after |dI| / rate x
+# LAKESHORE_RAMP_TIME_FACTOR + LAKESHORE_RAMP_MARGIN_S.
+LAKESHORE_POLL_S = 0.25
+LAKESHORE_RAMP_TIME_FACTOR = 1.5
+LAKESHORE_RAMP_MARGIN_S = 15.0
+# What a setpoint costs beyond its ramp, for the time estimates: the arm
+# check, RDGI?, RATE?, SETI and SETI? (6 x 50 ms), then at least one poll.
+LAKESHORE_SETPOINT_OVERHEAD_S = 0.5
+# STOP "will stop the output current ramp within 2 s" (manual, STOP).
+LAKESHORE_STOP_SETTLE_S = 2.0
+# SETI? answers in mA (+nnn.nnn), RATE? in 0.1 mA/s (+n.nnnn).
+LAKESHORE_SETPOINT_READBACK_A = 0.0015
+LAKESHORE_RATE_READBACK_A_S = 0.00015
+# OPST? bits (manual 5.2.5.2): compliance, ramp done, power limit.
+LAKESHORE_OPST_COMPLIANCE = 1
+LAKESHORE_OPST_RAMP_DONE = 2
+LAKESHORE_OPST_POWER_LIMIT = 4
+# ERST? is "<hardware errors>,<operational errors>" (manual 5.2.6).
+LAKESHORE_HARDWARE_ERRORS = {5: "output stage protect", 4: "temperature fault", 3: "output over voltage",
+                             2: "output over current", 1: "DAC processor not responding",
+                             0: "output control failure"}
+LAKESHORE_OPERATIONAL_ERRORS = {7: "remote enable fault", 6: "power supply flow switch fault",
+                                5: "magnet flow switch fault", 4: "high line voltage", 3: "low line voltage",
+                                2: "temperature high", 1: "external current program error",
+                                0: "calibration error"}
+# High and low line voltage: "Operation can continue" (manual), so they are
+# reported, never a refusal; every other error bit refuses a setpoint.
+LAKESHORE_WARNING_OPERATIONAL_BITS = (4, 3)
+LAKESHORE_XPGM_MODES = {0: "Internal", 1: "External", 2: "Sum"}
+LAKESHORE_WATER_MODES = {0: "Manual Off", 1: "Manual On", 2: "Auto", 3: "Disabled"}
 # Corrections allowed to the fixed-field frequency sweep's field feedback.
 # Each step stays capped at MAGNET_FIELD_ZERO_MAX_STEP_A, but the 12 of the
 # MOKE Gauss zeroing (small currents) stopped this ramp from 0 A at about
@@ -3846,6 +3908,724 @@ class STFMRKepco4886Controller:
             self.logger("STFMR KEPCO VISA session closed")
             if shutdown_error is not None:
                 raise shutdown_error
+
+
+class LakeShoreRampStopped(RuntimeError):
+    """A Lake Shore ramp ended by a Stop: STOP was sent (unless nothing had
+    been) and the output left where it stopped, ``current_a`` (RDGI? read
+    after it, or nan)."""
+
+    def __init__(self, message: str, current_a: float = math.nan) -> None:
+        super().__init__(message)
+        self.current_a = current_a
+
+
+class LakeShoreRampError(RuntimeError):
+    """A Lake Shore ramp that failed: an error bit, compliance, a time-out,
+    a read-back that does not match.  STOP was sent once a setpoint had
+    been, and the output is left at its last reading, ``current_a``; no
+    further setpoint is sent except by the zero rules of the pages."""
+
+    def __init__(self, message: str, current_a: float = math.nan) -> None:
+        super().__init__(message)
+        self.current_a = current_a
+
+
+class LakeShoreZeroError(LakeShoreRampError):
+    """A Lake Shore zero (SETI 0) that was not confirmed: |RDGI?| did not
+    come under the tolerance, or SETI? did not read back 0."""
+
+
+def lakeshore_current_tolerance_a(current_a) -> float:
+    """How close RDGI? must come to a setpoint to count as there: 10 mA or
+    0.2 % of |I|, whichever is larger (2026-10-21)."""
+    return max(0.01, 0.002 * abs(float(current_a)))
+
+
+def lakeshore_ramp_seconds(currents, rate_a_s) -> float:
+    """The ramping time of the setpoints ``currents`` (A), in order, at
+    ``rate_a_s``: sum |dI| / rate.  The Yes/No time estimates add it."""
+    values = [float(value) for value in currents]
+    rate = float(rate_a_s)
+    if not math.isfinite(rate) or rate <= 0 or len(values) < 2:
+        return 0.0
+    return sum(abs(b - a) for a, b in zip(values, values[1:])) / rate
+
+
+def lakeshore_scan_ramp_seconds(currents, rate_a_s) -> float:
+    """A scan's Lake Shore time: lakeshore_ramp_seconds and, for every
+    setpoint after the first value, LAKESHORE_SETPOINT_OVERHEAD_S of
+    read-backs (the 50 ms between commands)."""
+    values = list(currents)
+    return lakeshore_ramp_seconds(values, rate_a_s) + max(len(values) - 1, 0) * LAKESHORE_SETPOINT_OVERHEAD_S
+
+
+def parse_lakeshore_rate(text) -> float:
+    """The Rate A/s box: from LAKESHORE_MIN_RATE_A_S to
+    LAKESHORE_MAX_RATE_A_S (the user gave no rate, 2026-10-21)."""
+    try:
+        rate = float(str(text).strip())
+    except (TypeError, ValueError):
+        rate = math.nan
+    if not math.isfinite(rate) or not LAKESHORE_MIN_RATE_A_S <= rate <= LAKESHORE_MAX_RATE_A_S:
+        raise ValueError(f"Rate A/s must be from {LAKESHORE_MIN_RATE_A_S:g} to {LAKESHORE_MAX_RATE_A_S:g} A/s")
+    return rate
+
+
+def lakeshore_error_names(hardware: int, operational: int) -> list[str]:
+    """ERST?'s two bytes as names, hardware errors first."""
+    names = [name for bit, name in LAKESHORE_HARDWARE_ERRORS.items() if int(hardware) >> bit & 1]
+    names += [name for bit, name in LAKESHORE_OPERATIONAL_ERRORS.items() if int(operational) >> bit & 1]
+    return names
+
+
+def lakeshore_blocking_errors(hardware: int, operational: int) -> list[str]:
+    """The ERST? errors that refuse a setpoint and end a ramp: every
+    hardware error, every operational one but high and low line voltage."""
+    names = [name for bit, name in LAKESHORE_HARDWARE_ERRORS.items() if int(hardware) >> bit & 1]
+    names += [name for bit, name in LAKESHORE_OPERATIONAL_ERRORS.items()
+              if int(operational) >> bit & 1 and bit not in LAKESHORE_WARNING_OPERATIONAL_BITS]
+    return names
+
+
+def lakeshore_live_text(reading) -> str:
+    """The supply's live line, at most 32 characters, the width of the SHV
+    rack's box: "+1.000 A (set +1.000) 0.52 V"."""
+    if not reading:
+        return "-- A"
+    current, setpoint = float(reading.get("current_a", math.nan)), float(reading.get("setpoint_a", math.nan))
+    voltage = float(reading.get("voltage_v", math.nan))
+    largest = max((abs(value) for value in (current, setpoint) if math.isfinite(value)), default=0.0)
+    digits = 3 if largest < 9.9995 else 2 if largest < 99.995 else 1
+    def number(value, form):
+        return f"{value:{form}}" if math.isfinite(value) else "--"
+    return (f"{number(current, f'+.{digits}f')} A (set {number(setpoint, f'+.{digits}f')}) "
+            f"{number(voltage, '.2f')} V")
+
+
+def lakeshore_state_word(reading, arm_problem: str = "") -> str:
+    """The connection row's status, within its 13 characters."""
+    if not reading:
+        return "Connected"
+    if reading.get("errors_blocking"):
+        return "ERROR"
+    if reading.get("compliance") or reading.get("power_limit"):
+        return "Compliance" if reading.get("compliance") else "Power limit"
+    if arm_problem:
+        return "NOT ARMED"
+    if reading.get("output_on") is False:
+        return "At 0 A"
+    if reading.get("at_setpoint"):
+        return "At setpoint"
+    return "Ramping" if reading.get("ramping") else "Connected"
+
+
+class LakeShoreMagnetSupplyController(SafeVisaIdentityController):
+    """A Lake Shore 643 or 648 electromagnet power supply on GPIB (user,
+    2026-10-21), on the page's worker only.
+
+    The manual's I/O rules: LF terminators both ways (as the user's
+    check_648.py), at least 50 ms after every command and every reply before
+    the next (so at most 20 per second), on one session leased to one page.
+    Connect sends *IDN? and queries only: no setpoint, no setting.  A
+    setpoint is RATE (read back), then SETI (read back), then a wait until
+    RDGI? is within tolerance and OPST? says the ramp is done; a Stop, an
+    ERST? error, compliance or the power limit, or a time-out sends STOP and
+    leaves the output where it is.  The supply has no remote output-off, so
+    0 A is "off": zero() is SETI 0 at the rate, waiting until |RDGI?| is
+    under the tolerance, never stopped and never ended by an error bit
+    (the zero is the way out of one).  No persistent setting is written."""
+
+    def __init__(self, logger: Callable[[str], None], model: str, owner_scope: str = "STFMR") -> None:
+        info = LAKESHORE_MAGNET_MODELS[str(model)]
+        super().__init__(logger, info["label"], info["model"], owner_scope=owner_scope,
+                         safe_off_on_connect=False)
+        self.model = str(model)
+        self.short_label = info["short"]
+        self.model_token = info["model"]
+        self.program_max_a = float(info["max_current_a"])
+        # Replaced by the offline tests' simulated clock.
+        self.clock = time.monotonic
+        self.sleep = time.sleep
+        self._next_io_at = 0.0
+        # Set by request_stop() from any thread (no I/O); a ramp's wait sees it.
+        self._stop_request = threading.Event()
+        self.reading: dict[str, object] = {}
+        self.limit_current_a = math.nan
+        self.limit_rate_a_s = math.nan
+        self.rate_a_s = math.nan
+        self.program_rate_a_s: float | None = None
+        self.setpoint_a = math.nan
+        self.current_a = math.nan
+        self.voltage_v = math.nan
+        # True until a reading shows SETI? 0 and |RDGI?| under the tolerance,
+        # and kept across a disconnect whose zero was not confirmed, as the
+        # 4886's output_owned is: the stage interlocks read it.
+        self.output_on = False
+        self.arm_problem = ""
+        self.xpgm = None
+        self.magnet_water = None
+        self.internal_water = None
+        self.ramp_segments = None
+        self.ramp_segment_rates: tuple[float, ...] = ()
+        self.last_ramp: dict[str, object] = {}
+        self.last_zero_notes: list[str] = []
+
+    # ---- limits -------------------------------------------------------------
+    @property
+    def effective_max_a(self) -> float:
+        """min(the program's limit, the instrument's LIMIT? current)."""
+        limit = self.limit_current_a
+        return min(self.program_max_a, limit) if math.isfinite(limit) else self.program_max_a
+
+    @property
+    def effective_max_rate_a_s(self) -> float:
+        """min(LAKESHORE_MAX_RATE_A_S, the instrument's LIMIT? rate)."""
+        limit = self.limit_rate_a_s
+        return min(LAKESHORE_MAX_RATE_A_S, limit) if math.isfinite(limit) else LAKESHORE_MAX_RATE_A_S
+
+    def check_current(self, current_a) -> float:
+        """A setpoint within the program's limit and LIMIT?, else ValueError
+        before anything is sent."""
+        value = float(current_a)
+        if not math.isfinite(value):
+            raise ValueError(f"The {self.short_label} current must be a finite number")
+        if abs(value) > self.program_max_a + 1e-9:
+            raise ValueError(f"The {self.short_label} current must be within ±{self.program_max_a:g} A (the "
+                             f"program's limit); {value:+g} A was refused and nothing was sent")
+        limit = self.limit_current_a
+        if math.isfinite(limit) and abs(value) > limit + 1e-9:
+            raise ValueError(f"{value:+g} A is above the {self.short_label}'s LIMIT? maximum current of {limit:g} A "
+                             "(its front-panel limit); nothing was sent")
+        return value
+
+    def check_rate(self, rate_a_s) -> float:
+        """A ramp rate within the Rate box's range and LIMIT?'s rate."""
+        value = parse_lakeshore_rate(rate_a_s)
+        limit = self.limit_rate_a_s
+        if math.isfinite(limit) and value > limit + 1e-9:
+            raise ValueError(f"{value:g} A/s is above the {self.short_label}'s LIMIT? maximum rate of {limit:g} A/s "
+                             "(its front-panel limit); nothing was sent")
+        return value
+
+    # ---- I/O ------------------------------------------------------------------
+    def _require(self) -> None:
+        if self.instrument is None:
+            raise RuntimeError(f"The {self.label} is not connected")
+
+    def _pace(self) -> None:
+        wait = self._next_io_at - self.clock()
+        if wait > 0:
+            self.sleep(wait)
+
+    def _query(self, command: str) -> str:
+        self._require()
+        self._pace()
+        try:
+            return str(self.instrument.query(command)).strip()
+        finally:
+            self._next_io_at = self.clock() + LAKESHORE_IO_GAP_S
+
+    def _write(self, command: str) -> None:
+        self._require()
+        self._pace()
+        try:
+            self.instrument.write(command)
+        finally:
+            self._next_io_at = self.clock() + LAKESHORE_IO_GAP_S
+
+    def _numbers(self, command: str, count: int) -> list[float]:
+        reply = self._query(command)
+        try:
+            values = [float(part) for part in reply.split(",") if part.strip()]
+        except ValueError:
+            values = []
+        if len(values) != count or not all(math.isfinite(value) for value in values):
+            raise RuntimeError(f"{self.short_label} {command} answered {reply!r}, not {count} number(s)")
+        return values
+
+    def _number(self, command: str) -> float:
+        return self._numbers(command, 1)[0]
+
+    def _optional_number(self, command: str):
+        """A query the manual documents but the program does not need (the
+        water modes, ramp segments): None, logged, if it is not answered."""
+        try:
+            return self._number(command)
+        except Exception as error:
+            self.logger(f"{self.owner_scope} {self.short_label}: {command} not answered ({short_status_error(error, 60)})")
+            return None
+
+    def _stopped(self, stop_event) -> bool:
+        return self._stop_request.is_set() or (stop_event is not None and stop_event.is_set())
+
+    def request_stop(self) -> None:
+        """From any thread, no I/O: a ramp in progress sends STOP at its next
+        poll and ends stopped.  zero() clears it."""
+        self._stop_request.set()
+
+    # ---- connection -------------------------------------------------------------
+    def connect(self, resource_name: str) -> str:
+        with self.lock:
+            if self.instrument is not None:
+                return self.identity
+            identity = super().connect(resource_name)
+            self._next_io_at = self.clock() + LAKESHORE_IO_GAP_S
+            try:
+                fields = [part.strip().upper() for part in identity.split(",")]
+                if len(fields) < 2 or fields[0] != "LSCI" or fields[1] != self.model_token:
+                    raise RuntimeError(f"{resource_name} answered *IDN? with {identity!r}, not the {self.label} "
+                                       f"(LSCI,{self.model_token}); nothing else was sent")
+                self._stop_request.clear()
+                self._read_connect_state()
+            except BaseException:
+                self._close_session()
+                raise
+            reading = self.reading
+            self.logger(
+                f"{self.owner_scope} {self.short_label}: SETI? {reading['setpoint_a']:+.3f} A, RDGI? "
+                f"{reading['current_a']:+.4f} A, RDGV? {reading['voltage_v']:+.4f} V, RATE? {self.rate_a_s:g} A/s, "
+                f"LIMIT? {self.limit_current_a:g} A / {self.limit_rate_a_s:g} A/s, XPGM? "
+                f"{LAKESHORE_XPGM_MODES.get(self.xpgm, self.xpgm)}, OPST? {reading['opst']}, ERST? "
+                f"{reading['hardware_errors']},{reading['operational_errors']}; usable up to "
+                f"±{self.effective_max_a:g} A at {LAKESHORE_MIN_RATE_A_S:g} to {self.effective_max_rate_a_s:g} A/s"
+                + (f"; NOT ARMED: {self.arm_problem}" if self.arm_problem else "")
+                + ("" if not reading["output_on"] else "; the output is NOT at zero"))
+            return identity
+
+    def _read_connect_state(self) -> None:
+        setpoint = self._number("SETI?")
+        current = self._number("RDGI?")
+        voltage = self._number("RDGV?")
+        self.rate_a_s = self._number("RATE?")
+        self.limit_current_a, self.limit_rate_a_s = self._numbers("LIMIT?", 2)
+        self.xpgm = int(self._number("XPGM?"))
+        opst = int(self._number("OPST?"))
+        hardware, operational = (int(value) for value in self._numbers("ERST?", 2))
+        # Read only, and only to show and log them (the manual documents the
+        # queries); a supply that does not answer them is still usable.
+        water = self._optional_number("MAGWTR?")
+        self.magnet_water = None if water is None else int(water)
+        water = self._optional_number("INTWTR?")
+        self.internal_water = None if water is None else int(water)
+        # With ramp segments on, the rate depends on the current (manual
+        # 4.9): a ramp's time-out then counts the slowest segment rate.
+        segments = self._optional_number("RSEG?")
+        self.ramp_segments = None if segments is None else int(segments)
+        rates = []
+        if self.ramp_segments == 1:
+            for segment in range(1, 6):
+                try:
+                    rates.append(self._numbers(f"RSEGS? {segment}", 2)[1])
+                except Exception as error:
+                    self.logger(f"{self.owner_scope} {self.short_label}: RSEGS? {segment} not answered "
+                                f"({short_status_error(error, 60)})")
+        self.ramp_segment_rates = tuple(rate for rate in rates if rate > 0)
+        self.setpoint_a = setpoint
+        self._update_reading(current, voltage, opst, hardware, operational)
+        self._update_arm_problem(self.xpgm, hardware, operational)
+
+    def _update_arm_problem(self, xpgm, hardware: int, operational: int) -> str:
+        problems = []
+        if xpgm != 0:
+            problems.append(f"its programming mode is {LAKESHORE_XPGM_MODES.get(xpgm, xpgm)} (XPGM? {xpgm}), not "
+                            "Internal: set it to Internal on the front panel")
+        blocking = lakeshore_blocking_errors(hardware, operational)
+        if blocking:
+            problems.append(f"an error is latched (ERST? {hardware},{operational}: {', '.join(blocking)}): remove "
+                            "its cause and clear it on the front panel (Status)")
+        self.arm_problem = "; ".join(problems)
+        return self.arm_problem
+
+    def _require_armed(self) -> None:
+        """Before every setpoint but a zero: XPGM? Internal and no blocking
+        ERST? error, read now; else nothing is sent."""
+        self.xpgm = int(self._number("XPGM?"))
+        hardware, operational = (int(value) for value in self._numbers("ERST?", 2))
+        if self._update_arm_problem(self.xpgm, hardware, operational):
+            raise RuntimeError(f"The {self.short_label} is not armed: {self.arm_problem}; no setpoint was sent")
+
+    def _update_reading(self, current, voltage, opst, hardware, operational) -> dict[str, object]:
+        setpoint = self.setpoint_a
+        self.current_a, self.voltage_v = current, voltage
+        at_zero = (math.isfinite(setpoint) and abs(setpoint) <= LAKESHORE_SETPOINT_READBACK_A
+                   and abs(current) <= lakeshore_current_tolerance_a(0.0))
+        self.output_on = not at_zero
+        at_setpoint = (math.isfinite(setpoint) and abs(current - setpoint) <= lakeshore_current_tolerance_a(setpoint)
+                       and bool(opst & LAKESHORE_OPST_RAMP_DONE))
+        self.reading = dict(
+            model=self.short_label, setpoint_a=setpoint, current_a=current, voltage_v=voltage, opst=int(opst),
+            ramping=not opst & LAKESHORE_OPST_RAMP_DONE, at_setpoint=at_setpoint,
+            compliance=bool(opst & LAKESHORE_OPST_COMPLIANCE), power_limit=bool(opst & LAKESHORE_OPST_POWER_LIMIT),
+            hardware_errors=int(hardware), operational_errors=int(operational),
+            errors=lakeshore_error_names(hardware, operational),
+            errors_blocking=lakeshore_blocking_errors(hardware, operational), output_on=self.output_on)
+        return dict(self.reading)
+
+    def read_state(self) -> dict[str, object]:
+        """SETI?, RDGI?, RDGV?, OPST?, ERST?: the live read-back."""
+        with self.lock:
+            self.setpoint_a = self._number("SETI?")
+            current = self._number("RDGI?")
+            voltage = self._number("RDGV?")
+            opst = int(self._number("OPST?"))
+            hardware, operational = (int(value) for value in self._numbers("ERST?", 2))
+            return self._update_reading(current, voltage, opst, hardware, operational)
+
+    def read_current(self) -> float:
+        """RDGI? alone, for a scan point's measured-current column."""
+        with self.lock:
+            self.current_a = self._number("RDGI?")
+            return self.current_a
+
+    def describe(self) -> dict[str, object]:
+        """What a run log's run_prepared records of the supply (no I/O)."""
+        return dict(model=self.short_label, label=self.label, identity=self.identity, resource=self.resource_name,
+                    connected=self.connected, program_max_a=self.program_max_a,
+                    limit_current_a=self.limit_current_a, limit_rate_a_s=self.limit_rate_a_s,
+                    effective_max_a=self.effective_max_a, effective_max_rate_a_s=self.effective_max_rate_a_s,
+                    instrument_rate_a_s=self.rate_a_s,
+                    programming_mode=LAKESHORE_XPGM_MODES.get(self.xpgm, self.xpgm),
+                    magnet_water=LAKESHORE_WATER_MODES.get(self.magnet_water, self.magnet_water),
+                    internal_water=LAKESHORE_WATER_MODES.get(self.internal_water, self.internal_water),
+                    ramp_segments=self.ramp_segments, ramp_segment_rates_a_s=list(self.ramp_segment_rates),
+                    arm_problem=self.arm_problem, reading=dict(self.reading))
+
+    # ---- setpoints -----------------------------------------------------------------
+    def _set_rate(self, rate: float) -> None:
+        present = self._number("RATE?")
+        if abs(present - rate) > LAKESHORE_RATE_READBACK_A_S:
+            self._write(f"RATE {rate:.4f}")
+            present = self._number("RATE?")
+            if abs(present - rate) > LAKESHORE_RATE_READBACK_A_S:
+                self.rate_a_s = present
+                raise LakeShoreRampError(f"{self.short_label} RATE? read back {present:g} A/s after RATE "
+                                         f"{rate:.4f}; no setpoint was sent", self.current_a)
+        self.rate_a_s = present
+        self.program_rate_a_s = rate
+
+    def _send_stop(self) -> None:
+        try:
+            self._write("STOP")
+        except Exception as error:
+            self.logger(f"{self.owner_scope} {self.short_label}: STOP failed: {error}")
+
+    def _read_after_stop(self) -> float:
+        """RDGI? once the ramp has stopped (within 2 s of STOP, manual)."""
+        self.sleep(LAKESHORE_STOP_SETTLE_S)
+        try:
+            self.current_a = self._number("RDGI?")
+        except Exception as error:
+            self.logger(f"{self.owner_scope} {self.short_label}: RDGI? after STOP failed: {error}")
+            return math.nan
+        self.output_on = True
+        return self.current_a
+
+    def ramp_to(self, target_a, rate_a_s, stop_event=None, on_progress=None) -> dict[str, object]:
+        """Ramp to ``target_a`` at ``rate_a_s`` and wait until it is there.
+        Refused (ValueError, nothing sent) beyond the limits; refused
+        (RuntimeError, nothing sent) unless armed.  Raises LakeShoreRampStopped
+        on a Stop (``stop_event`` or request_stop), LakeShoreRampError on a
+        failure; both after STOP once SETI was sent.  ``on_progress(reading)``
+        after each poll.  Returns the reading at the setpoint."""
+        target = round(self.check_current(target_a), 3)
+        rate = self.check_rate(rate_a_s)
+        with self.lock:
+            self._require()
+            if self._stopped(stop_event):
+                raise LakeShoreRampStopped(f"{self.short_label} ramp to {target:+g} A not started: Stop requested; "
+                                           "nothing was sent", self.current_a)
+            self._require_armed()
+            start = self._number("RDGI?")
+            self.current_a = start
+            self._set_rate(rate)
+            if self._stopped(stop_event):
+                raise LakeShoreRampStopped(f"{self.short_label} ramp to {target:+g} A not started: Stop requested; "
+                                           "no setpoint was sent", start)
+            # Claimed before the write, as the 4886's OUTP ON: a write that
+            # fails may still have reached the supply.
+            self.output_on = True
+            self._write(f"SETI {target:.3f}")
+            try:
+                readback = self._number("SETI?")
+            except Exception as error:
+                self._send_stop()
+                where = self._read_after_stop()
+                raise LakeShoreRampError(f"{self.short_label} SETI? after SETI {target:.3f} failed ({error}); STOP "
+                                         f"sent, output left at {where:+.3f} A", where) from error
+            if abs(readback - target) > LAKESHORE_SETPOINT_READBACK_A:
+                self.setpoint_a = readback
+                self._send_stop()
+                where = self._read_after_stop()
+                raise LakeShoreRampError(f"{self.short_label} SETI? read back {readback:+.3f} A after SETI "
+                                         f"{target:.3f}; STOP sent, output left at {where:+.3f} A", where)
+            self.setpoint_a = readback
+            return self._wait_for(target, start, rate, stop_event, on_progress, zeroing=False)
+
+    def _wait_for(self, target, start, rate, stop_event, on_progress, *, zeroing: bool) -> dict[str, object]:
+        rates = [rate, *self.ramp_segment_rates]
+        slowest = min(value for value in rates if value > 0)
+        distance = abs(target - start) if math.isfinite(start) else self.effective_max_a
+        timeout = distance / slowest * LAKESHORE_RAMP_TIME_FACTOR + LAKESHORE_RAMP_MARGIN_S
+        began = self.clock()
+        tolerance = lakeshore_current_tolerance_a(target)
+        notes = []
+        # The manual says OPST? "reads and clears" its register: a ramp-done
+        # bit seen once counts until the current is at the setpoint, so a
+        # poll that read it a moment early cannot hide it (unverified on the
+        # real supplies, 2026-10-21).
+        ramp_done_seen = False
+        while True:
+            if not zeroing and self._stopped(stop_event):
+                self._send_stop()
+                where = self._read_after_stop()
+                raise LakeShoreRampStopped(f"{self.short_label} ramp to {target:+g} A stopped: STOP sent, output "
+                                           f"left at {where:+.3f} A", where)
+            current = self._number("RDGI?")
+            voltage = self._number("RDGV?")
+            opst = int(self._number("OPST?"))
+            hardware, operational = (int(value) for value in self._numbers("ERST?", 2))
+            reading = self._update_reading(current, voltage, opst, hardware, operational)
+            if on_progress is not None:
+                try:
+                    on_progress(dict(reading))
+                except Exception:
+                    pass
+            problems = list(reading["errors_blocking"])
+            if reading["compliance"]:
+                problems.append("in compliance (OPST?)")
+            if reading["power_limit"]:
+                problems.append("in power limit (OPST?)")
+            if problems and not zeroing:
+                self._send_stop()
+                where = self._read_after_stop()
+                raise LakeShoreRampError(
+                    f"{self.short_label} ramp to {target:+g} A ended: {', '.join(problems)} (OPST? {opst}, ERST? "
+                    f"{hardware},{operational}); STOP sent, output left at {where:+.3f} A; no further setpoint is "
+                    "sent", where)
+            if problems:
+                note = ", ".join(problems)
+                if note not in notes:
+                    notes.append(note)
+            ramp_done_seen = ramp_done_seen or bool(opst & LAKESHORE_OPST_RAMP_DONE)
+            if abs(current - target) <= tolerance and (zeroing or ramp_done_seen):
+                self.last_ramp = dict(target_a=target, start_a=start, rate_a_s=rate,
+                                      seconds=self.clock() - began, current_a=current, voltage_v=voltage)
+                if zeroing:
+                    self.last_zero_notes = notes
+                return reading
+            if self.clock() - began > timeout:
+                if zeroing:
+                    raise LakeShoreZeroError(
+                        f"{self.short_label} zero not confirmed: RDGI? {current:+.3f} A after {timeout:.0f} s"
+                        + (f" ({'; '.join(notes)})" if notes else ""), current)
+                self._send_stop()
+                where = self._read_after_stop()
+                raise LakeShoreRampError(
+                    f"{self.short_label} did not reach {target:+g} A within {timeout:.0f} s (RDGI? {current:+.3f} A, "
+                    f"OPST? {opst}{'' if ramp_done_seen else ', ramp done never seen'}); STOP sent, "
+                    f"output left at {where:+.3f} A", where)
+            self.sleep(LAKESHORE_POLL_S)
+
+    def zero(self, rate_a_s=None) -> dict[str, object]:
+        """SETI 0 at the rate (``rate_a_s``, else the last the program set,
+        else LAKESHORE_DEFAULT_RATE_A_S, never above the effective maximum)
+        and wait until |RDGI?| is under the tolerance with SETI? 0: the
+        Lake Shore's "Zero / OFF" (it has no remote output-off; 0 A is off).
+        Allowed armed or not; never stopped by a Stop, never ended by an
+        error bit (they are noted).  Nothing is written when SETI? is
+        already 0 and the current under the tolerance.  Raises
+        LakeShoreZeroError when the zero is not confirmed."""
+        with self.lock:
+            self._stop_request.clear()
+            self._require()
+            try:
+                rate = float(rate_a_s if rate_a_s is not None else self.program_rate_a_s or LAKESHORE_DEFAULT_RATE_A_S)
+            except (TypeError, ValueError):
+                rate = LAKESHORE_DEFAULT_RATE_A_S
+            if not math.isfinite(rate) or rate < LAKESHORE_MIN_RATE_A_S:
+                rate = LAKESHORE_DEFAULT_RATE_A_S
+            rate = min(rate, self.effective_max_rate_a_s)
+            problems = []
+            start = math.nan
+            try:
+                self.setpoint_a = self._number("SETI?")
+                start = self.current_a = self._number("RDGI?")
+            except Exception as error:
+                problems.append(f"read before the zero: {short_status_error(error, 60)}")
+            if (not problems and abs(self.setpoint_a) <= LAKESHORE_SETPOINT_READBACK_A
+                    and abs(start) <= lakeshore_current_tolerance_a(0.0)):
+                self.output_on = False
+                self.last_zero_notes = []
+                self.reading = dict(self.reading, setpoint_a=self.setpoint_a, current_a=start, output_on=False)
+                return dict(self.reading)
+            self.output_on = True
+            try:
+                self._set_rate(rate)
+            except Exception as error:
+                problems.append(f"RATE: {short_status_error(error, 60)}")
+            try:
+                self._write("SETI 0.000")
+                self.setpoint_a = self._number("SETI?")
+            except Exception as error:
+                problems.append(f"SETI 0: {short_status_error(error, 60)}")
+            try:
+                reading = self._wait_for(0.0, start, rate, None, None, zeroing=True)
+                self.setpoint_a = self._number("SETI?")
+            except Exception as error:
+                raise LakeShoreZeroError(
+                    f"{error}" + (f"; {'; '.join(problems)}" if problems else ""),
+                    getattr(error, "current_a", self.current_a)) from error
+            if abs(self.setpoint_a) > LAKESHORE_SETPOINT_READBACK_A:
+                self.output_on = True
+                raise LakeShoreZeroError(f"{self.short_label} zero not confirmed: SETI? reads "
+                                         f"{self.setpoint_a:+.3f} A", self.current_a)
+            reading = self._update_reading(reading["current_a"], reading["voltage_v"], reading["opst"],
+                                           reading["hardware_errors"], reading["operational_errors"])
+            if problems:
+                self.logger(f"{self.owner_scope} {self.short_label} zeroed, after: {'; '.join(problems)}")
+            return reading
+
+    # ---- the end ------------------------------------------------------------------------
+    def _close_session(self) -> None:
+        instrument, manager, resource_name = self.instrument, self.resource_manager, self.resource_name
+        if instrument is not None:
+            try:
+                instrument.close()
+            except BaseException:
+                pass
+        release_shared_visa_manager(manager)
+        self.instrument = None
+        self.resource_manager = None
+        self.resource_name = ""
+        self.identity = ""
+        release_instrument_lease(resource_name, self)
+
+    def safe_output_off(self) -> None:
+        """Zero (ramped), for the shared close paths that call it."""
+        if self.instrument is not None:
+            self.zero()
+
+    def disconnect(self) -> None:
+        """Ramp to 0 first (as the 4886's disconnect zeroes its output),
+        then close the session whatever the zero did; a zero that was not
+        confirmed raises after the close, and output_on stays True."""
+        with self.lock:
+            if self.instrument is None and self.resource_manager is None:
+                return
+            failure = None
+            if self.instrument is not None:
+                try:
+                    self.zero()
+                except BaseException as error:
+                    failure = error
+            self._close_session()
+            self.logger(f"{self.owner_scope} {self.label} disconnected"
+                        + ("" if failure is None else "; its zero was NOT confirmed"))
+            if failure is not None:
+                raise RuntimeError(f"{self.label} disconnected, but zero FAILED: {failure}: check it") from failure
+
+
+class MagnetSupply:
+    """The magnet supply a page drives (user, 2026-10-21: each page chooses
+    "KEPCO 4886" or its Lake Shore).  With the KEPCO, the default, every call
+    is the one the page always made (set_output, set_scan_current,
+    force_output_off), so that path is unchanged.  With the Lake Shore every
+    setpoint ramps at ``rate_a_s`` and returns once at it: on the page's
+    worker only.  A Stop during a ramp (``stop_event``) sends STOP and
+    raises ``stopped(error)`` (the page's own stop exception) if given."""
+
+    def __init__(self, kepco, lakeshore=None, *, use_lakeshore: bool = False, rate_a_s=None, stop_event=None,
+                 stopped=None, on_progress=None) -> None:
+        self.kepco = kepco
+        self.lakeshore_controller = lakeshore
+        self.use_lakeshore = bool(use_lakeshore and lakeshore is not None)
+        self.rate_a_s = LAKESHORE_DEFAULT_RATE_A_S if rate_a_s is None else float(rate_a_s)
+        self.stop_event = stop_event
+        self.stopped = stopped
+        self.on_progress = on_progress
+
+    @property
+    def lakeshore(self) -> bool:
+        return self.use_lakeshore
+
+    @property
+    def controller(self):
+        return self.lakeshore_controller if self.use_lakeshore else self.kepco
+
+    @property
+    def name(self) -> str:
+        """The CSV's magnet_supply: "KEPCO 4886", "LS643" or "LS648"."""
+        return self.lakeshore_controller.short_label if self.use_lakeshore else MAGNET_SUPPLY_KEPCO
+
+    @property
+    def label(self) -> str:
+        """The short name in texts: "KEPCO" or "LS643"."""
+        return self.lakeshore_controller.short_label if self.use_lakeshore else "KEPCO"
+
+    @property
+    def connected(self) -> bool:
+        controller = self.controller
+        return controller is not None and bool(getattr(controller, "connected", False))
+
+    @property
+    def output_on(self) -> bool:
+        """The 4886's output_owned (what this program sent), or the Lake
+        Shore's: not confirmed at SETI? 0 and |RDGI?| under the tolerance."""
+        controller = self.controller
+        if controller is None:
+            return False
+        return bool(getattr(controller, "output_on" if self.use_lakeshore else "output_owned", False))
+
+    def max_current_a(self) -> float:
+        if self.use_lakeshore:
+            return float(self.lakeshore_controller.effective_max_a)
+        return STFMR_KEPCO_MAX_CURRENT_A
+
+    def _ramp(self, current_a):
+        try:
+            return self.lakeshore_controller.ramp_to(current_a, self.rate_a_s, self.stop_event, self.on_progress)
+        except LakeShoreRampStopped as error:
+            if self.stopped is not None:
+                raise self.stopped(error) from error
+            raise
+
+    def start(self, current_a, voltage_limit_v):
+        """A scan's first setpoint: the 4886's full output sequence, or a ramp."""
+        if self.use_lakeshore:
+            return self._ramp(current_a)
+        return self.kepco.set_output("CURR", current_a, voltage_limit_v)
+
+    def step(self, current_a):
+        """A later setpoint: the 4886's CURR alone, or a ramp."""
+        if self.use_lakeshore:
+            return self._ramp(current_a)
+        return self.kepco.set_scan_current(current_a)
+
+    def zero(self):
+        """The operator's Zero / OFF and every scan end: the 4886's zero and
+        OUTP OFF, or the Lake Shore at 0 A (ramped, waited for)."""
+        if self.use_lakeshore:
+            return self.lakeshore_controller.zero(self.rate_a_s)
+        return self.kepco.force_output_off()
+
+    def programmed_current_a(self):
+        """The CSV's kepco_programmed_current_a, of whichever supply: the
+        4886's last current sent while its output is on, or the Lake Shore's
+        SETI? read back."""
+        if self.use_lakeshore:
+            value = getattr(self.lakeshore_controller, "setpoint_a", math.nan)
+            return value if isinstance(value, (int, float)) and math.isfinite(value) else ""
+        return self.kepco.cached_current_a if self.kepco.output_owned else ""
+
+    def measured_current_a(self, fresh: bool = False):
+        """The CSV's magnet_measured_current_a: the Lake Shore's RDGI? (read
+        now with ``fresh``, on the worker), empty for the write-only 4886."""
+        if not self.use_lakeshore:
+            return ""
+        value = (self.lakeshore_controller.read_current() if fresh
+                 else getattr(self.lakeshore_controller, "current_a", math.nan))
+        return value if isinstance(value, (int, float)) and math.isfinite(value) else ""
 
 
 class STFMRGauss475Controller(SafeVisaIdentityController):
@@ -6983,7 +7763,7 @@ def stfmr_angle_move_seconds(angles, from_deg=0.0) -> float:
     return total / NEWMARK_SPEED_DEG_S
 
 
-def stfmr_end_outputs_text(results, rf_label: str, check: bool = True) -> str:
+def stfmr_end_outputs_text(results, rf_label: str, check: bool = True, supply: str = "4886") -> str:
     """The outputs part of an FMR or STFMR scan's finish status (user,
     2026-10-18: every scan ends with its sources zeroed), from
     zero_scan_outputs' results under "4886" and rf_label ("PNA RF" or
@@ -6991,9 +7771,11 @@ def stfmr_end_outputs_text(results, rf_label: str, check: bool = True) -> str:
     "RF", the page's only RF source, so that "Completed; 4886 and RF
     zeroed; 12345 points saved" fits the status label; the dialog and the
     log name the source in full."""
-    names = {"4886": "4886", rf_label: "RF"}
+    # supply: "LS643" or "LS648" when a Lake Shore was the scan's magnet
+    # supply, its results under that name (user, 2026-10-21).
+    names = {supply: supply, rf_label: "RF"}
     short = {names[label]: state for label, state in (results or {}).items() if label in names}
-    return scan_end_outputs_text(short, ("4886", "RF"), check=check, together="4886 and RF")
+    return scan_end_outputs_text(short, (supply, "RF"), check=check, together=f"{supply} and RF")
 
 
 def stfmr_end_outputs_lines(results, order) -> str:
@@ -15359,6 +16141,10 @@ class STFMRScanRecorder(ScanRunRecorder):
         # angle (user, 2026-10-17); blank when the sweep does not use the
         # motor.  Last, so every older column keeps its place.
         "stage_angle_deg",
+        # The magnet supply, "KEPCO 4886" or "LS643", and the LS643's RDGI?
+        # at the point's setpoint (blank for the write-only 4886); current_a
+        # is the programmed current of either (user, 2026-10-21).  Last.
+        "magnet_supply", "magnet_measured_current_a",
     )
 
     def __init__(self, parent: Path, settings: dict[str, object], name: str = "") -> None:
@@ -17856,6 +18642,9 @@ class CombinedControlApp:
             "kepco": STFMRKepco4886Controller(self.thread_log, owner_scope="FMR"),
             "gauss": STFMRGauss475Controller(self.thread_log),
             "vna": STFMRPNAFMRController(self.thread_log),
+            # The Lake Shore 648, the page's other magnet supply (user,
+            # 2026-10-21); the KEPCO stays the default.
+            "lakeshore": LakeShoreMagnetSupplyController(self.thread_log, "648", owner_scope="FMR"),
         }
         # These sit on the tab named "FMR"; a connection conflict named them
         # "STFMR", the other tab (audit, 2026-10-13).
@@ -17882,6 +18671,17 @@ class CombinedControlApp:
         self.stfmr_device_connect_buttons = {}
         self.stfmr_device_disconnect_buttons = {}
         self.stfmr_device_resource_widgets = {}
+        # The Lake Shore 648's row shares the KEPCO's place; the chosen
+        # supply and the rate are plain values for the worker, set on the Tk
+        # thread (user, 2026-10-21).
+        self.stfmr_resource_vars["lakeshore"] = tk.StringVar(value=LAKESHORE_MAGNET_MODELS["648"]["resource"])
+        self.stfmr_device_connection_vars["lakeshore"] = tk.StringVar(value="Not connected")
+        self.stfmr_magnet_choice = MAGNET_SUPPLY_KEPCO
+        self.stfmr_magnet_choice_var = tk.StringVar(value=STFMR_FMR_MAGNET_CHOICES[0])
+        self.stfmr_magnet_rate_var = tk.StringVar(value=f"{LAKESHORE_DEFAULT_RATE_A_S:g}")
+        self.stfmr_magnet_rate_a_s = LAKESHORE_DEFAULT_RATE_A_S
+        # How many Lake Shore Apply, Read or Zero jobs are queued or run.
+        self.stfmr_magnet_job_pending = 0
         self.stfmr_safety_var = tk.BooleanVar(value=False)
         self.stfmr_output_mode_var = tk.StringVar(value="Current")
         self.stfmr_output_target_var = tk.StringVar(value="0")
@@ -17978,6 +18778,9 @@ class CombinedControlApp:
             "gauss": STFMRGauss475Controller(self.thread_log),
             "smb": STFMRSMB100AController(self.thread_log),
             "830": STFMRSR830Controller(self.thread_log),
+            # The Lake Shore 643, the page's other magnet supply (user,
+            # 2026-10-21); the KEPCO stays the default.
+            "lakeshore": LakeShoreMagnetSupplyController(self.thread_log, "643", owner_scope="STFMR"),
         }
         self.stfmr_lockin_mfli_controller = NonLocalACController(self.thread_log)
         self.stfmr_lockin_executor = ThreadPoolExecutor(
@@ -17992,6 +18795,18 @@ class CombinedControlApp:
             key: tk.StringVar(value="Not connected")
             for key in STFMR_LOCKIN_DEFAULT_RESOURCES
         }
+        # The Lake Shore 643's row shares the KEPCO's place (user, 2026-10-21).
+        self.stfmr_lockin_resource_vars["lakeshore"] = tk.StringVar(value=LAKESHORE_MAGNET_MODELS["643"]["resource"])
+        self.stfmr_lockin_connection_vars["lakeshore"] = tk.StringVar(value="Not connected")
+        # The chosen magnet supply and the Lake Shore's rate, as plain values
+        # for the worker; set on the Tk thread (user, 2026-10-21).
+        self.stfmr_lockin_magnet_choice = MAGNET_SUPPLY_KEPCO
+        self.stfmr_lockin_magnet_choice_var = tk.StringVar(value=STFMR_LOCKIN_MAGNET_CHOICES[0])
+        self.stfmr_lockin_magnet_rate_var = tk.StringVar(value=f"{LAKESHORE_DEFAULT_RATE_A_S:g}")
+        self.stfmr_lockin_magnet_rate_a_s = LAKESHORE_DEFAULT_RATE_A_S
+        # How many Lake Shore Apply, Read or Zero jobs of the field-output
+        # panel are queued or run on the worker.
+        self.stfmr_lockin_magnet_job_pending = 0
         self.stfmr_lockin_connect_buttons = {}
         self.stfmr_lockin_disconnect_buttons = {}
         self.stfmr_lockin_resource_widgets = {}
@@ -19883,6 +20698,8 @@ class CombinedControlApp:
         output = ttk.LabelFrame(
             top, text="KEPCO 4886 BOP 20-10 field output", padding=8
         )
+        # Its title names the chosen magnet supply (user, 2026-10-21).
+        self.stfmr_field_output_frame = output
         # Right of the connections and as tall as them; spare width stays here.
         output.grid(row=0, column=1, sticky="nsew")
         output.columnconfigure(11, weight=1)
@@ -19908,6 +20725,8 @@ class CombinedControlApp:
         mode_combo.bind(
             "<<ComboboxSelected>>", self._on_stfmr_output_mode_changed, add="+"
         )
+        # Current only with the Lake Shore (user, 2026-10-21).
+        self.stfmr_output_mode_combo = mode_combo
         ttk.Label(output, textvariable=self.stfmr_output_target_label_var).grid(
             row=1, column=2, sticky="e"
         )
@@ -19920,9 +20739,12 @@ class CombinedControlApp:
         ttk.Label(output, textvariable=self.stfmr_output_limit_label_var).grid(
             row=1, column=4, sticky="e"
         )
-        ttk.Entry(
+        # The Lake Shore's Rate A/s in this place while it is chosen (user,
+        # 2026-10-21).
+        self.stfmr_output_limit_entry = ttk.Entry(
             output, textvariable=self.stfmr_output_limit_var, width=7
-        ).grid(row=1, column=5, padx=(0, 8))
+        )
+        self.stfmr_output_limit_entry.grid(row=1, column=5, padx=(0, 8))
         self.stfmr_apply_output_button = ttk.Button(
             output,
             text="Apply output",
@@ -19968,6 +20790,7 @@ class CombinedControlApp:
             "gauss": "LS475",
             "vna": "PNA",
         }
+        first_cells = []
         for row, key in enumerate(("kepco", "gauss", "vna")):
             device = ttk.Frame(instruments)
             device.grid(row=row, column=0, sticky="ew", pady=1)
@@ -19976,12 +20799,25 @@ class CombinedControlApp:
             # status text is never squeezed.
             device.columnconfigure(1, weight=1)
             device.columnconfigure(6, weight=1000)
-            ttk.Label(
-                device,
-                text=f"{labels[key]}:",
-                width=12,
-                anchor="e",
-            ).grid(row=0, column=0, sticky="e")
+            if key == "kepco":
+                # The magnet supply's row (user, 2026-10-21): its label is the
+                # choice, KEPCO4886 (the default) or LS648, and the row shows
+                # the chosen supply's widgets in the same place.
+                choice = ttk.Combobox(device, textvariable=self.stfmr_magnet_choice_var,
+                                      values=STFMR_FMR_MAGNET_CHOICES, state="readonly", width=10)
+                choice.grid(row=0, column=0, sticky="e")
+                choice.bind("<<ComboboxSelected>>", self._stfmr_magnet_choice_changed, add="+")
+                self.stfmr_magnet_choice_combo = choice
+                first_cells.append((device, choice))
+            else:
+                label = ttk.Label(
+                    device,
+                    text=f"{labels[key]}:",
+                    width=12,
+                    anchor="e",
+                )
+                label.grid(row=0, column=0, sticky="e")
+                first_cells.append((device, label))
             entry = ttk.Entry(
                 device,
                 textvariable=self.stfmr_resource_vars[key],
@@ -20006,16 +20842,49 @@ class CombinedControlApp:
             disconnect_button.grid(row=0, column=3, padx=1)
             self.stfmr_device_connect_buttons[key] = connect_button
             self.stfmr_device_disconnect_buttons[key] = disconnect_button
-            self._create_connection_indicator(device, f"stfmr_{key}").grid(
-                row=0, column=4, padx=(5, 1)
-            )
-            ttk.Label(
+            lamp = self._create_connection_indicator(device, f"stfmr_{key}")
+            lamp.grid(row=0, column=4, padx=(5, 1))
+            status = ttk.Label(
                 device,
                 textvariable=self.stfmr_device_connection_vars[key],
                 width=13,
                 anchor="w",
-            ).grid(row=0, column=5, sticky="w", padx=(1, 0))
+            )
+            status.grid(row=0, column=5, sticky="w", padx=(1, 0))
+            if key == "kepco":
+                self.stfmr_supply_widgets = {"kepco": (entry, connect_button, disconnect_button, lamp, status)}
+            if key == "kepco" and "lakeshore" in self.stfmr_resource_vars:
+                # The Lake Shore 648's widgets in the same columns, shown in
+                # place of the KEPCO's while it is chosen.
+                ls_entry = ttk.Entry(device, textvariable=self.stfmr_resource_vars["lakeshore"], width=18)
+                ls_entry.grid(row=0, column=1, sticky="w", padx=(0, 4))
+                ls_connect = ttk.Button(device, text="Connect", width=8,
+                                        command=lambda: self.connect_stfmr_device("lakeshore"))
+                ls_connect.grid(row=0, column=2, padx=1)
+                ls_disconnect = ttk.Button(device, text="Disconnect", width=10, state="disabled",
+                                           command=lambda: self.disconnect_stfmr_device("lakeshore"))
+                ls_disconnect.grid(row=0, column=3, padx=1)
+                ls_lamp = self._create_connection_indicator(device, "stfmr_lakeshore")
+                ls_lamp.grid(row=0, column=4, padx=(5, 1))
+                ls_status = ttk.Label(device, textvariable=self.stfmr_device_connection_vars["lakeshore"],
+                                      width=13, anchor="w")
+                ls_status.grid(row=0, column=5, sticky="w", padx=(1, 0))
+                # Kept out of the rows' dictionaries, whose widgets are all
+                # shown: the row accessor _stfmr_row finds them.
+                self.stfmr_supply_rows = {"lakeshore": (ls_entry, ls_connect, ls_disconnect)}
+                self.stfmr_supply_widgets["lakeshore"] = (ls_entry, ls_connect, ls_disconnect, ls_lamp, ls_status)
+                for widget in self.stfmr_supply_widgets["lakeshore"]:
+                    widget.grid_remove()
 
+        # The magnet supply's choice (a Combobox) asks for another width than
+        # the labels (user, 2026-10-21): every row's first column is as wide
+        # as the widest, so the rows' fields and buttons stay in one column.
+        try:
+            widest = max(cell.winfo_reqwidth() for _frame, cell in first_cells)
+            for row_frame, _cell in first_cells:
+                row_frame.columnconfigure(0, minsize=widest)
+        except (AttributeError, TypeError, ValueError, tk.TclError):
+            pass
         self._arrange_pair_by_width(top, instruments, output)
         # Tab visits the connections first, as they now sit on the left.
         instruments.lower(output)
@@ -20290,6 +21159,8 @@ class CombinedControlApp:
         field_output = ttk.LabelFrame(
             top, text="KEPCO 4886 BOP 20-10 field output", padding=6
         )
+        # Its title names the chosen magnet supply (user, 2026-10-21).
+        self.stfmr_lockin_field_output_frame = field_output
         # Right of the connections and as tall as them; spare width stays here
         # so the connection list keeps its natural width at the left.
         field_output.grid(row=0, column=1, sticky="nsew")
@@ -20315,6 +21186,8 @@ class CombinedControlApp:
             width=8,
         )
         manual_mode.grid(row=1, column=1, padx=(0, 8))
+        # Current only with the Lake Shore (user, 2026-10-21).
+        self.stfmr_lockin_manual_mode_combo = manual_mode
         manual_mode.bind(
             "<<ComboboxSelected>>", self._on_stfmr_lockin_manual_mode_changed, add="+"
         )
@@ -20329,9 +21202,12 @@ class CombinedControlApp:
         ttk.Label(
             field_output, textvariable=self.stfmr_lockin_manual_limit_label_var
         ).grid(row=1, column=4, sticky="e")
-        ttk.Entry(
+        # The Lake Shore's Rate A/s in this place while it is chosen (user,
+        # 2026-10-21): the 4886's voltage limit does not apply to it.
+        self.stfmr_lockin_manual_limit_entry = ttk.Entry(
             field_output, textvariable=self.stfmr_lockin_manual_limit_var, width=7
-        ).grid(row=1, column=5, padx=(0, 8))
+        )
+        self.stfmr_lockin_manual_limit_entry.grid(row=1, column=5, padx=(0, 8))
         self.stfmr_lockin_apply_output_button = ttk.Button(
             field_output,
             text="Apply output",
@@ -20377,7 +21253,9 @@ class CombinedControlApp:
             "830": "SR830",
             "mfli": "MFLI",
         }
-        # The magnet path first, then the lock-ins.
+        # The magnet path first, then the lock-ins.  Each row's first cell,
+        # for one shared column width (below).
+        first_cells = []
         for row, key in enumerate(("kepco", "gauss", "smb", "830", "mfli")):
             frame = ttk.Frame(instruments)
             frame.grid(row=row, column=0, sticky="ew", pady=1)
@@ -20388,9 +21266,21 @@ class CombinedControlApp:
             # and the status text stays visible.
             frame.columnconfigure(1, weight=1)
             frame.columnconfigure(6, weight=1000)
-            ttk.Label(frame, text=f"{labels[key]}:", width=11, anchor="e").grid(
-                row=0, column=0, sticky="e"
-            )
+            if key == "kepco":
+                # The magnet supply's row (user, 2026-10-21): its label is the
+                # choice, KEPCO4886 (the default) or LS643, and the row shows
+                # the chosen supply's address, buttons, lamp and status in the
+                # same place, so the list keeps its height.
+                choice = ttk.Combobox(frame, textvariable=self.stfmr_lockin_magnet_choice_var,
+                                      values=STFMR_LOCKIN_MAGNET_CHOICES, state="readonly", width=9)
+                choice.grid(row=0, column=0, sticky="e")
+                choice.bind("<<ComboboxSelected>>", self._stfmr_lockin_magnet_choice_changed, add="+")
+                self.stfmr_lockin_magnet_choice_combo = choice
+                first_cells.append((frame, choice))
+            else:
+                label = ttk.Label(frame, text=f"{labels[key]}:", width=11, anchor="e")
+                label.grid(row=0, column=0, sticky="e")
+                first_cells.append((frame, label))
             if key == "mfli":
                 # Two Zurich lock-ins: pick one by name, so the Data Server
                 # that can reach that MFLI is the one tried.  As wide on
@@ -20418,13 +21308,39 @@ class CombinedControlApp:
             self.stfmr_lockin_resource_widgets[key] = entry
             self.stfmr_lockin_connect_buttons[key] = connect
             self.stfmr_lockin_disconnect_buttons[key] = disconnect
-            self._create_connection_indicator(frame, f"stfmr_lockin_{key}").grid(
-                row=0, column=4, padx=(5, 1)
-            )
-            ttk.Label(
+            lamp = self._create_connection_indicator(frame, f"stfmr_lockin_{key}")
+            lamp.grid(row=0, column=4, padx=(5, 1))
+            status = ttk.Label(
                 frame, textvariable=self.stfmr_lockin_connection_vars[key],
                 width=13, anchor="w",
-            ).grid(row=0, column=5, sticky="w")
+            )
+            status.grid(row=0, column=5, sticky="w")
+            if key == "kepco":
+                self.stfmr_lockin_supply_widgets = {"kepco": (entry, connect, disconnect, lamp, status)}
+            if key == "kepco" and "lakeshore" in self.stfmr_lockin_resource_vars:
+                # The Lake Shore 643's widgets in the same columns, shown in
+                # place of the KEPCO's while it is chosen (a page made without
+                # its __init__, the offline tests', has none).
+                ls_entry = ttk.Entry(frame, textvariable=self.stfmr_lockin_resource_vars["lakeshore"], width=18)
+                ls_entry.grid(row=0, column=1, sticky="w", padx=(0, 4))
+                ls_connect = ttk.Button(frame, text="Connect", width=8,
+                                        command=lambda: self.connect_stfmr_lockin_device("lakeshore"))
+                ls_disconnect = ttk.Button(frame, text="Disconnect", width=10, state="disabled",
+                                           command=lambda: self.disconnect_stfmr_lockin_device("lakeshore"))
+                ls_connect.grid(row=0, column=2, padx=1)
+                ls_disconnect.grid(row=0, column=3, padx=1)
+                ls_lamp = self._create_connection_indicator(frame, "stfmr_lockin_lakeshore")
+                ls_lamp.grid(row=0, column=4, padx=(5, 1))
+                ls_status = ttk.Label(frame, textvariable=self.stfmr_lockin_connection_vars["lakeshore"],
+                                      width=13, anchor="w")
+                ls_status.grid(row=0, column=5, sticky="w")
+                # Kept out of the rows' dictionaries, whose widgets are all
+                # shown: the row accessor _stfmr_lockin_row finds them.
+                self.stfmr_lockin_supply_rows = {"lakeshore": (ls_entry, ls_connect, ls_disconnect)}
+                self.stfmr_lockin_supply_widgets["lakeshore"] = (ls_entry, ls_connect, ls_disconnect, ls_lamp,
+                                                                 ls_status)
+                for widget in self.stfmr_lockin_supply_widgets["lakeshore"]:
+                    widget.grid_remove()
         # The Newmark NSC-A1 rotation stage, a sixth row laid out as the five
         # above (user, 2026-10-17: "add the connection button for Motor in
         # RT-E and ST-FMR modules").  "auto" takes the only Performax USB
@@ -20437,7 +21353,9 @@ class CombinedControlApp:
         frame.grid(row=5, column=0, sticky="ew", pady=1)
         frame.columnconfigure(1, weight=1)
         frame.columnconfigure(6, weight=1000)
-        ttk.Label(frame, text="Motor:", width=11, anchor="e").grid(row=0, column=0, sticky="e")
+        motor_label = ttk.Label(frame, text="Motor:", width=11, anchor="e")
+        motor_label.grid(row=0, column=0, sticky="e")
+        first_cells.append((frame, motor_label))
         motor_entry = ttk.Entry(frame, textvariable=self.stfmr_lockin_motor_resource_var, width=18)
         motor_entry.grid(row=0, column=1, sticky="w", padx=(0, 4))
         motor_connect = ttk.Button(frame, text="Connect", width=8, command=self.connect_stfmr_lockin_motor)
@@ -20452,6 +21370,16 @@ class CombinedControlApp:
             frame, textvariable=self.stfmr_lockin_motor_status_var, width=13, anchor="w",
         ).grid(row=0, column=5, sticky="w")
         self.stfmr_lockin_motor_widgets = (motor_entry, motor_connect, motor_disconnect)
+        # The magnet supply's choice (a Combobox) asks for another width than
+        # the other rows' labels (user, 2026-10-21): every row's first column
+        # is as wide as the widest, so the addresses, buttons and lamps stay
+        # in one column.
+        try:
+            widest = max(cell.winfo_reqwidth() for _frame, cell in first_cells)
+            for row_frame, _cell in first_cells:
+                row_frame.columnconfigure(0, minsize=widest)
+        except (AttributeError, TypeError, ValueError, tk.TclError):
+            pass
 
         self._arrange_pair_by_width(top, instruments, field_output)
         # Tab visits the connections first, as they now sit on the left.
@@ -20926,6 +21854,179 @@ class CombinedControlApp:
             return self.stfmr_lockin_mfli_controller.mfli_connected
         return self.stfmr_lockin_controllers[key].connected
 
+    # ---- the magnet supply: the KEPCO 4886 or the Lake Shore 643 (user, 2026-10-21) ----
+    def _stfmr_lockin_row(self, key: str):
+        """A connection row's (address, Connect, Disconnect): the LS643's
+        from its own dictionary, the others' from the rows' dictionaries."""
+        rows = self.__dict__.get("stfmr_lockin_supply_rows") or {}
+        if key in rows:
+            return rows[key]
+        return tuple((self.__dict__.get(name) or {}).get(key) for name in (
+            "stfmr_lockin_resource_widgets", "stfmr_lockin_connect_buttons", "stfmr_lockin_disconnect_buttons"))
+
+    def _stfmr_lockin_row_keys(self) -> list[str]:
+        return [*self.stfmr_lockin_connect_buttons, *(self.__dict__.get("stfmr_lockin_supply_rows") or {})]
+
+    def _stfmr_lockin_lakeshore_chosen(self) -> bool:
+        """True while the LS643 is the page's magnet supply; the KEPCO 4886,
+        the default, otherwise (also on a page made without its __init__)."""
+        controllers = self.__dict__.get("stfmr_lockin_controllers") or {}
+        return (self.__dict__.get("stfmr_lockin_magnet_choice", MAGNET_SUPPLY_KEPCO) != MAGNET_SUPPLY_KEPCO
+                and controllers.get("lakeshore") is not None)
+
+    def _stfmr_lockin_magnet_key(self) -> str:
+        """The chosen supply's row: "kepco" or "lakeshore"."""
+        return "lakeshore" if self._stfmr_lockin_lakeshore_chosen() else "kepco"
+
+    def _stfmr_lockin_supply_label(self) -> str:
+        """The supply's name in the page's texts: "4886" or "LS643"."""
+        return self.stfmr_lockin_controllers["lakeshore"].short_label if self._stfmr_lockin_lakeshore_chosen() \
+            else "4886"
+
+    def _stfmr_lockin_supply(self) -> MagnetSupply:
+        """The chosen supply: the 4886 with the calls it always got, or the
+        LS643, ramping at the page's rate; a ramp watches the sweep's stop
+        event (Stop / zero, Zero / OFF, the page closing) and ends with
+        LakeShoreRampStopped after STOP.  Its calls run on the worker."""
+        controllers = self.__dict__.get("stfmr_lockin_controllers") or {}
+        return MagnetSupply(controllers.get("kepco"), controllers.get("lakeshore"),
+                            use_lakeshore=self._stfmr_lockin_lakeshore_chosen(),
+                            rate_a_s=self.__dict__.get("stfmr_lockin_magnet_rate_a_s", LAKESHORE_DEFAULT_RATE_A_S),
+                            stop_event=self.__dict__.get("stfmr_lockin_stop_event"),
+                            on_progress=self._stfmr_lockin_magnet_progress)
+
+    def _stfmr_lockin_rate(self) -> float:
+        """The Rate A/s box, checked on the Tk thread (and against the
+        LS643's LIMIT? once connected); kept as a plain value for the worker."""
+        rate = self.stfmr_lockin_controllers["lakeshore"].check_rate(self.stfmr_lockin_magnet_rate_var.get())
+        self.stfmr_lockin_magnet_rate_a_s = rate
+        return rate
+
+    def _stfmr_lockin_magnet_progress(self, _reading) -> None:
+        """A ramp's reading, from the worker: the panel's readouts follow it."""
+        def show() -> None:
+            if not self.closing and not self.stfmr_lockin_closed:
+                self._show_stfmr_lockin_kepco_state()
+        self.post_ui(show)
+
+    def _stfmr_lockin_magnet_jobs_pending(self) -> bool:
+        return self.__dict__.get("stfmr_lockin_magnet_job_pending", 0) > 0
+
+    def _stfmr_lockin_magnet_choice_changed(self, _event=None) -> None:
+        """The magnet-supply choice (user, 2026-10-21): refused while a sweep
+        runs or starts, while a Lake Shore job is pending, and while the
+        supply being left has its output on (or not confirmed at zero)."""
+        variable = self.stfmr_lockin_magnet_choice_var
+        choice = "LS643" if variable.get() == STFMR_LOCKIN_MAGNET_CHOICES[1] else MAGNET_SUPPLY_KEPCO
+        previous = self.__dict__.get("stfmr_lockin_magnet_choice", MAGNET_SUPPLY_KEPCO)
+        if choice == previous:
+            return
+        problem = None
+        if (self.closing or self.stfmr_lockin_closed or self._stfmr_lockin_rows_locked()
+                or self._stfmr_lockin_magnet_jobs_pending()):
+            problem = "STFMR is busy: the magnet supply can be changed once it is idle"
+        elif self._stfmr_lockin_supply().output_on:
+            problem = (f"The {self._stfmr_lockin_supply_label()} output is on (or not confirmed at zero): zero it "
+                       "first (Zero / OFF), then change the magnet supply")
+        if problem is not None:
+            variable.set(STFMR_LOCKIN_MAGNET_CHOICES[0 if previous == MAGNET_SUPPLY_KEPCO else 1])
+            messagebox.showerror("STFMR magnet supply", problem, parent=self.root)
+            return
+        self.stfmr_lockin_magnet_choice = choice
+        self.thread_log(f"STFMR magnet supply: {choice}")
+        self._stfmr_lockin_show_magnet_choice()
+        self._update_stfmr_lockin_ui()
+
+    def _stfmr_lockin_show_magnet_choice(self) -> None:
+        """The connection row and the field-output panel for the chosen supply."""
+        lakeshore = self._stfmr_lockin_lakeshore_chosen()
+        for key, widgets in (self.__dict__.get("stfmr_lockin_supply_widgets") or {}).items():
+            for widget in widgets:
+                if (key == "lakeshore") == lakeshore:
+                    widget.grid()
+                else:
+                    widget.grid_remove()
+        frame = self.__dict__.get("stfmr_lockin_field_output_frame")
+        if frame is not None:
+            frame.configure(text="Lake Shore 643 field output" if lakeshore else "KEPCO 4886 BOP 20-10 field output")
+        combo = self.__dict__.get("stfmr_lockin_manual_mode_combo")
+        if lakeshore:
+            # Current only; the rate in the voltage limit's place.
+            self.stfmr_lockin_manual_mode_var.set("Current")
+            self._on_stfmr_lockin_manual_mode_changed()
+            self.stfmr_lockin_manual_limit_label_var.set("Rate A/s:")
+        else:
+            self._on_stfmr_lockin_manual_mode_changed()
+        if combo is not None:
+            combo.configure(state="disabled" if lakeshore else "readonly")
+        entry = self.__dict__.get("stfmr_lockin_manual_limit_entry")
+        if entry is not None:
+            entry.configure(textvariable=self.stfmr_lockin_magnet_rate_var if lakeshore
+                            else self.stfmr_lockin_manual_limit_var)
+        button = self.__dict__.get("stfmr_lockin_read_output_button")
+        if button is not None:
+            button.configure(text="Read back" if lakeshore else "Show sent values")
+        self._show_stfmr_lockin_kepco_state()
+
+    def _show_stfmr_lockin_lakeshore_state(self) -> None:
+        """The LS643's last read-back in the panel's four readouts: SETI?,
+        RDGI?, RDGV? and its state (no I/O here)."""
+        controller = self.stfmr_lockin_controllers["lakeshore"]
+        reading = controller.reading if controller.connected else {}
+        if not reading:
+            self.stfmr_lockin_kepco_mode_var.set("Set: -- A")
+            self.stfmr_lockin_kepco_current_var.set("I: -- A")
+            self.stfmr_lockin_kepco_voltage_var.set("V: -- V")
+            self.stfmr_lockin_kepco_output_var.set("NOT CONFIRMED 0 A" if controller.output_on else "--")
+            return
+        self.stfmr_lockin_kepco_mode_var.set(f"Set: {float(reading['setpoint_a']):+.5g} A")
+        self.stfmr_lockin_kepco_current_var.set(f"I: {float(reading['current_a']):+.5g} A")
+        self.stfmr_lockin_kepco_voltage_var.set(f"V: {float(reading['voltage_v']):+.4g} V")
+        word = lakeshore_state_word(reading, controller.arm_problem)
+        self.stfmr_lockin_kepco_output_var.set("At 0 A" if word == "Connected" and not reading.get("output_on")
+                                               else word)
+
+    def _stfmr_lockin_magnet_job(self, operation, done, status: str) -> None:
+        """A field-output panel job of the LS643 (Apply, Read back, Zero) on
+        the page's worker (user, 2026-10-21: a ramp takes |dI| / rate, never
+        on the Tk thread); Apply output, Start, a hand move and the supply
+        choice wait while one is pending.  ``done(result)`` on the Tk thread."""
+        self.stfmr_lockin_magnet_job_pending = self.__dict__.get("stfmr_lockin_magnet_job_pending", 0) + 1
+        self.stfmr_lockin_status_var.set(status)
+        self._update_stfmr_lockin_ui()
+
+        def job():
+            self._stfmr_lockin_require_page_open()
+            return operation()
+        try:
+            future = self.stfmr_lockin_executor.submit(job)
+        except BaseException as error:
+            self.stfmr_lockin_magnet_job_pending -= 1
+            self._update_stfmr_lockin_ui()
+            if not self.closing:
+                messagebox.showerror("STFMR LS643", str(error), parent=self.root)
+            return
+
+        def finished() -> None:
+            self.stfmr_lockin_magnet_job_pending = max(0, self.stfmr_lockin_magnet_job_pending - 1)
+            if self.closing or self.stfmr_lockin_closed:
+                return
+            try:
+                result = future.result()
+            except LakeShoreRampStopped as stopped:
+                self.stfmr_lockin_status_var.set(f"LS643 ramp stopped: {short_status_error(stopped, 40)}")
+            except BaseException as error:
+                self.stfmr_lockin_status_var.set(f"LS643 failed: {short_status_error(error, 40)}")
+                message = str(error)
+                self._stfmr_lockin_after_drain(lambda: messagebox.showerror("STFMR LS643", message,
+                                                                            parent=self.root))
+            else:
+                done(result)
+            self._update_stfmr_lockin_ui()
+            self._show_stfmr_lockin_kepco_state()
+
+        future.add_done_callback(lambda _future: self.post_ui(finished))
+
     def _stfmr_lockin_rows_locked(self) -> bool:
         """The instrument rows' Connect / Disconnect and addresses are
         locked while a sweep runs, and also from Start until the sweep runs
@@ -20946,13 +22047,13 @@ class CombinedControlApp:
         if key == "mfli" and not connected:
             self._set_stfmr_lockin_overload_state(None)
         locked = self._stfmr_lockin_rows_locked()
-        self.stfmr_lockin_connect_buttons[key].configure(
+        widget, connect_button, disconnect_button = self._stfmr_lockin_row(key)
+        connect_button.configure(
             state="disabled" if connected or locked else "normal"
         )
-        self.stfmr_lockin_disconnect_buttons[key].configure(
+        disconnect_button.configure(
             state="normal" if connected and not locked else "disabled"
         )
-        widget = self.stfmr_lockin_resource_widgets[key]
         widget.configure(
             state="disabled" if connected or locked
             else widget_idle_state(widget)
@@ -21054,26 +22155,28 @@ class CombinedControlApp:
         # or Disconnect gave it (review, 2026-10-13).  Locked from Start too,
         # through its dialogs and stage check (review, 2026-10-18).
         rows_locked = self._stfmr_lockin_rows_locked()
-        for key, connect_button in self.stfmr_lockin_connect_buttons.items():
+        for key in self._stfmr_lockin_row_keys():
+            widget, connect_button, disconnect_button = self._stfmr_lockin_row(key)
             status = self.stfmr_lockin_connection_vars[key].get()
             if status in ("Connecting…", "Disconnecting…"):
                 continue
             connected = status == "Connected"
+            # The LS643 row also waits for its panel jobs (user, 2026-10-21).
+            row_locked = rows_locked or (key == "lakeshore" and self._stfmr_lockin_magnet_jobs_pending())
             connect_button.configure(
-                state="disabled" if connected or rows_locked else "normal"
+                state="disabled" if connected or row_locked else "normal"
             )
-            self.stfmr_lockin_disconnect_buttons[key].configure(
-                state="normal" if connected and not rows_locked else "disabled"
+            disconnect_button.configure(
+                state="normal" if connected and not row_locked else "disabled"
             )
-            widget = self.stfmr_lockin_resource_widgets[key]
             widget.configure(
-                state="disabled" if connected or rows_locked
+                state="disabled" if connected or row_locked
                 else widget_idle_state(widget)
             )
         meter_keys = self._stfmr_lockin_meter_keys(self.stfmr_lockin_meter_var.get())
         ready = all(
             self._stfmr_lockin_connected(key)
-            for key in ("kepco", "gauss", "smb", *meter_keys)
+            for key in (self._stfmr_lockin_magnet_key(), "gauss", "smb", *meter_keys)
         )
         # Locked from Start's stage check until the sweep starts or does not
         # (user, 2026-10-17), as RT-E's Start is while its stage check and
@@ -21098,13 +22201,22 @@ class CombinedControlApp:
             and not self.stfmr_lockin_gauss_busy
             else "disabled"
         )
+        choice = self.__dict__.get("stfmr_lockin_magnet_choice_combo")
+        if choice is not None:
+            # Locked while a sweep runs or starts, a Lake Shore job is
+            # pending, or the chosen supply is not confirmed at zero (user,
+            # 2026-10-21).
+            choice.configure(state="disabled" if self._stfmr_lockin_rows_locked()
+                             or self._stfmr_lockin_magnet_jobs_pending()
+                             or self._stfmr_lockin_supply().output_on else "readonly")
         if hasattr(self, "stfmr_lockin_apply_output_button"):
-            kepco_connected = self._stfmr_lockin_connected("kepco")
+            kepco_connected = self._stfmr_lockin_connected(self._stfmr_lockin_magnet_key())
             # A running sweep owns the supply, so manual set-points wait; the
             # red Zero / OFF stays live whenever the KEPCO is connected.
             self._update_stfmr_lockin_apply_button()
             self.stfmr_lockin_read_output_button.configure(
-                state="normal" if kepco_connected and not self.stfmr_lockin_running else "disabled"
+                state="normal" if kepco_connected and not self.stfmr_lockin_running
+                and not self._stfmr_lockin_magnet_jobs_pending() else "disabled"
             )
             self.stfmr_lockin_zero_output_button.configure(
                 state="normal" if kepco_connected else "disabled"
@@ -21120,8 +22232,9 @@ class CombinedControlApp:
         button = self.__dict__.get("stfmr_lockin_apply_output_button")
         if button is None:
             return
-        button.configure(state="normal" if self._stfmr_lockin_connected("kepco") and not self.stfmr_lockin_running
-                         and not self._stfmr_lockin_manual_output_held() else "disabled")
+        button.configure(state="normal" if self._stfmr_lockin_connected(self._stfmr_lockin_magnet_key())
+                         and not self.stfmr_lockin_running and not self._stfmr_lockin_manual_output_held()
+                         and not self._stfmr_lockin_magnet_jobs_pending() else "disabled")
 
     def _stfmr_lockin_manual_output_held(self) -> bool:
         """Apply output waits while a stage job of the Motor row (Connect,
@@ -21140,8 +22253,12 @@ class CombinedControlApp:
             self.stfmr_lockin_manual_limit_label_var.set("Voltage limit V:")
 
     def _show_stfmr_lockin_kepco_state(self) -> None:
-        """Show the values last sent to the 4886, which has no hardware readback."""
+        """Show the values last sent to the 4886, which has no hardware
+        readback; or, with the LS643 chosen, its last read-back."""
         if not hasattr(self, "stfmr_lockin_kepco_mode_var"):
+            return
+        if self._stfmr_lockin_lakeshore_chosen():
+            self._show_stfmr_lockin_lakeshore_state()
             return
         controller = self.stfmr_lockin_controllers["kepco"]
         if not controller.connected or not getattr(controller, "last_command", ""):
@@ -21182,6 +22299,9 @@ class CombinedControlApp:
                 parent=self.root,
             )
             return
+        if self._stfmr_lockin_lakeshore_chosen():
+            self._apply_stfmr_lockin_lakeshore_output()
+            return
         if not controller.connected:
             return
         if not self.stfmr_lockin_manual_safety_var.get():
@@ -21215,7 +22335,45 @@ class CombinedControlApp:
             "KEPCO command sent as in the LabVIEW trace; check the front panel and the LS475"
         )
 
+    def _apply_stfmr_lockin_lakeshore_output(self) -> None:
+        """Apply output with the LS643 chosen (user, 2026-10-21): the target
+        checked against the program's 40 A and its LIMIT?, the Rate A/s box,
+        then the ramp on the worker; Zero / OFF stops it (STOP) and zeroes."""
+        controller = self.stfmr_lockin_controllers["lakeshore"]
+        if not controller.connected or self._stfmr_lockin_magnet_jobs_pending():
+            return
+        if not self.stfmr_lockin_manual_safety_var.get():
+            messagebox.showwarning(
+                "STFMR LS643",
+                "Please tick the magnet, cooling, wiring, limits and personnel safety confirmation first.",
+                parent=self.root,
+            )
+            return
+        try:
+            target = controller.check_current(float(self.stfmr_lockin_manual_target_var.get()))
+            rate = self._stfmr_lockin_rate()
+        except (TypeError, ValueError, tk.TclError) as error:
+            messagebox.showerror("STFMR LS643", str(error), parent=self.root)
+            return
+        # An old Zero / OFF must not stop this ramp (no sweep runs or starts:
+        # Apply output waits for those).
+        self.stfmr_lockin_stop_event.clear()
+        supply = self._stfmr_lockin_supply()
+        self.thread_log(f"STFMR LS643: ramping to {target:+g} A at {rate:g} A/s")
+        self._stfmr_lockin_magnet_job(
+            lambda: supply.start(target, None),
+            lambda _reading: self.stfmr_lockin_status_var.set(f"LS643 at {target:+g} A; check the LS475"),
+            f"Ramping the LS643 to {target:+g} A at {rate:g} A/s…")
+
     def read_stfmr_lockin_kepco_once(self) -> None:
+        if self._stfmr_lockin_lakeshore_chosen():
+            # Read back from the LS643 on the worker (user, 2026-10-21).
+            controller = self.stfmr_lockin_controllers["lakeshore"]
+            if controller.connected and not self.stfmr_lockin_running and not self._stfmr_lockin_magnet_jobs_pending():
+                self._stfmr_lockin_magnet_job(controller.read_state,
+                                              lambda _reading: self.stfmr_lockin_status_var.set("LS643 read back"),
+                                              "Reading the LS643…")
+            return
         if not self.stfmr_lockin_controllers["kepco"].connected:
             return
         self._show_stfmr_lockin_kepco_state()
@@ -21225,6 +22383,9 @@ class CombinedControlApp:
 
     def zero_stfmr_lockin_kepco_output(self, *, deferred: bool = False) -> None:
         if self.closing:
+            return
+        if self._stfmr_lockin_lakeshore_chosen():
+            self._zero_stfmr_lockin_lakeshore()
             return
         controller = self.stfmr_lockin_controllers["kepco"]
         if not self.stfmr_lockin_running:
@@ -21276,6 +22437,27 @@ class CombinedControlApp:
         self._show_stfmr_lockin_kepco_state()
         self.stfmr_lockin_status_var.set("KEPCO zeroed and output off")
 
+    def _zero_stfmr_lockin_lakeshore(self) -> None:
+        """Zero / OFF with the LS643 chosen (user, 2026-10-21): it has no
+        remote output-off, so 0 A is off.  As the 4886's: the sweep's stop
+        event first (a start is abandoned, a hand move stops); a ramp in
+        progress sees the request at once and sends STOP; during a sweep the
+        sweep ends and its own end zeroes it; else the zero runs on the
+        worker, ramped at the rate, and is waited for."""
+        controller = self.stfmr_lockin_controllers["lakeshore"]
+        if not self.stfmr_lockin_running:
+            self.stfmr_lockin_stop_event.set()
+        controller.request_stop()
+        if not controller.connected:
+            return
+        if self.stfmr_lockin_running:
+            self.stop_stfmr_lockin_scan(button="LS643 Zero / OFF")
+            return
+        supply = self._stfmr_lockin_supply()
+        self._stfmr_lockin_magnet_job(supply.zero,
+                                      lambda _reading: self.stfmr_lockin_status_var.set("LS643 at 0 A (zeroed)"),
+                                      "Ramping the LS643 to 0 A…")
+
     def _stfmr_lockin_page_closing(self) -> bool:
         """True once the page closes.  With the motor connected, the close no
         longer cancels the page's queue (the motor's Disconnect must run on
@@ -21298,8 +22480,11 @@ class CombinedControlApp:
         if self._stfmr_lockin_rows_locked():
             return
         resource = self.stfmr_lockin_resource_vars[key].get().strip()
-        self.stfmr_lockin_connect_buttons[key].configure(state="disabled")
-        self.stfmr_lockin_resource_widgets[key].configure(state="disabled")
+        if key == "lakeshore" and self._stfmr_lockin_magnet_jobs_pending():
+            return
+        entry, connect_button, _disconnect = self._stfmr_lockin_row(key)
+        connect_button.configure(state="disabled")
+        entry.configure(state="disabled")
         self.stfmr_lockin_connection_vars[key].set("Connecting…")
         if key == "kepco":
             # As on the FMR page, the legacy 4886 session is opened only from
@@ -21338,6 +22523,8 @@ class CombinedControlApp:
                     messagebox.showerror("STFMR instrument connection", str(error), parent=self.root)
                 return
             self._set_stfmr_lockin_device_ui(key, True)
+            if key == "lakeshore":
+                self._stfmr_lockin_lakeshore_connected()
             # A connect pressed just before Start may finish during the
             # sweep, whose meter must not change (audit, 2026-10-13), or
             # during Start's dialogs or stage check, which have read it
@@ -21359,7 +22546,9 @@ class CombinedControlApp:
         # sweep would find the instrument gone (review, 2026-10-18).
         if self._stfmr_lockin_rows_locked():
             return
-        self.stfmr_lockin_disconnect_buttons[key].configure(state="disabled")
+        if key == "lakeshore" and self._stfmr_lockin_magnet_jobs_pending():
+            return      # it ramps to 0 A at its Disconnect: not under a job of its own
+        self._stfmr_lockin_row(key)[2].configure(state="disabled")
         if key == "kepco":
             try:
                 self.stfmr_lockin_controllers[key].disconnect()
@@ -21390,8 +22579,30 @@ class CombinedControlApp:
                 if not self.closing:
                     messagebox.showerror("STFMR instrument disconnect", str(error), parent=self.root)
             self._set_stfmr_lockin_device_ui(key, False)
+            if key == "lakeshore":
+                self._show_stfmr_lockin_kepco_state()
 
         future.add_done_callback(lambda _future: self.post_ui(finished))
+
+    def _stfmr_lockin_lakeshore_connected(self) -> None:
+        """After the LS643's Connect (user, 2026-10-21): its read-back in the
+        panel, and what keeps it from being armed, an output not at zero or
+        a LIMIT? below the program's limit, said at once."""
+        controller = self.stfmr_lockin_controllers["lakeshore"]
+        self._show_stfmr_lockin_kepco_state()
+        self._update_stfmr_lockin_ui()
+        reading, notes = controller.reading, []
+        if controller.arm_problem:
+            notes.append(f"It is NOT armed, so no setpoint is sent to it: {controller.arm_problem}.")
+        if controller.output_on:
+            notes.append(f"Its output is NOT at zero: RDGI? {reading.get('current_a', math.nan):+.3f} A "
+                         f"(SETI? {reading.get('setpoint_a', math.nan):+.3f} A).")
+        if controller.effective_max_a < controller.program_max_a:
+            notes.append(f"Its LIMIT? allows at most {controller.limit_current_a:g} A, below the program's "
+                         f"{controller.program_max_a:g} A: larger currents are refused.")
+        if notes and not self.closing:
+            message = "Connected. " + " ".join(notes)
+            self._stfmr_lockin_after_drain(lambda: messagebox.showwarning("STFMR LS643", message, parent=self.root))
 
     # ---- the Newmark stage's Motor row (user, 2026-10-17) -------------------------
     def _stfmr_lockin_motor_locked(self) -> bool:
@@ -21537,7 +22748,7 @@ class CombinedControlApp:
         future.add_done_callback(lambda _future: self.post_ui(finished))
 
     # ---- the stage by hand: Move stage and Stop stage (user, 2026-10-17) --------
-    def _stfmr_lockin_require_4886_off(self) -> None:
+    def _stfmr_lockin_require_4886_off(self, *, pending: bool = True) -> None:
         """A hand move turns the sample in the magnet's gap, so it is refused
         while this page's 4886 output is on, or not confirmed off after a
         failed Zero / OFF or Disconnect (user, 2026-10-18: "Refuse: zero it
@@ -21552,6 +22763,22 @@ class CombinedControlApp:
         connected (it then holds the supply's lease, so no other page can
         switch it on), and while any other page's 4886 output is on or not
         confirmed off."""
+        if self._stfmr_lockin_lakeshore_chosen():
+            # The LS643 chosen (user, 2026-10-21): connected here, confirmed
+            # at zero (SETI? 0 and |RDGI?| under the tolerance), and no
+            # Apply, Read or Zero of it pending.
+            lakeshore = self.stfmr_lockin_controllers["lakeshore"]
+            if pending and self._stfmr_lockin_magnet_jobs_pending():
+                raise RuntimeError("An LS643 setpoint, read or zero is in progress: wait for it, zero the LS643 "
+                                   "(Zero / OFF), then move the stage")
+            if not lakeshore.connected:
+                raise RuntimeError("Connect the LS643 on this page and zero it (Zero / OFF) first: the stage must "
+                                   "not turn with the magnet on")
+            if lakeshore.output_on:
+                raise RuntimeError("The LS643 output is not at zero (or not confirmed at zero): zero it first "
+                                   "(Zero / OFF), then move the stage")
+            self._stfmr_lockin_require_other_4886_off()
+            return
         kepco = self.stfmr_lockin_controllers["kepco"]
         if not getattr(kepco, "connected", False):
             raise RuntimeError("Connect the 4886 on this page and zero it (Zero / OFF) first: the stage must not "
@@ -21565,10 +22792,32 @@ class CombinedControlApp:
         """Raises while another page's 4886 output is on or not confirmed off
         (review, 2026-10-18): before a hand move, its CLR / EO=1, and each of
         a sweep's stage moves."""
+        supplies = self._stfmr_lockin_other_lakeshore_on()
+        if supplies:
+            # The Lake Shores (user, 2026-10-21): SHV's LS643 is this page's
+            # supply; the FMR page's LS648 is counted too, to be safe.
+            raise RuntimeError(f"The {' and '.join(supplies)} output is not at zero (or not confirmed at zero): "
+                               "zero it there (Zero / OFF) first: the stage must not turn with the magnet on")
         others = self._stfmr_lockin_other_4886_on()
         if others:
             raise RuntimeError(f"The KEPCO 4886 output of the {' and '.join(others)} page is on (or not confirmed "
                                "off): zero it there (Zero / OFF) first: the stage must not turn with the magnet on")
+
+    def _stfmr_lockin_other_lakeshore_on(self) -> list[str]:
+        """The magnet supplies other than this page's chosen one whose
+        output is not confirmed at zero (user, 2026-10-21), for the stage's
+        checks: this page's LS643 while the 4886 is chosen, SHV's LS643 and
+        the FMR page's LS648 (connected or left not confirmed at zero by a
+        Disconnect).  Read from __dict__, as _stfmr_lockin_other_4886_on."""
+        own = self.stfmr_lockin_controllers.get("lakeshore") if self._stfmr_lockin_lakeshore_chosen() else None
+        rte = self.__dict__.get("rte_panel")
+        candidates = (("this page's LS643", None if own is not None
+                       else self.stfmr_lockin_controllers.get("lakeshore")),
+                      ("FMR page's LS648", (self.__dict__.get("stfmr_controllers") or {}).get("lakeshore")),
+                      ("SHV page's LS643", ((getattr(rte, "__dict__", {}).get("rte_controllers") or {}).get("lakeshore")
+                                            if rte is not None else None)))
+        return [name for name, supply in candidates
+                if supply is not None and supply is not own and getattr(supply, "output_on", False) is True]
 
     def _stfmr_lockin_other_4886_on(self) -> list[str]:
         """The other pages (FMR, SHV) whose 4886 controller has its output on
@@ -21577,7 +22826,12 @@ class CombinedControlApp:
         (a test harness) counts as off."""
         own = self.stfmr_lockin_controllers["kepco"]
         rte = self.__dict__.get("rte_panel")
-        candidates = (("FMR", (self.__dict__.get("stfmr_controllers") or {}).get("kepco")),
+        # With the LS643 chosen, this page's own 4886 counts as another
+        # supply (user, 2026-10-21).
+        own_page = (("STFMR", own),) if self._stfmr_lockin_lakeshore_chosen() else ()
+        if own_page:
+            own = None
+        candidates = own_page + (("FMR", (self.__dict__.get("stfmr_controllers") or {}).get("kepco")),
                       ("SHV", ((getattr(rte, "__dict__", {}).get("rte_controllers") or {}).get("kepco")
                                if rte is not None else None)))
         return [page for page, kepco in candidates
@@ -21626,6 +22880,10 @@ class CombinedControlApp:
         stop = _EitherEvent(self.stfmr_lockin_stop_event, self.stfmr_lockin_stage_stop_event)
 
         def move():
+            # Again on the worker, right before the move, after any job queued
+            # before it (a Lake Shore ramp, say): the stage never turns with
+            # the magnet on (user, 2026-10-21).  Flags only, no I/O.
+            self._stfmr_lockin_require_4886_off(pending=False)
             try:
                 state = motor.move_to_deg(target, stop, on_progress=self._stfmr_lockin_motor_progress)
             except NewmarkStopRequested as stopped:
@@ -22364,7 +23622,14 @@ class CombinedControlApp:
             self.stfmr_lockin_gauss_continuous_var.get()
             and self._stfmr_lockin_connected("gauss")
         )
-        if not read_meter and not read_field:
+        # The chosen LS643's read-back (SETI?, RDGI?, RDGV?, OPST?, ERST?)
+        # for the panel's readouts, while idle (user, 2026-10-21).
+        lakeshore = (self.stfmr_lockin_controllers.get("lakeshore") if self._stfmr_lockin_lakeshore_chosen()
+                     else None)
+        read_magnet = (lakeshore is not None and lakeshore.connected
+                       and not self._stfmr_lockin_magnet_jobs_pending())
+        magnet = {}
+        if not read_meter and not read_field and not read_magnet:
             self._set_stfmr_lockin_overload_state(None)
             self.stfmr_lockin_live_after_id = self.root.after(
                 500, self._stfmr_lockin_live_timer
@@ -22383,6 +23648,11 @@ class CombinedControlApp:
 
         def operation():
             self._stfmr_lockin_require_page_open()      # review, 2026-10-17
+            if read_magnet:
+                try:
+                    magnet["reading"] = lakeshore.read_state()
+                except Exception as error:
+                    magnet["error"] = error
             field = (
                 self.stfmr_lockin_controllers["gauss"].read_field()
                 if read_field else None
@@ -22420,6 +23690,14 @@ class CombinedControlApp:
                     return
                 if self.closing or self.stfmr_lockin_closed:
                     return
+                if read_magnet:
+                    self._show_stfmr_lockin_kepco_state()
+                    if "error" in magnet:
+                        self.stfmr_lockin_kepco_output_var.set("Read failed")
+                    # The supply choice locks and unlocks with the output.
+                    if self.__dict__.get("stfmr_lockin_magnet_last_on") != lakeshore.output_on:
+                        self.stfmr_lockin_magnet_last_on = lakeshore.output_on
+                        self._update_stfmr_lockin_ui()
                 if (meter != self.stfmr_lockin_meter_var.get().strip()
                         or (read_meter and not all(self._stfmr_lockin_connected(k) for k in meter_keys))):
                     self._set_stfmr_lockin_overload_state(None)
@@ -22501,12 +23779,14 @@ class CombinedControlApp:
         (user, 2026-10-14; it was one Power dBm value)."""
         meter = self.stfmr_lockin_meter_var.get().strip()
         meter_keys = self._stfmr_lockin_meter_keys(meter)
+        magnet_key = self._stfmr_lockin_magnet_key()
         missing = [
-            key for key in ("kepco", "gauss", "smb", *meter_keys)
+            key for key in (magnet_key, "gauss", "smb", *meter_keys)
             if not self._stfmr_lockin_connected(key)
         ]
         if missing:
-            raise RuntimeError("Connect the 4886, 475, SMB100A and the selected lock-in before starting STFMR")
+            raise RuntimeError(f"Connect the {self._stfmr_lockin_supply_label()}, 475, SMB100A and the selected "
+                               "lock-in before starting STFMR")
         # The page has one safety confirmation, in the KEPCO 4886 field output
         # panel; a sweep energises the magnet and the RF, so it needs that tick.
         if not self.stfmr_lockin_manual_safety_var.get():
@@ -22572,10 +23852,18 @@ class CombinedControlApp:
             )
         if not 0 < limit_v <= STFMR_KEPCO_MAX_VOLTAGE_V:
             raise ValueError("4886 voltage limit must be within 0–20 V")
+        supply = self._stfmr_lockin_supply()
+        if supply.lakeshore:
+            # The LS643 (user, 2026-10-21): armed, its rate, and its 40 A
+            # (lowered by its LIMIT?) for the currents below.
+            if supply.lakeshore_controller.arm_problem:
+                raise ValueError(f"The LS643 is not armed: {supply.lakeshore_controller.arm_problem}")
+            self._stfmr_lockin_rate()
         forward = self._build_stfmr_one_way_points(
             self.stfmr_lockin_start_var.get(),
             self.stfmr_lockin_stop_var.get(),
             self.stfmr_lockin_step_var.get(),
+            supply.max_current_a(),
         )
         # A run that would save nothing switched the 4886 and the RF on for
         # no data (audit, 2026-10-13), so it is refused.  A fixed current
@@ -22608,9 +23896,10 @@ class CombinedControlApp:
         Start's second half (after the stage check) and after its folder and
         name dialogs, before any file or output (review, 2026-10-18: an
         instrument disconnected during the stage check was not seen)."""
-        names = {"kepco": "KEPCO 4886", "gauss": "LS475", "smb": "SMB100A", "830": "SR830", "mfli": "MFLI"}
+        names = {"kepco": "KEPCO 4886", "lakeshore": "LS643", "gauss": "LS475", "smb": "SMB100A", "830": "SR830",
+                 "mfli": "MFLI"}
         states = self.__dict__.get("stfmr_lockin_connection_vars", {})
-        for key in ("kepco", "gauss", "smb", *self._stfmr_lockin_meter_keys(meter)):
+        for key in (self._stfmr_lockin_magnet_key(), "gauss", "smb", *self._stfmr_lockin_meter_keys(meter)):
             state = states[key].get() if key in states else ""
             if not self._stfmr_lockin_connected(key) or state in ("Connecting…", "Disconnecting…"):
                 raise RuntimeError(f"The {names[key]} is no longer connected; the sweep was not started")
@@ -22621,7 +23910,8 @@ class CombinedControlApp:
         if (self.closing or self.stfmr_lockin_closed
                 or self.stfmr_lockin_running
                 or getattr(self, "stfmr_lockin_starting", False)
-                or self._stfmr_lockin_stage_job_pending()):
+                or self._stfmr_lockin_stage_job_pending()
+                or self._stfmr_lockin_magnet_jobs_pending()):
             return
         self._run_stfmr_lockin_start_step(self._start_stfmr_lockin_scan)
 
@@ -22792,6 +24082,15 @@ class CombinedControlApp:
             known_deg = self.__dict__.get("stfmr_lockin_motor_known_deg") if angle_plan["used"] else None
             move_s = stfmr_angle_move_seconds(angles_deg, known_deg or 0.0)
             estimate += move_s
+            # The LS643 ramps where the 4886 jumps (user, 2026-10-21): every
+            # pass from 0 A to Start A, through every point, and back to 0 A
+            # (zeroed before each carrier and at the end), at the rate, with
+            # its read-backs.
+            supply = self._stfmr_lockin_supply()
+            ramp_s = (passes * lakeshore_scan_ramp_seconds([0.0, *points, 0.0], supply.rate_a_s)
+                      if supply.lakeshore else 0.0)
+            estimate += ramp_s
+            name = self._stfmr_lockin_supply_label()
             angle_line = angle_plan["text"] + (
                 f"; the stage is at {known_deg:+.3f}° now" if known_deg is not None else "")
             # The seconds come first; from 2 min the minutes or hours follow, as
@@ -22828,13 +24127,14 @@ class CombinedControlApp:
                 f"{acquire_s:g} s"
                 + (f" + {move_s:.0f} s of stage moves at {NEWMARK_SPEED_DEG_S:g}°/s"
                    if angle_plan["used"] else "")
+                + (f" + {ramp_s:.0f} s of LS643 ramps at {supply.rate_a_s:g} A/s" if supply.lakeshore else "")
                 + f"{estimate_scale}).\n"
                 # Every scan page zeroes its sources at every end (user,
                 # 2026-10-18); the run folder and its name come after this.
-                + "At the end (completed, stopped or failed) the 4886 is zeroed and the SMB100A RF "
+                + f"At the end (completed, stopped or failed) the {name} is zeroed and the SMB100A RF "
                 "switched off. The run folder and file name are asked next.\n"
-                + ("Start now, turn the stage and enable the 4886 and SMB100A outputs?"
-                   if angle_plan["used"] else "Start now and enable the 4886 and SMB100A outputs?"),
+                + (f"Start now, turn the stage and enable the {name} and SMB100A outputs?"
+                   if angle_plan["used"] else f"Start now and enable the {name} and SMB100A outputs?"),
                 parent=self.root,
             ):
                 return
@@ -22925,6 +24225,9 @@ class CombinedControlApp:
                 "motor_speed_deg_s": NEWMARK_SPEED_DEG_S if angle_plan["used"] else None,
                 "motor_angle_at_start_deg": known_deg,
                 "stage_moves_s_estimate": move_s,
+                # The magnet supply, its identity, limits and rate (user,
+                # 2026-10-21).
+                "magnet_supply": self._stfmr_lockin_magnet_settings(supply, ramp_s),
             }
             # The save step every scan page shares (user, 2026-10-18): the
             # folder dialog, the file-name step (a typed name names the run
@@ -22993,6 +24296,9 @@ class CombinedControlApp:
             self.stfmr_lockin_mfli_range_attempts = 0
             self.stfmr_lockin_mfli_range_actions = []
             self.stfmr_lockin_selected_meter = meter
+            # The supply's name in the end's texts and log (user, 2026-10-21).
+            self.stfmr_lockin_scan_supply_label = self._stfmr_lockin_supply_label()
+            self.stfmr_lockin_scan_supply_name = supply.name
             self.stfmr_lockin_stop_event.clear()
             self.stfmr_lockin_running = True
             self._set_stfmr_progress(self.stfmr_lockin_progress, 0, total_points)
@@ -23016,6 +24322,15 @@ class CombinedControlApp:
         # limit error or the driver off is asked Yes/No then, never
         # mid-sweep with the RF on (user, 2026-10-17; as RT-E's Angle Start).
         self._stfmr_lockin_check_motor(begin)
+
+    def _stfmr_lockin_magnet_settings(self, supply, ramp_s) -> dict[str, object]:
+        """run_prepared's magnet_supply (user, 2026-10-21); no I/O."""
+        if not supply.lakeshore:
+            kepco = supply.kepco
+            return dict(name=supply.name, resource=str(getattr(kepco, "resource_name", "") or ""),
+                        connected=bool(getattr(kepco, "connected", False)), max_current_a=STFMR_KEPCO_MAX_CURRENT_A)
+        return dict(name=supply.name, rate_a_s=supply.rate_a_s, ramp_s_counted=ramp_s,
+                    setpoint_tolerance="max(0.01 A, 0.2 % of |I|)", **supply.lakeshore_controller.describe())
 
     # ---- the stage angles and Start's stage check (user, 2026-10-17) ------------
     def _stfmr_lockin_angle_plan(self) -> dict[str, object]:
@@ -23487,19 +24802,34 @@ class CombinedControlApp:
                     # Without a session zero_output() sends nothing at all,
                     # which must not be logged as zeroed (review, 2026-10-18):
                     # the sweep cannot run without the 4886 anyway.
-                    kepco = self.stfmr_lockin_controllers["kepco"]
-                    if not kepco.connected:
-                        raise RuntimeError("The KEPCO 4886 is not connected; the sweep stopped before the stage moved")
-                    self._stfmr_lockin_require_other_4886_off()
-                    was_on = getattr(kepco, "output_owned", True)
-                    with visa_operation("KEPCO 4886", "zeroing before the first stage move"):
-                        kepco.zero_output()
-                    self._stfmr_lockin_note("STFMR sweep: 4886 zeroed before the first stage move" if was_on else
-                                            "STFMR sweep: 4886 output not on before the first stage move; "
-                                            "nothing to zero")
-                    moved["state"] = self._stfmr_lockin_move_stage(angle_target)
-                    if moved["state"] is None:
-                        return
+                    if supply.lakeshore:
+                        # The LS643 ramped to 0 A and confirmed there before
+                        # the stage turns (user, 2026-10-21).
+                        if not supply.connected:
+                            raise RuntimeError("The LS643 is not connected; the sweep stopped before the stage moved")
+                        self._stfmr_lockin_require_other_4886_off()
+                        was_on = supply.output_on
+                        supply.zero()
+                        self._stfmr_lockin_note("STFMR sweep: LS643 ramped to 0 A before the first stage move"
+                                                if was_on else "STFMR sweep: LS643 at 0 A before the first stage move")
+                        moved["state"] = self._stfmr_lockin_move_stage(angle_target)
+                        if moved["state"] is None:
+                            return
+                    else:
+                        kepco = self.stfmr_lockin_controllers["kepco"]
+                        if not kepco.connected:
+                            raise RuntimeError("The KEPCO 4886 is not connected; the sweep stopped before the stage "
+                                               "moved")
+                        self._stfmr_lockin_require_other_4886_off()
+                        was_on = getattr(kepco, "output_owned", True)
+                        with visa_operation("KEPCO 4886", "zeroing before the first stage move"):
+                            kepco.zero_output()
+                        self._stfmr_lockin_note("STFMR sweep: 4886 zeroed before the first stage move" if was_on else
+                                                "STFMR sweep: 4886 output not on before the first stage move; "
+                                                "nothing to zero")
+                        moved["state"] = self._stfmr_lockin_move_stage(angle_target)
+                        if moved["state"] is None:
+                            return
                 # The first power, as the one power was set before, now read
                 # back before the RF is switched on: a level the SMB100A did
                 # not take raises inside configure(), before "LFO ON" and
@@ -23543,16 +24873,22 @@ class CombinedControlApp:
                         timeconstant_s=self.stfmr_lockin_mfli_timeconstant_s,
                     )
             else:
-                with visa_operation("KEPCO 4886", "zeroing before the next carrier"):
-                    self.stfmr_lockin_controllers["kepco"].zero_output()
+                if supply.lakeshore:
+                    # Ramped to 0 A and waited for, as the 4886 is zeroed
+                    # before every carrier (user, 2026-10-21).
+                    supply.zero()
+                else:
+                    with visa_operation("KEPCO 4886", "zeroing before the next carrier"):
+                        self.stfmr_lockin_controllers["kepco"].zero_output()
                 # The next angle, with the 4886 at zero and the RF, AM and LFO
                 # left on (user, 2026-10-17).
                 if angle_change and angle_target is not None:
                     # Without a session the zero above sent nothing, and
                     # another page's 4886 may be on (review, 2026-10-18): the
                     # stage must not turn with the magnet on.
-                    if not self.stfmr_lockin_controllers["kepco"].connected:
-                        raise RuntimeError("The KEPCO 4886 is not connected; the sweep stopped before the stage moved")
+                    if not supply.connected:
+                        raise RuntimeError(f"The {supply.label if supply.lakeshore else 'KEPCO 4886'} is not "
+                                           "connected; the sweep stopped before the stage moved")
                     self._stfmr_lockin_require_other_4886_off()
                     moved["state"] = self._stfmr_lockin_move_stage(angle_target)
                     if moved["state"] is None:
@@ -23591,11 +24927,18 @@ class CombinedControlApp:
                         )
             if self.stfmr_lockin_stop_event.is_set():
                 return
-            with visa_operation("KEPCO 4886", "enabling the output at the first current"):
-                self.stfmr_lockin_controllers["kepco"].set_output(
-                    "CURR", first_current, self.stfmr_lockin_limit_v
-                )
+            if supply.lakeshore:
+                # Ramped to the first current and waited for (user, 2026-10-21).
+                supply.start(first_current, None)
+            else:
+                with visa_operation("KEPCO 4886", "enabling the output at the first current"):
+                    self.stfmr_lockin_controllers["kepco"].set_output(
+                        "CURR", first_current, self.stfmr_lockin_limit_v
+                    )
 
+        # The chosen supply, as at Start (the choice is locked while the
+        # sweep runs; user, 2026-10-21).
+        supply = self._stfmr_lockin_supply()
         try:
             future = self.stfmr_lockin_executor.submit(configure)
         except BaseException as error:
@@ -23608,6 +24951,10 @@ class CombinedControlApp:
                 return
             try:
                 future.result()
+            except LakeShoreRampStopped:
+                # A Stop during an LS643 ramp: STOP was sent (user, 2026-10-21).
+                self._finish_stfmr_lockin_scan(stopped=True)
+                return
             except BaseException as error:
                 self._finish_stfmr_lockin_scan(error=error)
                 return
@@ -24340,6 +25687,10 @@ class CombinedControlApp:
             # 2026-10-17); blank without the motor.  Last, so every older
             # column keeps its place.
             "stage_angle_deg": "" if stage_angle is None else stage_angle,
+            # The magnet supply and the LS643's current read when its ramp
+            # reached this point's setpoint (user, 2026-10-21).
+            "magnet_supply": self.__dict__.get("stfmr_lockin_scan_supply_name", MAGNET_SUPPLY_KEPCO),
+            "magnet_measured_current_a": self._stfmr_lockin_supply().measured_current_a(),
         }
         pair = [row]
         if dual:
@@ -24604,6 +25955,11 @@ class CombinedControlApp:
             )
             self._configure_stfmr_lockin_frequency(initial=False)
             return
+        if self._stfmr_lockin_lakeshore_chosen():
+            # The LS643 ramps on the worker and the point's settle starts once
+            # it is at the setpoint (user, 2026-10-21).
+            self._stfmr_lockin_ramp_then(self.stfmr_lockin_points[done_in_frequency], self._schedule_stfmr_lockin_read)
+            return
         try:
             next_current = self.stfmr_lockin_points[done_in_frequency]
             self.stfmr_lockin_controllers["kepco"].set_scan_current(next_current)
@@ -24612,9 +25968,49 @@ class CombinedControlApp:
             return
         # Keep the field-output panel on the current the sweep just sent.
         self._show_stfmr_lockin_kepco_state()
+        self._schedule_stfmr_lockin_read()
+
+    def _stfmr_lockin_ramp_then(self, current: float, then) -> None:
+        """A sweep step with the LS643 (user, 2026-10-21): the ramp to
+        ``current`` on the worker (never the Tk thread), then ``then()`` on
+        the Tk thread once it is at the setpoint.  A Stop during it (the
+        sweep's stop event) sends STOP and the sweep ends stopped; a failure
+        (an error bit, compliance, a time-out) ends it failed, the output
+        left where STOP left it until the end's zero."""
+        supply = self._stfmr_lockin_supply()
+        try:
+            future = self.stfmr_lockin_executor.submit(supply.step, current)
+        except BaseException as error:
+            self._finish_stfmr_lockin_scan(error=error)
+            return
+        self.stfmr_lockin_future = future
+
+        def ramped() -> None:
+            if not self.stfmr_lockin_running:
+                return
+            try:
+                future.result()
+            except LakeShoreRampStopped:
+                self._finish_stfmr_lockin_scan(stopped=True)
+                return
+            except BaseException as error:
+                self._finish_stfmr_lockin_scan(error=error)
+                return
+            if self.stfmr_lockin_stop_event.is_set():
+                self._finish_stfmr_lockin_scan(stopped=True)
+                return
+            self._show_stfmr_lockin_kepco_state()
+            then()
+
+        future.add_done_callback(lambda _future: self.post_ui(ramped))
+
+    def _schedule_stfmr_lockin_read(self) -> None:
+        """The next point's read after the effective settle."""
         # The effective settle after the step: Settle s, or
         # LOCKIN_SETTLE_TAUS x the TC of every lock-in read when longer
         # (user, 2026-10-14).
+        if not self.stfmr_lockin_running:
+            return
         self.stfmr_lockin_after_id = self.root.after(
             max(1, int(math.ceil(self.stfmr_lockin_effective_settle_s * 1000.0 - 1e-6))),
             self._read_next_stfmr_lockin_point,
@@ -24643,7 +26039,8 @@ class CombinedControlApp:
                 except Exception:
                     pass    # the stop must never wait on the log
         # Within the 52-character status label (user, 2026-10-18).
-        self.stfmr_lockin_status_var.set("Stopping; zeroing the 4886, SMB100A RF off next…")
+        self.stfmr_lockin_status_var.set(
+            f"Stopping; zeroing the {self.__dict__.get('stfmr_lockin_scan_supply_label', '4886')}, SMB100A RF off next…")
         if self.stfmr_lockin_after_id is not None:
             try:
                 self.root.after_cancel(self.stfmr_lockin_after_id)
@@ -24652,7 +26049,7 @@ class CombinedControlApp:
             self.stfmr_lockin_after_id = None
             self._finish_stfmr_lockin_scan(stopped=True)
 
-    def _stfmr_lockin_zero_outputs(self) -> dict[str, str]:
+    def _stfmr_lockin_zero_outputs(self, magnet: bool = True) -> dict[str, str]:
         """Every end of a sweep, completed, stopped or failed (user,
         2026-10-18: every scan page zeroes its sources at every end, as
         SHV), on the page's worker after the sweep's own clean-up (a stage
@@ -24662,11 +26059,17 @@ class CombinedControlApp:
         AM, LFO and RF off with OUTP? read back as 0 (rf_off_read_back).
         Each is tried whatever the other did, through the shared
         zero_scan_outputs; never raises."""
+        # The chosen supply (user, 2026-10-21): the 4886 as before, or the
+        # LS643 ramped to 0 A and waited for (never stopped), its result
+        # under "LS643".
+        # magnet=False: the RF only (the program closing, whose LS643 zero
+        # runs on a thread of its own).
+        supply = self._stfmr_lockin_supply()
+
         def kepco_off():
-            kepco = self.stfmr_lockin_controllers["kepco"]
-            if not kepco.connected:
+            if not supply.connected:
                 return "not connected"
-            kepco.force_output_off()
+            supply.zero()
 
         def rf_off():
             smb = self.stfmr_lockin_controllers["smb"]
@@ -24674,7 +26077,8 @@ class CombinedControlApp:
                 return "not connected"
             smb.rf_off_read_back()
 
-        return zero_scan_outputs((("4886", kepco_off), ("SMB100A RF", rf_off)))
+        steps = (((self._stfmr_lockin_supply_label(), kepco_off),) if magnet else ()) + (("SMB100A RF", rf_off),)
+        return zero_scan_outputs(steps)
 
     def _finish_stfmr_lockin_scan(
         self, *, error: BaseException | None = None, stopped: bool = False
@@ -24697,7 +26101,8 @@ class CombinedControlApp:
             self.stfmr_lockin_after_id = None
         # A callback of the sweep that still came would stop, not go on.
         self.stfmr_lockin_stop_event.set()
-        self.stfmr_lockin_status_var.set("Ending; zeroing the 4886, SMB100A RF off…")
+        self.stfmr_lockin_status_var.set(
+            f"Ending; zeroing the {self.__dict__.get('stfmr_lockin_scan_supply_label', '4886')}, SMB100A RF off…")
         try:
             future = self.stfmr_lockin_executor.submit(self._stfmr_lockin_zero_outputs)
         except BaseException:
@@ -24725,7 +26130,8 @@ class CombinedControlApp:
             # closed the files itself.
             return
         self.stfmr_lockin_running = False
-        order = ("4886", "SMB100A RF")
+        supply = self.__dict__.get("stfmr_lockin_scan_supply_label", "4886")
+        order = (supply, "SMB100A RF")
         failed = [label for label in order if results.get(label) not in ("zeroed", "not connected")]
         lines = stfmr_end_outputs_lines(results, order)
         recorder = self.__dict__.get("stfmr_lockin_recorder")
@@ -24749,9 +26155,10 @@ class CombinedControlApp:
             # saved", within the 52-character status label (user, 2026-10-17
             # and 2026-10-18); a failed zero leaves ": check it" to the dialog.
             status = (
-                f"Stopped; {stfmr_end_outputs_text(results, 'SMB100A RF', check=False)}; "
+                f"Stopped; {stfmr_end_outputs_text(results, 'SMB100A RF', check=False, supply=supply)}; "
                 f"{where.replace('stage stopped at', 'stage at')}; {saved} saved" if motor_used
-                else f"Stopped; {stfmr_end_outputs_text(results, 'SMB100A RF')}; {saved} point{'' if saved == 1 else 's'} saved"
+                else f"Stopped; {stfmr_end_outputs_text(results, 'SMB100A RF', supply=supply)}; "
+                f"{saved} point{'' if saved == 1 else 's'} saved"
             )
         else:
             modulations = len(getattr(self, "stfmr_lockin_modulation_frequencies_hz", ()))
@@ -24768,7 +26175,7 @@ class CombinedControlApp:
                 swept.append(f"{powers} powers")
             if angles > 1:
                 swept.append(f"{angles} angles")
-            status = (f"Completed; {stfmr_end_outputs_text(results, 'SMB100A RF')}; {saved} "
+            status = (f"Completed; {stfmr_end_outputs_text(results, 'SMB100A RF', supply=supply)}; {saved} "
                       f"point{'' if saved == 1 else 's'} saved; "
                       + ", ".join(swept))
         outcome = "error" if error is not None else "stopped" if stopped else "completed"
@@ -25442,7 +26849,7 @@ class CombinedControlApp:
 
     @staticmethod
     def _build_stfmr_one_way_points(
-        start_a: float, stop_a: float, step_a: float
+        start_a: float, stop_a: float, step_a: float, max_current_a: float = STFMR_KEPCO_MAX_CURRENT_A
     ) -> list[float]:
         start = float(start_a)
         stop = float(stop_a)
@@ -25451,8 +26858,10 @@ class CombinedControlApp:
             raise ValueError("FMR start/stop current and step must be finite numbers")
         if step <= 0.0:
             raise ValueError("FMR current step must be greater than 0")
-        if max(abs(start), abs(stop)) > STFMR_KEPCO_MAX_CURRENT_A:
-            raise ValueError("FMR start/stop current must be within ±10 A")
+        # The KEPCO's ±10 A, or the chosen Lake Shore's effective maximum
+        # (user, 2026-10-21).
+        if max(abs(start), abs(stop)) > max_current_a:
+            raise ValueError(f"FMR start/stop current must be within ±{max_current_a:g} A")
         if start == stop:
             return [start]
         interval_count = int(math.ceil(abs(stop - start) / step - 1e-12))
@@ -25508,12 +26917,12 @@ class CombinedControlApp:
         return max(tail) - min(tail) <= tolerance
 
     def _stfmr_fmr_inputs(self):
-        required = ("kepco", "gauss", "vna")
+        required = (self._stfmr_magnet_key(), "gauss", "vna")
         missing = [
             key for key in required if not self.stfmr_controllers[key].connected
         ]
         if missing:
-            raise RuntimeError("Connect the 4886, 475 and PNA before starting FMR")
+            raise RuntimeError(f"Connect the {self._stfmr_supply_label()}, 475 and PNA before starting FMR")
         if not self.stfmr_safety_var.get():
             raise RuntimeError("Please tick the magnet, cooling, wiring and personnel safety confirmation first")
         selected = tuple(
@@ -25532,10 +26941,18 @@ class CombinedControlApp:
             raise ValueError("PNA stimulus power must be a finite number")
         if power_dbm > STFMR_PNA_MAX_POWER_DBM:
             raise ValueError("PNA stimulus power must not exceed 0 dBm")
+        # The LS648 (user, 2026-10-21): armed, its rate, and its 100 A
+        # (lowered by its LIMIT?) for the currents.
+        supply = self._stfmr_supply()
+        if supply.lakeshore:
+            if supply.lakeshore_controller.arm_problem:
+                raise ValueError(f"The LS648 is not armed: {supply.lakeshore_controller.arm_problem}")
+            self._stfmr_rate()
         currents = self._build_stfmr_one_way_points(
             self.stfmr_fmr_start_current_var.get(),
             self.stfmr_fmr_stop_current_var.get(),
             self.stfmr_fmr_step_current_var.get(),
+            supply.max_current_a(),
         )
         voltage_limit = float(self.stfmr_fmr_voltage_limit_var.get())
         settle = float(self.stfmr_fmr_settle_var.get())
@@ -25549,9 +26966,16 @@ class CombinedControlApp:
         return selected, frequencies, power_dbm, currents, voltage_limit, settle
 
     def _stfmr_frequency_inputs(self):
-        required = ("kepco", "gauss", "vna")
+        required = (self._stfmr_magnet_key(), "gauss", "vna")
         if any(not self.stfmr_controllers[key].connected for key in required):
-            raise RuntimeError("Connect the 4886, 475 and PNA before starting the frequency sweep")
+            raise RuntimeError(f"Connect the {self._stfmr_supply_label()}, 475 and PNA before starting the frequency "
+                               "sweep")
+        supply = self._stfmr_supply()
+        if supply.lakeshore:
+            # The LS648 (user, 2026-10-21): armed, and its rate.
+            if supply.lakeshore_controller.arm_problem:
+                raise ValueError(f"The LS648 is not armed: {supply.lakeshore_controller.arm_problem}")
+            self._stfmr_rate()
         if not self.stfmr_safety_var.get():
             raise RuntimeError("Please tick the magnet, cooling, wiring and personnel safety confirmation first")
         selected = STFMRPNAFMRController.normalize_selected(
@@ -25593,37 +27017,291 @@ class CombinedControlApp:
             settle,
         )
 
-    def _set_stfmr_scan_busy(self, busy: bool) -> None:
-        for key in STFMR_DEFAULT_RESOURCES:
+    # ---- the magnet supply: the KEPCO 4886 or the Lake Shore 648 (user, 2026-10-21) ----
+    def _stfmr_row(self, key: str):
+        """An FMR connection row's (address, Connect, Disconnect)."""
+        rows = self.__dict__.get("stfmr_supply_rows") or {}
+        if key in rows:
+            return rows[key]
+        return tuple((self.__dict__.get(name) or {}).get(key) for name in (
+            "stfmr_device_resource_widgets", "stfmr_device_connect_buttons", "stfmr_device_disconnect_buttons"))
+
+    def _stfmr_lakeshore_chosen(self) -> bool:
+        """True while the LS648 is the FMR page's magnet supply; the KEPCO
+        4886, the default, otherwise (also on a page made without __init__)."""
+        controllers = self.__dict__.get("stfmr_controllers") or {}
+        return (self.__dict__.get("stfmr_magnet_choice", MAGNET_SUPPLY_KEPCO) != MAGNET_SUPPLY_KEPCO
+                and controllers.get("lakeshore") is not None)
+
+    def _stfmr_magnet_key(self) -> str:
+        return "lakeshore" if self._stfmr_lakeshore_chosen() else "kepco"
+
+    def _stfmr_supply_label(self) -> str:
+        """"4886" or "LS648", for the page's texts."""
+        return self.stfmr_controllers["lakeshore"].short_label if self._stfmr_lakeshore_chosen() else "4886"
+
+    def _stfmr_supply(self, stop_event=None) -> MagnetSupply:
+        """The chosen supply: the 4886 with the calls it always got (from
+        the Tk thread, its Connect's rule), or the LS648 ramping at the
+        page's rate on the worker; ``stop_event``: the running scan's."""
+        controllers = self.__dict__.get("stfmr_controllers") or {}
+        return MagnetSupply(controllers.get("kepco"), controllers.get("lakeshore"),
+                            use_lakeshore=self._stfmr_lakeshore_chosen(),
+                            rate_a_s=self.__dict__.get("stfmr_magnet_rate_a_s", LAKESHORE_DEFAULT_RATE_A_S),
+                            stop_event=stop_event, on_progress=self._stfmr_magnet_progress)
+
+    def _stfmr_rate(self) -> float:
+        """The Rate A/s box, checked on the Tk thread (against the LS648's
+        LIMIT? once connected), kept as a plain value for the worker."""
+        rate = self.stfmr_controllers["lakeshore"].check_rate(self.stfmr_magnet_rate_var.get())
+        self.stfmr_magnet_rate_a_s = rate
+        return rate
+
+    def _stfmr_magnet_progress(self, _reading) -> None:
+        def show() -> None:
+            if not self.closing and not self.stfmr_closed:
+                self._show_stfmr_lakeshore_state()
+        self.post_ui(show)
+
+    def _stfmr_magnet_jobs_pending(self) -> bool:
+        return self.__dict__.get("stfmr_magnet_job_pending", 0) > 0
+
+    def _stfmr_scans_busy(self) -> bool:
+        return bool(self.stfmr_fmr_running or self.stfmr_frequency_running
+                    or self.__dict__.get("stfmr_fmr_ending", False))
+
+    def _stfmr_magnet_choice_changed(self, _event=None) -> None:
+        """The magnet-supply choice (user, 2026-10-21): refused while a scan
+        runs or ends, while a Lake Shore job is pending, and while the
+        supply being left has its output on (or not confirmed at zero)."""
+        variable = self.stfmr_magnet_choice_var
+        choice = "LS648" if variable.get() == STFMR_FMR_MAGNET_CHOICES[1] else MAGNET_SUPPLY_KEPCO
+        previous = self.__dict__.get("stfmr_magnet_choice", MAGNET_SUPPLY_KEPCO)
+        if choice == previous:
+            return
+        problem = None
+        if self.closing or self.stfmr_closed or self._stfmr_scans_busy() or self._stfmr_magnet_jobs_pending():
+            problem = "FMR is busy: the magnet supply can be changed once it is idle"
+        elif self._stfmr_supply().output_on:
+            problem = (f"The {self._stfmr_supply_label()} output is on (or not confirmed at zero): zero it first "
+                       "(Zero / OFF), then change the magnet supply")
+        if problem is not None:
+            variable.set(STFMR_FMR_MAGNET_CHOICES[0 if previous == MAGNET_SUPPLY_KEPCO else 1])
+            messagebox.showerror("FMR magnet supply", problem, parent=self.root)
+            return
+        self.stfmr_magnet_choice = choice
+        self.thread_log(f"FMR magnet supply: {choice}")
+        self._stfmr_show_magnet_choice()
+
+    def _stfmr_show_magnet_choice(self) -> None:
+        """The connection row and the field-output panel for the chosen supply."""
+        lakeshore = self._stfmr_lakeshore_chosen()
+        for key, widgets in (self.__dict__.get("stfmr_supply_widgets") or {}).items():
+            for widget in widgets:
+                if (key == "lakeshore") == lakeshore:
+                    widget.grid()
+                else:
+                    widget.grid_remove()
+        frame = self.__dict__.get("stfmr_field_output_frame")
+        if frame is not None:
+            frame.configure(text="Lake Shore 648 field output" if lakeshore else "KEPCO 4886 BOP 20-10 field output")
+        if lakeshore:
+            self.stfmr_output_mode_var.set("Current")
+        self._on_stfmr_output_mode_changed()
+        if lakeshore:
+            self.stfmr_output_limit_label_var.set("Rate A/s:")
+        combo = self.__dict__.get("stfmr_output_mode_combo")
+        if combo is not None:
+            combo.configure(state="disabled" if lakeshore else "readonly")
+        entry = self.__dict__.get("stfmr_output_limit_entry")
+        if entry is not None:
+            entry.configure(textvariable=self.stfmr_magnet_rate_var if lakeshore else self.stfmr_output_limit_var)
+        button = self.__dict__.get("stfmr_read_output_button")
+        if button is not None:
+            button.configure(text="Read back" if lakeshore else "Show sent values")
+        if lakeshore:
+            self._show_stfmr_lakeshore_state()
+        else:
+            self.read_stfmr_kepco_once()
+        self._set_stfmr_scan_busy(self._stfmr_scans_busy())
+
+    def _show_stfmr_lakeshore_state(self) -> None:
+        """The LS648's last read-back in the panel's readouts (no I/O)."""
+        if not hasattr(self, "stfmr_kepco_mode_var"):
+            return
+        controller = self.stfmr_controllers["lakeshore"]
+        reading = controller.reading if controller.connected else {}
+        if not reading:
+            self.stfmr_kepco_mode_var.set("Set: -- A")
+            self.stfmr_kepco_current_var.set("I: -- A")
+            self.stfmr_kepco_voltage_var.set("V: -- V")
+            self.stfmr_kepco_output_var.set("NOT CONFIRMED 0 A" if controller.output_on else "--")
+            return
+        self.stfmr_kepco_mode_var.set(f"Set: {float(reading['setpoint_a']):+.5g} A")
+        self.stfmr_kepco_current_var.set(f"I: {float(reading['current_a']):+.5g} A")
+        self.stfmr_kepco_voltage_var.set(f"V: {float(reading['voltage_v']):+.4g} V")
+        word = lakeshore_state_word(reading, controller.arm_problem)
+        self.stfmr_kepco_output_var.set("At 0 A" if word == "Connected" and not reading.get("output_on") else word)
+
+    def _stfmr_magnet_job(self, operation, done, status: str) -> None:
+        """A field-output panel job of the LS648 on the FMR worker (user,
+        2026-10-21): never on the Tk thread.  ``done(result)`` on the Tk thread."""
+        self.stfmr_magnet_job_pending = self.__dict__.get("stfmr_magnet_job_pending", 0) + 1
+        self.stfmr_status_var.set(status)
+        self._set_stfmr_scan_busy(self._stfmr_scans_busy())
+
+        def job():
+            if self.closing or self.stfmr_closed:
+                raise RuntimeError("FMR is closing")
+            return operation()
+        try:
+            future = self.stfmr_executor.submit(job)
+        except BaseException as error:
+            self.stfmr_magnet_job_pending -= 1
+            self._set_stfmr_scan_busy(self._stfmr_scans_busy())
+            if not self.closing:
+                messagebox.showerror("FMR LS648", str(error), parent=self.root)
+            return
+
+        def finished() -> None:
+            self.stfmr_magnet_job_pending = max(0, self.stfmr_magnet_job_pending - 1)
+            if self.closing or self.stfmr_closed:
+                return
+            try:
+                result = future.result()
+            except LakeShoreRampStopped as stopped:
+                self.stfmr_status_var.set(f"LS648 ramp stopped: {short_status_error(stopped, 60)}")
+            except BaseException as error:
+                self.stfmr_status_var.set(f"LS648 failed: {short_status_error(error, 60)}")
+                message = str(error)
+                self._stfmr_fmr_after_drain(lambda: messagebox.showerror("FMR LS648", message, parent=self.root))
+            else:
+                done(result)
+            self._show_stfmr_lakeshore_state()
+            self._set_stfmr_scan_busy(self._stfmr_scans_busy())
+
+        future.add_done_callback(lambda _future: self.post_ui(finished))
+
+    def _stfmr_magnet_then(self, kind: str, operation, then) -> None:
+        """A scan's LS648 step (user, 2026-10-21): ``operation`` (a ramp or
+        a zero) on the FMR worker, then ``then(result)`` on the Tk thread.
+        The stop first, as in every FMR callback: a Stop during a ramp sends
+        STOP (the ramp watches the scan's stop event) and the scan ends
+        stopped; a failure ends it failed."""
+        finish = self._finish_stfmr_fmr_scan if kind == "fmr" else self._finish_stfmr_frequency_scan
+        stop_event = getattr(self, f"stfmr_{kind}_stop_event")
+        try:
+            future = self.stfmr_executor.submit(operation)
+        except BaseException as error:
+            finish(error=error)
+            return
+        setattr(self, f"stfmr_{kind}_future", future)
+
+        def done() -> None:
+            setattr(self, f"stfmr_{kind}_future", None)
+            if not getattr(self, f"stfmr_{kind}_running"):
+                return
+            if stop_event.is_set():
+                finish(stopped=True)
+                return
+            try:
+                result = future.result()
+            except LakeShoreRampStopped:
+                finish(stopped=True)
+                return
+            except BaseException as error:
+                finish(error=error)
+                return
+            self._show_stfmr_lakeshore_state()
+            then(result)
+
+        future.add_done_callback(lambda _future: self.post_ui(done))
+
+    def _stfmr_zero_then(self, then) -> None:
+        """A scan's end zeroing (user, 2026-10-18), then ``then(results)``:
+        with the 4886 here on the Tk thread as before; with the LS648 on the
+        worker (its ramp to 0 A is waited for), the page busy meanwhile."""
+        if not self._stfmr_lakeshore_chosen():
+            then(self._stfmr_fmr_zero_outputs())
+            return
+        self.stfmr_fmr_ending = True
+        try:
+            future = self.stfmr_executor.submit(self._stfmr_fmr_zero_outputs, False)
+        except BaseException:
+            self.stfmr_fmr_ending = False
+            then(self._stfmr_fmr_zero_outputs(readout=False))
+            return
+
+        def zeroed() -> None:
+            self.stfmr_fmr_ending = False
+            try:
+                results = future.result()
+            except BaseException as error:
+                results = {self._stfmr_supply_label(): f"zero FAILED: {error}"}
+            if not self.closing and not self.stfmr_closed:
+                self._show_stfmr_lakeshore_state()
+            then(results)
+
+        future.add_done_callback(lambda _future: self.post_ui(zeroed))
+
+    def _stfmr_feedback_iterations(self, supply) -> int:
+        """The frequency sweep's most corrections: enough steps of at most
+        MAGNET_FIELD_ZERO_MAX_STEP_A to reach the supply's full current."""
+        if not supply.lakeshore:
+            return STFMR_FIELD_FEEDBACK_MAX_ITERATIONS
+        return MAGNET_FIELD_ZERO_MAX_ITERATIONS + math.ceil(supply.max_current_a() / MAGNET_FIELD_ZERO_MAX_STEP_A)
+
+    def _stfmr_magnet_settings(self, supply, ramp_s) -> dict[str, object]:
+        """run_prepared's magnet_supply (user, 2026-10-21); no I/O."""
+        if not supply.lakeshore:
+            kepco = supply.kepco
+            return dict(name=supply.name, resource=str(getattr(kepco, "resource_name", "") or ""),
+                        connected=bool(getattr(kepco, "connected", False)), max_current_a=STFMR_KEPCO_MAX_CURRENT_A)
+        return dict(name=supply.name, rate_a_s=supply.rate_a_s, ramp_s_counted=ramp_s,
+                    setpoint_tolerance="max(0.01 A, 0.2 % of |I|)", **supply.lakeshore_controller.describe())
+
+        # A Lake Shore job of the panel (user, 2026-10-21) locks what a
+        # scan locks, except Stop.
+        jobs = self._stfmr_magnet_jobs_pending()
+        stop_busy, busy = busy, busy or jobs
+        keys = [*STFMR_DEFAULT_RESOURCES, *(self.__dict__.get("stfmr_supply_rows") or {})]
+        for key in keys:
             connected = (
                 self.stfmr_mfli_controller.mfli_connected
                 if key == "mfli"
                 else self.stfmr_controllers[key].connected
             )
-            self.stfmr_device_connect_buttons[key].configure(
+            entry, connect_button, disconnect_button = self._stfmr_row(key)
+            connect_button.configure(
                 state="disabled" if busy or connected else "normal"
             )
-            self.stfmr_device_disconnect_buttons[key].configure(
+            disconnect_button.configure(
                 state="disabled" if busy or not connected else "normal"
             )
-            self.stfmr_device_resource_widgets[key].configure(
+            entry.configure(
                 state="disabled" if busy or connected else "normal"
             )
+        magnet = self.stfmr_controllers[self._stfmr_magnet_key()]
         self.stfmr_apply_output_button.configure(
             state="disabled"
-            if busy or not self.stfmr_controllers["kepco"].connected
+            if busy or not magnet.connected
             else "normal"
         )
         self.stfmr_read_output_button.configure(
             state="disabled"
-            if busy or not self.stfmr_controllers["kepco"].connected
+            if busy or not magnet.connected
             else "normal"
         )
         self.stfmr_zero_output_button.configure(
             state="normal"
-            if self.stfmr_controllers["kepco"].connected
+            if magnet.connected
             else "disabled"
         )
+        choice = self.__dict__.get("stfmr_magnet_choice_combo")
+        if choice is not None:
+            # Locked while a scan runs or ends, a Lake Shore job is pending,
+            # or the chosen supply is not confirmed at zero (user, 2026-10-21).
+            choice.configure(state="disabled" if busy or self._stfmr_supply().output_on else "readonly")
         self.stfmr_read_gauss_button.configure(
             state="disabled"
             if busy or not self.stfmr_controllers["gauss"].connected
@@ -25631,7 +27309,7 @@ class CombinedControlApp:
         )
         fmr_ready = all(
             self.stfmr_controllers[key].connected
-            for key in ("kepco", "gauss", "vna")
+            for key in (self._stfmr_magnet_key(), "gauss", "vna")
         )
         self.stfmr_fmr_start_button.configure(
             state="normal" if not busy and fmr_ready else "disabled"
@@ -25640,7 +27318,7 @@ class CombinedControlApp:
             state="normal" if not busy and fmr_ready else "disabled"
         )
         self.stfmr_fmr_stop_button.configure(
-            state="normal" if busy else "disabled"
+            state="normal" if stop_busy else "disabled"
         )
 
     @staticmethod
@@ -25656,15 +27334,17 @@ class CombinedControlApp:
 
     @staticmethod
     def _stfmr_fmr_csv_fields():
+        # magnet_supply and the LS648's measured current last (user,
+        # 2026-10-21); current_setpoint_a is either supply's programmed one.
         return ("index", "elapsed_s", "current_setpoint_a", "pna_frequency_hz",
                 "pna_power_dbm", "pna_actual_power_dbm", "field_raw", "field_raw_unit",
-                "measured_field_g", *STFMR_S_PARAMETERS)
+                "measured_field_g", *STFMR_S_PARAMETERS, "magnet_supply", "magnet_measured_current_a")
 
     @staticmethod
     def _stfmr_frequency_csv_fields():
         return ("index", "elapsed_s", "target_field_g", "measured_field_g",
                 "current_setpoint_a", "pna_frequency_hz", "pna_power_dbm",
-                "pna_actual_power_dbm", *STFMR_S_PARAMETERS)
+                "pna_actual_power_dbm", *STFMR_S_PARAMETERS, "magnet_supply", "magnet_measured_current_a")
 
     # ---- the FMR page's run files and scan ends (user, 2026-10-18) ---------------
     # Both FMR scans save as every scan page does (user, 2026-10-18: "every
@@ -25703,7 +27383,7 @@ class CombinedControlApp:
             **details,
             "resources": {key: var.get() for key, var in self.stfmr_resource_vars.items()},
             "safety_confirmed": bool(self.stfmr_safety_var.get()),
-            "outputs_zeroed_at_end": ["4886", "PNA RF"],
+            "outputs_zeroed_at_end": [self._stfmr_supply_label(), "PNA RF"],
         }
 
     def _begin_stfmr_fmr_run(self, kind: str, settings: dict):
@@ -25723,7 +27403,7 @@ class CombinedControlApp:
             setattr(self, f"stfmr_{kind}_run_directory", recorder.directory)
         return recorder
 
-    def _stfmr_fmr_zero_outputs(self, readout: bool = True) -> dict[str, str]:
+    def _stfmr_fmr_zero_outputs(self, readout: bool = True, magnet: bool = True) -> dict[str, str]:
         """An FMR scan's end, completed, stopped or failed (user,
         2026-10-18: every scan page zeroes its sources at every end, as
         SHV): the 4886 as its Zero / OFF button zeroes it (force_output_off:
@@ -25744,7 +27424,18 @@ class CombinedControlApp:
             except Exception:
                 pass
 
+        # The chosen supply (user, 2026-10-21): the LS648 ramped to 0 A and
+        # waited for (on the worker, never stopped), its result under
+        # "LS648"; magnet=False: the RF only (the program closing, whose
+        # LS648 zero runs on a thread of its own).
+        supply = self._stfmr_supply()
+
         def kepco_off():
+            if supply.lakeshore:
+                if not supply.connected:
+                    return "not connected"
+                supply.zero()
+                return None
             kepco = self.stfmr_controllers["kepco"]
             if not kepco.connected:
                 return "not connected"
@@ -25761,7 +27452,8 @@ class CombinedControlApp:
                 return "not connected"
             pna.rf_off_read_back()
 
-        return zero_scan_outputs((("4886", kepco_off), ("PNA RF", rf_off)))
+        steps = (((self._stfmr_supply_label(), kepco_off),) if magnet else ()) + (("PNA RF", rf_off),)
+        return zero_scan_outputs(steps)
 
     def _end_stfmr_fmr_run(self, kind: str, results, *, error, stopped: bool, points: int, total: int) -> str:
         """The log and the status of an FMR scan's end, once its outputs
@@ -25771,10 +27463,11 @@ class CombinedControlApp:
         zero.  Returns the status, within the 48-character label: "Completed;
         4886 and RF zeroed; 120 points saved", "Stopped; ...", "Failed: ..."
         (user, 2026-10-18)."""
-        order = ("4886", "PNA RF")
+        supply = self.__dict__.get("stfmr_scan_supply_label", "4886")
+        order = (supply, "PNA RF")
         failed = [label for label in order if results.get(label) not in ("zeroed", "not connected")]
         lines = stfmr_end_outputs_lines(results, order)
-        outputs = stfmr_end_outputs_text(results, "PNA RF")
+        outputs = stfmr_end_outputs_text(results, "PNA RF", supply=supply)
         if error is not None:
             status = f"Failed: {short_status_error(error, 40)}"
         elif stopped:
@@ -25820,7 +27513,7 @@ class CombinedControlApp:
             pass
 
     def start_stfmr_fmr_scan(self) -> None:
-        if self.stfmr_fmr_running or self.stfmr_frequency_running:
+        if self._stfmr_scans_busy() or self._stfmr_magnet_jobs_pending():
             return
         try:
             selected, frequencies, power_dbm, currents, limit, settle = (
@@ -25836,6 +27529,14 @@ class CombinedControlApp:
             + (STFMR_FIELD_SETTLE_REQUIRED_SAMPLES - 1) * settle_poll
             + 0.15
         )
+        # The LS648 ramps where the 4886 jumps (user, 2026-10-21): each
+        # frequency from 0 A through every current and back to 0 A (zeroed
+        # after each frequency's sweep), at the rate, with its read-backs.
+        supply = self._stfmr_supply()
+        ramp_s = (len(frequencies) * lakeshore_scan_ramp_seconds([0.0, *currents, 0.0], supply.rate_a_s)
+                  if supply.lakeshore else 0.0)
+        estimated += ramp_s
+        name = self._stfmr_supply_label()
         mixed_source_ports = bool(
             set(selected) & {"S11", "S21"}
             and set(selected) & {"S12", "S22"}
@@ -25853,8 +27554,10 @@ class CombinedControlApp:
                 f"PNA stimulus power: {power_dbm:g} dBm\n"
                 f"Current: {currents[0]:g} → {currents[-1]:g} A, {len(currents)} points\n"
                 f"S-parameters: {', '.join(selected)}\nEstimated at least: {estimated:.1f} s"
-                f"{source_note}\n\nAt the end (completed, stopped or failed) the 4886 is zeroed and turned off "
-                "and the PNA RF switched off. The run folder and file name are asked next."
+                + (f" ({ramp_s:.0f} s of LS648 ramps at {supply.rate_a_s:g} A/s)" if supply.lakeshore else "")
+                + f"{source_note}\n\nAt the end (completed, stopped or failed) the {name} is "
+                + ("ramped to 0 A" if supply.lakeshore else "zeroed and turned off")
+                + " and the PNA RF switched off. The run folder and file name are asked next."
             ),
             parent=self.root,
         ):
@@ -25864,6 +27567,7 @@ class CombinedControlApp:
             currents_a=list(currents), current_start_a=currents[0], current_stop_a=currents[-1],
             current_step_a=self.stfmr_fmr_step_current_var.get(), wait_s=settle,
             total_points=total_points, estimated_s=estimated,
+            magnet_supply=self._stfmr_magnet_settings(supply, ramp_s),
         )
         if self._begin_stfmr_fmr_run("fmr", settings) is None:
             return
@@ -25884,6 +27588,8 @@ class CombinedControlApp:
         self.stfmr_fmr_field_settle_samples.clear()
         self.stfmr_fmr_field_settle_target_g = None
         self.stfmr_fmr_started = time.monotonic()
+        # The supply's name for the rows and the end (user, 2026-10-21).
+        self.stfmr_scan_supply_label, self.stfmr_scan_supply_name = name, supply.name
         self.stfmr_fmr_running = True
         self.stfmr_fmr_stop_event.clear()
         self.stfmr_fmr_save_button.configure(state="disabled")
@@ -25961,18 +27667,32 @@ class CombinedControlApp:
         if self.stfmr_fmr_stop_event.is_set():
             self._finish_stfmr_fmr_scan(stopped=True)
             return
+        lakeshore = self._stfmr_lakeshore_chosen()
         if self.stfmr_fmr_current_index >= len(self.stfmr_fmr_currents):
+            def next_frequency(_result=None) -> None:
+                self.stfmr_fmr_frequency_index += 1
+                self.stfmr_fmr_current_index = 0
+                self._configure_stfmr_fmr_frequency()
+            if lakeshore:
+                # Ramped to 0 A on the worker, as the 4886 is zeroed after
+                # each frequency's sweep (user, 2026-10-21).
+                self._stfmr_magnet_then("fmr", self._stfmr_supply(self.stfmr_fmr_stop_event).zero, next_frequency)
+                return
             try:
                 result = self.stfmr_controllers["kepco"].zero_output()
                 self._apply_stfmr_kepco_readback(result)
             except BaseException as error:
                 self._finish_stfmr_fmr_scan(error=error)
                 return
-            self.stfmr_fmr_frequency_index += 1
-            self.stfmr_fmr_current_index = 0
-            self._configure_stfmr_fmr_frequency()
+            next_frequency()
             return
         current = self.stfmr_fmr_currents[self.stfmr_fmr_current_index]
+        if lakeshore:
+            # The LS648 ramps on the worker; the 475 settle starts once it is
+            # at the setpoint (user, 2026-10-21).
+            self._stfmr_magnet_then("fmr", lambda: self._stfmr_supply(self.stfmr_fmr_stop_event).step(current),
+                                    lambda _reading: self._settle_stfmr_fmr_point(current))
+            return
         try:
             if self.stfmr_fmr_current_index == 0:
                 result = self.stfmr_controllers["kepco"].set_output(
@@ -25988,6 +27708,12 @@ class CombinedControlApp:
             self._finish_stfmr_fmr_scan(error=error)
             return
         self._apply_stfmr_kepco_readback(result)
+        self._settle_stfmr_fmr_point(current)
+
+    def _settle_stfmr_fmr_point(self, current: float) -> None:
+        """After a point's setpoint: the 475 settle, then the PNA."""
+        if not self.stfmr_fmr_running:
+            return
         settle_s = self.stfmr_fmr_settle_s
         self.stfmr_fmr_field_settle_samples.clear()
         self.stfmr_fmr_field_settle_started = time.monotonic()
@@ -26079,7 +27805,8 @@ class CombinedControlApp:
                 ]
                 self._finish_stfmr_fmr_scan(
                     error=RuntimeError(
-                        f"After setting the 4886 to {current:+.6g} A the 475 field did not settle within "
+                        f"After setting the {self.__dict__.get('stfmr_scan_supply_label', '4886')} to "
+                        f"{current:+.6g} A the 475 field did not settle within "
                         f"{timeout_s:g} s; "
                         "this transition point was not recorded; check the magnet response or increase the wait"
                     )
@@ -26158,6 +27885,10 @@ class CombinedControlApp:
                     name: float(s_values.get(name, math.nan))
                     for name in STFMR_S_PARAMETERS
                 },
+                # The supply and the LS648's RDGI? at the setpoint (user,
+                # 2026-10-21); blank for the write-only 4886.
+                "magnet_supply": self.__dict__.get("stfmr_scan_supply_name", MAGNET_SUPPLY_KEPCO),
+                "magnet_measured_current_a": self._stfmr_supply().measured_current_a(),
             }
             self.stfmr_fmr_rows.append(row)
             try:
@@ -26211,7 +27942,8 @@ class CombinedControlApp:
         recorder = self._stfmr_fmr_scan_recorder("fmr")
         if recorder is not None:
             recorder.event("stop_requested", button=button)
-        self.stfmr_fmr_status_var.set("Stopping; the 4886 and PNA RF are zeroed next…")
+        self.stfmr_fmr_status_var.set(
+            f"Stopping; the {self.__dict__.get('stfmr_scan_supply_label', '4886')} and PNA RF are zeroed next…")
         self.stfmr_fmr_stop_button.configure(state="disabled")
         if self.stfmr_fmr_after_id is not None:
             try:
@@ -26235,7 +27967,14 @@ class CombinedControlApp:
             self.stfmr_fmr_after_id = None
         # Every end zeroes the 4886 and switches the PNA RF off, completed,
         # stopped or failed (user, 2026-10-18); "PNA RF off at end" is gone.
-        results = self._stfmr_fmr_zero_outputs()
+        # The LS648 is ramped to 0 A on the worker first (user, 2026-10-21).
+        self._stfmr_zero_then(lambda results: self._finished_stfmr_fmr_scan(results, error, stopped))
+
+    def _finished_stfmr_fmr_scan(self, results, error, stopped: bool) -> None:
+        """The field scan's end once its outputs were zeroed (not after the
+        page's close, which closed the run itself)."""
+        if self.__dict__.get("stfmr_closed", False):
+            return
         self._set_stfmr_scan_busy(False)
         self.stfmr_fmr_save_button.configure(
             state="normal" if self.stfmr_fmr_rows else "disabled"
@@ -26248,7 +27987,7 @@ class CombinedControlApp:
         ))
 
     def start_stfmr_frequency_scan(self) -> None:
-        if self.stfmr_fmr_running or self.stfmr_frequency_running:
+        if self._stfmr_scans_busy() or self._stfmr_magnet_jobs_pending():
             return
         try:
             (
@@ -26263,9 +28002,17 @@ class CombinedControlApp:
         except BaseException as error:
             messagebox.showerror("STFMR fixed-field frequency sweep", str(error), parent=self.root)
             return
-        estimated = (2 + STFMR_FIELD_FEEDBACK_MAX_ITERATIONS) * settle + (
+        # With the LS648 (user, 2026-10-21): up to 100 A, so more corrections
+        # of at most MAGNET_FIELD_ZERO_MAX_STEP_A, each ramped and read back.
+        supply = self._stfmr_supply()
+        name = self._stfmr_supply_label()
+        iterations = self._stfmr_feedback_iterations(supply)
+        estimated = (2 + iterations) * settle + (
             len(frequencies) * 0.25
         )
+        if supply.lakeshore:
+            estimated += (2 + iterations) * (MAGNET_FIELD_ZERO_MAX_STEP_A / supply.rate_a_s
+                                             + LAKESHORE_SETPOINT_OVERHEAD_S)
         if not messagebox.askyesno(
             "Start fixed-field frequency sweep",
             (
@@ -26274,10 +28021,13 @@ class CombinedControlApp:
                 f"{frequencies[-1] / 1e9:g} GHz, {len(frequencies)} points\n"
                 f"PNA stimulus power: {power_dbm:g} dBm\n"
                 f"S-parameters: {', '.join(selected)}\n"
-                f"Estimated at most about: {estimated:.1f} s\n\n"
-                "The program adjusts the 4886 current in small steps using 475 feedback. At the end "
-                "(completed, stopped or failed) the 4886 is zeroed and turned off and the PNA RF switched "
-                "off. The run folder and file name are asked next."
+                f"Estimated at most about: {estimated:.1f} s"
+                + (f" (the LS648 ramping at {supply.rate_a_s:g} A/s; the ramp back to 0 A at the end "
+                   "comes on top)" if supply.lakeshore else "")
+                + f"\n\nThe program adjusts the {name} current in small steps using 475 feedback. At the end "
+                f"(completed, stopped or failed) the {name} is "
+                + ("ramped to 0 A" if supply.lakeshore else "zeroed and turned off")
+                + " and the PNA RF switched off. The run folder and file name are asked next."
             ),
             parent=self.root,
         ):
@@ -26285,7 +28035,8 @@ class CombinedControlApp:
         settings = self._stfmr_fmr_settings(
             "frequency", selected, frequencies, power_dbm, voltage_limit,
             target_field_g=target_field, field_tolerance_g=tolerance, feedback_wait_s=settle,
-            feedback_max_corrections=STFMR_FIELD_FEEDBACK_MAX_ITERATIONS, estimated_max_s=estimated,
+            feedback_max_corrections=iterations, estimated_max_s=estimated,
+            magnet_supply=self._stfmr_magnet_settings(supply, 0.0),
         )
         if self._begin_stfmr_fmr_run("frequency", settings) is None:
             return
@@ -26301,6 +28052,8 @@ class CombinedControlApp:
         self.stfmr_frequency_settle_s = settle
         self.stfmr_frequency_feedback_points.clear()
         self.stfmr_frequency_feedback_iteration = 0
+        self.stfmr_frequency_feedback_max_iterations = iterations
+        self.stfmr_scan_supply_label, self.stfmr_scan_supply_name = name, supply.name
         self.stfmr_frequency_running = True
         self.stfmr_frequency_stop_event.clear()
         self.stfmr_frequency_save_button.configure(state="disabled")
@@ -26309,20 +28062,28 @@ class CombinedControlApp:
         )
         self._set_stfmr_scan_busy(True)
         self._redraw_stfmr_frequency_plot()
+        def baseline(_result=None) -> None:
+            self.stfmr_frequency_feedback_current = 0.0
+            self.stfmr_frequency_status_var.set(
+                f"Measuring the 0 A baseline and feeding back to {target_field:+g} G…"
+            )
+            self._schedule_stfmr_frequency_feedback_read()
         try:
             self._stfmr_fmr_scan_log("frequency", "scan_started", total_points=len(frequencies))
-            result = self.stfmr_controllers["kepco"].set_output(
-                "CURR", 0.0, voltage_limit
-            )
+            if not supply.lakeshore:
+                result = self.stfmr_controllers["kepco"].set_output(
+                    "CURR", 0.0, voltage_limit
+                )
         except BaseException as error:
             self._finish_stfmr_frequency_scan(error=error)
             return
+        if supply.lakeshore:
+            # The 0 A baseline: the LS648 ramped there on the worker (user,
+            # 2026-10-21).
+            self._stfmr_magnet_then("frequency", self._stfmr_supply(self.stfmr_frequency_stop_event).zero, baseline)
+            return
         self._apply_stfmr_kepco_readback(result)
-        self.stfmr_frequency_feedback_current = 0.0
-        self.stfmr_frequency_status_var.set(
-            f"Measuring the 0 A baseline and feeding back to {target_field:+g} G…"
-        )
-        self._schedule_stfmr_frequency_feedback_read()
+        baseline()
 
     def _schedule_stfmr_frequency_feedback_read(self) -> None:
         if not self.stfmr_frequency_running:
@@ -26380,9 +28141,14 @@ class CombinedControlApp:
                 )
                 self._measure_next_stfmr_frequency_point()
                 return
+            # The KEPCO's ±10 A or the LS648's maximum (user, 2026-10-21).
+            maximum = self._stfmr_supply().max_current_a()
+            iterations = self.__dict__.get("stfmr_frequency_feedback_max_iterations",
+                                           STFMR_FIELD_FEEDBACK_MAX_ITERATIONS)
+            supply_name = self.__dict__.get("stfmr_scan_supply_label", "4886")
             if len(self.stfmr_frequency_feedback_points) == 1:
                 probe = current + MAGNET_FIELD_ZERO_PROBE_A
-                if probe > STFMR_KEPCO_MAX_CURRENT_A:
+                if probe > maximum:
                     probe = current - MAGNET_FIELD_ZERO_PROBE_A
                 self._apply_stfmr_frequency_feedback_current(probe)
                 return
@@ -26396,16 +28162,16 @@ class CombinedControlApp:
             if not math.isfinite(slope) or abs(slope) < MAGNET_FIELD_ZERO_MIN_SLOPE_GS_PER_A:
                 self._finish_stfmr_frequency_scan(
                     error=RuntimeError(
-                        "475 field did not change measurably with the 4886 probe current; check the polarity, "
-                        "probe orientation, wiring and the 4886 front-panel state"
+                        f"475 field did not change measurably with the {supply_name} probe current; check the "
+                        f"polarity, probe orientation, wiring and the {supply_name} front-panel state"
                     )
                 )
                 return
             self.stfmr_frequency_feedback_iteration += 1
-            if self.stfmr_frequency_feedback_iteration > STFMR_FIELD_FEEDBACK_MAX_ITERATIONS:
+            if self.stfmr_frequency_feedback_iteration > iterations:
                 self._finish_stfmr_frequency_scan(
                     error=RuntimeError(
-                        f"Target not reached after {STFMR_FIELD_FEEDBACK_MAX_ITERATIONS} corrections; "
+                        f"Target not reached after {iterations} corrections; "
                         f"{self.stfmr_frequency_target_field_g:+g}±"
                         f"{self.stfmr_frequency_tolerance_g:g} G"
                     )
@@ -26416,24 +28182,24 @@ class CombinedControlApp:
                 min(MAGNET_FIELD_ZERO_MAX_STEP_A, error_g / slope),
             )
             next_current = max(
-                -STFMR_KEPCO_MAX_CURRENT_A,
-                min(STFMR_KEPCO_MAX_CURRENT_A, current + correction),
+                -maximum,
+                min(maximum, current + correction),
             )
             next_current = float(round(next_current, 4))
             if abs(next_current - current) < 0.0005:
                 # Say so when the field needs more than the 4886's ±10 A,
                 # rather than blaming the current resolution (review, 2026-10-13).
                 at_limit = (
-                    abs(current) >= STFMR_KEPCO_MAX_CURRENT_A - 0.0005
+                    abs(current) >= maximum - 0.0005
                     and error_g / slope * current > 0
                 )
                 self._finish_stfmr_frequency_scan(
                     error=RuntimeError(
                         f"Target {self.stfmr_frequency_target_field_g:+g} G needs more than the "
-                        f"4886's ±{STFMR_KEPCO_MAX_CURRENT_A:g} A; the field at {current:+g} A is "
+                        f"{supply_name}'s ±{maximum:g} A; the field at {current:+g} A is "
                         f"{field_g:+.5g} G"
                         if at_limit
-                        else "Field tolerance still not met at the 4886 current resolution"
+                        else f"Field tolerance still not met at the {supply_name} current resolution"
                     )
                 )
                 return
@@ -26446,6 +28212,17 @@ class CombinedControlApp:
     def _apply_stfmr_frequency_feedback_current(self, current: float) -> None:
         if self.stfmr_frequency_stop_event.is_set():
             self._finish_stfmr_frequency_scan(stopped=True)
+            return
+        if self._stfmr_lakeshore_chosen():
+            # Ramped on the worker; the feedback read follows once the LS648
+            # is at the setpoint (user, 2026-10-21).
+            def ramped(_reading) -> None:
+                self.stfmr_frequency_feedback_current = float(current)
+                self.stfmr_frequency_status_var.set(
+                    f"Field feedback step {self.stfmr_frequency_feedback_iteration + 1}: I={current:+.4g} A")
+                self._schedule_stfmr_frequency_feedback_read()
+            self._stfmr_magnet_then("frequency",
+                                    lambda: self._stfmr_supply(self.stfmr_frequency_stop_event).step(current), ramped)
             return
         try:
             result = self.stfmr_controllers["kepco"].set_scan_current(current)
@@ -26529,6 +28306,8 @@ class CombinedControlApp:
                     name: float(s_values.get(name, math.nan))
                     for name in STFMR_S_PARAMETERS
                 },
+                "magnet_supply": self.__dict__.get("stfmr_scan_supply_name", MAGNET_SUPPLY_KEPCO),
+                "magnet_measured_current_a": self._stfmr_supply().measured_current_a(),
             }
             self.stfmr_frequency_rows.append(row)
             try:
@@ -26574,7 +28353,8 @@ class CombinedControlApp:
         recorder = self._stfmr_fmr_scan_recorder("frequency")
         if recorder is not None:
             recorder.event("stop_requested", button=button)
-        self.stfmr_frequency_status_var.set("Stopping; the 4886 and PNA RF are zeroed next…")
+        self.stfmr_frequency_status_var.set(
+            f"Stopping; the {self.__dict__.get('stfmr_scan_supply_label', '4886')} and PNA RF are zeroed next…")
         self.stfmr_fmr_stop_button.configure(state="disabled")
         if self.stfmr_frequency_after_id is not None:
             try:
@@ -26597,8 +28377,15 @@ class CombinedControlApp:
                 pass
             self.stfmr_frequency_after_id = None
         # Every end zeroes the 4886 and switches the PNA RF off (user,
-        # 2026-10-18), as the field scan's.
-        results = self._stfmr_fmr_zero_outputs()
+        # 2026-10-18), as the field scan's; the LS648 ramped to 0 A on the
+        # worker first (user, 2026-10-21).
+        self._stfmr_zero_then(lambda results: self._finished_stfmr_frequency_scan(results, error, stopped))
+
+    def _finished_stfmr_frequency_scan(self, results, error, stopped: bool) -> None:
+        """The frequency sweep's end once its outputs were zeroed (not after the
+        page's close, which closed the run itself)."""
+        if self.__dict__.get("stfmr_closed", False):
+            return
         self._set_stfmr_scan_busy(False)
         self.stfmr_frequency_save_button.configure(
             state="normal" if self.stfmr_frequency_rows else "disabled"
@@ -26948,16 +28735,17 @@ class CombinedControlApp:
 
     def _set_stfmr_device_ui(self, key: str, connected: bool) -> None:
         self._set_connection_indicator(f"stfmr_{key}", connected)
-        self.stfmr_device_connect_buttons[key].configure(
+        entry, connect_button, disconnect_button = self._stfmr_row(key)
+        connect_button.configure(
             state="disabled" if connected else "normal"
         )
-        self.stfmr_device_disconnect_buttons[key].configure(
+        disconnect_button.configure(
             state="normal" if connected else "disabled"
         )
-        self.stfmr_device_resource_widgets[key].configure(
+        entry.configure(
             state="disabled" if connected else "normal"
         )
-        if key == "kepco":
+        if key == self._stfmr_magnet_key():
             self.stfmr_apply_output_button.configure(
                 state="normal" if connected else "disabled"
             )
@@ -26974,7 +28762,7 @@ class CombinedControlApp:
         if hasattr(self, "stfmr_fmr_start_button"):
             fmr_ready = all(
                 self.stfmr_controllers[name].connected
-                for name in ("kepco", "gauss", "vna")
+                for name in (self._stfmr_magnet_key(), "gauss", "vna")
             )
             self.stfmr_fmr_start_button.configure(
                 state=(
@@ -26997,8 +28785,9 @@ class CombinedControlApp:
 
     def connect_stfmr_device(self, key: str) -> None:
         resource = self.stfmr_resource_vars[key].get().strip()
-        self.stfmr_device_connect_buttons[key].configure(state="disabled")
-        self.stfmr_device_resource_widgets[key].configure(state="disabled")
+        entry, connect_button, _disconnect = self._stfmr_row(key)
+        connect_button.configure(state="disabled")
+        entry.configure(state="disabled")
         self.stfmr_device_connection_vars[key].set("Connecting…")
         if key == "kepco":
             # NI-VISA on the STFMR computer identifies this legacy BIT 4886
@@ -27046,11 +28835,15 @@ class CombinedControlApp:
                 self.read_stfmr_kepco_once()
             elif key == "gauss":
                 self.read_stfmr_gauss_once()
+            elif key == "lakeshore":
+                self._stfmr_lakeshore_connected()
 
         future.add_done_callback(lambda _future: self.post_ui(finished))
 
     def disconnect_stfmr_device(self, key: str) -> None:
-        self.stfmr_device_disconnect_buttons[key].configure(state="disabled")
+        if key == "lakeshore" and (self._stfmr_scans_busy() or self._stfmr_magnet_jobs_pending()):
+            return      # the LS648 ramps to 0 A at its Disconnect: not under a scan or a job
+        self._stfmr_row(key)[2].configure(state="disabled")
         self.stfmr_device_connection_vars[key].set("Disconnecting…")
         if key == "kepco":
             try:
@@ -27110,8 +28903,32 @@ class CombinedControlApp:
             elif key == "gauss":
                 self.stfmr_gauss_field_var.set("-- G")
                 self.stfmr_gauss_status_var.set("Waiting for gaussmeter connection")
+            elif key == "lakeshore" and self._stfmr_lakeshore_chosen():
+                self._show_stfmr_lakeshore_state()
+            self._set_stfmr_scan_busy(self._stfmr_scans_busy())
 
         future.add_done_callback(lambda _future: self.post_ui(finished))
+
+    def _stfmr_lakeshore_connected(self) -> None:
+        """After the LS648's Connect (user, 2026-10-21): its read-back, and
+        what keeps it from being armed, an output not at zero or a LIMIT?
+        below the program's limit, said at once."""
+        controller = self.stfmr_controllers["lakeshore"]
+        if self._stfmr_lakeshore_chosen():
+            self._show_stfmr_lakeshore_state()
+        self._set_stfmr_scan_busy(self._stfmr_scans_busy())
+        reading, notes = controller.reading, []
+        if controller.arm_problem:
+            notes.append(f"It is NOT armed, so no setpoint is sent to it: {controller.arm_problem}.")
+        if controller.output_on:
+            notes.append(f"Its output is NOT at zero: RDGI? {reading.get('current_a', math.nan):+.3f} A "
+                         f"(SETI? {reading.get('setpoint_a', math.nan):+.3f} A).")
+        if controller.effective_max_a < controller.program_max_a:
+            notes.append(f"Its LIMIT? allows at most {controller.limit_current_a:g} A, below the program's "
+                         f"{controller.program_max_a:g} A: larger currents are refused.")
+        if notes and not self.closing:
+            message = "Connected. " + " ".join(notes)
+            self._stfmr_fmr_after_drain(lambda: messagebox.showwarning("FMR LS648", message, parent=self.root))
 
     def _flag_stfmr_kepco_off_unconfirmed(self) -> None:
         """After a failed write: flag an output whose zero/OFF was not confirmed.
@@ -27139,6 +28956,9 @@ class CombinedControlApp:
         )
 
     def apply_stfmr_kepco_output(self) -> None:
+        if self._stfmr_lakeshore_chosen():
+            self._apply_stfmr_lakeshore_output()
+            return
         if not self.stfmr_safety_var.get():
             messagebox.showwarning(
                 "STFMR KEPCO",
@@ -27171,7 +28991,41 @@ class CombinedControlApp:
             "KEPCO command sent as in the LabVIEW trace; verify the front panel and the 475"
         )
 
+    def _apply_stfmr_lakeshore_output(self) -> None:
+        """Apply output with the LS648 chosen (user, 2026-10-21): the target
+        within the program's 100 A and its LIMIT?, the Rate A/s box, then the
+        ramp on the worker; Zero / OFF stops it (STOP) and zeroes it."""
+        controller = self.stfmr_controllers["lakeshore"]
+        if not controller.connected or self._stfmr_scans_busy() or self._stfmr_magnet_jobs_pending():
+            return
+        if not self.stfmr_safety_var.get():
+            messagebox.showwarning(
+                "STFMR LS648",
+                "Please tick the magnet, cooling, wiring, limits and personnel safety confirmation first.",
+                parent=self.root,
+            )
+            return
+        try:
+            target = controller.check_current(float(self.stfmr_output_target_var.get()))
+            rate = self._stfmr_rate()
+        except (TypeError, ValueError, tk.TclError) as error:
+            messagebox.showerror("FMR LS648", str(error), parent=self.root)
+            return
+        supply = self._stfmr_supply()
+        self.thread_log(f"FMR LS648: ramping to {target:+g} A at {rate:g} A/s")
+        self._stfmr_magnet_job(lambda: supply.start(target, None),
+                               lambda _reading: self.stfmr_status_var.set(f"LS648 at {target:+g} A; check the 475"),
+                               f"Ramping the LS648 to {target:+g} A at {rate:g} A/s…")
+
     def read_stfmr_kepco_once(self) -> None:
+        if self._stfmr_lakeshore_chosen():
+            # Read back from the LS648 on the worker (user, 2026-10-21).
+            controller = self.stfmr_controllers["lakeshore"]
+            if controller.connected and not self._stfmr_scans_busy() and not self._stfmr_magnet_jobs_pending():
+                self._stfmr_magnet_job(controller.read_state,
+                                       lambda _reading: self.stfmr_status_var.set("LS648 read back"),
+                                       "Reading the LS648…")
+            return
         if not self.stfmr_controllers["kepco"].connected:
             return
         controller = self.stfmr_controllers["kepco"]
@@ -27199,6 +29053,24 @@ class CombinedControlApp:
         self.stfmr_status_var.set("Showing the last values sent by this program, not a 4886 hardware readback")
 
     def zero_stfmr_kepco_output(self) -> None:
+        if self._stfmr_lakeshore_chosen():
+            # The LS648 (user, 2026-10-21): no remote output-off, 0 A is off.
+            # A ramp in progress sees the request at once and sends STOP; a
+            # running scan is stopped and its end zeroes it; else the zero
+            # runs on the worker, ramped at the rate, and is waited for.
+            controller = self.stfmr_controllers["lakeshore"]
+            controller.request_stop()
+            if not controller.connected:
+                return
+            if self.stfmr_fmr_running or self.stfmr_frequency_running:
+                self.stop_stfmr_fmr_scan(button="LS648 Zero / OFF")
+                return
+            if self.__dict__.get("stfmr_fmr_ending", False):
+                return      # the scan's end is zeroing it already
+            supply = self._stfmr_supply()
+            self._stfmr_magnet_job(supply.zero, lambda _reading: self.stfmr_status_var.set("LS648 at 0 A (zeroed)"),
+                                   "Ramping the LS648 to 0 A…")
+            return
         if not self.stfmr_controllers["kepco"].connected:
             return
         # A running FMR or frequency scan is stopped first: otherwise its
@@ -27248,11 +29120,42 @@ class CombinedControlApp:
 
         future.add_done_callback(lambda _future: self.post_ui(finished))
 
+    def _read_stfmr_lakeshore_idle(self) -> None:
+        """The chosen LS648's read-back while the page is idle (user,
+        2026-10-21): SETI?, RDGI?, RDGV?, OPST?, ERST? on the worker, shown
+        in the panel's readouts; the supply choice follows its output."""
+        controller = (self.__dict__.get("stfmr_controllers") or {}).get("lakeshore")
+        if (controller is None or not controller.connected or not self._stfmr_lakeshore_chosen()
+                or self._stfmr_scans_busy() or self._stfmr_magnet_jobs_pending()
+                or self.__dict__.get("stfmr_magnet_poll_inflight", False)):
+            return
+        self.stfmr_magnet_poll_inflight = True
+        try:
+            future = self.stfmr_executor.submit(controller.read_state)
+        except BaseException:
+            self.stfmr_magnet_poll_inflight = False
+            return
+
+        def finished() -> None:
+            self.stfmr_magnet_poll_inflight = False
+            if self.closing or self.stfmr_closed:
+                return
+            if future.exception() is not None:
+                self.stfmr_kepco_output_var.set("Read failed")
+                return
+            self._show_stfmr_lakeshore_state()
+            if self.__dict__.get("stfmr_magnet_last_on") != controller.output_on:
+                self.stfmr_magnet_last_on = controller.output_on
+                self._set_stfmr_scan_busy(self._stfmr_scans_busy())
+
+        future.add_done_callback(lambda _future: self.post_ui(finished))
+
     def _stfmr_poll_timer(self) -> None:
         if self.closing or self.stfmr_closed:
             return
         if self.stfmr_gauss_auto_var.get():
             self.read_stfmr_gauss_once()
+        self._read_stfmr_lakeshore_idle()
         try:
             self.stfmr_poll_after_id = self.root.after(
                 STFMR_GAUSS_POLL_INTERVAL_MS, self._stfmr_poll_timer
@@ -48472,8 +50375,22 @@ class CombinedControlApp:
             except (AttributeError, tk.TclError):
                 pass
             self.stfmr_frequency_after_id = None
+        # The LS648 (user, 2026-10-21): a ramp in progress sees the request
+        # at once and sends STOP; then it is ramped to 0 A, waited for and
+        # disconnected on a thread of its own (not daemon, so the program
+        # waits for it), never on the Tk thread: at 1 A/s 100 A take 100 s.
+        lakeshore = (self.__dict__.get("stfmr_controllers") or {}).get("lakeshore")
+        if lakeshore is not None:
+            lakeshore.request_stop()
+        background = lakeshore is not None and lakeshore.connected
+        deferred = background and self._stfmr_lakeshore_chosen()
+        held = []
         # 4886 shutdown remains a direct, main-thread write-only operation.
-        scans = [kind for kind in ("fmr", "frequency") if getattr(self, f"stfmr_{kind}_running", False)]
+        # A scan whose end is zeroing the LS648 on the worker has its run log
+        # still open: it is closed here too.
+        ending = self.__dict__.get("stfmr_fmr_ending", False)
+        scans = [kind for kind in ("fmr", "frequency") if getattr(self, f"stfmr_{kind}_running", False)
+                 or (ending and self.__dict__.get(f"stfmr_{kind}_recorder") is not None)]
         if scans:
             # A scan running as the program closes ends here, as at every
             # end: the 4886 zeroed, the PNA RF off, and its run log closed
@@ -48481,16 +50398,21 @@ class CombinedControlApp:
             for kind in scans:
                 setattr(self, f"stfmr_{kind}_running", False)
             # On the shutdown thread: no readout update (review, 2026-10-18).
-            results = self._stfmr_fmr_zero_outputs(readout=False)
+            results = self._stfmr_fmr_zero_outputs(readout=False, magnet=not deferred)
             for kind in scans:
                 recorder = self.__dict__.get(f"stfmr_{kind}_recorder")
                 setattr(self, f"stfmr_{kind}_recorder", None)
                 if recorder is not None:
                     recorder.event("stop_requested", button="program closing")
+                    if deferred:
+                        # Closed by the LS648's thread once its zero is known.
+                        held.append((kind, recorder))
+                        continue
                     recorder.event("outputs_zeroed", **results)
                     recorder.close("closed", outputs=dict(results),
                                    points_saved=len(getattr(self, f"stfmr_{kind}_rows", ())))
         else:
+            results = {}
             try:
                 self.stfmr_controllers["kepco"].zero_output()
             except BaseException:
@@ -48507,10 +50429,32 @@ class CombinedControlApp:
         except BaseException as error:
             errors.append(f"MFLI: {error}")
         for controller in self.stfmr_controllers.values():
+            if background and controller is lakeshore:
+                continue
             try:
                 controller.disconnect()
             except BaseException as error:
                 errors.append(str(error))
+        if background:
+            label, other_results = lakeshore.short_label, dict(results)
+
+            def close_lakeshore() -> None:
+                try:
+                    lakeshore.disconnect()
+                    state = "zeroed"
+                except BaseException as error:
+                    state = f"zero FAILED: {error}"
+                self.thread_log(f"FMR close: {label} {state}" + ("" if state == "zeroed" else ": check it"))
+                for kind, recorder in held:
+                    outputs = {label: state, **other_results}
+                    try:
+                        recorder.event("outputs_zeroed", **outputs)
+                        recorder.close("closed", outputs=outputs,
+                                       points_saved=len(getattr(self, f"stfmr_{kind}_rows", ())))
+                    except BaseException:
+                        pass
+
+            threading.Thread(target=close_lakeshore, name="fmr-ls648-close", daemon=False).start()
         self.stfmr_executor.shutdown(wait=False, cancel_futures=True)
         for error in errors:
             try:
@@ -48547,19 +50491,31 @@ class CombinedControlApp:
             self.stfmr_lockin_live_after_id = None
 
         errors = []
+        # The LS643 (user, 2026-10-21): a ramp in progress sees the request
+        # at once and sends STOP; then it is ramped to 0 A, waited for and
+        # disconnected on a thread of its own (not daemon, so the program
+        # waits for it), never on the Tk thread: at 1 A/s 40 A take 40 s.
+        lakeshore = self.stfmr_lockin_controllers.get("lakeshore")
+        if lakeshore is not None:
+            lakeshore.request_stop()
+        background = lakeshore is not None and lakeshore.connected
+        lakeshore_label = lakeshore.short_label if lakeshore is not None else ""
+        deferred = False
         # The legacy 4886 is deliberately handled synchronously: write-only,
         # no query/clear/terminator, followed by closing the VISA session.
         results = None
         if sweep_running:
             # The sweep's end, as at every end (user, 2026-10-18), here on
             # the Tk thread: the worker is shut down below.
-            results = self._stfmr_lockin_zero_outputs()
+            deferred = background and self._stfmr_lockin_lakeshore_chosen()
+            results = self._stfmr_lockin_zero_outputs(magnet=not deferred)
             errors.extend(f"{label}: {state}" for label, state in results.items()
                           if state not in ("zeroed", "not connected"))
             recorder = self.__dict__.get("stfmr_lockin_recorder")
             if recorder is not None:
                 recorder.event("stop_requested", button="program closing")
-                recorder.event("outputs_zeroed", **results)
+                if not deferred:
+                    recorder.event("outputs_zeroed", **results)
         else:
             try:
                 self.stfmr_lockin_controllers["kepco"].zero_output()
@@ -48569,19 +50525,49 @@ class CombinedControlApp:
                 self.stfmr_lockin_controllers["smb"].rf_off()
             except BaseException as error:
                 errors.append(f"SMB100A: {error}")
-        errors.extend(self._close_stfmr_lockin_recording(
-            "closed", shutdown_errors=list(errors), outputs_off=not errors,
-            **({"outputs": results} if results is not None else {}),
-        ))
+        held_recorder = None
+        if deferred:
+            # Closed by the LS643's thread once its zero is known.
+            held_recorder = self.__dict__.get("stfmr_lockin_recorder")
+            self.stfmr_lockin_recorder = None
+        else:
+            errors.extend(self._close_stfmr_lockin_recording(
+                "closed", shutdown_errors=list(errors), outputs_off=not errors,
+                **({"outputs": results} if results is not None else {}),
+            ))
         try:
             self.stfmr_lockin_mfli_controller.disconnect_mfli()
         except BaseException as error:
             errors.append(f"MFLI: {error}")
         for controller in self.stfmr_lockin_controllers.values():
+            if background and controller is lakeshore:
+                continue
             try:
                 controller.disconnect()
             except BaseException as error:
                 errors.append(str(error))
+        if background:
+            close_errors, close_results = list(errors), dict(results or {})
+
+            def close_lakeshore() -> None:
+                try:
+                    lakeshore.disconnect()
+                    state = "zeroed"
+                except BaseException as error:
+                    state = f"zero FAILED: {error}"
+                self.thread_log(f"STFMR close: {lakeshore_label} {state}"
+                                + ("" if state == "zeroed" else ": check it"))
+                if held_recorder is not None:
+                    outputs = {lakeshore_label: state, **close_results}
+                    shutdown = close_errors + ([] if state == "zeroed" else [f"{lakeshore_label}: {state}"])
+                    try:
+                        held_recorder.event("outputs_zeroed", **outputs)
+                        held_recorder.close("closed", shutdown_errors=shutdown, outputs_off=not shutdown,
+                                            outputs=outputs)
+                    except BaseException:
+                        pass
+
+            threading.Thread(target=close_lakeshore, name="stfmr-ls643-close", daemon=False).start()
         # The Newmark stage (user, 2026-10-17): disconnected on the page's
         # worker, the thread that holds its USB handles (a move running now
         # sees the stop event set above and sends STOP itself first;
@@ -52258,13 +54244,17 @@ class NewmarkNSCA1Controller:
         return before
 
 
-def rte_scan_plan(mode, start, end, step, loops=1, round_trip=True):
-    """KEPCO drive-current, 6221 excitation-current or stage-angle nodes; no field calibration."""
+def rte_scan_plan(mode, start, end, step, loops=1, round_trip=True, max_current_a=STFMR_KEPCO_MAX_CURRENT_A,
+                  supply='KEPCO'):
+    """Magnet-supply drive-current, 6221 excitation-current or stage-angle nodes; no field calibration.
+    A Field scan's currents stay within +/-``max_current_a`` of ``supply``:
+    the KEPCO's 10 A, or the Lake Shore 643's effective maximum (user,
+    2026-10-21)."""
     if mode not in ('Field', 'Current', 'Angle'):
         raise ValueError('SHV supports only Field, Current and Angle scans')
     nodes = tuple(ppms_scan_axis(float(start), float(end), float(step)))
-    if mode == 'Field' and any(abs(v) > STFMR_KEPCO_MAX_CURRENT_A for v in nodes):
-        raise ValueError('KEPCO sweep current must stay within +/-10 A')
+    if mode == 'Field' and any(abs(v) > max_current_a for v in nodes):
+        raise ValueError(f'{supply} sweep current must stay within +/-{max_current_a:g} A')
     if mode == 'Angle':
         outside = [v for v in nodes if abs(v) > NEWMARK_CABLE_LIMIT_DEG]
         if outside:
@@ -52284,7 +54274,7 @@ def rte_scan_plan(mode, start, end, step, loops=1, round_trip=True):
                  for point, value in enumerate(nodes, 1))
 
 
-def rte_outer_plan(mode, start, end, step):
+def rte_outer_plan(mode, start, end, step, max_current_a=STFMR_KEPCO_MAX_CURRENT_A, supply='KEPCO'):
     """The outer loop of an Angle+Field or Angle+Current scan (user,
     2026-10-18): its KEPCO currents (A) or 6221 currents (mA RMS), from
     Start to End in Step, one pass, no round trip.  The KEPCO currents get
@@ -52294,9 +54284,10 @@ def rte_outer_plan(mode, start, end, step):
     inner = {'Angle+Field': 'Field', 'Angle+Current': 'Current'}.get(mode)
     if inner is None:
         raise ValueError('Only Angle+Field and Angle+Current scans have an outer loop')
-    label = RTE_OUTER_ROWS[mode]['label'].rstrip(':')
+    label = RTE_OUTER_ROWS[mode]['label'].rstrip(':').replace('KEPCO', supply)
     try:
-        return tuple(value for _loop, _point, value in rte_scan_plan(inner, start, end, step, 1, False))
+        return tuple(value for _loop, _point, value in rte_scan_plan(inner, start, end, step, 1, False,
+                                                                     max_current_a, supply))
     except ValueError as error:
         raise ValueError(f'{label}: {error}') from error
 
@@ -52328,7 +54319,7 @@ def rte_outer_step_of(row):
 RTE_STATUS_WIDEST_EXAMPLE = "Stopped; outputs held unless OFF was requested; stage stopped at -359.999°"
 
 
-def rte_outputs_text(results, check=True):
+def rte_outputs_text(results, check=True, supply='KEPCO'):
     """The outputs part of an SHV finish status, from the scan end's
     zeroing (user, 2026-10-18): "KEPCO and 6221 zeroed", or each output's
     result, "zero FAILED" in capitals.  ": check it" is left out when the
@@ -52341,8 +54332,10 @@ def rte_outputs_text(results, check=True):
     fine for it."""
     if results:
         six = results.get("6221", "")
-        results = {"6221": six if six == "zeroed" else "zero FAILED", "KEPCO": results.get("kepco", "")}
-    return scan_end_outputs_text(results, ("6221", "KEPCO"), check=check, together="KEPCO and 6221")
+        results = {"6221": six if six == "zeroed" else "zero FAILED", supply: results.get("kepco", "")}
+    # ``supply``: "LS643" when the Lake Shore was the scan's magnet supply
+    # (user, 2026-10-21); the results keep the key "kepco" for it.
+    return scan_end_outputs_text(results, ("6221", supply), check=check, together=f"{supply} and 6221")
 
 
 # The longest "Failed: ..." SHV status that still names an output not
@@ -52351,26 +54344,26 @@ def rte_outputs_text(results, check=True):
 RTE_FAILED_STATUS_CHARS = 64
 
 
-def rte_unconfirmed_outputs(results) -> list[str]:
+def rte_unconfirmed_outputs(results, supply='KEPCO') -> list[str]:
     """The SHV outputs a scan's end did not confirm at zero, as
     rte_outputs_text judges them: the 6221 unless "zeroed" (an SHV scan
     always drives it), the KEPCO unless "zeroed" or "not connected"; both
     when the zeroing never reported (review, 2026-10-18)."""
     if not results:
-        return ["6221", "KEPCO"]
+        return ["6221", supply]
     failed = [] if results.get("6221") == "zeroed" else ["6221"]
     if results.get("kepco") not in ("zeroed", "not connected"):
-        failed.append("KEPCO")
+        failed.append(supply)
     return failed
 
 
-def rte_failed_status_text(error, results) -> str:
+def rte_failed_status_text(error, results, supply='KEPCO') -> str:
     """An SHV failure's status: "Failed: <error>", and when an output was
     not confirmed at zero also "; 6221 zero FAILED" (or "; 6221 and KEPCO
     zero FAILED", or "; outputs not confirmed zeroed" when the zeroing never
     reported), with the error shortened so that the whole line stays within
     RTE_FAILED_STATUS_CHARS (review, 2026-10-18: a failure never said so)."""
-    failed = rte_unconfirmed_outputs(results)
+    failed = rte_unconfirmed_outputs(results, supply)
     if not failed:
         return f"Failed: {short_status_error(error, 100)}"
     tail = ("; outputs not confirmed zeroed" if not results
@@ -52385,6 +54378,10 @@ def rte_failed_status_text(error, results) -> str:
 # Since 2026-10-18 the program's one set of red-button colours.
 RTE_RED_BUTTON_COLORS = RED_BUTTON_COLORS
 
+
+# The SHV magnet-supply choice (user, 2026-10-21): the KEPCO 4886, the
+# default, or the Lake Shore 643.
+RTE_MAGNET_CHOICES = (MAGNET_SUPPLY_KEPCO, LAKESHORE_MAGNET_MODELS['643']['label'])
 
 # The RT-E scan box's note by mode: what Start, End and Step are and where
 # the field comes from (user, 2026-10-17).  At most 40 characters (its box).
@@ -52476,7 +54473,15 @@ class RTEPanel(PPMSPanel):
             # The rotation stage of the Angle scan (user, 2026-10-13).  Its DLL
             # is loaded on Connect, never here.
             'newmark': NewmarkNSCA1Controller(self.thread_log),
+            # The Lake Shore 643, the page's other magnet supply (user,
+            # 2026-10-21); the KEPCO stays the default (rte_magnet_choice).
+            'lakeshore': LakeShoreMagnetSupplyController(self.thread_log, '643', owner_scope='SHV'),
         }
+        # The chosen magnet supply and the Lake Shore's ramp rate, plain
+        # values for the worker (a Tk variable is never read there); set on
+        # the Tk thread by the choice and by Start / Apply.
+        self.rte_magnet_choice = MAGNET_SUPPLY_KEPCO
+        self.rte_magnet_rate_a_s = LAKESHORE_DEFAULT_RATE_A_S
         # Stop stage sets this; a manual move watches it, and an Angle scan's
         # moves watch it beside the scan's own stop event.
         self.rte_stage_stop_event = threading.Event()
@@ -52582,19 +54587,41 @@ class RTEPanel(PPMSPanel):
         # Every row has the same fixed columns (label, 18-character address,
         # buttons sized to their text, lamp, 13-character status), so the
         # rack, the SR830 rows and the Zurich row line up when stacked.
-        for row, (key, label) in enumerate((('kepco', 'KEPCO 4886'), ('gauss', 'Lake Shore 475'))):
-            self.rte_resources[key] = tk.StringVar(value=STFMR_LOCKIN_DEFAULT_RESOURCES[key])
+        # The magnet supply's row (user, 2026-10-21): its label is the choice,
+        # "KEPCO 4886" (the default) or "Lake Shore 643", and the row shows
+        # the chosen supply's address, Connect, Disconnect, lamp and state in
+        # the same place, so the rack keeps its height; the other supply's
+        # widgets are kept (grid_remove) and its connection stays as it is.
+        self.rte_magnet_choice_var = tk.StringVar(value=MAGNET_SUPPLY_KEPCO)
+        self.rte_magnet_choice_combo = ttk.Combobox(rack, textvariable=self.rte_magnet_choice_var,
+                                                    values=RTE_MAGNET_CHOICES, state='readonly', width=13)
+        self.rte_magnet_choice_combo.grid(row=0, column=0, sticky='w')
+        self.rte_magnet_choice_combo.bind('<<ComboboxSelected>>', self._rte_magnet_choice_changed)
+        self.rte_supply_widgets = {}
+        for row, (key, label) in enumerate((('kepco', 'KEPCO 4886'), ('gauss', 'Lake Shore 475'),
+                                            ('lakeshore', None))):
+            row = 0 if key == 'lakeshore' else row
+            default = (LAKESHORE_MAGNET_MODELS['643']['resource'] if key == 'lakeshore'
+                       else STFMR_LOCKIN_DEFAULT_RESOURCES[key])
+            self.rte_resources[key] = tk.StringVar(value=default)
             self.rte_connections[key] = tk.StringVar(value='Not connected')
-            ttk.Label(rack, text=label, width=13).grid(row=row, column=0, sticky='w')
+            if label is not None and key != 'kepco':
+                ttk.Label(rack, text=label, width=13).grid(row=row, column=0, sticky='w')
             entry = ttk.Entry(rack, textvariable=self.rte_resources[key], width=18)
             entry.grid(row=row, column=1)
             connect = ttk.Button(rack, text='Connect', width=8, command=lambda k=key: self._rte_connect(k))
             connect.grid(row=row, column=2)
             disconnect = ttk.Button(rack, text='Disconnect', width=10, command=lambda k=key: self._rte_disconnect(k))
             disconnect.grid(row=row, column=3)
-            self._create_connection_indicator(rack, 'rte_' + key).grid(row=row, column=4, padx=3)
-            ttk.Label(rack, textvariable=self.rte_connections[key], width=13).grid(row=row, column=5, sticky='w')
+            lamp = self._create_connection_indicator(rack, 'rte_' + key)
+            lamp.grid(row=row, column=4, padx=3)
+            status = ttk.Label(rack, textvariable=self.rte_connections[key], width=13)
+            status.grid(row=row, column=5, sticky='w')
             self.rte_connection_widgets[key] = (entry, connect, disconnect)
+            if key in ('kepco', 'lakeshore'):
+                self.rte_supply_widgets[key] = (entry, connect, disconnect, lamp, status)
+        for widget in self.rte_supply_widgets['lakeshore']:
+            widget.grid_remove()
         self.rte_field_live = tk.StringVar(value='LS475 field: -- G')
         self.rte_drive_live = tk.StringVar(value='KEPCO: no output command sent')
         # Fixed boxes, so a new reading never shifts the lists.  A longer
@@ -52694,14 +54721,22 @@ class RTEPanel(PPMSPanel):
         self.rte_edit_widgets.append((safety, 'normal'))
         self.rte_drive_target = tk.StringVar(value=f'{RTE_KEPCO_DEFAULT_CURRENT_A:g}')
         self.rte_voltage_limit = tk.StringVar(value='5')
+        # The Lake Shore's ramp rate (user, 2026-10-21), in the voltage
+        # limit's place while the Lake Shore is chosen (the KEPCO's limit
+        # does not apply to it).
+        self.rte_magnet_rate = tk.StringVar(value=f'{LAKESHORE_DEFAULT_RATE_A_S:g}')
         self.ppms_current_live_var = tk.StringVar(value='6221: not connected')
         def entry_at(row, col, label, variable):
-            ttk.Label(params, text=label).grid(row=row, column=col, sticky='e')
+            text = ttk.Label(params, text=label)
+            text.grid(row=row, column=col, sticky='e')
             entry = ttk.Entry(params, textvariable=variable, width=5)
             entry.grid(row=row, column=col + 1, padx=3, sticky='ew')
             self.rte_edit_widgets.append((entry, 'normal'))
-        entry_at(1, 0, 'KEPCO current A', self.rte_drive_target)
-        entry_at(1, 2, 'Voltage limit V', self.rte_voltage_limit)
+            return text, entry
+        # "Magnet current A" (it was "KEPCO current A"): the chosen supply's
+        # current (user, 2026-10-21).
+        entry_at(1, 0, 'Magnet current A', self.rte_drive_target)
+        self.rte_limit_label, self.rte_limit_entry = entry_at(1, 2, 'Voltage limit V', self.rte_voltage_limit)
         entry_at(2, 0, '6221 mA RMS', self.ppms_transport_current_var)
         entry_at(2, 2, 'Frequency Hz', self.ppms_transport_frequency_var)
         entry_at(2, 4, 'Compliance V', self.ppms_transport_compliance_var)
@@ -52711,6 +54746,8 @@ class RTEPanel(PPMSPanel):
             button = ttk.Button(params, text=label, command=callback, width=11)
             button.grid(row=row, column=col, padx=4)
             self.rte_edit_widgets.append((button, 'normal'))
+            if callback == self._rte_apply_drive:
+                self.rte_apply_button = button
         kepco_off = ttk.Button(params, text='KEPCO Zero / OFF', command=self._rte_zero, width=15)
         sources_off = ttk.Button(params, text='6221 / 2400 OFF', command=self.ppms_sources_off, width=15)
         off_grids = (dict(row=1, column=6), dict(row=3, column=4, columnspan=3, sticky='e'))
@@ -52724,9 +54761,11 @@ class RTEPanel(PPMSPanel):
                 red_button_in_place_of(button, str(button.cget('text')), command, **grid)
                 for button, command, grid in ((kepco_off, self._rte_zero, off_grids[0]),
                                               (sources_off, self.ppms_sources_off, off_grids[1]))]
+            self.rte_magnet_off_button = self.rte_off_buttons[0]
         else:
             kepco_off.grid(**off_grids[0])
             sources_off.grid(**off_grids[1])
+            self.rte_magnet_off_button = kepco_off
         # A compliance warning is long: it wraps within its four columns
         # instead of widening the settings.
         current_live = ttk.Label(params, textvariable=self.ppms_current_live_var, width=1, wraplength=0)
@@ -53043,14 +55082,21 @@ class RTEPanel(PPMSPanel):
                     else ('-3', '3', '0.05'))
         for variable, value in zip(self.ppms_simple_range, defaults):
             variable.set(value)
-        self.rte_scan_units.set('6221 mA RMS' if current else 'Stage °' if angle else 'KEPCO A')
-        note = self.__dict__.get('rte_scan_note')
-        if note is not None:
-            note.set(RTE_SCAN_NOTES.get(mode, RTE_SCAN_NOTES['Current']))
+        self._rte_show_scan_units(mode)
         self._rte_show_outer_row(mode)
         if not self.ppms_field_scan_rows:
             self.ppms_plot_axis = 'current' if current else 'angle' if angle else 'field'
             self._redraw_ppms_transport_plot()
+
+    def _rte_show_scan_units(self, mode):
+        """The scan box's units and note for ``mode``, naming the chosen
+        magnet supply: "KEPCO A" or "LS643 A" (user, 2026-10-21)."""
+        name = self._rte_supply_label()
+        self.rte_scan_units.set('6221 mA RMS' if mode == 'Current' else 'Stage °' if mode in RTE_ANGLE_MODES
+                                else f'{name} A')
+        note = self.__dict__.get('rte_scan_note')
+        if note is not None:
+            note.set(RTE_SCAN_NOTES.get(mode, RTE_SCAN_NOTES['Current']).replace('KEPCO', name))
 
     def _rte_show_outer_row(self, mode):
         """The outer row (user, 2026-10-18): shown, with its mode's label,
@@ -53069,7 +55115,7 @@ class RTEPanel(PPMSPanel):
         variables = self.rte_outer_ranges[mode]
         for variable, value in zip(variables, row['defaults']):
             variable.set(value)
-        self.rte_outer_label.set(row['label'])
+        self.rte_outer_label.set(row['label'].replace('KEPCO', self._rte_supply_label()))
         for entry, variable in zip(self.rte_outer_entries, variables):
             entry.configure(textvariable=variable)
         for widget, options in widgets:
@@ -53088,6 +55134,11 @@ class RTEPanel(PPMSPanel):
         for widget, state in self.rte_edit_widgets + self.ppms_lockin_choice_widgets:
             widget.configure(state='disabled' if busy else state)
         self._rte_paint_red_buttons()
+        combo = self.__dict__.get('rte_magnet_choice_combo')
+        if combo is not None:
+            # Locked while a scan runs, the rack is busy, or the chosen supply
+            # is not confirmed at zero (user, 2026-10-21).
+            combo.configure(state='disabled' if busy or self._rte_magnet_output_on() else 'readonly')
         self.rte_start_button.configure(state='normal' if not busy and self.ppms_control_safety_var.get() else 'disabled')
         self.ppms_field_scan_stop_button.configure(state='normal' if self.ppms_field_scan_running else 'disabled')
         self.ppms_field_scan_save_button.configure(state='normal' if self.ppms_field_scan_rows and not busy else 'disabled')
@@ -53126,6 +55177,123 @@ class RTEPanel(PPMSPanel):
             raise RuntimeError('Tick the SHV rack safety confirmation first')
         if self.ppms_field_scan_running or self.ppms_environment_busy:
             raise RuntimeError('SHV is busy; wait or stop the scan first')
+
+    # ---- the magnet supply: the KEPCO 4886 or the Lake Shore 643 (user, 2026-10-21) ----
+    def _rte_lakeshore_chosen(self) -> bool:
+        """True while the Lake Shore 643 is the page's magnet supply; the
+        KEPCO 4886 (the default) otherwise, also on a page made without its
+        __init__ (the offline tests')."""
+        controllers = self.__dict__.get('rte_controllers') or {}
+        return (self.__dict__.get('rte_magnet_choice', MAGNET_SUPPLY_KEPCO) != MAGNET_SUPPLY_KEPCO
+                and controllers.get('lakeshore') is not None)
+
+    def _rte_supply(self) -> MagnetSupply:
+        """The chosen supply.  The KEPCO gets the calls it always got; the
+        Lake Shore ramps at the rate set at Start or Apply, and a Stop (the
+        scan's stop event, set by Stop, the OFF buttons and the close) sends
+        STOP and ends the scan as Stopped (PPMSScanCancelled)."""
+        return MagnetSupply(self.rte_controllers['kepco'], self.rte_controllers.get('lakeshore'),
+                            use_lakeshore=self._rte_lakeshore_chosen(),
+                            rate_a_s=self.__dict__.get('rte_magnet_rate_a_s', LAKESHORE_DEFAULT_RATE_A_S),
+                            stop_event=self.ppms_field_scan_stop_event,
+                            stopped=lambda error: PPMSScanCancelled(f'SHV stopped during a magnet ramp; {error}'),
+                            on_progress=self._rte_magnet_progress)
+
+    def _rte_supply_label(self) -> str:
+        """"KEPCO" or "LS643", for the page's texts."""
+        return self.rte_controllers['lakeshore'].short_label if self._rte_lakeshore_chosen() else 'KEPCO'
+
+    def _rte_magnet_terms(self, limit) -> str:
+        """How the supply is set, for the Yes/No texts: the KEPCO's voltage
+        limit, or the Lake Shore's ramp rate."""
+        if self._rte_lakeshore_chosen():
+            return f"ramped at {self.__dict__.get('rte_magnet_rate_a_s', LAKESHORE_DEFAULT_RATE_A_S):g} A/s"
+        return f'voltage limit {limit:g} V'
+
+    def _rte_rate(self) -> float:
+        """The Rate A/s box, checked (and against LIMIT? once connected) on
+        the Tk thread; kept as a plain value for the worker."""
+        rate = self.rte_controllers['lakeshore'].check_rate(self.rte_magnet_rate.get())
+        self.rte_magnet_rate_a_s = rate
+        return rate
+
+    def _rte_magnet_progress(self, reading):
+        """A Lake Shore ramp's reading, from the worker: shown on the Tk thread."""
+        text, word = lakeshore_live_text(reading), lakeshore_state_word(reading)
+
+        def show():
+            if self.rte_closed or self.closing:
+                return
+            line = self.__dict__.get('rte_drive_live')
+            if line is not None and self._rte_lakeshore_chosen():
+                line.set(text)
+            connection = (self.__dict__.get('rte_connections') or {}).get('lakeshore')
+            if connection is not None:
+                connection.set(word)
+        self.post_ui(show)
+
+    def _rte_magnet_output_on(self) -> bool:
+        """The chosen supply's output on or not confirmed at zero (no I/O)."""
+        return self._rte_supply().output_on
+
+    def _rte_magnet_choice_changed(self, _event=None):
+        """The magnet-supply choice (user, 2026-10-21): refused while the
+        page is busy or a scan runs, and while the supply being left has its
+        output on (or not confirmed at zero): it is zeroed first."""
+        variable = self.rte_magnet_choice_var
+        choice, previous = variable.get(), self.__dict__.get('rte_magnet_choice', MAGNET_SUPPLY_KEPCO)
+        if choice == previous:
+            return
+        problem = None
+        if self.rte_closed or self.closing or self.ppms_field_scan_running or self.ppms_environment_busy:
+            problem = 'SHV is busy: the magnet supply can be changed once it is idle'
+        elif self._rte_magnet_output_on():
+            label = self._rte_supply_label()
+            button = 'KEPCO Zero / OFF' if label == 'KEPCO' else f'{label} to 0 A'
+            problem = (f'The {label} output is on (or not confirmed at zero): zero it first ({button}), then '
+                       'change the magnet supply')
+        if problem is not None:
+            variable.set(previous)
+            messagebox.showerror('SHV magnet supply', problem, parent=self.root)
+            return
+        self.rte_magnet_choice = choice
+        self.thread_log(f'SHV magnet supply: {choice}')
+        self._rte_show_magnet_choice()
+        self._update_ppms_control_ui()
+
+    def _rte_show_magnet_choice(self):
+        """The rack row, the settings and the scan box for the chosen supply."""
+        lakeshore = self._rte_lakeshore_chosen()
+        for key, widgets in (self.__dict__.get('rte_supply_widgets') or {}).items():
+            for widget in widgets:
+                if (key == 'lakeshore') == lakeshore:
+                    widget.grid()
+                else:
+                    widget.grid_remove()
+        label = self._rte_supply_label()
+        if 'rte_limit_label' in self.__dict__:
+            self.rte_limit_label.configure(text='Rate A/s' if lakeshore else 'Voltage limit V')
+            self.rte_limit_entry.configure(textvariable=self.rte_magnet_rate if lakeshore else self.rte_voltage_limit)
+        if 'rte_apply_button' in self.__dict__:
+            self.rte_apply_button.configure(text=f'Apply {label}')
+        if 'rte_magnet_off_button' in self.__dict__:
+            # The Lake Shore has no remote output-off: 0 A is its "off".
+            self.rte_magnet_off_button.configure(text=f'{label} to 0 A' if lakeshore else 'KEPCO Zero / OFF')
+        line = self.__dict__.get('rte_drive_live')
+        if line is not None:
+            if lakeshore:
+                controller = self.rte_controllers['lakeshore']
+                line.set(lakeshore_live_text(controller.reading) if controller.connected
+                         else f'{label}: not connected')
+            else:
+                kepco = self.rte_controllers['kepco']
+                line.set(f'KEPCO programmed: {kepco.cached_current_a:+g} A' if kepco.output_owned
+                         else 'KEPCO: zeroed and output OFF' if kepco.last_command else 'KEPCO: no output command sent')
+        mode = self.__dict__.get('ppms_simple_mode')
+        if mode is not None and 'rte_scan_units' in self.__dict__:
+            self._rte_show_scan_units(mode.get())
+            if mode.get() in RTE_OUTER_ROWS and 'rte_outer_label' in self.__dict__:
+                self.rte_outer_label.set(RTE_OUTER_ROWS[mode.get()]['label'].replace('KEPCO', label))
 
     def _rte_dialog(self, title, text, show=None):
         """An error dialog from the Tk event loop, not inside drain_ui_queue,
@@ -53238,10 +55406,60 @@ class RTEPanel(PPMSPanel):
                 ownership.release('SHV')
                 raise
             return
+        if key == 'lakeshore':
+            # Connect sends *IDN? and queries only (user, 2026-10-21); what
+            # keeps it from being armed, an output not at zero and a LIMIT?
+            # below the program's limit are said at once.
+            controller = self.rte_controllers[key]
+
+            def supply_connected(_identity):
+                reading = controller.reading
+                self.rte_connections[key].set(lakeshore_state_word(reading, controller.arm_problem))
+                if self._rte_lakeshore_chosen():
+                    self.rte_drive_live.set(lakeshore_live_text(reading))
+                notes = []
+                if controller.arm_problem:
+                    notes.append(f'It is NOT armed, so no setpoint is sent to it: {controller.arm_problem}.')
+                if controller.output_on:
+                    notes.append(f"Its output is NOT at zero: RDGI? {reading.get('current_a', math.nan):+.3f} A "
+                                 f"(SETI? {reading.get('setpoint_a', math.nan):+.3f} A).")
+                if controller.effective_max_a < controller.program_max_a:
+                    notes.append(f'Its LIMIT? allows at most {controller.limit_current_a:g} A, below the '
+                                 f"program's {controller.program_max_a:g} A: larger currents are refused.")
+                if notes:
+                    self._rte_dialog(f'SHV {controller.label}', 'Connected. ' + ' '.join(notes),
+                                     show=messagebox.showwarning)
+            self._rte_submit(lambda: controller.connect(resource), supply_connected)
+            return
         self._rte_submit(lambda: self.rte_controllers[key].connect(resource),
                          lambda identity: self.rte_connections[key].set('Connected'))
 
     def _rte_disconnect(self, key):
+        if key == 'lakeshore':
+            # Ramped to 0 A first, as the 4886's Disconnect zeroes its output
+            # (user, 2026-10-21); closed whatever the zero did, and a zero not
+            # confirmed is shown (CHECK IT).
+            controller = self.rte_controllers[key]
+
+            def disconnect_supply():
+                try:
+                    controller.disconnect()
+                except Exception as error:
+                    if controller.connected:
+                        raise
+                    return error
+                return None
+
+            def supply_disconnected(failure):
+                if not controller.connected:
+                    self.rte_connections[key].set('Not connected')
+                if self._rte_lakeshore_chosen():
+                    self.rte_drive_live.set(f'{controller.short_label}: not connected' if failure is None
+                                            else f'{controller.short_label}: closed, zero NOT confirmed')
+                if failure is not None:
+                    raise failure
+            self._rte_submit(disconnect_supply, supply_disconnected)
+            return
         if key == 'newmark':
             stage = self.rte_controllers[key]
             def disconnect_stage():
@@ -53578,6 +55796,8 @@ class RTEPanel(PPMSPanel):
                          lambda _: self.ppms_device_connection_vars[key].set('Not connected'))
 
     def _rte_voltage_limit(self):
+        if self._rte_lakeshore_chosen():
+            return None     # the KEPCO's limit; the Lake Shore has its rate instead
         limit = float(self.rte_voltage_limit.get())
         if not math.isfinite(limit) or not 0 < limit <= STFMR_KEPCO_MAX_VOLTAGE_V:
             raise ValueError('KEPCO voltage limit must be greater than 0 and at most 20 V')
@@ -53585,16 +55805,47 @@ class RTEPanel(PPMSPanel):
 
     def _rte_drive_parameters(self):
         target = float(self.rte_drive_target.get())
+        if self._rte_lakeshore_chosen():
+            # The program's 40 A and the LS643's LIMIT? (user, 2026-10-21).
+            return self.rte_controllers['lakeshore'].check_current(target), None
         if not math.isfinite(target) or abs(target) > STFMR_KEPCO_MAX_CURRENT_A:
             raise ValueError('KEPCO current must be within +/-10 A')
         return target, self._rte_voltage_limit()
 
     def _rte_apply_drive(self):
+        lakeshore = self._rte_lakeshore_chosen()
         try:
             self._require_ppms_control_ready()
             target, limit = self._rte_drive_parameters()
+            if lakeshore:
+                supply_controller = self.rte_controllers['lakeshore']
+                if not supply_controller.connected:
+                    raise RuntimeError(f'Connect the {supply_controller.label} first')
+                rate = self._rte_rate()
         except Exception as error:
-            messagebox.showerror('SHV KEPCO', str(error), parent=self.root)
+            messagebox.showerror(f'SHV {self._rte_supply_label()}', str(error), parent=self.root)
+            return
+        if lakeshore:
+            # On the worker (a ramp takes |dI| / rate), with the rack busy
+            # meanwhile; its Zero button (never locked) sets the stop event,
+            # the ramp sends STOP and its zero runs next (user, 2026-10-21).
+            self.ppms_field_scan_stop_event.clear()
+            supply = self._rte_supply()
+
+            def ramp():
+                try:
+                    return supply.start(target, None)
+                except PPMSScanCancelled as stopped:
+                    return stopped
+
+            def ramped(result):
+                if isinstance(result, BaseException):
+                    self.rte_drive_live.set(f'{supply.label}: ramp to {target:+g} A stopped')
+                    return
+                self.rte_drive_live.set(lakeshore_live_text(result))
+                self.rte_connections['lakeshore'].set(lakeshore_state_word(result))
+            self.thread_log(f'SHV {supply.label}: ramping to {target:+g} A at {rate:g} A/s')
+            self._rte_submit(ramp, ramped)
             return
         self._rte_submit(lambda: self.rte_controllers['kepco'].set_output('CURR', target, limit),
                          lambda _: self.rte_drive_live.set(f'KEPCO programmed: {target:+g} A / limit {limit:g} V'))
@@ -53603,6 +55854,29 @@ class RTEPanel(PPMSPanel):
         self.ppms_field_scan_stop_event.set()
         try:
             if self.rte_closed:
+                return
+            if self._rte_lakeshore_chosen():
+                # The Lake Shore 643 (user, 2026-10-21): no remote output-off,
+                # so 0 A is off.  A ramp in progress sees the stop (and the
+                # request, at once) and sends STOP; then the zero runs on the
+                # worker, ramped at the rate, and is waited for.
+                supply = self._rte_supply()
+                supply.lakeshore_controller.request_stop()
+                future = self.ppms_executor.submit(supply.zero)
+
+                def zeroed():
+                    try:
+                        future.result()
+                        self.rte_drive_live.set(f'{supply.label}: at 0 A (zeroed)')
+                    except Exception as error:
+                        self.rte_drive_live.set(f'{supply.label} zero NOT confirmed: {short_status_error(error, 60)}')
+                    connection = self.rte_connections.get('lakeshore')
+                    controller = supply.lakeshore_controller
+                    if connection is not None and controller.connected:
+                        connection.set(lakeshore_state_word(controller.reading, controller.arm_problem))
+                    if not self.rte_closed and not self.closing:
+                        self._update_ppms_control_ui()
+                future.add_done_callback(lambda _: self.post_ui(zeroed))
                 return
             # Single executor: OFF follows any in-flight command; scan observes cancellation.
             # force_output_off: an explicit operator request acts even on an
@@ -53616,6 +55890,11 @@ class RTEPanel(PPMSPanel):
                     self.rte_drive_live.set('KEPCO: zeroed and output OFF')
                 except Exception as error:
                     self.rte_drive_live.set(f'KEPCO OFF not confirmed: {error}')
+                # The magnet-supply choice unlocks once the output is off
+                # (user, 2026-10-21).
+                if ('rte_edit_widgets' in self.__dict__ and not self.__dict__.get('rte_closed', False)
+                        and not getattr(self, 'closing', False)):
+                    self._update_ppms_control_ui()
             future.add_done_callback(lambda _: self.post_ui(finished))
         finally:
             # A running scan's log (user, 2026-10-18), after the stop event
@@ -53672,6 +55951,14 @@ class RTEPanel(PPMSPanel):
                     self.rte_field_live.set(data['field_display'])
                     if data.get('stage_display') is not None:
                         self.rte_stage_live.set(data['stage_display'])
+                    magnet = data.get('magnet_display')
+                    if magnet is not None:
+                        self.rte_connections['lakeshore'].set(magnet[1])
+                        if self._rte_lakeshore_chosen():
+                            self.rte_drive_live.set(magnet[0])
+                            combo = self.__dict__.get('rte_magnet_choice_combo')
+                            if combo is not None and not self.ppms_environment_busy and not self.ppms_field_scan_running:
+                                combo.configure(state='disabled' if self._rte_magnet_output_on() else 'readonly')
                     self.ppms_current_live_var.set('6221: ' + data['current_display'])
                     for key, (text, valid, overload) in data['references'].items():
                         self.ppms_xy_vars[key].set(text)
@@ -53697,6 +55984,16 @@ class RTEPanel(PPMSPanel):
                 stage_display = self._rte_stage_display(stage, stage.read_state())
             except Exception as error:
                 stage_display = f'Stage read failed: {short_status_error(error, 60)}'
+        # The Lake Shore 643's read-back (SETI?, RDGI?, RDGV?, OPST?, ERST?)
+        # when it is connected (user, 2026-10-21): its live line and state.
+        lakeshore, magnet_display = self.rte_controllers.get('lakeshore'), None
+        if lakeshore is not None and lakeshore.connected:
+            try:
+                reading = lakeshore.read_state()
+                magnet_display = (lakeshore_live_text(reading), lakeshore_state_word(reading, lakeshore.arm_problem))
+            except Exception as error:
+                magnet_display = (f'{lakeshore.short_label} read failed: {short_status_error(error, 40)}',
+                                  'Read failed')
         references = {}
         for key in self._ppms_sr830_keys():
             if not self.ppms_instrument_controllers[key].connected:
@@ -53710,7 +56007,7 @@ class RTEPanel(PPMSPanel):
             except Exception as error:
                 references[key] = ('Read failed: ' + short_status_error(error, 45), False, False)
         return dict(field_display=field_display, current_display=self._read_ppms_current_display(), references=references,
-                    stage_display=stage_display)
+                    stage_display=stage_display, magnet_display=magnet_display)
 
     def _rte_read_field(self):
         controller = self.rte_controllers['gauss']
@@ -53762,12 +56059,16 @@ class RTEPanel(PPMSPanel):
             # Angle+Field and Angle+Current (user, 2026-10-18): the main row is
             # an Angle scan's sweep, the inner loop, with its checks.
             angle = mode in RTE_ANGLE_MODES
+            # The chosen magnet supply (user, 2026-10-21): the KEPCO's +/-10 A,
+            # or the LS643's 40 A (lowered by its LIMIT?) and its rate.
+            supply = self._rte_supply()
             plan = rte_scan_plan('Angle' if angle else mode, *(v.get() for v in self.ppms_simple_range),
-                                 self.ppms_field_scan_loop_var.get(), self.rte_round_trip.get())
+                                 self.ppms_field_scan_loop_var.get(), self.rte_round_trip.get(),
+                                 supply.max_current_a(), supply.label)
             if not self.rte_controllers['gauss'].connected:
                 raise ValueError('Connect LS475 for measured-field recording')
-            if mode == 'Field' and not self.rte_controllers['kepco'].connected:
-                raise ValueError('Connect KEPCO for a field scan')
+            if mode == 'Field' and not supply.connected:
+                raise ValueError(f'Connect {supply.label} for a field scan')
             if angle:
                 # The stage turns the sample holder while the KEPCO holds a
                 # fixed field (user, 2026-10-13), or steps it (Angle+Field).
@@ -53787,14 +56088,14 @@ class RTEPanel(PPMSPanel):
                     # longer read (user, 2026-10-17); kept as a guard.
                     raise ValueError(f'The {stage.label} has no steps/° scale; Disconnect and Connect the '
                                      'stage again')
-                if not self.rte_controllers['kepco'].connected:
-                    raise ValueError('Connect KEPCO for an angle scan: it '
+                if not supply.connected:
+                    raise ValueError(f'Connect {supply.label} for an angle scan: it '
                                      + ('sets the outer field' if mode == 'Angle+Field' else 'holds the field'))
             # The outer loop (user, 2026-10-18), after the inner range's and
             # the instruments' checks: Angle+Field's KEPCO currents within
             # +/-10 A, Angle+Current's 6221 currents checked below.
-            outer = rte_outer_plan(mode, *(v.get() for v in self.rte_outer_ranges[mode])) if mode in RTE_OUTER_ROWS \
-                else None
+            outer = rte_outer_plan(mode, *(v.get() for v in self.rte_outer_ranges[mode]), supply.max_current_a(),
+                                   supply.label) if mode in RTE_OUTER_ROWS else None
             # A Field scan takes its KEPCO currents from the scan range and
             # needs only the voltage limit; a Current scan never drives the
             # KEPCO.  The unused boxes no longer refuse a scan (audit,
@@ -53808,6 +56109,15 @@ class RTEPanel(PPMSPanel):
                 field_current, limit = self._rte_drive_parameters()
             else:
                 limit = self._rte_voltage_limit() if mode in ('Field', 'Angle+Field') else None
+            # The Lake Shore ramps: its rate from the Rate A/s box, and it must
+            # be armed (the worker reads XPGM? and ERST? again before each
+            # setpoint) (user, 2026-10-21).
+            ramp_rate = None
+            if supply.lakeshore and mode != 'Current':
+                ramp_rate = self._rte_rate()
+                supply = self._rte_supply()
+                if supply.lakeshore_controller.arm_problem:
+                    raise ValueError(f'The {supply.label} is not armed: {supply.lakeshore_controller.arm_problem}')
             settings = self._ppms_direct_transport_settings()
             # Every 6221 current a scan sets: a Current scan's, and
             # Angle+Current's outer currents (user, 2026-10-18).
@@ -53853,13 +56163,29 @@ class RTEPanel(PPMSPanel):
             steps_s = (len(outer) * STFMR_FIELD_SETTLE_REQUIRED_SAMPLES * RTE_FIELD_SETTLE_POLL_S
                        if mode == 'Angle+Field' else (len(outer) - 1) * duration)
             least_s += turning / NEWMARK_SPEED_DEG_S + len(passes) * steps_s
+        # The Lake Shore ramps where the KEPCO jumps (user, 2026-10-21): from
+        # where it is to the first current, through every setpoint of every
+        # pass, and back to 0 A at the end, at the rate.
+        ramp_s = 0.0
+        if ramp_rate is not None:
+            here = supply.lakeshore_controller.current_a
+            here = here if math.isfinite(here) else 0.0
+            sequence = ([value for _loop, _point, value in plan] if mode == 'Field'
+                        else list(outer) if mode == 'Angle+Field' else [field_current])
+            ramp_s = lakeshore_scan_ramp_seconds([here, *sequence * len(passes), 0.0]
+                                                 if mode in ('Field', 'Angle+Field') else [here, field_current, 0.0],
+                                                 ramp_rate)
+            least_s += ramp_s
         least_text = self._format_scan_duration(least_s)
+        ramp_text = (f' The {supply.label} ramps at {ramp_rate:g} A/s: {self._format_scan_duration(ramp_s)} of '
+                     'ramping are counted, from its present current to 0 A at the end.' if ramp_rate is not None
+                     else '')
         if angle:
             first, last = plan[0][2], max((p[2] for p in plan), key=lambda value: abs(value - plan[0][2]))
         if outer:
             if not messagebox.askyesno(f'SHV {mode} scan', self._rte_outer_question(
-                    mode, plan, outer, passes, limit, field_current, settle_text, least_text, len(angles), turning),
-                    parent=self.root):
+                    mode, plan, outer, passes, limit, field_current, settle_text, least_text,
+                    len(angles), turning, ramp_text), parent=self.root):
                 return
         if mode == 'Angle':
             trip = ', round trip' if self.rte_round_trip.get() else ''
@@ -53868,10 +56194,12 @@ class RTEPanel(PPMSPanel):
                     f'Angle scan from {first:g}° to {last:g}° (step {abs(float(self.ppms_simple_range[2].get())):g}°'
                     f'{trip}): {len(plan)} angles x {len(passes)} harmonic pass(es) = {len(plan) * len(passes)} '
                     'points.\n\n'
-                    f'Each angle waits {settle_text} before it is read; the scan takes at least {least_text}.\n\n'
-                    f'The field is fixed: the KEPCO is set once to {field_current:+g} A (voltage limit {limit:g} V), '
-                    'settled on the LS475 and held during the scan. When the scan ends (completed, stopped or '
-                    'failed) the 6221 and then the KEPCO are zeroed; the stage stays where the scan left it.\n\n'
+                    f'Each angle waits {settle_text} before it is read; the scan takes at least {least_text}.'
+                    f'{ramp_text}\n\n'
+                    f'The field is fixed: the {supply.label} is set once to {field_current:+g} A '
+                    f'({self._rte_magnet_terms(limit)}), settled on the LS475 and held during the scan. When the scan '
+                    f'ends (completed, stopped or failed) the 6221 and then the {supply.label} are zeroed; the stage '
+                    'stays where the scan left it.\n\n'
                     'The Newmark stage turns the SAMPLE HOLDER with its wires attached, at '
                     f'{NEWMARK_SPEED_DEG_S:g}°/s, to each angle counted from the stage zero (absolute moves, all '
                     f'within ±{NEWMARK_CABLE_LIMIT_DEG:g}° of it). Can the wires follow?\n\nStart the scan?',
@@ -53893,6 +56221,7 @@ class RTEPanel(PPMSPanel):
         try:
             run_settings = self._rte_run_settings(mode, plan, passes, settings, limit, field_current, stable,
                                                   duration, pass_settles, settle_s, typed, outer=outer)
+            run_settings['magnet_supply'] = self._rte_magnet_settings(supply, mode, ramp_rate, ramp_s)
         except Exception as error:
             messagebox.showerror('SHV run log', f'Could not gather the settings for the run log; the scan was not '
                                  f'started: {error}', parent=self.root)
@@ -53938,6 +56267,8 @@ class RTEPanel(PPMSPanel):
                 self._rte_dialog('SHV run folder', f'Could not write the run log; the scan was not started: {problem}')
                 return
             self.rte_recorder, self.rte_run_folder = recorder, recorder.directory
+            # The supply's name in the finish texts (user, 2026-10-21).
+            self.rte_scan_supply_label = supply.label
             path = recorder.csv_path
             self.ppms_live_csv_path, self.ppms_live_csv_fields = path, None
             self.ppms_field_scan_running = True
@@ -53976,7 +56307,7 @@ class RTEPanel(PPMSPanel):
                 # not here: "; settle 86400 s" made the longest line about 586 px in
                 # Arial 15 px (user, 2026-10-14).
                 self.ppms_field_scan_status_var.set(
-                    f'SHV Angle {first:g}° to {last:g}°, KEPCO {field_current:+g} A held; '
+                    f'SHV Angle {first:g}° to {last:g}°, {supply.label} {field_current:+g} A held; '
                     f'{self.ppms_field_scan_total} points')
             elif outer:
                 # Shorter than the Angle line (user, 2026-10-18): the
@@ -53989,12 +56320,14 @@ class RTEPanel(PPMSPanel):
             self._redraw_ppms_transport_plot()
             self.thread_log(f'SHV {mode} scan; run folder: {recorder.directory} ({path.name} and '
                             f'{recorder.log_path.name}); {per_pass} points x {len(passes)} harmonic pass(es)'
-                            + (f'; stage {first:g}° to {last:g}°, KEPCO {field_current:+g} A held' if mode == 'Angle' else '')
+                            + (f'; stage {first:g}° to {last:g}°, {supply.label} {field_current:+g} A held'
+                               if mode == 'Angle' else '')
                             + (f'; outer {RTE_OUTER_ROWS[mode]["label"].rstrip(":")} {outer[0]:g} to {outer[-1]:g} '
                                f'({len(outer)} steps), inner stage {first:g}° to {last:g}°'
-                               + (f', KEPCO {field_current:+g} A held' if mode == 'Angle+Current' else '')
+                               + (f', {supply.label} {field_current:+g} A held' if mode == 'Angle+Current' else '')
                                if outer else '')
-                            + f'; each reading waits {settle_text}; at least {least_text}')
+                            + f'; each reading waits {settle_text}; at least {least_text}'
+                            + (f'; {supply.label} ramps at {ramp_rate:g} A/s' if ramp_rate is not None else ''))
             # The wait announced here; the worker logs only a different one (a
             # harmonic pass with fewer lock-ins).
             self.ppms_scan_settle_logged = settle_s
@@ -54003,7 +56336,7 @@ class RTEPanel(PPMSPanel):
                 # Every ending zeroed the 6221 and the KEPCO on the worker
                 # (user, 2026-10-18); the status says how it went.
                 results = self.__dict__.get('rte_scan_outputs')
-                outputs = rte_outputs_text(results, check=not angle)
+                outputs = rte_outputs_text(results, check=not angle, supply=supply.label)
                 try:
                     future.result()
                     status = f'Completed; {outputs}'
@@ -54013,7 +56346,7 @@ class RTEPanel(PPMSPanel):
                 except Exception as error:
                     outcome, error_text = 'error', str(error)
                     # And an output not confirmed at zero (review, 2026-10-18).
-                    status = rte_failed_status_text(error, results)
+                    status = rte_failed_status_text(error, results, supply.label)
                     if angle:
                         # Where the stage is after a failure, "NOT confirmed stopped"
                         # included, goes to the log and the dialog; the status line
@@ -54031,15 +56364,15 @@ class RTEPanel(PPMSPanel):
                     points_saved=len(self.ppms_field_scan_rows), status=status, outputs=results,
                     **({'stage': self.rte_stage_where or 'stage not moved'} if angle else {}))
                 zeroing = ('At the end: ' + '; '.join(f'{name} {results[key]}' for name, key in
-                                                      (('6221', '6221'), ('KEPCO', 'kepco')))
-                           if results else 'At the end: the 6221 and the KEPCO were not confirmed zeroed')
+                                                      (('6221', '6221'), (supply.label, 'kepco')))
+                           if results else f'At the end: the 6221 and the {supply.label} were not confirmed zeroed')
                 # The finish runs inside drain_ui_queue: its dialogs open
                 # from the Tk event loop, after the page is idle again
                 # (review, 2026-10-18; the README's 2026-10-14 rule).
                 if not self.closing and not self.rte_closed:
                     if outcome == 'error':
                         detail = error_text + (f'\n\n{where[:1].upper()}{where[1:]}' if where else '')
-                        unconfirmed = rte_unconfirmed_outputs(results)
+                        unconfirmed = rte_unconfirmed_outputs(results, supply.label)
                         # CHECK IT on a failure too (review, 2026-10-18).
                         check = (f"\n\nCHECK IT: {' and '.join(unconfirmed)} not confirmed at zero."
                                  if unconfirmed else '')
@@ -54107,7 +56440,7 @@ class RTEPanel(PPMSPanel):
     # ---- the run folder's log (user, 2026-10-18: "like ST-FMR, pls also write a
     # log of SHV and save results in a folder") ------------------------------------
     def _rte_outer_question(self, mode, plan, outer, passes, limit, field_current, settle_text, least_text,
-                            moves, turning):
+                            moves, turning, ramp_text=''):
         """The Yes/No of an Angle+Field or Angle+Current scan (user,
         2026-10-18): the outer steps, the angles of each sweep, the points,
         the stage moves (the returns to the first angle counted) and the time
@@ -54115,10 +56448,14 @@ class RTEPanel(PPMSPanel):
         first, last = plan[0][2], max((p[2] for p in plan), key=lambda value: abs(value - plan[0][2]))
         trip = ', round trip' if self.rte_round_trip.get() else ''
         steps = len(outer) * len(passes)
+        # The chosen magnet supply's name and how it is set (user, 2026-10-21).
+        name, terms = self._rte_supply_label(), self._rte_magnet_terms(limit)
         if mode == 'Angle+Field':
-            outer_text = (f'Field, the OUTER loop: {len(outer)} KEPCO steps from {outer[0]:+g} A to {outer[-1]:+g} A '
-                          f'(voltage limit {limit:g} V). At each step the KEPCO is set to that current (the first '
-                          'switches the output on, the others change its current only) and the field is settled on '
+            setting = ('the first switches the output on, the others change its current only' if name == 'KEPCO'
+                       else 'it ramps there and the step waits until RDGI? is at it')
+            outer_text = (f'Field, the OUTER loop: {len(outer)} {name} steps from {outer[0]:+g} A to {outer[-1]:+g} A '
+                          f'({terms}). At each step the {name} is set to that current ({setting}) and the field is '
+                          'settled on '
                           f'the LS475 (at most {STFMR_FIELD_SETTLE_TIMEOUT_S:g} s; an unsettled field is noted in the '
                           'log and the scan goes on); then the whole angle sweep runs.')
             unit = 'field'
@@ -54127,8 +56464,8 @@ class RTEPanel(PPMSPanel):
                           'At each step only the 6221 amplitude changes, within the fixed range set for the largest '
                           'current (as a Current scan); the first point after each change is read with the agreeing '
                           'windows; then the whole angle sweep runs.\n\n'
-                          f'The field is fixed: the KEPCO is set once to {field_current:+g} A (voltage limit '
-                          f'{limit:g} V), settled on the LS475 and held during the scan.')
+                          f'The field is fixed: the {name} is set once to {field_current:+g} A ({terms}), settled on '
+                          'the LS475 and held during the scan.')
             unit = 'current'
         passes_text = (f' Each of the {len(passes)} harmonic passes runs the whole {unit} x angle scan.'
                        if len(passes) > 1 else '')
@@ -54140,8 +56477,8 @@ class RTEPanel(PPMSPanel):
                 f'{len(plan) * steps} points.{passes_text} {moves} stage moves ({steps - 1} of them back to '
                 f'{first:g}°), {turning:g}° of turning in all.\n\n'
                 f'Each angle waits {settle_text} before it is read; the scan takes at least {least_text} (the '
-                'turning counted, the move to the first angle not).\n\n'
-                'When the scan ends (completed, stopped or failed) the 6221 and then the KEPCO are zeroed; the '
+                f'turning counted, the move to the first angle not).{ramp_text}\n\n'
+                f'When the scan ends (completed, stopped or failed) the 6221 and then the {name} are zeroed; the '
                 'stage stays where the scan left it.\n\n'
                 'The Newmark stage turns the SAMPLE HOLDER with its wires attached, at '
                 f'{NEWMARK_SPEED_DEG_S:g}°/s, to each angle counted from the stage zero (absolute moves, all '
@@ -54246,6 +56583,18 @@ class RTEPanel(PPMSPanel):
                        steps_per_degree=getattr(stage, 'steps_per_degree', None),
                        speed_deg_s=NEWMARK_SPEED_DEG_S, cable_limit_deg=NEWMARK_CABLE_LIMIT_DEG),
             safety_confirmed=bool(box(safety)) if safety is not None else None)
+
+    def _rte_magnet_settings(self, supply, mode, rate, ramp_s):
+        """run_prepared's magnet_supply (user, 2026-10-21): which supply the
+        scan drives, its identity, limits and ramp rate.  No I/O."""
+        used = mode != 'Current'
+        if not supply.lakeshore:
+            kepco = supply.kepco
+            return dict(name=supply.name, used=used, resource=str(getattr(kepco, 'resource_name', '') or ''),
+                        identity=str(getattr(kepco, 'identity', '') or ''),
+                        connected=bool(getattr(kepco, 'connected', False)), max_current_a=STFMR_KEPCO_MAX_CURRENT_A)
+        return dict(name=supply.name, used=used, rate_a_s=rate, ramp_s_counted=ramp_s,
+                    setpoint_tolerance='max(0.01 A, 0.2 % of |I|)', **supply.lakeshore_controller.describe())
 
     def _rte_log(self, name, **details):
         """One event in the running scan's log, from either thread; never
@@ -54360,26 +56709,51 @@ class RTEPanel(PPMSPanel):
         Current scan needs no KEPCO) or "zero FAILED: <error>"; the log
         has them (user, 2026-10-18).  The steps run through the shared
         zero_scan_outputs, which every scan page's end uses (2026-10-18)."""
+        # The chosen magnet supply (user, 2026-10-21): the KEPCO as before, or
+        # the Lake Shore 643 ramped to 0 A and waited for (its zero is never
+        # stopped).  Its result keeps the key "kepco".
+        supply = self._rte_supply()
+
         def kepco_off():
-            kepco = self.rte_controllers.get('kepco')
-            if kepco is None or not kepco.connected:
+            if supply.controller is None or not supply.connected:
                 return 'not connected'
-            kepco.force_output_off()
+            supply.zero()
         results = zero_scan_outputs((('6221', self._rte_zero_6221_after_scan), ('kepco', kepco_off)))
-        self._rte_log('outputs_zeroed', **{'6221': results['6221'], 'kepco': results['kepco']})
-        self.thread_log(f"SHV scan end: 6221 {results['6221']}; KEPCO {results['kepco']}")
+        self._rte_log('outputs_zeroed', **{'6221': results['6221'], 'kepco': results['kepco']},
+                      **({'magnet_supply': supply.name} if supply.lakeshore else {}))
+        self.thread_log(f"SHV scan end: 6221 {results['6221']}; {supply.label} {results['kepco']}")
 
         def show():
             if self.rte_closed or self.closing:
                 return
             # The lines the OFF buttons leave (the KEPCO's is its Zero / OFF's).
-            for name, key, text in (('rte_drive_live', 'kepco', 'KEPCO: zeroed and output OFF'),
+            magnet_line = f'{supply.label}: at 0 A (zeroed)' if supply.lakeshore else 'KEPCO: zeroed and output OFF'
+            for name, key, text in (('rte_drive_live', 'kepco', magnet_line),
                                     ('ppms_current_live_var', '6221', 'OFF / 0 mA')):
                 line = self.__dict__.get(name)
                 if line is not None and results[key] == 'zeroed':
                     line.set(text)
         self.post_ui(show)
         return results
+
+    def _rte_magnet_log(self, supply, reading) -> dict:
+        """A field_programmed entry's Lake Shore details (user, 2026-10-21):
+        nothing for the KEPCO, whose entries stay as they were."""
+        if not supply.lakeshore or not isinstance(reading, dict):
+            return {}
+        ramp = supply.lakeshore_controller.last_ramp
+        return dict(magnet_supply=supply.name, rate_a_s=supply.rate_a_s, setpoint_a=reading.get('setpoint_a'),
+                    measured_current_a=reading.get('current_a'), voltage_v=reading.get('voltage_v'),
+                    opst=reading.get('opst'), ramp_s=ramp.get('seconds'))
+
+    def _rte_show_programmed(self, supply, value, reading, held=False):
+        """The rack's live line after a setpoint, from the worker: the
+        KEPCO's "KEPCO programmed: +2 A", or the Lake Shore's read-back."""
+        if supply.lakeshore and isinstance(reading, dict):
+            text = lakeshore_live_text(reading)
+        else:
+            text = f'KEPCO programmed: {value:+g} A' + (' (held)' if held else '')
+        self.post_ui(lambda: None if self.rte_closed or self.closing else self.rte_drive_live.set(text))
 
     def _rte_update_current(self, settings):
         """Change only the running sine amplitude, without abort/reset/re-arm."""
@@ -54391,6 +56765,9 @@ class RTEPanel(PPMSPanel):
         stage_failure = False
         drift_noted = False
         angle = mode in RTE_ANGLE_MODES
+        # The chosen magnet supply, as at Start (the choice is locked while the
+        # scan runs; user, 2026-10-21).
+        supply = self._rte_supply()
         try:
             # Same expression, in the same order, as the validator's peak_a:
             # (I*1e-3)*sqrt2 could come out 1 ulp below sqrt2*I*1e-3, so a scan
@@ -54433,13 +56810,16 @@ class RTEPanel(PPMSPanel):
                 if mode == 'Field':
                     try:
                         self._rte_wait(0)
-                        kepco = self.rte_controllers['kepco']
+                        # The KEPCO's set_output / set_scan_current as before,
+                        # or the Lake Shore's ramp, returning at the setpoint
+                        # before the field settle (user, 2026-10-21).
                         if index == 1 and not settings.get('continue_source'):
-                            kepco.set_output('CURR', target, limit)
+                            reading = supply.start(target, limit)
                         else:
-                            kepco.set_scan_current(target)
-                        self._rte_log('field_programmed', index=progress, current_a=target, voltage_limit_v=limit)
-                        self.post_ui(lambda value=target: self.rte_drive_live.set(f'KEPCO programmed: {value:+g} A'))
+                            reading = supply.step(target)
+                        self._rte_log('field_programmed', index=progress, current_a=target, voltage_limit_v=limit,
+                                      **self._rte_magnet_log(supply, reading))
+                        self._rte_show_programmed(supply, target, reading)
                         self._rte_settle_field()
                     except PPMSScanCancelled:
                         raise
@@ -54460,17 +56840,16 @@ class RTEPanel(PPMSPanel):
                         # the sweep's first move.
                         try:
                             self._rte_wait(0)
-                            kepco = self.rte_controllers['kepco']
                             if index == 1 and not settings.get('continue_source'):
-                                kepco.set_output('CURR', step_value, limit)
+                                reading = supply.start(step_value, limit)
                             else:
-                                kepco.set_scan_current(step_value)
+                                reading = supply.step(step_value)
                             self._rte_log('field_programmed', index=progress, step_index=step_index,
-                                          steps=len(outer), current_a=step_value, voltage_limit_v=limit)
+                                          steps=len(outer), current_a=step_value, voltage_limit_v=limit,
+                                          **self._rte_magnet_log(supply, reading))
                             # The Field scan's line: a longer one would wrap
                             # in its fixed box and change the rack's height.
-                            self.post_ui(lambda value=step_value: self.rte_drive_live.set(
-                                f'KEPCO programmed: {value:+g} A'))
+                            self._rte_show_programmed(supply, step_value, reading)
                             self._rte_settle_field(step_index=step_index)
                         except PPMSScanCancelled:
                             raise
@@ -54485,11 +56864,10 @@ class RTEPanel(PPMSPanel):
                     if mode != 'Angle+Field' and index == 1 and not settings.get('continue_source'):
                         try:
                             self._rte_wait(0)
-                            self.rte_controllers['kepco'].set_output('CURR', field_current, limit)
+                            reading = supply.start(field_current, limit)
                             self._rte_log('field_programmed', index=progress, current_a=field_current,
-                                          voltage_limit_v=limit, held=True)
-                            self.post_ui(lambda value=field_current: self.rte_drive_live.set(
-                                f'KEPCO programmed: {value:+g} A (held)'))
+                                          voltage_limit_v=limit, held=True, **self._rte_magnet_log(supply, reading))
+                            self._rte_show_programmed(supply, field_current, reading, held=True)
                             self._rte_settle_field()
                         except PPMSScanCancelled:
                             raise
@@ -54557,7 +56935,6 @@ class RTEPanel(PPMSPanel):
                     self.thread_log(f'SHV {mode} point {index}: the LS475 field changed by {drift_g:+.6g} G during '
                                     f'the acquisition ({before:+.6g} -> {measured:+.6g} G); point saved, scan goes on '
                                     '(later drifts of this pass are in the field_drift_g column only)')
-                kepco = self.rte_controllers['kepco']
                 # Angle rows add the stage's target and where it is (PX read
                 # back, equal to the target); Field and Current rows keep their
                 # columns.
@@ -54568,8 +56945,10 @@ class RTEPanel(PPMSPanel):
                 row = dict(module='SHV', scan_mode=mode, loop=loop, point=point,
                     harmonic_pass=settings.get('harmonic_pass', 1),
                     elapsed_s=time.monotonic() - self.ppms_field_scan_started_at,
-                    kepco_programmed_current_a=kepco.cached_current_a if kepco.output_owned else '',
-                    kepco_voltage_limit_v=limit if mode in ('Field', *RTE_ANGLE_MODES) else '',
+                    # Whichever supply's programmed current (user, 2026-10-21);
+                    # a voltage limit is the KEPCO's only.
+                    kepco_programmed_current_a=supply.programmed_current_a(),
+                    kepco_voltage_limit_v=limit if mode in ('Field', *RTE_ANGLE_MODES) and not supply.lakeshore else '',
                     measured_field_g=measured, **stage_columns, stable_s=stable,
                     first_point_windows=windows, warmup_s=(windows - 1) * duration,
                     **{'6221_current_rms_ma': point_settings['current_rms_ma'],
@@ -54592,6 +56971,14 @@ class RTEPanel(PPMSPanel):
                     # 2026-10-18); its value is in kepco_programmed_current_a
                     # or 6221_current_rms_ma.
                     row[RTE_OUTER_ROWS[mode]['index_column']] = step_index
+                # The magnet supply and the Lake Shore's measured current
+                # (RDGI?, read now), after every older column (user,
+                # 2026-10-21): "KEPCO 4886", whose current is not read back,
+                # or "LS643".
+                row['magnet_supply'] = supply.name
+                row['magnet_measured_current_a'] = (supply.measured_current_a(fresh=True)
+                                                    if supply.lakeshore and supply.connected and mode != 'Current'
+                                                    else '')
                 # Later passes may omit SR830s whose selected orders are done.
                 # Preserve the first pass CSV schema with empty cells.
                 if self.ppms_field_scan_rows:
@@ -54616,10 +57003,12 @@ class RTEPanel(PPMSPanel):
                 # below, and the KEPCO's field held (user, 2026-10-13).
                 self._rte_stop_stage_after_failure(error)
             # A source-off failure must not skip the magnet cleanup attempt.
+            # The Lake Shore is left where its STOP left it: the end's zero
+            # ramps it to 0 A (user, 2026-10-21).
             try:
                 self._stop_ppms_transport_source()
             finally:
-                if field_failure:
+                if field_failure and not supply.lakeshore:
                     self.rte_controllers['kepco'].safe_output_off()
             raise
 
@@ -54698,7 +57087,8 @@ class RTEPanel(PPMSPanel):
             # The log after the event (review, 2026-10-18): a slow disk never
             # delays the Stop.
             self._rte_log('stop_requested', button='Stop')
-            self.ppms_field_scan_status_var.set('Stopping; completed CSV points kept; KEPCO and 6221 zeroed next')
+            label = self.__dict__.get('rte_scan_supply_label', 'KEPCO')
+            self.ppms_field_scan_status_var.set(f'Stopping; completed CSV points kept; {label} and 6221 zeroed next')
             self.ppms_field_scan_stop_button.configure(state='disabled')
 
     def _redraw_ppms_transport_plot(self):
@@ -54789,6 +57179,11 @@ class RTEPanel(PPMSPanel):
         self.ppms_field_scan_stop_event.set()
         # A stage move by hand watches this one too (and the scan's); it sends STOP itself.
         self.rte_stage_stop_event.set()
+        # A Lake Shore ramp in progress sends STOP at its next poll; the scan's
+        # end and the disconnect below ramp it to 0 A (user, 2026-10-21).
+        lakeshore = self.rte_controllers.get('lakeshore')
+        if lakeshore is not None:
+            lakeshore.request_stop()
         # A running scan's log (user, 2026-10-18), after the stop events
         # (review, 2026-10-18) and before the clean-up job is queued, which
         # closes the log once the scan has ended.
