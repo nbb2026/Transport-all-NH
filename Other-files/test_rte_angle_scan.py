@@ -230,7 +230,10 @@ class Recorder(rte_tests.Widget):
         Recorder.made.append(self)
 
     def grid(self, **kwargs):
-        self.grid_options = dict(kwargs)
+        # As Tk: grid() with no options after grid_remove() puts the widget
+        # back where it was.
+        if kwargs or not self.grid_removed:
+            self.grid_options = dict(kwargs)
         self.grid_removed = False
 
     def grid_remove(self):
@@ -1853,7 +1856,11 @@ class AnglePageTests(unittest.TestCase):
                                              lambda _self, parent, key: Recorder(parent, indicator=key)))
             stack.enter_context(patch.object(app.CombinedControlApp, "_set_connection_indicator", Mock()))
             stack.enter_context(patch.object(app.CombinedControlApp, "_draw_nonlocal_series", Mock()))
-            return app.RTEPanel(parent, rte_tests.Widget())
+            panel = app.RTEPanel(parent, rte_tests.Widget())
+            # The KEPCO 4886 path (SHV starts on the LS643 since 2026-10-23).
+            panel.rte_magnet_choice_var.set(app.MAGNET_SUPPLY_KEPCO)
+            panel._rte_magnet_choice_changed()
+            return panel
 
     def test_the_motor_row_is_in_the_rack_and_the_stage_block_in_the_settings(self):
         """User/CI, 2026-10-14: a rack row and a row under the settings for

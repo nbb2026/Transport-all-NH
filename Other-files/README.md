@@ -1,5 +1,13 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## SHV and ST-FMR start on the Lake Shore 643 (2026-10-23)
+
+- User: "change SHV and STFMR to default use LS643". Both pages start with the magnet supply set to the Lake Shore
+  643 (`GPIB0::12::INSTR`, the lab unit's IEEE address); the KEPCO 4886 stays one choice away. FMR keeps the KEPCO
+  4886 as its default (LS648 one choice away). The user confirmed the LS643 connects at address 12 and reads 0 A.
+- Tests that drive the KEPCO path now choose it explicitly (`test_rte_angle_end_to_end.kepco_chosen`, the SHV
+  harness in test_rte_angle_scan); the stand-in widget's grid() now restores its place after grid_remove(), as Tk.
+
 ## Lake Shore magnet supplies: review fixes (2026-10-21)
 
 - The FMR page's busy state (`_set_stfmr_scan_busy`) had lost its `def` in the Lake Shore commit: Start, the LS648's

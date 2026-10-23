@@ -18917,8 +18917,10 @@ class CombinedControlApp:
         self.stfmr_lockin_connection_vars["lakeshore"] = tk.StringVar(value="Not connected")
         # The chosen magnet supply and the Lake Shore's rate, as plain values
         # for the worker; set on the Tk thread (user, 2026-10-21).
-        self.stfmr_lockin_magnet_choice = MAGNET_SUPPLY_KEPCO
-        self.stfmr_lockin_magnet_choice_var = tk.StringVar(value=STFMR_LOCKIN_MAGNET_CHOICES[0])
+        # The Lake Shore 643 by default (user, 2026-10-23: "change SHV and
+        # STFMR to default use LS643"); the KEPCO 4886 stays one choice away.
+        self.stfmr_lockin_magnet_choice = "LS643"
+        self.stfmr_lockin_magnet_choice_var = tk.StringVar(value=STFMR_LOCKIN_MAGNET_CHOICES[1])
         self.stfmr_lockin_magnet_rate_var = tk.StringVar(value=f"{LAKESHORE_DEFAULT_RATE_A_S:g}")
         self.stfmr_lockin_magnet_rate_a_s = LAKESHORE_DEFAULT_RATE_A_S
         # How many Lake Shore Apply, Read or Zero jobs of the field-output
@@ -21948,6 +21950,10 @@ class CombinedControlApp:
         self.stfmr_lockin_canvas.bind(
             "<Configure>", lambda _event: self._redraw_stfmr_lockin_plot(), add="+"
         )
+        # The rows and the output panel for the start-up supply, the Lake
+        # Shore 643 since 2026-10-23 (user); the KEPCO's are already shown.
+        if self._stfmr_lockin_lakeshore_chosen():
+            self._stfmr_lockin_show_magnet_choice()
         self._redraw_stfmr_lockin_live_plots()
         self._redraw_stfmr_lockin_plot()
 
@@ -54674,6 +54680,11 @@ class RTEPanel(PPMSPanel):
         self.ppms_acquisition_time_var.set(f'{RTE_ACQUISITION_S:g}')
         self.ppms_simple_mode.set(RTE_DEFAULT_SCAN_MODE)
         self._rte_mode_changed()
+        # The Lake Shore 643 by default (user, 2026-10-23: "change SHV and
+        # STFMR to default use LS643"), chosen as the combobox would; the
+        # KEPCO 4886 stays one choice away.
+        self.rte_magnet_choice_var.set(RTE_MAGNET_CHOICES[1])
+        self._rte_magnet_choice_changed()
         # Setting the variables does not fire the checkbutton commands, so the
         # harmonic plot rows have to be rebuilt for the new selection.
         self._refresh_ppms2_plot_layout()

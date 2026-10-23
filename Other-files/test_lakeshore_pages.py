@@ -256,7 +256,19 @@ class ShvLakeShoreTests(ete.EndToEnd):
         self.assertTrue(h.panel._rte_lakeshore_chosen())
         self.assertIn("zero it first (LS643 to 0 A)", h.showerror.call_args.args[1])
 
-    def test_the_kepco_stays_the_default_and_the_lakeshore_gets_nothing(self):
+    def test_shv_and_stfmr_start_on_the_ls643(self):
+        """User, 2026-10-23: "change SHV and STFMR to default use LS643"."""
+        import inspect
+        import test_rte_angle_end_to_end as ete
+        panel = ete.build_page(kepco=False)
+        self.assertTrue(panel._rte_lakeshore_chosen())
+        self.assertEqual(panel.rte_magnet_choice_var.get(), "Lake Shore 643")
+        init = inspect.getsource(stfmr_app.CombinedControlApp.__init__)
+        self.assertIn('self.stfmr_lockin_magnet_choice = "LS643"', init)
+        self.assertIn("tk.StringVar(value=STFMR_LOCKIN_MAGNET_CHOICES[1])", init)
+        self.assertEqual(stfmr_app.STFMR_LOCKIN_MAGNET_CHOICES[1], "LS643")
+
+    def test_with_the_kepco_chosen_the_lakeshore_gets_nothing(self):
         h = self.make()
         controller, fake = self.lakeshore(h, choose=False)
         self.assertFalse(h.panel._rte_lakeshore_chosen())

@@ -121,7 +121,15 @@ class Gauss:
         pass
 
 
-def build_page():
+def kepco_chosen(panel):
+    """SHV starts on the Lake Shore 643 since 2026-10-23 (user); these
+    tests drive the KEPCO 4886 path, chosen as the combobox would."""
+    panel.rte_magnet_choice_var.set(app.MAGNET_SUPPLY_KEPCO)
+    panel._rte_magnet_choice_changed()
+    return panel
+
+
+def build_page(kepco=True):
     """The real RTEPanel constructor on stand-in widgets (as test_rte_angle_scan's)."""
     parent = Mock(closing=False)
     parent.root.after.return_value = "timer"
@@ -137,7 +145,8 @@ def build_page():
                                          lambda _self, parent, key: Recorder(parent, indicator=key)))
         stack.enter_context(patch.object(app.CombinedControlApp, "_set_connection_indicator", Mock()))
         stack.enter_context(patch.object(app.CombinedControlApp, "_draw_nonlocal_series", Mock()))
-        return app.RTEPanel(parent, rte_tests.Widget())
+        panel = app.RTEPanel(parent, rte_tests.Widget())
+        return kepco_chosen(panel) if kepco else panel
 
 
 class EndToEnd(unittest.TestCase):
