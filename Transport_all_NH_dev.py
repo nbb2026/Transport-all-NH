@@ -2725,7 +2725,7 @@ STFMR_FMR_MAGNET_CHOICES = ("KEPCO4886", "LS648")
 # 0.2 %).  No 643 manual was at hand: the same is used for it.
 LAKESHORE_MAGNET_MODELS = {
     "643": {"label": "Lake Shore 643", "short": "LS643", "model": "MODEL643", "max_current_a": 40.0,
-            "resource": "GPIB0::11::INSTR", "tolerance_a": 0.05, "tolerance_rel": 0.002},
+            "resource": "GPIB0::12::INSTR", "tolerance_a": 0.05, "tolerance_rel": 0.002},
     "648": {"label": "Lake Shore 648", "short": "LS648", "model": "MODEL648", "max_current_a": 100.0,
             "resource": "GPIB0::10::INSTR", "tolerance_a": 0.05, "tolerance_rel": 0.002},
 }

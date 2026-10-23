@@ -25,7 +25,7 @@
 - User: "Add LS643 connection & control for SHV and STFMR. Add LS648 connection & control for FMR. LS means
   lakeshore." Each page chooses its magnet supply in the KEPCO row's label: **KEPCO 4886** (the default, so nothing
   changes until a Lake Shore is chosen) or **Lake Shore 643** (SHV), **LS643** (ST-FMR), **LS648** (FMR). The row then
-  shows the chosen supply's address (LS648 `GPIB0::10::INSTR`, LS643 `GPIB0::11::INSTR`), Connect, Disconnect, lamp
+  shows the chosen supply's address (LS648 `GPIB0::10::INSTR`, LS643 `GPIB0::12::INSTR` (the lab unit's IEEE address, 2026-10-23; was 11)), Connect, Disconnect, lamp
   and state in the same place. The choice is locked while a scan runs and while the supply being left is not
   confirmed at zero.
 - `LakeShoreMagnetSupplyController`: LF terminators, at least 50 ms after every command and reply (manual 5.3.5),

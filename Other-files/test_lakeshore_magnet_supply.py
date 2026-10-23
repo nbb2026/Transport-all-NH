@@ -238,7 +238,7 @@ class ConnectTests(unittest.TestCase):
                         patch.object(app, "acquire_shared_visa_manager", return_value=Manager(fake)), \
                         patch.object(app, "release_shared_visa_manager"):
                     with self.assertRaises(RuntimeError):
-                        controller.connect("GPIB0::11::INSTR")
+                        controller.connect("GPIB0::12::INSTR")
                 self.assertFalse(controller.connected)
                 self.assertTrue(fake.closed)
                 self.assertEqual(fake.commands, ["*IDN?"], "nothing but *IDN? reaches a wrong instrument")
@@ -414,7 +414,7 @@ class ZeroTests(unittest.TestCase):
         with patch.object(app, "pyvisa", object()), \
                 patch.object(app, "acquire_shared_visa_manager", return_value=Manager(fake)):
             with self.assertRaisesRegex(RuntimeError, "already connected by \"SHV / Lake Shore 643\""):
-                second.connect("GPIB0::11")
+                second.connect("GPIB0::12")
         release(first)
 
 
@@ -454,7 +454,7 @@ class ReviewTests(unittest.TestCase):
         with patch.object(app, "pyvisa", object()), \
                 patch.object(app, "acquire_shared_visa_manager", return_value=Manager(fake)), \
                 patch.object(app, "release_shared_visa_manager"):
-            controller.connect("GPIB0::11::INSTR")
+            controller.connect("GPIB0::12::INSTR")
         self.assertEqual(controller.arm_problem, "")
         release(controller)
 
