@@ -8,8 +8,8 @@ root.update() never returned and the program hung at start-up on the lab
 PCs.  Each class builds the whole application as the lab PC shows it.
 """
 import tkinter as tk
+import tkinter.font
 import unittest
-from unittest import mock
 
 from lab_screen import LAB_WIDE, build_lab_app, lab_window
 from test_ppms_motor_debug import app
@@ -28,6 +28,13 @@ def cidwm_mode_row(built):
     box = next(w for w in descendants(built.k6221_tab)
                if isinstance(w, tk.ttk.LabelFrame) and str(w.cget("text")) == "MOKE difference display")
     return next(w for w in box.winfo_children() if hasattr(w, "_pair_side_by_side"))
+
+
+def select_page(built, text):
+    notebook = next(w for w in built.__dict__.values() if isinstance(w, tk.ttk.Notebook))
+    for index in range(notebook.index("end")):
+        if notebook.tab(index, "text") == text:
+            notebook.select(index)
 
 
 def rte_stage_parts(built):
@@ -87,15 +94,21 @@ class EveryPageSettlesTests(Built, unittest.TestCase):
                         self.assertEqual(held, [], "a pair flipped at every <Configure>")
 
     def test_cidwm_difference_display_takes_the_spare_width(self):
-        notebook = next(w for w in self.a.__dict__.values() if isinstance(w, tk.ttk.Notebook))
-        for index in range(notebook.index("end")):
-            if notebook.tab(index, "text") == "CIDWM":
-                notebook.select(index)
+        # Since 2026-10-20 (user: "use two columns for these two part") the
+        # difference display is the right-hand box of a pair with the pulse
+        # sign scan, which keeps its natural width (column 0, weight 0); the
+        # display takes the spare width (column 1, weight 1), so its width
+        # never follows its own mode row.  It was the left-hand box beside
+        # the Images box (weights 1, 0) until then.
+        select_page(self.a, "CIDWM")
         self.show(LAB_WIDE)
         row = cidwm_mode_row(self.a)
-        moke = row.master.master
-        self.assertEqual((int(moke.columnconfigure(0)["weight"]), int(moke.columnconfigure(1)["weight"])),
-                         (1, 0))
+        display = row.master
+        pair = display.master
+        self.assertEqual((int(pair.columnconfigure(0)["weight"]), int(pair.columnconfigure(1)["weight"])),
+                         (0, 1))
+        self.assertTrue(pair._pair_side_by_side, "the scan and the display side by side at 2000 px")
+        self.assertEqual(int(display.grid_info()["column"]), 1)
         self.assertTrue(row._pair_side_by_side, "the mode row fits beside its buttons at 2000 px")
 
 
@@ -117,14 +130,20 @@ class RTEStageBlockTests(Built, unittest.TestCase):
         for index in range(notebook.index("end")):
             if notebook.tab(index, "text") == "SHV":
                 notebook.select(index)
-        # The Zurich at 1+2+3, three plot rows, the worst case for height:
-        # SHV starts at 1+2 since the user's figure (2026-10-18), and every
-        # plot must still keep its 55 px when the user picks 1+2+3.  As the
-        # harmonic box does (its <<ComboboxSelected>>); the Zurich is not
-        # connected, so nothing is sent.
-        cls.a.rte_panel.zurich_harmonic.set("1+2+3")
-        cls.a.rte_panel._apply_ppms2_zurich_harmonic()
+        # Three plot rows, the worst case for height: SHV starts with
+        # SR830-1 at 1 and SR830-2 at 2 measured and the Zurich not (user's
+        # figure, 2026-10-20), and every plot must still keep its 55 px when
+        # the user also measures the Zurich at 1+2+3.  As its Measure tick
+        # and its harmonic box do (their command and <<ComboboxSelected>>);
+        # the Zurich is not connected, so nothing is sent.
+        cls.three_plot_rows(cls.a.rte_panel)
         cls.root.update()
+
+    @staticmethod
+    def three_plot_rows(panel):
+        panel.ppms_lockin_selection["zurich"].set(True)
+        panel.zurich_harmonic.set("1+2+3")
+        panel._apply_ppms2_zurich_harmonic()
 
     def layouts(self):
         """(settings beside the scan box, params beside the lock-ins, where the block is)."""
@@ -140,7 +159,8 @@ class RTEStageBlockTests(Built, unittest.TestCase):
               f"settings {settings.winfo_width()}x{settings.winfo_height()}, scan box "
               f"{scan.winfo_width()}x{scan.winfo_height()}, params {params.winfo_reqwidth()}x"
               f"{params.winfo_reqheight()}, lock-ins {lockins.winfo_reqwidth()}x{lockins.winfo_reqheight()}, "
-              f"stage block {block.winfo_reqwidth()}x{block.winfo_reqheight()}; plots "
+              f"stage block {block.winfo_reqwidth()}x{block.winfo_reqheight()}, outer row "
+              f"{self.a.rte_panel.rte_outer_place} ({self.a.rte_panel.ppms_simple_mode.get()}); plots "
               f"{sorted({c.winfo_height() for c in canvases.values()})} px tall")
 
     def test_the_block_is_in_the_settings_whatever_the_history(self):
@@ -312,16 +332,19 @@ class RTEStageBlockTests(Built, unittest.TestCase):
                     self.assertGreaterEqual(canvas.winfo_height(), 55, "Increase the window height")
 
     def test_at_the_default_1_plus_2_two_rows_are_drawn_and_the_third_is_hidden(self):
-        """The SHV default, the Zurich at 1+2 (user's figure, 2026-10-18):
-        the first- and second-harmonic rows keep their 55 px in the 1101 px
+        """The SHV default, SR830-1 at 1 and SR830-2 at 2 measured and the
+        Zurich at 1+2 not (user's figures, 2026-10-18 and 2026-10-20): the
+        first- and second-harmonic rows keep their 55 px in the 1101 px
         window and at 2000 px, and the third row is hidden."""
         panel = self.a.rte_panel
         canvases = panel.ppms_harmonic_canvases
         try:
+            panel.ppms_lockin_selection["zurich"].set(False)
             panel.zurich_harmonic.set(app.RTE_ZURICH_DEFAULT_HARMONICS)
             panel._apply_ppms2_zurich_harmonic()
             self.assertEqual(app.RTE_ZURICH_DEFAULT_HARMONICS, "1+2")
-            self.assertEqual(sorted(panel._ppms2_measured_orders()), [1, 2])
+            self.assertEqual({order: sorted(meters) for order, meters in panel._ppms2_measured_orders().items()},
+                             {1: ["830_a"], 2: ["830_b"]})
             for width, height in ((1101, CI_SHOT_HEIGHT), (LAB_WIDE, self.height)):
                 self.root.geometry(f"{width}x{height}+0+0")
                 self.root.update()
@@ -335,60 +358,171 @@ class RTEStageBlockTests(Built, unittest.TestCase):
                             self.assertTrue(canvas.winfo_ismapped())
                             self.assertGreaterEqual(canvas.winfo_height(), 55, "Increase the window height")
         finally:
-            panel.zurich_harmonic.set("1+2+3")
-            panel._apply_ppms2_zurich_harmonic()
+            self.three_plot_rows(panel)
             self.root.update()
+
+    def test_the_outer_row_costs_no_height_in_the_1101_px_window(self):
+        """The outer row of Angle+Field (the start-up scan since 2026-10-19,
+        user) and Angle+Current: beside the main row in the 1101 px window,
+        so the scan box is as tall as an Angle scan's (CI, 2026-10-30: under
+        the main rows it took 36 px from the plots on Windows, 43 px each with
+        three plot rows); under it at 2000 px, its Start / End / Step under
+        the main row's."""
+        panel = self.a.rte_panel
+        rows = panel.rte_start_button.master
+        scan = rows.master
+        outer = [widget for widget, _options in panel.rte_outer_widgets]
+        font = tkinter.font.nametofont("TkDefaultFont")
+        self.assertEqual(panel.ppms_simple_mode.get(), "Angle+Field", "the start-up scan")
+
+        def choose(mode, width, height):
+            panel.ppms_simple_mode.set(mode)
+            panel._rte_mode_changed()
+            self.root.geometry(f"{width}x{height}+0+0")
+            for _ in range(3):
+                self.root.update()
+
+        def main_entries():
+            return sorted((w for w in rows.grid_slaves(row=0) if w.winfo_class() == "TEntry" and w not in outer),
+                          key=lambda w: w.winfo_rootx())
+
+        try:
+            heights = {}
+            for mode in ("Angle", "Angle+Field", "Angle+Current"):
+                choose(mode, 1101, CI_SHOT_HEIGHT)
+                heights[mode] = scan.winfo_height()
+                if mode == "Angle":
+                    self.assertFalse(any(w.winfo_ismapped() for w in outer))
+                    continue
+                # The layout numbers, for the record.
+                print(f"SHV {mode} at 1101 px: outer row {panel.rte_outer_place}, {panel.rte_outer_numbers}, "
+                      f"columns {panel.rte_scan_rows_columns}, outer widgets "
+                      f"{[w.winfo_reqwidth() for w in outer]} px, label {panel.rte_outer_label.get()!r}")
+                with self.subTest(mode=mode, width=1101):
+                    self.assertEqual(panel.rte_outer_place, "beside")
+                    self.assertTrue(all(w.winfo_ismapped() for w in outer))
+                    self.assertEqual({int(w.grid_info()["row"]) for w in outer}, {0})
+                    entries = main_entries()
+                    self.assertEqual(len(entries), 3, "Start, End and Step")
+                    self.assertGreater(outer[0].winfo_rootx(), entries[-1].winfo_rootx() + entries[-1].winfo_width())
+                    xs = [w.winfo_rootx() for w in outer]
+                    self.assertEqual(xs, sorted(xs), "the label, then Start / End / Step")
+                    right = scan.winfo_rootx() + scan.winfo_width()
+                    for widget in outer:
+                        self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), right, "inside the box")
+                    self.assertLessEqual(font.measure(panel.rte_outer_label.get()), outer[0].winfo_width(),
+                                         "the label shows in full")
+            print(f"SHV scan box at 1101x{CI_SHOT_HEIGHT} px: {heights} px tall")
+            self.assertEqual(heights["Angle+Field"], heights["Angle"], "no height in the 1101 px window")
+            self.assertEqual(heights["Angle+Current"], heights["Angle"])
+            for mode in ("Angle+Field", "Angle+Current"):
+                choose(mode, LAB_WIDE, self.height)
+                with self.subTest(mode=mode, width=LAB_WIDE):
+                    self.assertEqual(panel.rte_outer_place, "under")
+                    self.assertEqual({int(w.grid_info()["row"]) for w in outer}, {3})
+                    for mine, theirs in zip(panel.rte_outer_entries, main_entries()):
+                        self.assertTrue(mine.winfo_ismapped())
+                        self.assertEqual((mine.winfo_rootx(), mine.winfo_width()),
+                                         (theirs.winfo_rootx(), theirs.winfo_width()))
+                    self.assertGreater(outer[0].winfo_rooty(), rows.grid_slaves(row=2, column=0)[0].winfo_rooty())
+        finally:
+            choose("Angle+Field", LAB_WIDE, self.height)
 
     def test_the_motor_row_lines_up_with_the_rack_rows(self):
         """User, 2026-10-17: the stage's connection is the rack's fifth row,
         "Motor", laid out as the four above it, in the 1101 px and 2000 px
-        windows; its lamp follows the stage."""
+        windows; its lamp follows the stage.  The first row is the magnet
+        supply's, the LS643's since the page starts on it (user, 2026-10-23)
+        or the KEPCO's once chosen, each in the same columns."""
         panel = self.a.rte_panel
         entry, connect, disconnect = panel.rte_connection_widgets["newmark"]
-        kepco = panel.rte_connection_widgets["kepco"]
-        for width in (1101, LAB_WIDE):
-            with self.subTest(width=width):
-                self.show(width)
-                self.assertIs(entry.master, kepco[0].master, "in the rack")
-                self.assertEqual(int(entry.grid_info()["row"]), 4)
-                for mine, theirs in zip((entry, connect, disconnect), kepco):
-                    self.assertTrue(mine.winfo_ismapped())
-                    self.assertEqual((mine.winfo_rootx(), mine.winfo_width()),
-                                     (theirs.winfo_rootx(), theirs.winfo_width()))
-                status = next(w for w in entry.master.grid_slaves(row=4, column=5))
-                kepco_status = next(w for w in entry.master.grid_slaves(row=0, column=5))
-                self.assertEqual(str(status.cget("textvariable")), str(panel.rte_connections["newmark"]))
-                self.assertEqual((status.winfo_rootx(), status.winfo_width()),
-                                 (kepco_status.winfo_rootx(), kepco_status.winfo_width()))
-                (label,) = entry.master.grid_slaves(row=4, column=0)
-                self.assertEqual(str(label.cget("text")), "Motor")
+        self.assertEqual(panel.rte_magnet_choice_var.get(), app.RTE_MAGNET_CHOICES[1], "the LS643 at start-up")
+        try:
+            for choice in (app.RTE_MAGNET_CHOICES[1], app.MAGNET_SUPPLY_KEPCO):
+                panel.rte_magnet_choice_var.set(choice)
+                panel._rte_magnet_choice_changed()
+                shown = panel.rte_supply_widgets["lakeshore" if choice != app.MAGNET_SUPPLY_KEPCO else "kepco"]
+                hidden = panel.rte_supply_widgets["kepco" if choice != app.MAGNET_SUPPLY_KEPCO else "lakeshore"]
+                gauss = panel.rte_connection_widgets["gauss"]
+                for width in (1101, LAB_WIDE):
+                    with self.subTest(choice=choice, width=width):
+                        self.show(width)
+                        self.assertIs(entry.master, shown[0].master, "in the rack")
+                        self.assertEqual(int(entry.grid_info()["row"]), 4)
+                        self.assertFalse(any(w.winfo_ismapped() for w in hidden), "the other supply's row")
+                        for theirs in (shown[:3], gauss):
+                            for mine, other in zip((entry, connect, disconnect), theirs):
+                                self.assertTrue(mine.winfo_ismapped() and other.winfo_ismapped())
+                                self.assertEqual((mine.winfo_rootx(), mine.winfo_width()),
+                                                 (other.winfo_rootx(), other.winfo_width()))
+                        status = next(w for w in entry.master.grid_slaves(row=4, column=5))
+                        self.assertEqual(str(status.cget("textvariable")), str(panel.rte_connections["newmark"]))
+                        self.assertEqual((status.winfo_rootx(), status.winfo_width()),
+                                         (shown[4].winfo_rootx(), shown[4].winfo_width()))
+                        (label,) = entry.master.grid_slaves(row=4, column=0)
+                        self.assertEqual(str(label.cget("text")), "Motor")
+                        # The supply's choice in the label column, no wider.
+                        combo = panel.rte_magnet_choice_combo
+                        self.assertLessEqual(combo.winfo_rootx() + combo.winfo_width(), entry.winfo_rootx())
+        finally:
+            panel.rte_magnet_choice_var.set(app.RTE_MAGNET_CHOICES[1])
+            panel._rte_magnet_choice_changed()
+            self.root.update()
+        self.assertEqual(panel.rte_magnet_choice_var.get(), app.RTE_MAGNET_CHOICES[1])
         self.assertEqual(panel.rte_resources["newmark"].get(), "auto")
         self.assertEqual(panel.rte_connections["newmark"].get(), "Not connected")
 
 
 class GuardTests(Built, unittest.TestCase):
-    """The layout that hung (spare width on the Images side) now settles:
-    the looping row is held stacked."""
+    """A pair whose width follows its own layout settles: the looping row is
+    held stacked.
+
+    Until 2026-10-20 this rebuilt the 2026-10-12 shape on the CIDWM page (the
+    spare width given to the Images box beside the difference display).
+    That pair is gone: the difference display is beside the pulse sign scan
+    and takes the spare width itself (user, 2026-10-20), and the Images box
+    is alone on its row.  So the guard is held here by a pair made with the
+    program's own _arrange_pair_by_width whose box is one pixel too narrow
+    for side by side whenever it is side by side, and wide enough whenever
+    it is stacked: the shape of the 2026-10-12 hang, which never settles
+    without the guard."""
 
     @classmethod
     def setUpClass(cls):
-        original = app.CombinedControlApp._arrange_pair_by_width
-
-        def as_on_2026_10_12(self, container, left, right, **options):
-            if "text" in right.keys() and str(right.cget("text")) == "Images":
-                container.columnconfigure(0, weight=0)
-                container.columnconfigure(1, weight=1)
-            return original(self, container, left, right, **options)
-
-        with mock.patch.object(app.CombinedControlApp, "_arrange_pair_by_width", as_on_2026_10_12):
-            cls.build()
+        cls.build()
 
     def test_the_looping_row_is_held_stacked(self):
-        self.show(LAB_WIDE)  # returns: it hung here before
-        row = cidwm_mode_row(self.a)
+        self.show(LAB_WIDE)
+        box = tk.Frame(self.root)
+        self.addCleanup(box.destroy)
+        left = tk.ttk.Frame(box, width=200, height=20)
+        right = tk.ttk.Frame(box, width=200, height=20)
+        left.grid(row=0, column=0)
+        right.grid(row=0, column=1)
+        widths = []
+
+        def follow_own_layout(_event=None):
+            # After the pair's own <Configure> handler: a width that makes
+            # the other layout right, as a box sized by its own rows.
+            wide = getattr(box, "_pair_side_by_side", None)
+            if wide is None:
+                return
+            need = int(box._pair_wide_need)
+            width = need - 1 if wide else need + 20
+            widths.append(width)
+            box.place_configure(width=width)
+
+        self.a._arrange_pair_by_width(box, left, right, gap=0)
+        box.bind("<Configure>", follow_own_layout, add="+")
+        box.place(x=0, y=0, width=10, height=60)
+        self.root.update()  # returns: without the guard it never would
+        row = box
         self.assertTrue(row._pair_flip_guard["held"])
         self.assertIs(row._pair_side_by_side, False)
         self.assertEqual(row._pair_flip_guard["flips"], app.PAIR_FLIP_LIMIT + 1, "no flip after the hold")
+        self.assertGreater(len(widths), app.PAIR_FLIP_LIMIT, "it did flip until it was held")
+        # Held stacked although it is now wide enough, until the window is resized.
+        self.assertGreaterEqual(box.winfo_width(), box._pair_wide_need)
 
 
 if __name__ == "__main__":

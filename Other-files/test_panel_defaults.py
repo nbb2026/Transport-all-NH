@@ -81,7 +81,13 @@ class PanelDefaultTests(unittest.TestCase):
                          {1: ["830_a"], 2: ["830_b"]}, f"SR830-1 and SR830-2 measured by default: {orders}")
 
     def test_rte_scan_runs_one_pass_per_harmonic(self):
-        passes = self.app.rte_panel._rte_harmonic_passes(dict(
+        # SR830-1 at 1+2+3, chosen as its harmonic box would: it starts at 1
+        # since the user's figure (2026-10-20; it was 1+2+3 until then).
+        panel = self.app.rte_panel
+        variable = panel._ppms_harmonic_var("830_a")
+        self.addCleanup(variable.set, variable.get())
+        variable.set("1+2+3")
+        passes = panel._rte_harmonic_passes(dict(
             active_lockins=("830_a",), current_rms_ma=1.0, frequency_hz=133.7,
             compliance_v=10.0, harmonic_a=1, harmonic_b=2, harmonic_c=3,
             allow_no_lockins=False))
@@ -164,12 +170,13 @@ class PanelDefaultTests(unittest.TestCase):
     def test_camera_display_defaults_follow_the_users_figure(self):
         """2026-10-12: CLim -2 ~ 2, 4 frames, 4×4 binning, 2×2 mean filter,
         exposure 100 ms, FPS 10; refresh 0.2 s, 100 points; edit steps
-        1, 1, 1, 5, 5.  The camera worker starts from the same values."""
+        1, 1, 1, 5, 5.  The camera worker starts from the same values.
+        Binning 2×2 since 2026-10-20 (user)."""
         a = self.app
         self.assertEqual((a.difference_clim_low_var.get(), a.difference_clim_high_var.get(),
                           a.difference_temporal_average_var.get(), a.difference_spatial_binning_var.get(),
                           a.difference_mean_filter_var.get(), a.camera_exposure_ms_var.get(),
-                          a.camera_video_fps_var.get()), ("-2", "2", 4, 4, 2, "100", "10"))
+                          a.camera_video_fps_var.get()), ("-2", "2", 4, 2, 2, "100", "10"))
         self.assertEqual((float(a.roi_live_interval_var.get()), int(float(a.roi_live_max_points_var.get()))),
                          (0.2, 100))
         self.assertEqual({key: var.get() for key, var in a.roi_edit_step_vars.items()},
@@ -836,6 +843,18 @@ class ReviewFixWidgetTests(unittest.TestCase):
     def test_a_cancelled_stfmr_start_unlocks_the_rows_and_apply(self):
         self.select("STFMR")
         a = self.app
+        # The KEPCO path: the page starts on the LS643 since 2026-10-23
+        # (user), so the KEPCO is chosen as its combobox would, and the LS643
+        # chosen again afterwards.
+        self.assertEqual(a.stfmr_lockin_magnet_choice, "LS643")
+        a.stfmr_lockin_magnet_choice_var.set(app.STFMR_LOCKIN_MAGNET_CHOICES[0])
+        a._stfmr_lockin_magnet_choice_changed()
+        self.assertEqual(a.stfmr_lockin_magnet_choice, app.MAGNET_SUPPLY_KEPCO)
+
+        def lake_shore_again():
+            a.stfmr_lockin_magnet_choice_var.set(app.STFMR_LOCKIN_MAGNET_CHOICES[1])
+            a._stfmr_lockin_magnet_choice_changed()
+        self.addCleanup(lake_shore_again)
         kepco = a.stfmr_lockin_controllers["kepco"]
         connect = a.stfmr_lockin_connect_buttons["gauss"]
         apply = a.stfmr_lockin_apply_output_button

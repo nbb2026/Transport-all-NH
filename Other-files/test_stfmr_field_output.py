@@ -69,6 +69,24 @@ class FieldOutputTests(unittest.TestCase):
             if notebook.tab(index, "text") == "STFMR":
                 notebook.select(index)
         cls.root.update()
+        # The page starts on the Lake Shore 643 (user, 2026-10-23: "change
+        # SHV and STFMR to default use LS643"), as recorded here; the tests of
+        # the KEPCO 4886's field output choose the KEPCO, as its combobox
+        # does, and test_the_page_starts_on_the_lake_shore_643 checks the
+        # start-up choice and the LS643's row.
+        a = cls.app
+        cls.start_up = dict(
+            choice=a.stfmr_lockin_magnet_choice, shown=a.stfmr_lockin_magnet_choice_var.get(),
+            panel=str(a.stfmr_lockin_field_output_frame.cget("text")),
+            rows={key: [bool(w.winfo_ismapped()) for w in widgets]
+                  for key, widgets in a.stfmr_lockin_supply_widgets.items()})
+        cls.choose_supply(app.STFMR_LOCKIN_MAGNET_CHOICES[0])
+        cls.root.update()
+
+    @classmethod
+    def choose_supply(cls, shown):
+        cls.app.stfmr_lockin_magnet_choice_var.set(shown)
+        cls.app._stfmr_lockin_magnet_choice_changed()
 
     @classmethod
     def tearDownClass(cls):
@@ -187,6 +205,53 @@ class FieldOutputTests(unittest.TestCase):
             self.assertEqual(int(entry.cget("width")), 18)
         finally:
             self.arranged(LAB_WIDE, "STFMR", self.a.stfmr_lockin_resource_widgets)
+
+    def test_the_page_starts_on_the_lake_shore_643(self):
+        """User, 2026-10-23: "change SHV and STFMR to default use LS643".  The
+        page starts with the LS643 chosen: its row (address, Connect,
+        Disconnect, lamp, state) in the magnet supply's row, laid out as the
+        rows under it, and the field output panel its own, in the 1101 px
+        and 2000 px windows; the KEPCO 4886's row is kept, hidden, one
+        choice away."""
+        a = self.a
+        self.assertEqual(self.start_up["choice"], "LS643")
+        self.assertEqual(self.start_up["shown"], app.STFMR_LOCKIN_MAGNET_CHOICES[1])
+        self.assertEqual(self.start_up["panel"], "Lake Shore 643 field output")
+        self.assertEqual(self.start_up["rows"], {"kepco": [False] * 5, "lakeshore": [True] * 5})
+        entry, connect, disconnect = a.stfmr_lockin_motor_widgets
+        try:
+            self.choose_supply(app.STFMR_LOCKIN_MAGNET_CHOICES[1])
+            ls_entry, ls_connect, ls_disconnect, _lamp, _status = a.stfmr_lockin_supply_widgets["lakeshore"]
+            gauss = a.stfmr_lockin_resource_widgets["gauss"]
+            for width in (self.LAB_DEFAULT, LAB_WIDE):
+                with self.subTest(width=width):
+                    self.arranged(width, "STFMR", a.stfmr_lockin_resource_widgets)
+                    self.assertEqual(str(a.stfmr_lockin_field_output_frame.cget("text")),
+                                     "Lake Shore 643 field output")
+                    for mine, theirs, other in ((ls_entry, entry, gauss),
+                                                (ls_connect, connect, a.stfmr_lockin_connect_buttons["gauss"]),
+                                                (ls_disconnect, disconnect,
+                                                 a.stfmr_lockin_disconnect_buttons["gauss"])):
+                        self.assertTrue(mine.winfo_ismapped())
+                        self.assertEqual((mine.winfo_rootx(), mine.winfo_width()),
+                                         (theirs.winfo_rootx(), theirs.winfo_width()))
+                        self.assertEqual((mine.winfo_rootx(), mine.winfo_width()),
+                                         (other.winfo_rootx(), other.winfo_width()))
+                    self.assertFalse(any(w.winfo_ismapped() for w in a.stfmr_lockin_supply_widgets["kepco"]))
+                    choice = a.stfmr_lockin_magnet_choice_combo
+                    self.assertLessEqual(choice.winfo_rootx() + choice.winfo_width(), ls_entry.winfo_rootx())
+                    tab = a.stfmr_lockin_tab
+                    right = tab.winfo_rootx() + tab.winfo_width()
+                    over = [w for w in descendants(tab)
+                            if w.winfo_ismapped() and w.winfo_rootx() + w.winfo_width() > right + 1]
+                    self.assertEqual(over, [], "widgets past the right edge")
+                    button = a.stfmr_lockin_zero_output_button
+                    self.assertGreaterEqual(button.winfo_width(), button.winfo_reqwidth(), "the button is squeezed")
+                    self.assertLessEqual(button.winfo_x() + button.winfo_width(), button.master.winfo_width() - 2)
+        finally:
+            self.choose_supply(app.STFMR_LOCKIN_MAGNET_CHOICES[0])
+            self.arranged(LAB_WIDE, "STFMR", a.stfmr_lockin_resource_widgets)
+        self.assertEqual(a.stfmr_lockin_magnet_choice, app.MAGNET_SUPPLY_KEPCO)
 
     def test_the_stage_controls_share_the_read_ls475_line(self):
         """User, 2026-10-17: Set motor 0° and Move stage on the STFMR page.

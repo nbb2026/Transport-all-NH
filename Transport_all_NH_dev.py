@@ -55071,7 +55071,7 @@ class RTEPanel(PPMSPanel):
         self.rte_outer_label = tk.StringVar(value=RTE_OUTER_ROWS['Angle+Field']['label'])
         self.rte_outer_widgets, self.rte_outer_entries = [], []
         outer_label = ttk.Label(scan_rows, textvariable=self.rte_outer_label)
-        self.rte_outer_widgets.append((outer_label, dict(row=3, column=0, sticky='e')))
+        self.rte_outer_widgets.append((outer_label, dict(row=3, column=0, sticky='e', padx=0)))
         for i, (label, variable) in enumerate(zip(('Start', 'End', 'Step'), self.rte_outer_ranges['Angle+Field'])):
             self.rte_outer_widgets.append((ttk.Label(scan_rows, text=label),
                                            dict(row=3, column=1 + 2*i, sticky='e', padx=(4, 0))))
@@ -55082,6 +55082,26 @@ class RTEPanel(PPMSPanel):
         for widget, options in self.rte_outer_widgets:
             widget.grid(**options)
             widget.grid_remove()
+        # In the 1101 px window the program opens with, the outer row sits
+        # beside the main row instead, in columns 7 to 13 of row 0, so it
+        # costs the plots no height (CI, 2026-10-30: under the main rows it
+        # took the plots' 36 px there, and with three plot rows on Windows
+        # each plot fell from 55 px to 43 px).  It goes there only while the
+        # scan box spans the page (the settings stacked above it) and has
+        # the width; at 2000 px, beside the settings, it stays under the main
+        # row, its Start / End / Step under the main row's (arrange_outer_row
+        # below).  The offline tests' stand-ins keep it under.
+        self.rte_outer_place = 'under'
+        # The beside options, in the order of rte_outer_widgets.  Beside, the
+        # label sits 6 px right of the main row's Step box, and Start / End
+        # / Step 3 px right of the box before each (4 px in the main rows),
+        # so Angle+Current's longer label fits too (CI, 2026-10-30: Windows,
+        # 1101 px, 1076 px needed with the main rows' spacing, 1067 px there).
+        self.rte_outer_beside_options = [
+            dict(options, row=0, column=options['column'] + 7,
+                 **({'padx': (6, 0)} if options['column'] == 0 else
+                    {'padx': (3, 0)} if options.get('sticky') == 'e' else {}))
+            for _widget, options in self.rte_outer_widgets]
         # Status messages run to about a hundred characters and wrapped into
         # two lines when the label was one grid cell beside the progress bar.
         # Spanning the panel gives the text every pixel the progress bar does
@@ -55123,11 +55143,52 @@ class RTEPanel(PPMSPanel):
             self._arrange_pair_by_width(body, params, lockins_line, gap=0, stack_gap=4,
                                         right_width=lambda: lockins.winfo_reqwidth())
 
+            def grid_padx(info):
+                # A slave's padx (one value or left and right) and ipadx, as
+                # grid_info gives them (an int, a tuple or a Tcl list).
+                def numbers(value):
+                    parts = value if isinstance(value, (tuple, list)) else str(value).split()
+                    return [int(float(str(part))) for part in parts] or [0]
+                pad = numbers(info.get('padx', 0))
+                return pad[0] + (pad[1] if len(pad) > 1 else pad[0]) + 2 * numbers(info.get('ipadx', 0))[0]
+
+            def scan_rows_width(outer_row=True):
+                # The scan rows' width with the outer row under the main
+                # rows, as it is where the scan box is beside the settings,
+                # from the widgets' own requests (columns 0 to 6).  The outer
+                # row's widgets count with their places under the main rows
+                # (their column and padx), wherever they are, so where the
+                # outer row sits never changes this, nor the decisions taken
+                # by it (2026-10-30).  outer_row=False: the main rows alone,
+                # their width while the outer row is beside them.
+                under = {str(widget): options for widget, options in self.rte_outer_widgets}
+                widths, spans = [0] * 7, []
+                for widget in scan_rows.grid_slaves():
+                    if not outer_row and str(widget) in under:
+                        continue
+                    info = under.get(str(widget)) or widget.grid_info()
+                    column, span = int(info['column']), int(info.get('columnspan', 1))
+                    need = widget.winfo_reqwidth() + grid_padx(info)
+                    if span == 1:
+                        widths[column] = max(widths[column], need)
+                    else:
+                        spans.append((column, span, need))
+                for column, span, need in spans:
+                    # A spanning widget that does not fit widens the last
+                    # column it spans, as grid does when none has a weight.
+                    short = need - sum(widths[column:column + span])
+                    if short > 0:
+                        widths[min(column + span, 7) - 1] += short
+                if outer_row:
+                    self.rte_scan_rows_columns = widths   # for the layout record (CI prints it)
+                return sum(widths)
+
             def scan_stacked_width():
                 # The scan box's width from its parts' own requests.  The
-                # settings/scan pair decides by this (user/CI, 2026-10-14).
+                # settings/scan pair decides by this (user/CI, 2026-10-14);
+                # the scan rows' with the outer row under them (2026-10-30).
                 return self._pair_inset(scan) + max(
-                    part.winfo_reqwidth() for part in (scan_rows, scan_status, scan_notes))
+                    scan_rows_width(), scan_status.winfo_reqwidth(), scan_notes.winfo_reqwidth())
             def settings_without_block():
                 # The settings' width with the params beside the lock-ins and
                 # the stage block not beside them (user, 2026-10-17): the
@@ -55217,6 +55278,68 @@ class RTEPanel(PPMSPanel):
             controls.bind('<Configure>', arrange_stage_block, add='+')
             body.bind('<Configure>', arrange_stage_block, add='+')
             arrange_stage_block()
+
+            def arrange_outer_row(_event=None):
+                # Where the outer row goes (2026-10-30): beside the main row
+                # while the scan box spans the page (the settings/scan pair
+                # stacked, as in the 1101 px window) and has the width for
+                # both, else under it.  Decided from that pair's decision, the
+                # scan box's width and the widgets' own requests, never from
+                # where the row is: the pair decides by scan_rows_width, which
+                # counts the row under the main rows wherever it is, so the
+                # row can never change the pair's decision.
+                try:
+                    shown = any(widget.winfo_manager() == 'grid' for widget, _options in self.rte_outer_widgets)
+                    if not shown:
+                        return      # not an Angle+Field or Angle+Current scan
+                    stacked = getattr(controls, '_pair_side_by_side', None) is False
+                    room = scan.winfo_width() - self._pair_inset(scan)
+                    beside_width = sum(widget.winfo_reqwidth() + grid_padx(options) for (widget, _under), options
+                                       in zip(self.rte_outer_widgets, self.rte_outer_beside_options))
+                    # Beside, the main rows keep only their own widgets in
+                    # columns 0 to 6 (the outer label no longer widens column
+                    # 0) and the outer row takes columns 7 to 13: exactly the
+                    # rows' width there, whichever place the row has now.
+                    rows_width = scan_rows_width(outer_row=False)
+                    beside = stacked and room > 1 and room >= rows_width + beside_width
+                except (tk.TclError, ValueError):
+                    return
+                # For the layout record (CI prints it): the box's room, and
+                # what the rows and the outer row beside them need.
+                self.rte_outer_numbers = dict(room=room, rows=rows_width, beside=beside_width)
+                place = 'beside' if beside else 'under'
+                if self.rte_outer_place == place:
+                    return
+                # As _arrange_pair_by_width's guard: should the row ever flip
+                # PAIR_FLIP_LIMIT times within a second at one window width,
+                # it stays under the main row, the layout that never clips,
+                # until the window is resized (a layout that never settles
+                # hung the program at start-up on 2026-10-12).
+                window_width = scan.winfo_toplevel().winfo_width()
+                now = time.monotonic()
+                guard = outer_guard
+                if guard.get('window') != window_width:
+                    guard.update(window=window_width, since=now, flips=0, held=False)
+                if guard['held']:
+                    return
+                if now - guard['since'] > 1.0:
+                    guard.update(since=now, flips=0)
+                guard['flips'] += 1
+                if guard['flips'] > PAIR_FLIP_LIMIT:
+                    guard['held'] = True
+                    if self.rte_outer_place == 'under':
+                        return
+                    place, beside = 'under', False
+                self.rte_outer_place = place
+                for (widget, under), options in zip(self.rte_outer_widgets, self.rte_outer_beside_options):
+                    widget.grid_configure(**(options if beside else under))
+            outer_guard = {}
+            self.rte_arrange_outer_row = arrange_outer_row
+            # After the settings/scan pair, on its <Configure> and the scan
+            # box's (its width), and the rows' (a mode change shows the row).
+            controls.bind('<Configure>', arrange_outer_row, add='+')
+            scan.bind('<Configure>', arrange_outer_row, add='+')
+            scan_rows.bind('<Configure>', arrange_outer_row, add='+')
         self.ppms_plot_frame = ttk.LabelFrame(outer, text='SHV measurement', padding=2)
         self.ppms_plot_frame.grid(row=4, column=0, sticky='nsew')
         self.ppms_transport_plot_frames = {}
@@ -55274,8 +55397,18 @@ class RTEPanel(PPMSPanel):
         self.rte_outer_label.set(row['label'].replace('KEPCO', self._rte_supply_label()))
         for entry, variable in zip(self.rte_outer_entries, variables):
             entry.configure(textvariable=variable)
-        for widget, options in widgets:
-            widget.grid(**options)
+        # Under the main row, or beside it in the 1101 px window (2026-10-30;
+        # arrange_outer_row decides again once the row is shown).
+        beside = self.__dict__.get('rte_outer_place') == 'beside'
+        for (widget, options), beside_options in zip(widgets, self.__dict__.get('rte_outer_beside_options')
+                                                      or [None] * len(widgets)):
+            widget.grid(**(beside_options if beside and beside_options else options))
+        arrange = self.__dict__.get('rte_arrange_outer_row')
+        if arrange is not None:
+            try:
+                self.root.after_idle(arrange)
+            except (tk.TclError, AttributeError):
+                pass
 
     def _update_ppms_control_ui(self):
         if 'rte_edit_widgets' not in self.__dict__:

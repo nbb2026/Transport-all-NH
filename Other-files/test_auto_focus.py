@@ -612,8 +612,17 @@ class FrameTests(ManagerCase):
         self.assertAlmostEqual(focus._measure(), app.focus_sharpness(textured(30.0)))
 
     def test_two_distinct_frames_are_averaged(self):
+        # Each frame is shown for 50 ms, so the measurement sees it again and
+        # again: it must take it once and wait for the next one.  The first
+        # two frames differ, so taking one twice would score 10's sharpness
+        # (and skipping one 70's or 50's), not their average, 30's.
+        # Each begins 1 s after it is made, so after the measurement's own
+        # start on any clock: on Windows (Python 3.11) time.monotonic() ticks
+        # every 15.6 ms, and a frame stamped with the measurement's own
+        # start tick is not begun after it (CI, 2026-10-30: the first frame
+        # was refused there and frames 2 and 3 were averaged).
         a, m, focus = self.page()
-        frames = iter([textured(10.0), textured(10.0), textured(50.0)])
+        frames = iter([textured(10.0), textured(50.0), textured(90.0)])
         state = {"frame": None}
 
         class Source:
@@ -621,7 +630,7 @@ class FrameTests(ManagerCase):
             def latest_frame(self):
                 if state["frame"] is None or time.monotonic() > state["at"]:
                     state["frame"] = types.SimpleNamespace(
-                        raw=next(frames, textured(50.0)), exposure_start_monotonic=time.monotonic(),
+                        raw=next(frames, textured(90.0)), exposure_start_monotonic=time.monotonic() + 1.0,
                         exposure_ms=1.0)
                     state["at"] = time.monotonic() + 0.05
                 return state["frame"]
@@ -629,7 +638,24 @@ class FrameTests(ManagerCase):
         a.camera_window = Source()
         with mock.patch.object(app, "FOCUS_FRAMES_PER_POSITION", 2):
             score = focus._measure()
-        self.assertAlmostEqual(score, app.focus_sharpness(textured(10.0)), msg="the same frame never twice")
+        self.assertAlmostEqual(score, app.focus_sharpness(textured(30.0)),
+                               msg="two distinct frames, the same frame never twice")
+
+    def test_a_frame_stamped_with_the_measurements_own_start_is_not_taken(self):
+        # The Windows case above, as the code sees it: a frame whose stamp is
+        # the very moment the measurement waits from is not begun after it,
+        # so it is not taken; the next frame is.
+        a, m, focus = self.page()
+        start = time.monotonic() + 0.5    # the move settles then
+        same_tick = types.SimpleNamespace(raw=textured(10.0), exposure_start_monotonic=start, exposure_ms=1.0)
+        later = types.SimpleNamespace(raw=textured(50.0), exposure_start_monotonic=start + 1e3, exposure_ms=1.0)
+        camera = types.SimpleNamespace(latest_frame=same_tick)
+        a.camera_window = camera
+        focus.frames_after = start
+        timer = threading.Timer(0.2, lambda: setattr(camera, "latest_frame", later))
+        timer.start()
+        self.addCleanup(timer.cancel)
+        self.assertAlmostEqual(focus._measure(), app.focus_sharpness(textured(50.0)))
 
     def test_no_fresh_frame_is_a_failure(self):
         a, m, focus = self.page()

@@ -1,5 +1,36 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## CI green for v1.0.2 (2026-10-30)
+
+CI was off from 2026-10-18 to 2026-10-30 (Actions minutes), so the GUI changes of that period were checked only by
+the window-free tests. The first run on v1.0.2 (`0fb74ab`, run 41064008800) failed on Linux and Windows. Fixes:
+
+- **SHV, a real layout bug (code):** the outer row of Angle+Field (the start-up scan since 2026-10-19) and
+  Angle+Current sat under the main rows and took 36 px of plot height in the 1101 px window; with three plot rows
+  (e.g. the Zurich also measured at 1+2+3) each plot fell from 55 px to 43 px on Windows. In the 1101 px window it now
+  sits **beside the main row** (row 0, columns 7 to 13: "Outer LS643 A: Start End Step" right of the angle's Start End
+  Step), so the scan box is as tall as an Angle scan's; at 2000 px it stays under the main row, its boxes under the
+  main row's, as before. It goes beside only while the scan box spans the page (settings stacked above it) and has
+  the width (Windows 1101 px: 1067 px room; Angle+Field needs 1019, Angle+Current 1063); else under, so nothing is
+  clipped. The settings/scan pair still decides by the rows' width with the outer row under them, so where the row
+  sits never feeds back (a CI run that counted the beside label's gap looped on Linux); a flip guard as
+  `_arrange_pair_by_width`'s holds it under should it ever flip. Three plot rows at 1101 x 1300: Windows 55 px,
+  Linux 91 px. Visible change: in the 1101 px window the outer row is on the first scan row.
+- **Tests that followed the user's decisions:** ST-FMR and SHV start on the LS643 (2026-10-23): the KEPCO field-output
+  tests (`test_stfmr_field_output.FieldOutputTests`, `ReviewFixWidgetTests.test_a_cancelled_stfmr_start...`) choose
+  the KEPCO with `_stfmr_lockin_magnet_choice_changed` as the combobox does; the new
+  `test_the_page_starts_on_the_lake_shore_643` checks the start-up choice, the LS643 row lined up with the Motor and
+  LS475 rows and the panel title in both windows. The SHV Motor row is compared with the shown supply's row (LS643,
+  then KEPCO). SHV lock-ins (SR830-1 at 1 and SR830-2 at 2 measured, 2026-10-20): the three-row checks tick the
+  Zurich at 1+2+3; the harmonic-pass test sets SR830-1 to 1+2+3 itself. Camera binning 2x2 (2026-10-20). CIDWM
+  (2026-10-20): the difference display is the right-hand box beside the pulse sign scan and takes the spare width
+  (weights 0, 1); the loop-guard test now uses a pair whose width follows its own layout, as the 2026-10-12 shape
+  (Images beside the display) no longer exists.
+- **Windows only, test_auto_focus:** Python 3.11's `time.monotonic()` ticks every 15.6 ms on Windows, so the test's
+  first frame carried the very stamp `_measure` waits from and was rightly refused (frames 2 and 3 averaged). The code
+  never takes a frame twice (identity) nor one not begun after the move; the test now stamps its frames after the
+  call and uses three different frames, so taking one twice would show.
+
 ## License (2026-10-30)
 
 - Released under the GNU General Public License v3.0 (`LICENSE` at the repository root), chosen by the user when the
