@@ -1,5 +1,11 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## License (2026-10-30)
+
+- Released under the GNU General Public License v3.0 (`LICENSE` at the repository root), chosen by the user when the
+  repository was made public. Copyright (C) 2026 Heng Niu. Provided without warranty: it drives real laboratory
+  instruments, so check every safety limit for your own setup before use.
+
 ## SHV and ST-FMR start on the Lake Shore 643 (2026-10-23)
 
 - User: "change SHV and STFMR to default use LS643". Both pages start with the magnet supply set to the Lake Shore
