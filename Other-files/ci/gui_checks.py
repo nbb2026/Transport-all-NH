@@ -26,7 +26,7 @@ import tkinter.font
 import types
 from pathlib import Path
 
-PROGRAM = Path(__file__).resolve().parents[2] / "Transport_all_NH_dev.py"
+PROGRAM = Path(__file__).resolve().parents[2] / "Transport_all.py"
 COMPACT = ("CIDWM", "STFMR", "FMR")
 REPORTED = ("MOKE light", "MOKE motor", "MOKE magnet", "MOKE-24", "Non-local", "PPMS", "SHV")
 SCREENS = (  # (screen width, height, window width or 0 for the program's own)

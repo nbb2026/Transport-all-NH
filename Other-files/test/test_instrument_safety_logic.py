@@ -15,7 +15,7 @@ PROJECT = Path(__file__).resolve().parents[1]
 if str(PROJECT) not in sys.path:
     sys.path.insert(0, str(PROJECT))
 
-import Transport_all_NH_dev as app
+import Transport_all as app
 
 
 class FakeVariable:

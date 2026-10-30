@@ -18,11 +18,11 @@ The **Mode** list in the Run row chooses how it runs:
 Each mode keeps its own states, so switching between them loses nothing.
 
 `MS-fourState.py` runs on its own (since 2026-10-09). Copy that one file to
-any folder and run it; `Transport_all_NH_dev.py` is not needed.
+any folder and run it; `Transport_all.py` is not needed.
 
 - **What it needs:** Python with `tkinter`, `pyvisa` for the 6221 and SR830,
   and `pythonnet` for the PPMS (QDInstrument), or `MultiPyVu`.
-- **Close the main program's connections first:** if `Transport_all_NH_dev.py`
+- **Close the main program's connections first:** if `Transport_all.py`
   is open, close its PPMS, 6221 and SR830 connections before connecting here.
   Two programs must never drive the same instruments.
 - **The copied instrument code:** the code MS-fourState shares with the main
@@ -37,7 +37,7 @@ any folder and run it; `Transport_all_NH_dev.py` is not needed.
 
 ## Dialogs
 
-Folder, open and save dialogs and Yes/No boxes are Tk's own, in English whatever the language of Windows, as in the main program (2026-10-13). The code is copied from `Transport_all_NH_dev.py` by `Other-files/tools/ms_fourstate_copy_core.py`; do not edit the copied block.
+Folder, open and save dialogs and Yes/No boxes are Tk's own, in English whatever the language of Windows, as in the main program (2026-10-13). The code is copied from `Transport_all.py` by `Other-files/tools/ms_fourstate_copy_core.py`; do not edit the copied block.
 
 ## Connections
 
@@ -99,7 +99,7 @@ and temperature), is a console in the style of a command-line session.
 ## Manual settings
 
 Between runs, the **Manual settings** box sets one thing at a time, as the
-PPMS settings rows of `Transport_all_NH_dev.py` do:
+PPMS settings rows of `Transport_all.py` do:
 
 | Row | Fields | Buttons |
 | --- | --- | --- |

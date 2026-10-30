@@ -8,7 +8,7 @@ import unittest
 SOURCE = pathlib.Path(__file__).resolve().parents[1] / "KEPCO_4886_control.py"
 if not SOURCE.exists():
     # The standalone KEPCO script is not part of this folder any more; the
-    # 4886 logic under test lives in Transport_all_NH_dev.py and is covered
+    # 4886 logic under test lives in Transport_all.py and is covered
     # by test_instrument_safety_logic.py.
     raise unittest.SkipTest(f"standalone script not present: {SOURCE}")
 SPEC = importlib.util.spec_from_file_location("kepco_4886_standalone", SOURCE)

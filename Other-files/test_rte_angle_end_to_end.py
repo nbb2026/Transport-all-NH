@@ -681,7 +681,7 @@ class RunLogTests(RunLogBase):
             datetime.datetime.fromisoformat(event["timestamp"])
         # run_prepared: the settings and the instruments at Start.
         prepared = events[0]
-        self.assertEqual((prepared["program"], prepared["app_version"]), ("Transport_all_NH_dev.py", app.APP_VERSION))
+        self.assertEqual((prepared["program"], prepared["app_version"]), ("Transport_all.py", app.APP_VERSION))
         self.assertTrue(prepared["python_version"])
         self.assertEqual((prepared["file_name"], prepared["mode"]), ("angle", "Angle"))
         self.assertEqual((prepared["run_folder"], prepared["csv_path"], prepared["log_path"]),

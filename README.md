@@ -1,4 +1,4 @@
-# Transport-all-NH
+# Transport-all
 
 Instrument control and acquisition for magneto-electro-optical transport
 experiments: magneto-optic Kerr imaging, harmonic Hall transport in a PPMS,
@@ -6,14 +6,14 @@ room-temperature electrical measurement, and ferromagnetic and spin-torque
 ferromagnetic resonance.
 
 Everything runs from one Tkinter application,
-[`Transport_all_NH_dev.py`](Transport_all_NH_dev.py). A single process owns the
+[`Transport_all.py`](Transport_all.py). A single process owns the
 whole shared rack, so one page cannot take an instrument another page is
 already driving, and every source is brought to a safe state on shutdown.
 
 ## Running it
 
 ```bash
-python3 Transport_all_NH_dev.py
+python3 Transport_all.py
 ```
 
 Python 3.11 is what the program is developed and tested against. Every
@@ -114,7 +114,7 @@ Default VISA addresses are set in the code and editable in the interface.
 
 | Path | Contents |
 | --- | --- |
-| `Transport_all_NH_dev.py` | The application |
+| `Transport_all.py` | The application |
 | `Other-files/test*.py`, `Other-files/test/` | Offline regression tests |
 | `Other-files/README.md` | Dated change log, newest first |
 | `Other-files/docs/` | Generated user manual |

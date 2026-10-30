@@ -4,7 +4,7 @@ A standalone fixed-current two-dimensional frequency-sweep program. The entry po
 
 ## Dialogs
 
-Folder, open and save dialogs and Yes/No boxes are Tk's own, in English whatever the language of Windows, as in the main program (2026-10-13). The code is copied from `Transport_all_NH_dev.py` by `Other-files/tools/ms_fourstate_copy_core.py`; do not edit the copied block.
+Folder, open and save dialogs and Yes/No boxes are Tk's own, in English whatever the language of Windows, as in the main program (2026-10-13). The code is copied from `Transport_all.py` by `Other-files/tools/ms_fourstate_copy_core.py`; do not edit the copied block.
 
 ## Usage
 

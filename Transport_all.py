@@ -53644,7 +53644,7 @@ def newmark_explain_load_error(path, error):
     if code == 126 or isinstance(error, FileNotFoundError):
         return (f"Could not load {path}: it, or a DLL it needs, was not found (Windows error 126). "
                 f"{NEWMARK_DLL_NAME} needs {NEWMARK_SIUSB_NAME}, and Python does not search PATH for them: put "
-                "both 64-bit DLLs together in the program's folder (beside Transport_all_NH_dev.py).")
+                "both 64-bit DLLs together in the program's folder (beside Transport_all.py).")
     return f"Could not load {path}: {error}"
 
 

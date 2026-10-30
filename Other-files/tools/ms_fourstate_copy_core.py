@@ -1,5 +1,5 @@
 """Copy into MS-fourState.py the instrument code it shares with
-Transport_all_NH_dev.py, so MS-fourState.py runs on its own (user,
+Transport_all.py, so MS-fourState.py runs on its own (user,
 2026-10-09: "make it individual").  Also copies the English dialogs (Tk's
 own message boxes and file dialogs, as on the main program's CIDWM page)
 into MS-fourState.py and Test_Microwave_NH_dev.py (user, 2026-10-13).
@@ -21,10 +21,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-CORE = ROOT / "Transport_all_NH_dev.py"
+CORE = ROOT / "Transport_all.py"
 TARGET = ROOT / "MS-fourState.py"
-BEGIN = "# ===== BEGIN copied from Transport_all_NH_dev.py (Other-files/tools/ms_fourstate_copy_core.py) ====="
-END = "# ===== END copied from Transport_all_NH_dev.py ====="
+BEGIN = "# ===== BEGIN copied from Transport_all.py (Other-files/tools/ms_fourstate_copy_core.py) ====="
+END = "# ===== END copied from Transport_all.py ====="
 
 # What MS-fourState.py uses from the main program (as core.<name>).
 SEEDS = (
@@ -68,9 +68,9 @@ def _defined_names(node) -> list[str]:
 
 # Test_Microwave_NH_dev.py: the English dialogs only (user, 2026-10-13).
 MICROWAVE = ROOT / "Test_Microwave_NH_dev.py"
-MICROWAVE_BEGIN = ("# ===== BEGIN English dialogs copied from Transport_all_NH_dev.py "
+MICROWAVE_BEGIN = ("# ===== BEGIN English dialogs copied from Transport_all.py "
                    "(Other-files/tools/ms_fourstate_copy_core.py) =====")
-MICROWAVE_END = "# ===== END English dialogs copied from Transport_all_NH_dev.py ====="
+MICROWAVE_END = "# ===== END English dialogs copied from Transport_all.py ====="
 MICROWAVE_SEEDS = ("use_english_tk_dialogs",)
 
 
@@ -123,7 +123,7 @@ def copied_block(core_source: str, seeds=SEEDS, methods=METHODS, begin=BEGIN, en
         f"# The {what} with the main program, copied so\n"
         "# this file runs on its own.  Do not edit here: fix the main program and run\n"
         "# Other-files/tools/ms_fourstate_copy_core.py.\n"
-        f"# Copied from Transport_all_NH_dev.py, SHA-256 {digest}…\n"
+        f"# Copied from Transport_all.py, SHA-256 {digest}…\n"
     )
     return header + "\n\n\n".join(parts) + f"\n{end}"
 

@@ -31,7 +31,7 @@ output.  Stop during one of them does what it does in a run (6221 off, 0 Oe
 Driven); an error turns the 6221 off and leaves the field and angle.
 
 This file runs on its own: the instrument code it shares with
-Transport_all_NH_dev.py (the 6221, SR830 and PPMS controllers and the
+Transport_all.py (the 6221, SR830 and PPMS controllers and the
 rotator) is copied into it, between the BEGIN and END lines below.  Close the
 main program's PPMS, 6221 and SR830 connections first: two programs must
 never drive the same instruments.
@@ -54,11 +54,11 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-# ===== BEGIN copied from Transport_all_NH_dev.py (Other-files/tools/ms_fourstate_copy_core.py) =====
+# ===== BEGIN copied from Transport_all.py (Other-files/tools/ms_fourstate_copy_core.py) =====
 # The instrument code MS-fourState shares with the main program, copied so
 # this file runs on its own.  Do not edit here: fix the main program and run
 # Other-files/tools/ms_fourstate_copy_core.py.
-# Copied from Transport_all_NH_dev.py, SHA-256 23b4c07d8e77…
+# Copied from Transport_all.py, SHA-256 db73e82a1e13…
 import importlib
 
 
@@ -2463,7 +2463,7 @@ def read_ppms_cryogen_display(ppms):
     except Exception as error:
         result["helium_display"] = f"Unknown / {short_status_error(error, 35)}"
     return result
-# ===== END copied from Transport_all_NH_dev.py =====
+# ===== END copied from Transport_all.py =====
 
 # The copied instrument code, as ``core.<name>``: this module itself, so a
 # replaced helper (e.g. the echoed VISA manager) is the one the copied

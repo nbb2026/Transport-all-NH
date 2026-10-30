@@ -55,11 +55,11 @@ from tkinter import filedialog, font as tkfont, messagebox, ttk
 from typing import Callable
 
 
-# ===== BEGIN English dialogs copied from Transport_all_NH_dev.py (Other-files/tools/ms_fourstate_copy_core.py) =====
+# ===== BEGIN English dialogs copied from Transport_all.py (Other-files/tools/ms_fourstate_copy_core.py) =====
 # The English dialogs (Tk's own message boxes and file dialogs) it shares with the main program, copied so
 # this file runs on its own.  Do not edit here: fix the main program and run
 # Other-files/tools/ms_fourstate_copy_core.py.
-# Copied from Transport_all_NH_dev.py, SHA-256 23b4c07d8e77…
+# Copied from Transport_all.py, SHA-256 db73e82a1e13…
 import sys
 
 
@@ -297,7 +297,7 @@ def use_english_tk_dialogs(root: tk.Misc) -> bool:
     except tk.TclError as error:
         print(f"Tk's own dialogs are not available; the system's are used: {error}", file=sys.stderr)
         return False
-# ===== END English dialogs copied from Transport_all_NH_dev.py =====
+# ===== END English dialogs copied from Transport_all.py =====
 
 
 def configure_tk_font_system(root: tk.Misc) -> tuple[str, str]:
@@ -4136,7 +4136,7 @@ class MicrowaveTransportApp:
         self.closing=True;self.stop();self.status.set('Switching the outputs off and closing the instrument connections\u2026')
 
 
-# The lab's two Zurich MFLI lock-ins, as in Transport_all_NH_dev.py.  DEV4435,
+# The lab's two Zurich MFLI lock-ins, as in Transport_all.py.  DEV4435,
 # the normal Zurich, is reached over its rear-panel USB link (a PC-side
 # LabOne Data Server, then its own server at 192.168.69.78).  DEV4414, the
 # Super Zurich, is on the lab network at 192.168.68.250, where MF Device

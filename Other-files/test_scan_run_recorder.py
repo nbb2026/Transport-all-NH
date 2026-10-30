@@ -22,7 +22,7 @@ from unittest import mock
 _HERE = Path(__file__).resolve().parent
 if str(_HERE.parent) not in sys.path:
     sys.path.insert(0, str(_HERE.parent))
-import Transport_all_NH_dev as app
+import Transport_all as app
 
 BOM = "﻿".encode("utf-8")
 
@@ -66,7 +66,7 @@ class RecorderFileTests(Folder):
         (prepared,) = self.lines(recorder)
         self.assertEqual(prepared["event"], "run_prepared")
         datetime.datetime.fromisoformat(prepared["timestamp"])
-        self.assertEqual((prepared["program"], prepared["app_version"]), ("Transport_all_NH_dev.py", app.APP_VERSION))
+        self.assertEqual((prepared["program"], prepared["app_version"]), ("Transport_all.py", app.APP_VERSION))
         self.assertTrue(prepared["python_version"])
         self.assertEqual((prepared["file_name"], prepared["run_folder"], prepared["csv_path"], prepared["log_path"]),
                          ("B1", str(recorder.directory), str(recorder.csv_path), str(recorder.log_path)))

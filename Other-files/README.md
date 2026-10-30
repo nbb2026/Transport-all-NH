@@ -1,5 +1,17 @@
 # Magneto-Electro-Optical Transport Experiment Control Directory
 
+## Renamed Transport_all.py (user, 2026-10-30)
+
+- The program `Transport_all_NH_dev.py` is now **`Transport_all.py`** (`git mv`, so its history follows), and the
+  GitHub repository is `nbb2026/Transport-all` (was Transport-all-NH). Run it as `python Transport_all.py`.
+- Changed with it: the tests' imports and loaders, `ci/gui_checks.py`, `ci/drift_benchmark.py`, the copy tool
+  `tools/ms_fourstate_copy_core.py` (its markers; MS-fourState.py and Test_Microwave_NH_dev.py refreshed by it), the
+  Newmark DLL message ("beside Transport_all.py"), the run-folder JSON's `"program"` (it is the file's name), and the
+  READMEs that say which file to run. Sections below dated before 2026-10-30 keep the old name as history.
+- The default results folders are named after the file (`Path(__file__).stem`), so they are now
+  `Transport_all_<page>_Results` beside the program (e.g. `Transport_all_CIDWM_Results`); folders written as
+  `Transport_all_NH_dev_*_Results` stay where they are.
+
 ## CI green for v1.0.2 (2026-10-30)
 
 CI was off from 2026-10-18 to 2026-10-30 (Actions minutes), so the GUI changes of that period were checked only by

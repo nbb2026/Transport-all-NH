@@ -1,6 +1,6 @@
 # RT-E: room-temperature electrical transport
 
-Entry point: `../Transport_all_NH_dev.py`, tab **RT-E**, class `RTEPanel`.
+Entry point: `../Transport_all.py`, tab **RT-E**, class `RTEPanel`.
 
 ## Instruments and scans
 

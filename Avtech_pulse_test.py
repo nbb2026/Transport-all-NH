@@ -1,7 +1,7 @@
 """Avtech AVR-E3-B pulse generator: a standalone test over GPIB (user, 2026-10-13).
 
 Needs only PyVISA (py -m pip install pyvisa) and NI-VISA.  One pulse uses the
-same sequence as the CIDWM page of Transport_all_NH_dev.py (reviewed twice),
+same sequence as the CIDWM page of Transport_all.py (reviewed twice),
 from Avtech's manuals (AVR-E2,E3-B sn14486 and ed9; programming manual for
 "-B" instruments, firmware 5.07):
 

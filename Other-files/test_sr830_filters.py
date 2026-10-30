@@ -6,7 +6,7 @@ import unittest
 
 class OptionalFilters(unittest.TestCase):
     def test_every_line_filter_setup_disables_both_optional_filters(self):
-        source = Path(__file__).resolve().parents[1] / 'Transport_all_NH_dev.py'
+        source = Path(__file__).resolve().parents[1] / 'Transport_all.py'
         tree = ast.parse(source.read_text(encoding='utf-8'))
         paths = 0
         for node in ast.walk(tree):

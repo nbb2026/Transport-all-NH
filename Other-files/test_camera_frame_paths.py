@@ -14,7 +14,7 @@ import numpy as np
 
 # The vendor ``pco`` package is Windows-only; a stub keeps NumPy/PIL usable.
 sys.modules.setdefault("pco", types.SimpleNamespace(Camera=object))
-source = Path(__file__).resolve().parents[1] / "Transport_all_NH_dev.py"
+source = Path(__file__).resolve().parents[1] / "Transport_all.py"
 spec = importlib.util.spec_from_file_location("transport_camera_paths_test", source)
 app = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = app
