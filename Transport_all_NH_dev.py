@@ -1535,7 +1535,7 @@ class LabOneCAPIAdapter:
             self._destroy()
 
 
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 APPLICATION_NAME = "Magneto-Electro-Optical-Microwave Transport"
 WINDOW_TITLE_SUFFIX = "-NH & Prof Chen's group"
 MAIN_WINDOW_TITLE = "Magneto_Electro_Optical_Microwave_Transport_NH"
